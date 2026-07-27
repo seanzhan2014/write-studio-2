@@ -1,0 +1,1 @@
+ALTER TABLE `contents` ADD `content_name` text DEFAULT '' NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE `versions` ADD `model_name` text;

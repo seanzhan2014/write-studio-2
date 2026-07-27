@@ -1,0 +1,1 @@
+ALTER TABLE `contents` ADD `content_override` integer DEFAULT false NOT NULL;

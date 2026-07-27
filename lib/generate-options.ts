@@ -1,0 +1,19 @@
+export const DEFAULT_GENERATE_TARGET_WORDS = 5000;
+export const MIN_GENERATE_TARGET_WORDS = 100;
+export const MAX_GENERATE_TARGET_WORDS = 100000;
+export const MAX_GENERATE_PRESETS = 20;
+export const MAX_GENERATE_PRESET_CHARACTERS = 500;
+
+export function normalizeGenerateTargetWords(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return DEFAULT_GENERATE_TARGET_WORDS;
+  return Math.max(MIN_GENERATE_TARGET_WORDS, Math.min(MAX_GENERATE_TARGET_WORDS, parsed));
+}
+
+export function normalizeGeneratePresets(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((item) => String(item).trim().slice(0, MAX_GENERATE_PRESET_CHARACTERS))
+    .filter(Boolean))]
+    .slice(0, MAX_GENERATE_PRESETS);
+}
