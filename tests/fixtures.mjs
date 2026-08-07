@@ -8,7 +8,7 @@ export function fullStudioFixture() {
   }));
   const makeOutline = (id, title, plan, content = "") => ({
     id, title, titleGenerationPending: false, plan, content, archived: false, state: "saved", updatedAt: now,
-    versions: [], chat: { sessions: [{ id: `chat:${id}`, title: "主会话", messages: [], draft: "", includePrevious: true, includeCharacters: true, createdAt: now, updatedAt: now }], activeSessionId: `chat:${id}` },
+    versions: [], chat: { sessions: [{ id: `chat:${id}`, title: "主会话", messages: [], draft: "", includePrevious: true, includeCharacters: true, lastReadMessageId: null, createdAt: now, updatedAt: now }], activeSessionId: `chat:${id}` },
   });
   const previous = makeOutline("outline-previous", "前序灯塔", "林澈在灯塔取得前序线索。", "灯塔正文");
   const current = makeOutline("outline-current", "当前码头", "林澈与顾屿在七码头会合。", "林澈看向顾屿，确认潮汐表上的时间。");
@@ -16,10 +16,11 @@ export function fullStudioFixture() {
     { id: "version-manual", name: "手动快照", content: "不可变版本正文", source: "手动", createdAt: now, model: "捕获模型", prompt: "版本元数据回归", taskId: "task-version-meta", outlineSnapshot: { title: "生成时码头", plan: "生成时的大纲快照：林澈在七码头确认潮汐密钥。" } },
   ];
   current.chat.sessions[0].messages = chatMessages;
+  current.chat.sessions[0].lastReadMessageId = chatMessages.at(-1).id;
   current.chat.sessions.push({
     id: "chat:outline-current:alternate", title: "人物动机分支",
     messages: [{ id: "message-alternate", role: "user", text: "alternate-session-secret", createdAt: now }],
-    draft: "分支草稿", includePrevious: false, includeCharacters: false, createdAt: now, updatedAt: now,
+    draft: "分支草稿", includePrevious: false, includeCharacters: false, lastReadMessageId: null, createdAt: now, updatedAt: now,
   });
   const after = makeOutline("outline-after", "绝密后续大纲", "这是当前大纲之后的内容，绝不能进入上下文。", "后续正文秘密");
   const archived = makeOutline("outline-archived", "归档秘密", "归档内容绝不能进入上下文。", "归档正文");

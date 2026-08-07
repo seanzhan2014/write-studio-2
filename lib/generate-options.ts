@@ -4,6 +4,17 @@ export const MAX_GENERATE_TARGET_WORDS = 100000;
 export const MAX_GENERATE_PRESETS = 20;
 export const MAX_GENERATE_PRESET_CHARACTERS = 500;
 
+export const CONTENT_GENERATION_MODES = ["fresh", "rewrite", "continue"] as const;
+export type ContentGenerationMode = typeof CONTENT_GENERATION_MODES[number];
+
+export function isContentGenerationMode(value: unknown): value is ContentGenerationMode {
+  return CONTENT_GENERATION_MODES.includes(value as ContentGenerationMode);
+}
+
+export function normalizeContentGenerationMode(value: unknown): ContentGenerationMode {
+  return isContentGenerationMode(value) ? value : "fresh";
+}
+
 export function normalizeGenerateTargetWords(value: unknown) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return DEFAULT_GENERATE_TARGET_WORDS;

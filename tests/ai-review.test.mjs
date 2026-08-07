@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aiReviewContentName, resolvedOutlineContentName, timestampContentName } from "../lib/content-name.mjs";
+import { aiGenerateContentName, aiReviewContentName, localTimestampContentName, resolvedOutlineContentName, timestampContentName } from "../lib/content-name.mjs";
 import { AiReviewResultError, applyReviewEdits, createReviewBlocks, parseReviewResponse, reviewSourceDigest } from "../lib/ai-review.mjs";
 
 test("body names default to stable timestamps and AI Review appends to the original name", () => {
   assert.equal(timestampContentName("2026-08-03T04:05:06.000Z"), "2026-08-03 04:05:06");
+  const localDate = new Date(2026, 7, 3, 12, 5, 6);
+  assert.equal(localTimestampContentName(localDate), "2026-08-03 12:05:06");
+  assert.equal(aiGenerateContentName("accounts/fireworks/models/kimi-k2p6", localDate), "2026-08-03 12:05:06 · kimi-k2p6");
   const outline = {
     contentName: "2026-08-03 04:05:06",
     contentOverride: true,

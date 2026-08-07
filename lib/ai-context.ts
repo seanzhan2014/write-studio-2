@@ -1,5 +1,6 @@
 import { resolvedOutlineContent } from "./outline-content";
 import { outlineDisplayTitle } from "./outline-title";
+import { normalizeContentGenerationMode, type ContentGenerationMode } from "./generate-options";
 
 export type AiContextKind = "chat" | "content" | "outline" | "chapter-title";
 
@@ -49,10 +50,12 @@ export type AiContextSummary = {
   total: number;
   article: number;
   chapter: number;
+  chapterOutlines: number;
   outline: number;
   content: number;
   previous: number;
   previousCount: number;
+  chapterOutlineCount: number;
   characters: number;
   characterCount: number;
   previousContent: number;
@@ -76,7 +79,7 @@ function matchesCharacterReference(searchable: string, name: string) {
   return searchable.toLocaleLowerCase().includes(candidate.toLocaleLowerCase());
 }
 
-export function selectAiContext(data: AiContextData, outlineId: string, kind: AiContextKind, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string } = {}): SelectedAiContext {
+export function selectAiContext(data: AiContextData, outlineId: string, kind: AiContextKind, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; contentMode?: ContentGenerationMode } = {}): SelectedAiContext {
   const article = data.articles.find((candidate) => candidate.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === outlineId)));
   if (!article) throw new AiContextSelectionError("大纲不存在", "not_found");
   const chapter = article.chapters.find((candidate) => candidate.outlines.some((outline) => outline.id === outlineId));
@@ -92,7 +95,9 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
   if (currentIndex < 0) throw new AiContextSelectionError("大纲不可用于 AI", "archived");
   const previous = options.includePrevious === false ? [] : visibleOutlines.slice(0, currentIndex);
   const previousOutline = options.includePrevious === false || currentIndex === 0 ? undefined : visibleOutlines[currentIndex - 1];
-  const currentContent = resolvedOutlineContent(outline);
+  const contentMode = normalizeContentGenerationMode(options.contentMode);
+  const includeCurrentContent = kind === "chat" || (kind === "content" && contentMode !== "fresh");
+  const currentContent = includeCurrentContent ? resolvedOutlineContent(outline) : "";
   const searchable = `${outlineDisplayTitle(outline)}\n${outline.plan}\n${currentContent}`;
   const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : article.characters.filter((person) => !person.archived && [person.name, ...person.aliases].some((name) => matchesCharacterReference(searchable, name)));
   const characterIds = new Set(matchedCharacters.map((person) => person.id));
@@ -125,11 +130,12 @@ export function summarizeAiContext(context: SelectedAiContext, instruction: stri
   const counts = {
     article: context.article.title.length + context.article.summary.length + context.article.type.length + context.article.style.length,
     chapter: context.currentChapter.title.length,
+    chapterOutlines: context.chapterOutlines.reduce((total, item) => total + item.plan.length, 0),
     outline: context.kind === "chapter-title"
-      ? context.chapterOutlines.reduce((total, item) => total + item.title.length + item.plan.length, 0)
-      : context.currentOutline.title.length + context.currentOutline.plan.length,
+      ? context.chapterOutlines.reduce((total, item) => total + item.plan.length, 0)
+      : context.currentOutline.plan.length,
     content: Math.min(context.currentOutline.content.length, 30000),
-    previous: context.previousOutlines.reduce((total, item) => total + item.title.length + item.plan.length, 0),
+    previous: context.previousOutlines.reduce((total, item) => total + item.plan.length, 0),
     characters: context.characters.reduce((total, person) => total + person.name.length + person.aliases.join("").length + person.description.length, 0)
       + context.relationships.reduce((total, relationship) => total + relationship.characterA.length + relationship.characterB.length + relationship.description.length, 0),
     previousContent: context.previousContentTail.length,
@@ -140,6 +146,7 @@ export function summarizeAiContext(context: SelectedAiContext, instruction: stri
     ...counts,
     total: Math.min(60000, Object.values(counts).reduce((total, value) => total + value, 0) + history + 256),
     previousCount: context.kind === "chapter-title" ? context.chapterOutlines.length : context.previousOutlines.length,
+    chapterOutlineCount: context.chapterOutlines.length,
     characterCount: context.characters.length,
   };
 }

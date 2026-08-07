@@ -362,23 +362,28 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         const content = contents.get(outlineId);
         const outlineSessionRows = sessions.filter((row) => row.outline_id === outlineId);
         const sessionItems = outlineSessionRows.map((sessionRow) => {
-          const options = safeJson<{ title?: string; includePrevious?: boolean; includeCharacters?: boolean; active?: boolean }>(sessionRow.context_options_json, {});
+          const options = safeJson<{ title?: string; includePrevious?: boolean; includeCharacters?: boolean; active?: boolean; lastReadMessageId?: string | null }>(sessionRow.context_options_json, {});
+          const sessionMessages = messages.filter((row) => row.session_id === sessionRow.id).map((row) => ({
+            id: String(row.id), role: String(row.role) as "user" | "assistant", text: String(row.content),
+            createdAt: String(row.created_at), stopped: row.status === "stopped" || undefined,
+          }));
           return {
             id: String(sessionRow.id),
             title: options.title?.trim() || "新对话",
-            messages: messages.filter((row) => row.session_id === sessionRow.id).map((row) => ({
-              id: String(row.id), role: String(row.role) as "user" | "assistant", text: String(row.content),
-              createdAt: String(row.created_at), stopped: row.status === "stopped" || undefined,
-            })),
+            messages: sessionMessages,
             draft: String(sessionRow.draft ?? ""),
             includePrevious: options.includePrevious !== false,
             includeCharacters: options.includeCharacters !== false,
+            lastReadMessageId: Object.prototype.hasOwnProperty.call(options, "lastReadMessageId")
+              ? options.lastReadMessageId ?? null
+              : sessionMessages.filter((message) => message.role === "assistant").at(-1)?.id ?? null,
             createdAt: String(sessionRow.created_at),
             updatedAt: String(sessionRow.updated_at),
           };
         });
         const fallbackSession = {
           id: `chat:${outlineId}`, title: "新对话", messages: [], draft: "", includePrevious: true, includeCharacters: true,
+          lastReadMessageId: null,
           createdAt: String(outlineRow.updated_at), updatedAt: String(outlineRow.updated_at),
         };
         const activeSessionId = String(outlineSessionRows.find((row) => safeJson<{ active?: boolean }>(row.context_options_json, {}).active)?.id ?? sessionItems[0]?.id ?? fallbackSession.id);
@@ -479,7 +484,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.createdAt])));
         outline.chat.sessions.forEach((session) => {
-          statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId }), session.createdAt, session.updatedAt, nextRevision]));
+          statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
           session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
         });
       });

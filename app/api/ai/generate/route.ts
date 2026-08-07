@@ -1,5 +1,5 @@
 import { AiInputError, generateText } from "@/db/ai";
-import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
+import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
   try {
@@ -8,6 +8,8 @@ export async function POST(request: Request) {
     body.instruction = String(body.instruction ?? "").trim();
     if (body.instruction.length > 20000) return Response.json({ error: "补充指令不能超过 20,000 字符" }, { status: 400 });
     if (body.target !== "content" && !body.instruction) return Response.json({ error: "结构生成指令不能为空" }, { status: 400 });
+    if (body.target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return Response.json({ error: "正文生成模式无效" }, { status: 400 });
+    if (body.target === "content") body.contentMode = normalizeContentGenerationMode(body.contentMode);
     const targetWords = Number(body.targetWords ?? DEFAULT_GENERATE_TARGET_WORDS);
     if (body.target === "content" && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) return Response.json({ error: `目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数` }, { status: 400 });
     if (body.target === "content") body.targetWords = targetWords;

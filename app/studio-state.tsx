@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "@/lib/generate-options";
+import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, type ContentGenerationMode } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
@@ -24,6 +24,7 @@ export type ChatSession = {
   draft: string;
   includePrevious: boolean;
   includeCharacters: boolean;
+  lastReadMessageId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -128,6 +129,7 @@ export type AiTask = {
     includeCharacters: boolean;
     estimatedCharacters: number;
     targetWords?: number;
+    contentMode?: ContentGenerationMode;
     outlinePlanSnapshot?: string;
     outlineTitleSnapshot?: string;
     modelId?: string;
@@ -167,6 +169,7 @@ const now = "2026-07-28T14:32:00.000Z";
 function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"] {
   const createdAt = messages[0]?.createdAt ?? now;
   const updatedAt = messages.at(-1)?.createdAt ?? createdAt;
+  const lastReadMessageId = messages.filter((message) => message.role === "assistant").at(-1)?.id ?? null;
   const session: ChatSession = {
     id: `chat:${outlineId}`,
     title: messages[0]?.text.slice(0, 24) || "新对话",
@@ -174,6 +177,7 @@ function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"]
     draft: "",
     includePrevious: true,
     includeCharacters: true,
+    lastReadMessageId,
     createdAt,
     updatedAt,
   };
@@ -344,10 +348,11 @@ type StudioContextValue = {
   renameChatSession: (outlineId: string, sessionId: string, title: string) => void;
   deleteChatSession: (outlineId: string, sessionId: string) => void;
   branchChatSession: (outlineId: string, messageId: string) => string | null;
-  setChatDraft: (outlineId: string, draft: string) => void;
+  setChatDraft: (outlineId: string, draft: string, sessionId?: string) => void;
   setChatSetting: (outlineId: string, key: "includePrevious" | "includeCharacters", value: boolean) => void;
-  addChatMessage: (outlineId: string, message: Message) => void;
-  replaceChatMessages: (outlineId: string, messages: Message[]) => void;
+  addChatMessage: (outlineId: string, message: Message, sessionId?: string) => void;
+  replaceChatMessages: (outlineId: string, messages: Message[], sessionId?: string) => void;
+  markChatSessionRead: (outlineId: string, sessionId: string) => void;
   clearChat: (outlineId: string) => void;
   addTask: (task: Omit<AiTask, "id" | "createdAt" | "state"> & { state?: AiTask["state"] }) => string | null;
   updateTask: (taskId: string, patch: Partial<AiTask>) => void;
@@ -407,6 +412,10 @@ function normalizeAiTask(task: AiTask): AiTask {
   const phase = task.phase ?? (task.state === "waiting" ? "queued" : task.state === "success" ? "completed" : task.state === "failed" ? "failed" : task.state === "cancelled" ? "cancelled" : "generating");
   return {
     ...task,
+    contextOptions: task.contextOptions ? {
+      ...task.contextOptions,
+      ...(task.target === "正文" ? { contentMode: normalizeContentGenerationMode(task.contextOptions.contentMode) } : {}),
+    } : task.contextOptions,
     phase,
     attempt: Math.max(0, Number(task.attempt ?? 0)),
     receivedCharacters: Math.max(0, Number(task.receivedCharacters ?? task.resultText?.length ?? 0)),
@@ -442,8 +451,14 @@ function normalizeStudioData(source: StudioData): StudioData {
           const normalizedItem = { ...item, title: normalizedTitle, contentName: item.contentName?.trim() || timestampContentName(item.updatedAt), contentOverride: item.contentOverride === true, titleGenerationPending: item.titleGenerationPending ?? !normalizedTitle };
           const legacy = item.chat as typeof item.chat & { messages?: Message[]; draft?: string; includePrevious?: boolean; includeCharacters?: boolean };
           if (Array.isArray(legacy.sessions) && legacy.sessions.length) {
-            const activeSessionId = legacy.sessions.some((session) => session.id === legacy.activeSessionId) ? legacy.activeSessionId : legacy.sessions[0].id;
-            return { ...normalizedItem, chat: { sessions: legacy.sessions, activeSessionId } };
+            const sessions = legacy.sessions.map((session) => ({
+              ...session,
+              lastReadMessageId: Object.prototype.hasOwnProperty.call(session, "lastReadMessageId")
+                ? session.lastReadMessageId ?? null
+                : session.messages.filter((message) => message.role === "assistant").at(-1)?.id ?? null,
+            }));
+            const activeSessionId = sessions.some((session) => session.id === legacy.activeSessionId) ? legacy.activeSessionId : sessions[0].id;
+            return { ...normalizedItem, chat: { sessions, activeSessionId } };
           }
           const chat = emptyChat(item.id, legacy.messages ?? []);
           chat.sessions[0] = { ...chat.sessions[0], draft: legacy.draft ?? "", includePrevious: legacy.includePrevious !== false, includeCharacters: legacy.includeCharacters !== false };
@@ -455,7 +470,7 @@ function normalizeStudioData(source: StudioData): StudioData {
 }
 
 export function StudioProvider({ children }: { children: React.ReactNode }) {
-  const [data, setData] = useState<StudioData>(seedData);
+  const [data, setDataState] = useState<StudioData>(seedData);
   const [hydrated, setHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StudioContextValue["saveStatus"]>("loading");
   const [saveError, setSaveError] = useState("");
@@ -467,6 +482,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const saveEpochRef = useRef(0);
   const pendingRecoveredDraftKeysRef = useRef<string[]>([]);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+
+  const setData = useCallback((update: StudioData | ((current: StudioData) => StudioData)) => {
+    const next = typeof update === "function" ? update(dataRef.current) : update;
+    dataRef.current = next;
+    setDataState(next);
+  }, []);
 
   useEffect(() => { dataRef.current = data; }, [data]);
 
@@ -528,7 +549,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     }
     void load();
     return () => { active = false; };
-  }, []);
+  }, [setData]);
 
   const persist = useCallback(async function persistSnapshot(snapshot: StudioData, force = false, epoch = saveEpochRef.current, rebaseAttempt = 0): Promise<boolean> {
     if (!force && epoch !== saveEpochRef.current) return false;
@@ -575,7 +596,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("failed");
       return false;
     }
-  }, []);
+  }, [setData]);
 
   const enqueueSave = useCallback((snapshot: StudioData, force = false) => {
     const epoch = saveEpochRef.current;
@@ -610,7 +631,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     })();
     refreshPromiseRef.current = request;
     return request;
-  }, [hydrated, conflict]);
+  }, [hydrated, conflict, setData]);
 
   useEffect(() => {
     if (!hydrated || conflict) return;
@@ -900,7 +921,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const id = makeId("chat");
       const createdAt = new Date().toISOString();
       const cloned = messages.map((message) => ({ ...message, id: makeId("message") }));
-      const session: ChatSession = { id, title: title.trim().slice(0, 48) || "新对话", messages: cloned, draft: "", includePrevious: true, includeCharacters: true, createdAt, updatedAt: createdAt };
+      const session: ChatSession = { id, title: title.trim().slice(0, 48) || "新对话", messages: cloned, draft: "", includePrevious: true, includeCharacters: true, lastReadMessageId: cloned.filter((message) => message.role === "assistant").at(-1)?.id ?? null, createdAt, updatedAt: createdAt };
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { sessions: [session, ...item.chat.sessions], activeSessionId: id } } : item) })) })) }));
       return id;
     },
@@ -929,21 +950,32 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const id = makeId("chat");
       const createdAt = new Date().toISOString();
       const messages = active.messages.slice(0, index + 1).map((message) => ({ ...message, id: makeId("message") }));
-      const session: ChatSession = { ...active, id, title: `分支 · ${active.title}`.slice(0, 48), messages, draft: "", createdAt, updatedAt: createdAt };
+      const session: ChatSession = { ...active, id, title: `分支 · ${active.title}`.slice(0, 48), messages, draft: "", lastReadMessageId: messages.filter((message) => message.role === "assistant").at(-1)?.id ?? null, createdAt, updatedAt: createdAt };
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { sessions: [session, ...item.chat.sessions], activeSessionId: id } } : item) })) })) }));
       return id;
     },
-    setChatDraft(outlineId, draft) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, draft } : session) } } : item) })) })) }));
+    setChatDraft(outlineId, draft, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, draft } : session) } } : item) })) })) }));
     },
     setChatSetting(outlineId, key, settingValue) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, [key]: settingValue, updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
     },
-    addChatMessage(outlineId, message) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, messages: [...session.messages, message], updatedAt: message.createdAt } : session) } } : item) })) })) }));
+    addChatMessage(outlineId, message, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, messages: [...session.messages, message], updatedAt: message.createdAt } : session) } } : item) })) })) }));
     },
-    replaceChatMessages(outlineId, messages) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, messages, updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
+    replaceChatMessages(outlineId, messages, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, messages, updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
+    },
+    markChatSessionRead(outlineId, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        const sessions = item.chat.sessions.map((session) => {
+          if (session.id !== sessionId) return session;
+          const latestAssistantId = session.messages.filter((message) => message.role === "assistant").at(-1)?.id ?? null;
+          return session.lastReadMessageId === latestAssistantId ? session : { ...session, lastReadMessageId: latestAssistantId };
+        });
+        return { ...item, chat: { ...item.chat, sessions } };
+      }) })) })) }));
     },
     clearChat(outlineId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, messages: [], draft: "", updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
@@ -1064,7 +1096,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       revisionRef.current = conflict.serverRevision;
       await enqueueSave(conflict.local, true);
     },
-  }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, enqueueSave, refreshFromServer]);
+  }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, enqueueSave, refreshFromServer, setData]);
 
   return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
 }
@@ -1073,6 +1105,11 @@ export function useStudio() {
   const context = useContext(StudioContext);
   if (!context) throw new Error("useStudio must be used inside StudioProvider");
   return context;
+}
+
+export function chatSessionHasUnread(session: ChatSession) {
+  const latestAssistantId = session.messages.filter((message) => message.role === "assistant").at(-1)?.id;
+  return Boolean(latestAssistantId && latestAssistantId !== session.lastReadMessageId);
 }
 
 export function wordCount(text: string) {

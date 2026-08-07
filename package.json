@@ -11,7 +11,7 @@
     "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node scripts/run-tests.mjs && npm run test:ui",
-    "test:ui": "playwright test",
+    "test:ui": "node scripts/run-ui-tests.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

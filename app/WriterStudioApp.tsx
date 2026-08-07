@@ -39,11 +39,11 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { selectAiContext, summarizeAiContext, type AiContextSummary } from "@/lib/ai-context";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
-import { MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets } from "@/lib/generate-options";
+import { MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, type ContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { BUILTIN_REVIEW_REQUIREMENTS, MAX_REVIEW_PRESETS, MAX_REVIEW_PRESET_CHARACTERS, normalizeReviewPresets } from "@/lib/review-options";
-import { StudioProvider, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type Outline, type Version } from "./studio-state";
+import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type Outline, type Version } from "./studio-state";
 
 type View =
   | "outline-home"
@@ -87,6 +87,9 @@ type IconName =
   | "book"
   | "chat"
   | "copy"
+  | "paste"
+  | "save"
+  | "saveAs"
   | "branch"
   | "refresh"
   | "insert"
@@ -121,6 +124,9 @@ const iconPaths: Record<Exclude<IconName, "stop">, string[]> = {
   book: ["M3 5.5A2.5 2.5 0 0 1 5.5 3H11v17H5.5A2.5 2.5 0 0 0 3 22Z", "M21 5.5A2.5 2.5 0 0 0 18.5 3H13v17h5.5A2.5 2.5 0 0 1 21 22Z"],
   chat: ["M21 12a8 8 0 0 1-8 8H6l-3 2 1-5a9 9 0 1 1 17-5Z"],
   copy: ["M8 8h11v11H8z", "M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1"],
+  paste: ["M9 4h6v4H9z", "M6 6H4v15h16V6h-2", "M8 13h8", "M8 17h5"],
+  save: ["M5 3h12l3 3v15H5z", "M8 3v6h8V3", "M8 21v-7h8v7"],
+  saveAs: ["M5 3h12l3 3v15H5z", "M8 3v6h8V3", "M12 13v6", "M9 16l3 3 3-3"],
   branch: ["M6 3v12a4 4 0 0 0 4 4h8", "m14 15 4 4-4 4", "M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"],
   refresh: ["M20 7v5h-5", "M4 17v-5h5", "M6.1 9a7 7 0 0 1 11.8-2L20 12", "M4 12l2.1 5a7 7 0 0 0 11.8-2"],
   insert: ["M19 3v12a4 4 0 0 1-4 4H5", "m9 15-4 4 4 4"],
@@ -139,6 +145,24 @@ function Icon({ name }: { name: IconName }) {
 function clientId(prefix: string) {
   const uuid = globalThis.crypto?.randomUUID?.();
   return `${prefix}-${uuid ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 12)}`}`;
+}
+
+type ActiveChatStream = { controller: AbortController; cancel: () => void };
+const activeChatStreams = new Map<string, ActiveChatStream>();
+
+function registerActiveChatStream(taskId: string, stream: ActiveChatStream) {
+  activeChatStreams.set(taskId, stream);
+}
+
+function releaseActiveChatStream(taskId: string, controller: AbortController) {
+  if (activeChatStreams.get(taskId)?.controller === controller) activeChatStreams.delete(taskId);
+}
+
+function cancelActiveChatStream(taskId: string) {
+  const stream = activeChatStreams.get(taskId);
+  if (!stream) return false;
+  stream.cancel();
+  return true;
 }
 
 function useDismissOnOutside(open: boolean, onClose: () => void, insideSelector: string) {
@@ -224,15 +248,30 @@ function useConfiguredModels() {
 
 type GenerateContextSummary = AiContextSummary;
 
+const contentGenerationModes: Array<{ value: ContentGenerationMode; label: string; description: string }> = [
+  { value: "fresh", label: "全新生成", description: "只依据当前大纲独立创作，不发送现有正文。" },
+  { value: "rewrite", label: "改写正文", description: "以现有正文为原稿，返回完整的改写候选。" },
+  { value: "continue", label: "续写正文", description: "模型只生成新增部分，保存时自动接到现有正文后。" },
+];
+
+function contentGenerationModeLabel(mode?: ContentGenerationMode) {
+  return contentGenerationModes.find((item) => item.value === mode)?.label ?? "全新生成";
+}
+
 function activeChatSession(outline: Outline) {
   return outline.chat.sessions.find((session) => session.id === outline.chat.activeSessionId) ?? outline.chat.sessions[0];
 }
 
-function generateContextSummary(article: Article, outline: Outline, instruction: string, includePrevious: boolean, includeCharacters: boolean, target: "content" | "outline" | "chapter-title" = "content"): GenerateContextSummary {
+function generateContextSummary(article: Article, outline: Outline, instruction: string, includePrevious: boolean, includeCharacters: boolean, target: "content" | "outline" | "chapter-title" = "content", contentMode: ContentGenerationMode = "fresh"): GenerateContextSummary {
   try {
-    return summarizeAiContext(selectAiContext({ articles: [article] }, outline.id, target, { includePrevious, includeCharacters }), instruction);
+    const selected = selectAiContext({ articles: [article] }, outline.id, target, { includePrevious, includeCharacters, contentMode });
+    return summarizeAiContext({
+      ...selected,
+      currentOutline: { ...selected.currentOutline, title: outline.title, plan: outline.plan, content: target === "content" && contentMode !== "fresh" ? resolvedOutlineContent(outline) : selected.currentOutline.content },
+      chapterOutlines: selected.chapterOutlines.map((item) => item.id === outline.id ? { ...item, title: outline.title, plan: outline.plan } : item),
+    }, instruction);
   } catch {
-    return { total: 0, article: 0, chapter: 0, outline: 0, content: 0, previous: 0, previousCount: 0, characters: 0, characterCount: 0, previousContent: 0, instruction: instruction.length };
+    return { total: 0, article: 0, chapter: 0, chapterOutlines: 0, outline: 0, content: 0, previous: 0, previousCount: 0, chapterOutlineCount: 0, characters: 0, characterCount: 0, previousContent: 0, instruction: instruction.length };
   }
 }
 
@@ -1488,17 +1527,18 @@ function OutlineWorkspace({
   const [moreOpen, setMoreOpen] = useState(false);
   const [generateSeed, setGenerateSeed] = useState("");
   const displayTitle = outlineDisplayTitle(outline);
-  const chatResultReady = mode !== "chat" && studio.data.tasks.some((task) => task.target === "AI Chat" && task.outlineId === studio.currentOutline.id && task.state === "success");
+  const chatResultReady = mode !== "chat" && studio.currentOutline.chat.sessions.some(chatSessionHasUnread);
   useDismissOnOutside(moreOpen, () => setMoreOpen(false), ".workspace-more-trigger, .workspace-more-menu");
 
-  function saveAsCurrentContent() {
-    const defaultName = resolvedOutlineContentName(studio.currentOutline);
+  async function saveAsCurrentContent() {
+    const defaultName = `${resolvedOutlineContentName(studio.currentOutline)}-复制`;
     const name = window.prompt("另存为正文版本", defaultName);
     if (name === null) { setMoreOpen(false); return; }
     const versionName = name.trim() || defaultName;
     studio.saveVersion(studio.currentOutline.id, versionName, "手动", resolvedOutlineContent(studio.currentOutline));
     setMoreOpen(false);
-    onNotice(`已另存为「${versionName}」`);
+    const saved = await studio.saveNow();
+    onNotice(saved ? `已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
   }
 
   return (
@@ -1524,15 +1564,15 @@ function OutlineWorkspace({
         </div>
       )}
 
-      {mode === "write" && <WritingView outline={outline} focusMode={focusMode} previewVersion={previewVersion} onClearPreview={onClearPreview} onNotice={onNotice} />}
+      {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onClearPreview={onClearPreview} onNotice={onNotice} />}
       {mode === "chat" && <ChatView outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
-      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={saveAsCurrentContent}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
+      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
     </div>
   );
 }
 
-function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNotice }: { outline: { plan: string; content: string }; focusMode: boolean; previewVersion?: Version; onClearPreview: () => void; onNotice: (message: string) => void }) {
+function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { focusMode: boolean; previewVersion?: Version; onClearPreview: () => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const [planOpen, setPlanOpen] = useState(studio.data.settings.outlineExpanded);
   const [planPeek, setPlanPeek] = useState(false);
@@ -1545,6 +1585,7 @@ function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNot
   const [draftContent, setDraftContent] = useState("");
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [settingDefault, setSettingDefault] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const editingRef = useRef(false);
   const draftRef = useRef("");
@@ -1554,13 +1595,15 @@ function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNot
   const studioRef = useRef(studio);
   studioRef.current = studio;
   const editingOutlineId = studio.currentOutline.id;
-  const defaultVersion = !previewVersion && studio.currentOutline.sourceVersionId
+  const defaultVersion = !previewVersion && !studio.currentOutline.contentOverride && studio.currentOutline.sourceVersionId
     ? studio.currentOutline.versions.find((version) => version.id === studio.currentOutline.sourceVersionId)
     : undefined;
   const displayedVersion = previewVersion ?? defaultVersion;
+  const displayedIsDefault = Boolean(displayedVersion && !studio.currentOutline.contentOverride && displayedVersion.id === studio.currentOutline.sourceVersionId);
   const planSnapshot = displayedVersion?.outlineSnapshot;
   const plan = planSnapshot?.plan ?? "";
-  const displayedContent = previewVersion?.content ?? outline.content;
+  const displayedContent = previewVersion?.content ?? resolvedOutlineContent(studio.currentOutline);
+  const displayedContentName = displayedVersion?.name ?? resolvedOutlineContentName(studio.currentOutline);
   const content = editing ? draftContent : displayedContent;
 
   useEffect(() => () => {
@@ -1659,7 +1702,7 @@ function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNot
 
   async function saveEditing() {
     setSavingEdit(true);
-    const saved = await studio.commitContentEdit(studio.currentOutline.id, draftRef.current);
+    const saved = await studio.saveCurrentContent(studio.currentOutline.id, draftRef.current);
     setSavingEdit(false);
     if (!saved) return;
     editingRef.current = false;
@@ -1669,7 +1712,61 @@ function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNot
     setExitPromptOpen(false);
     setEditing(false);
     onClearPreview();
-    onNotice("正文已保存并设为默认");
+    onNotice("正文已保存");
+  }
+
+  async function copyEditingContent() {
+    const copied = await copyTextToClipboard(content);
+    onNotice(copied ? "正文已复制" : "复制失败，请检查剪贴板权限");
+  }
+
+  async function pasteEditingContent() {
+    if (!navigator.clipboard?.readText) {
+      onNotice("当前浏览器不支持读取剪贴板");
+      return;
+    }
+    try {
+      const pasted = await navigator.clipboard.readText();
+      const editor = editorRef.current;
+      if (!editor || !pasted) return;
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      const next = `${content.slice(0, start)}${pasted}${content.slice(end)}`;
+      changeDraft(next);
+      window.requestAnimationFrame(() => {
+        editor.focus();
+        const caret = start + pasted.length;
+        editor.setSelectionRange(caret, caret);
+      });
+    } catch {
+      onNotice("粘贴失败，请检查剪贴板权限");
+    }
+  }
+
+  async function saveAsEditingContent() {
+    const defaultName = `${resolvedOutlineContentName(studio.currentOutline)}-复制`;
+    const name = window.prompt("另存为正文", defaultName);
+    if (name === null) return;
+    const versionName = name.trim() || defaultName;
+    studio.saveVersion(studio.currentOutline.id, versionName, "手动", content);
+    const saved = await studio.saveNow();
+    onNotice(saved ? `正文已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
+  }
+
+  async function setDisplayedContentAsDefault() {
+    if (!displayedContent.trim() || displayedIsDefault || settingDefault) return;
+    setSettingDefault(true);
+    const versionId = previewVersion?.id ?? studio.saveVersion(
+      studio.currentOutline.id,
+      resolvedOutlineContentName(studio.currentOutline),
+      "手动",
+      displayedContent,
+    );
+    studio.setDefaultVersion(studio.currentOutline.id, versionId);
+    onClearPreview();
+    const saved = await studio.saveNow();
+    setSettingDefault(false);
+    onNotice(saved ? "已设为默认正文" : "设置默认正文未完成，请查看保存状态");
   }
 
   return (
@@ -1684,7 +1781,7 @@ function WritingView({ outline, focusMode, previewVersion, onClearPreview, onNot
         )}
 
         <section className="content-editor-section">
-          <div className="editor-heading"><span>正文</span><div>{editing ? <><button type="button" onClick={() => setFindOpen((value) => !value)}><Icon name="search" />查找</button><span>Markdown</span><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></> : <button className="start-edit-button" type="button" onClick={beginEditing}><Icon name="edit" />编辑</button>}</div></div>
+          <div className="editor-heading"><span title={displayedContentName}>{displayedContentName}</span><div>{editing ? <><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></> : <><button className="set-default-body-button" type="button" disabled={!displayedContent.trim() || displayedIsDefault || settingDefault} aria-label={displayedIsDefault ? "当前正文已是默认正文" : displayedVersion ? `将“${displayedVersion.name}”设为默认正文` : "将当前正文设为默认正文"} onClick={() => void setDisplayedContentAsDefault()}><Icon name="check" />{displayedIsDefault ? "已默认" : settingDefault ? "设置中" : "设为默认"}</button><button className="start-edit-button" type="button" onClick={beginEditing}><Icon name="edit" />编辑</button></>}</div></div>
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
           {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <div className="content-reader" role="region" aria-label="正文内容" style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content || "（正文为空）"}</div>}
         </section>
@@ -1706,6 +1803,7 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
   const [contextOpen, setContextOpen] = useState(false);
   const [includePrevious, setIncludePrevious] = useState(true);
   const [includeCharacters, setIncludeCharacters] = useState(true);
+  const [generationMode, setGenerationMode] = useState<ContentGenerationMode>("fresh");
   const [selectedModel, setSelectedModel] = useState(studio.data.settings.generateModel);
   const [compareCandidate, setCompareCandidate] = useState<Version | null>(null);
   const [notice, setNotice] = useState("");
@@ -1717,6 +1815,7 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
   const [outlineSaving, setOutlineSaving] = useState(false);
   const parsedTargetWords = Number(targetWordsInput);
   const targetWords = Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS ? parsedTargetWords : studio.data.settings.generateTargetWords;
+  const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
   const outlinePlanDirty = outlinePlanDraft !== outline.plan;
   useEffect(() => {
     const previous = lastSyncedOutlineRef.current;
@@ -1726,7 +1825,7 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
     }
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
   }, [studio.currentOutline.id, outline.plan]);
-  const summary = useMemo(() => generateContextSummary(studio.currentArticle, { ...studio.currentOutline, plan: outlinePlanDraft }, prompt, includePrevious, includeCharacters), [studio.currentArticle, studio.currentOutline, outlinePlanDraft, prompt, includePrevious, includeCharacters]);
+  const summary = useMemo(() => generateContextSummary(studio.currentArticle, { ...studio.currentOutline, plan: outlinePlanDraft }, prompt, includePrevious, includeCharacters, "content", generationMode), [studio.currentArticle, studio.currentOutline, outlinePlanDraft, prompt, includePrevious, includeCharacters, generationMode]);
   const outlineTasks = studio.data.tasks.filter((task) => task.outlineId === studio.currentOutline.id && task.target === "正文");
   const activeTasks = outlineTasks.filter((task) => task.state === "waiting" || task.state === "running").sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const latestFailed = outlineTasks.find((task) => task.state === "failed");
@@ -1748,15 +1847,16 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
   }, [outlinePlanDraft, studio]);
 
   const submit = useCallback(async () => {
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && (task.contextOptions?.targetWords ?? 5000) === targetWords && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && (task.contextOptions?.targetWords ?? 5000) === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     if (!await saveOutlineDraft() || !await studio.saveNow()) return;
-    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModel, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, estimatedCharacters: summary.total, targetWords, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId } });
+    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModel, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, estimatedCharacters: summary.total, targetWords, contentMode: generationMode, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId } });
     if (!taskId) { window.alert("已有 20 个等待或运行中的任务，请先取消一个任务后再生成。"); return; }
     setPrompt("");
     setNotice("");
     onTaskCreated();
-  }, [prompt, studio, selectedModel, selectedRecord?.modelId, selectedRecord?.timeoutMs, includePrevious, includeCharacters, summary.total, targetWords, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
+  }, [prompt, studio, selectedModel, selectedRecord?.modelId, selectedRecord?.timeoutMs, includePrevious, includeCharacters, summary.total, targetWords, generationMode, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -1797,16 +1897,26 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
               <Button className="generate-outline-save-button" variant={outlinePlanDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!outlinePlanDirty || outlineSaving} loading={outlineSaving} onClick={() => void saveOutlineDraft()}>保存大纲</Button>
             </div>
           </section>
+          <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
+            <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span><small>{contentGenerationModeLabel(generationMode)}</small></div>
+            <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
+              {contentGenerationModes.map((item) => {
+                const disabled = item.value !== "fresh" && !hasCurrentContent;
+                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} disabled={disabled} key={item.value} onClick={() => setGenerationMode(item.value)}><strong>{item.label}</strong><span>{item.description}</span></button>;
+              })}
+            </div>
+            {!hasCurrentContent && <p className="generate-mode-hint">当前正文为空，只能使用全新生成。</p>}
+          </section>
           <div className="generate-option-bar">
-            <NumberInput className="generate-word-count" label="目标字数" aria-label="正文目标字数" min={MIN_GENERATE_TARGET_WORDS} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => setTargetWordsInput(String(studio.data.settings.generateTargetWords))} />
+            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={MIN_GENERATE_TARGET_WORDS} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => setTargetWordsInput(String(studio.data.settings.generateTargetWords))} />
             <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
           </div>
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
-          <div className="generate-prompt-label"><span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span><Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="补充生成要求" /></div>
+          <div className="generate-prompt-label"><span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span><Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} /></div>
           <div className="generate-submit-row">
-            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span><strong>上下文 {summary.total.toLocaleString("zh-CN")} 字符</strong><small>前文 {summary.previousCount} 条 · 人物 {summary.characterCount} 位</small></span><Icon name="chevron" /></button>
+            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span><strong>{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</strong><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 人物 ${summary.characterCount} 位</small></span><Icon name="chevron" /></button>
             <div className="generate-model-control"><Select label="本次模型" data={modelOptions} value={selectedModel} allowDeselect={false} onChange={(value) => setSelectedModel(value ?? "")} /><small>{selectedModel ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
-            <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" onClick={() => void submit()}>开始生成</Button>
+            <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
           </div>
           {selectedModel !== studio.data.settings.generateModel && <button className="set-default-model" type="button" onClick={() => studio.updateSettings({ generateModel: selectedModel })}>将“{selectedModel || "本地 PoC 引擎"}”设为默认</button>}
         </section>
@@ -1823,14 +1933,14 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
         >
           <div className="generate-context-panel" aria-label="正文生成上下文">
             <Text size="xs" c="dimmed">预计发送 {summary.total.toLocaleString("zh-CN")} 字符</Text>
-            <ContextCard summary={summary} includePrevious={includePrevious} includeCharacters={includeCharacters} onPrevious={setIncludePrevious} onCharacters={setIncludeCharacters} />
+            <ContextCard summary={summary} contentMode={generationMode} includePrevious={includePrevious} includeCharacters={includeCharacters} onPrevious={setIncludePrevious} onCharacters={setIncludeCharacters} />
             <div className="context-preview"><span>当前大纲</span><strong>{displayTitle}</strong><p>{outlinePlanDraft || "尚未填写大纲内容"}</p></div>
           </div>
         </Drawer>
 
         <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><strong>{task.prompt || "按大纲生成"}</strong><p>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId)} · 目标 {(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字 · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><strong>{task.prompt || "按大纲生成"}</strong><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId)} · 目标 {(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字 · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
           {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><strong>{latestFailed.prompt || "按大纲生成"}</strong><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => studio.updateTask(latestFailed.id, { state: "waiting", error: undefined })}>原样重试</button></div></article>}
           {!activeTasks.length && !latestFailed && <div className="generate-empty-row">没有进行中的正文生成任务。</div>}
         </section>
@@ -1889,12 +1999,13 @@ function GeneratePresetDialog({ presets, onClose, onSave }: { presets: string[];
   </Modal>;
 }
 
-function ContextCard({ summary, includePrevious, includeCharacters, onPrevious, onCharacters }: { summary: GenerateContextSummary; includePrevious: boolean; includeCharacters: boolean; onPrevious: (value: boolean) => void; onCharacters: (value: boolean) => void }) {
-  const fixed = [["文章信息", summary.article], ["当前章节", summary.chapter], ["当前大纲", summary.outline], ["前一条正文", summary.previousContent], ["当前正文", summary.content]] as const;
+function ContextCard({ summary, contentMode, includePrevious, includeCharacters, onPrevious, onCharacters }: { summary: GenerateContextSummary; contentMode: ContentGenerationMode; includePrevious: boolean; includeCharacters: boolean; onPrevious: (value: boolean) => void; onCharacters: (value: boolean) => void }) {
+  const fixed = [["文章信息", summary.article], ["当前章节", summary.chapter], ["当前大纲", summary.outline], ["前一条正文", summary.previousContent]] as const;
   return (
     <div className="context-card">
       <div><strong>内容类别</strong><span>发送前预计</span></div>
       {fixed.map(([label, characters]) => <label key={label}><input type="checkbox" checked readOnly disabled />{label}<span>{characters.toLocaleString("zh-CN")} 字符</span></label>)}
+      <label><input type="checkbox" checked={contentMode !== "fresh"} readOnly disabled />当前正文<span>{contentMode === "fresh" ? "全新生成不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`}</span></label>
       <label><input type="checkbox" checked={includePrevious} onChange={(event) => onPrevious(event.target.checked)} />前面大纲<span>{summary.previousCount} 条 · {summary.previous.toLocaleString("zh-CN")} 字符</span></label>
       <label><input type="checkbox" checked={includeCharacters} onChange={(event) => onCharacters(event.target.checked)} />相关人物<span>{summary.characterCount} 位 · {summary.characters.toLocaleString("zh-CN")} 字符</span></label>
       <label><input type="checkbox" checked readOnly disabled />生成指令<span>{summary.instruction.toLocaleString("zh-CN")} 字符</span></label>
@@ -1939,6 +2050,10 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   const chatbotName = chatbotDisplayName(models, studio.data.settings.chatModel);
   const session = activeChatSession(outline);
   const message = session?.draft ?? "";
+  const activeChatTask = studio.data.tasks.find((task) => task.target === "AI Chat" && task.outlineId === outline.id && (task.state === "waiting" || task.state === "running"));
+  const sessionChatTask = activeChatTask?.contextOptions?.sessionId === session?.id ? activeChatTask : undefined;
+  const isStreaming = Boolean(activeChatTask);
+  const streaming = sessionChatTask?.resultText ?? "";
   const [contextOpen, setContextOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -1946,8 +2061,8 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   useDismissOnOutside(sessionsOpen || sessionMenuOpen, () => { setSessionsOpen(false); setSessionMenuOpen(false); }, ".chat-session-switcher, .chat-session-actions, .chat-session-popover, .chat-session-menu");
   useDismissOnOutside(toolsOpen || contextOpen, () => { setToolsOpen(false); setContextOpen(false); }, ".composer-context-chip, .composer-icon-button, .chat-tools-popover, .chat-context-panel");
   const [messageMenuId, setMessageMenuId] = useState("");
-  const [streaming, setStreaming] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
+  useDismissOnOutside(Boolean(messageMenuId), () => setMessageMenuId(""), ".message-action-trigger, .message-action-menu");
+  const [editingMessage, setEditingMessage] = useState<{ sessionId: string; messageId: string; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState("");
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const chatThreadRef = useRef<HTMLDivElement>(null);
@@ -1955,7 +2070,7 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   const fileRef = useRef<HTMLInputElement>(null);
   const streamController = useRef<AbortController | null>(null);
   const streamTaskId = useRef("");
-  const stopStreamingRef = useRef<(stopped?: boolean) => void>(() => undefined);
+  const streamSessionId = useRef("");
   const chatStudioRef = useRef(studio);
   const streamingRef = useRef("");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
@@ -1984,35 +2099,37 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
     return () => window.cancelAnimationFrame(frame);
   }, [session?.id, session?.messages.length, streaming]);
   useEffect(() => {
-    const cancelTask = (event: Event) => {
-      const taskId = (event as CustomEvent<{ taskId?: string }>).detail?.taskId;
-      if (taskId && taskId === streamTaskId.current) stopStreamingRef.current(true);
-    };
-    window.addEventListener("writer-studio-cancel-chat-task", cancelTask);
-    return () => {
-      window.removeEventListener("writer-studio-cancel-chat-task", cancelTask);
-    };
-  }, []);
+    if (session && chatSessionHasUnread(session)) studio.markChatSessionRead(outline.id, session.id);
+  }, [outline.id, session, studio]);
 
   function stopStreaming(stopped = true) {
     const taskId = streamTaskId.current;
+    const targetSessionId = streamSessionId.current;
     const partialResult = streamingRef.current;
-    streamController.current?.abort();
+    const controller = streamController.current;
+    controller?.abort();
+    if (taskId && controller) releaseActiveChatStream(taskId, controller);
     streamController.current = null;
-    if (partialResult) studio.addChatMessage(outline.id, { id: clientId("message"), role: "assistant", text: partialResult, createdAt: new Date().toISOString(), stopped });
+    if (partialResult) studio.addChatMessage(outline.id, { id: clientId("message"), role: "assistant", text: partialResult, createdAt: new Date().toISOString(), stopped }, targetSessionId || undefined);
     if (taskId) studio.updateTask(taskId, { state: "cancelled", phase: "cancelled", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: partialResult.length, resultText: partialResult || undefined, error: stopped ? "用户停止了聊天回复" : undefined });
     streamTaskId.current = "";
+    streamSessionId.current = "";
     streamingRef.current = "";
-    setStreaming("");
-    setIsStreaming(false);
+    void chatStudioRef.current.saveNow();
   }
   useEffect(() => {
     chatStudioRef.current = studio;
-    stopStreamingRef.current = stopStreaming;
   });
 
-  async function requestAnswer(question: string, addUser: boolean) {
-    if (!session || isStreaming || !await studio.saveNow()) return;
+  function cancelCurrentChatTask() {
+    if (!activeChatTask || cancelActiveChatStream(activeChatTask.id)) return;
+    const completedAt = new Date().toISOString();
+    studio.updateTask(activeChatTask.id, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, runnerId: undefined, leaseUntil: undefined });
+    void studio.saveNow();
+  }
+
+  async function requestAnswer(question: string, addUser: boolean, targetSessionId = session?.id, targetSession = session) {
+    if (!targetSessionId || !targetSession || isStreaming || streamTaskId.current || !await studio.saveNow()) return;
     const taskId = studio.addTask({
       articleId: studio.currentArticle.id,
       chapterId: outlineChapter.id,
@@ -2028,28 +2145,27 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
       receivedCharacters: 0,
       timeoutMs: models.find((model) => model.name === studio.data.settings.chatModel)?.timeoutMs ?? 600_000,
       contextOptions: {
-        includePrevious: session.includePrevious,
-        includeCharacters: session.includeCharacters,
+        includePrevious: targetSession.includePrevious,
+        includeCharacters: targetSession.includeCharacters,
         estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
-        sessionId: session.id,
+        sessionId: targetSessionId,
         modelId: models.find((model) => model.name === studio.data.settings.chatModel)?.modelId,
       },
     });
     if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
     streamTaskId.current = taskId;
+    streamSessionId.current = targetSessionId;
     if (addUser) {
-      studio.addChatMessage(outline.id, { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() });
-      studio.setChatDraft(outline.id, "");
-      if (session.title === "新对话") studio.renameChatSession(outline.id, session.id, question.slice(0, 24));
+      studio.addChatMessage(outline.id, { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() }, targetSessionId);
+      studio.setChatDraft(outline.id, "", targetSessionId);
+      if (targetSession.title === "新对话") studio.renameChatSession(outline.id, targetSessionId, question.slice(0, 24));
     }
     const controller = new AbortController();
     streamController.current = controller;
     streamingRef.current = "";
-    setStreaming("");
-    setIsStreaming(true);
-    let lastTaskProgressCharacters = 0;
+    registerActiveChatStream(taskId, { controller, cancel: () => stopStreaming(true) });
     try {
-      const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: question, sessionId: session.id, model: studio.data.settings.chatModel, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters }) });
+      const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: question, sessionId: targetSessionId, model: studio.data.settings.chatModel, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
       if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
       studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
       const reader = response.body.getReader();
@@ -2058,36 +2174,51 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
         const { done, value } = await reader.read();
         if (done) break;
         streamingRef.current += decoder.decode(value, { stream: true });
-        setStreaming(streamingRef.current);
-        if (streamingRef.current.length - lastTaskProgressCharacters >= 256) {
-          lastTaskProgressCharacters = streamingRef.current.length;
-          studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length });
-        }
+        studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, resultText: streamingRef.current });
       }
+      if (controller.signal.aborted) return;
       if (!streamingRef.current) throw new Error(`${chatbotName} 返回了空结果`);
-      studio.addChatMessage(outline.id, { id: clientId("message-assistant"), role: "assistant", text: streamingRef.current, createdAt: new Date().toISOString() });
+      studio.addChatMessage(outline.id, { id: clientId("message-assistant"), role: "assistant", text: streamingRef.current, createdAt: new Date().toISOString() }, targetSessionId);
       studio.updateTask(taskId, { state: "success", phase: "completed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, resultText: streamingRef.current, error: undefined });
-      window.setTimeout(() => { void chatStudioRef.current.saveNow(); }, 0);
+      await chatStudioRef.current.saveNow();
     } catch (error) {
       if (!controller.signal.aborted) {
         const errorMessage = error instanceof Error ? error.message : "请求失败";
-        studio.addChatMessage(outline.id, { id: clientId("message-error"), role: "assistant", text: `${chatbotName} 错误：${errorMessage}`, createdAt: new Date().toISOString() });
+        studio.addChatMessage(outline.id, { id: clientId("message-error"), role: "assistant", text: `${chatbotName} 错误：${errorMessage}`, createdAt: new Date().toISOString() }, targetSessionId);
         studio.updateTask(taskId, { state: "failed", phase: "failed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, error: errorMessage });
-        window.setTimeout(() => { void chatStudioRef.current.saveNow(); }, 0);
+        await chatStudioRef.current.saveNow();
       }
     } finally {
+      releaseActiveChatStream(taskId, controller);
       if (streamController.current === controller) streamController.current = null;
       if (streamTaskId.current === taskId) streamTaskId.current = "";
+      if (streamSessionId.current === targetSessionId) streamSessionId.current = "";
       streamingRef.current = "";
-      setStreaming("");
-      setIsStreaming(false);
     }
   }
 
   async function send() {
     const question = message.trim();
-    if (!question || isStreaming) return;
+    if (!question || isStreaming || editingMessage) return;
     await requestAnswer(question, true);
+  }
+
+  async function submitEditedMessage() {
+    if (!editingMessage || isStreaming) return;
+    const sourceSession = outline.chat.sessions.find((item) => item.id === editingMessage.sessionId);
+    const messageIndex = sourceSession?.messages.findIndex((item) => item.id === editingMessage.messageId) ?? -1;
+    const originalMessage = messageIndex >= 0 ? sourceSession?.messages[messageIndex] : undefined;
+    const editedText = editingMessage.text.trim();
+    if (!sourceSession || !originalMessage || originalMessage.role !== "user" || !editedText) return;
+    const messages = [...sourceSession.messages.slice(0, messageIndex), { ...originalMessage, text: editedText }];
+    studio.replaceChatMessages(outline.id, messages, sourceSession.id);
+    setEditingMessage(null);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    await requestAnswer(editedText, false, sourceSession.id, { ...sourceSession, messages });
+  }
+
+  function cancelEditingMessage() {
+    setEditingMessage(null);
   }
 
   async function copyMessage(id: string, text: string) {
@@ -2099,6 +2230,7 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   }
 
   function branchFrom(messageId: string) {
+    cancelEditingMessage();
     if (studio.branchChatSession(outline.id, messageId)) {
       setMessageMenuId("");
       onNotice("已从此消息创建新会话");
@@ -2137,10 +2269,10 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
           <span className="chat-header-icon"><Icon name="chat" /></span><span><strong>{session.title}</strong><small>{session.messages.length} 条消息</small></span><Icon name="chevron" />
         </button>
         <div className="chat-header-actions">
-          <IconButton name="plus" label="新建 AI Chat 会话" className="chat-new-session" onClick={() => { if (!isStreaming) { studio.createChatSession(outline.id); setSessionsOpen(false); composerRef.current?.focus(); } }} />
+          <IconButton name="plus" label="新建 AI Chat 会话" className="chat-new-session" onClick={() => { if (!isStreaming) { cancelEditingMessage(); studio.createChatSession(outline.id); setSessionsOpen(false); composerRef.current?.focus(); } }} />
           <IconButton name="more" label="会话操作" aria-haspopup="menu" aria-expanded={sessionMenuOpen} onClick={() => { setSessionMenuOpen((value) => !value); setSessionsOpen(false); }} />
         </div>
-        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="AI Chat 会话"><div className="chat-session-popover-head"><strong>AI Chat 会话</strong></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={isStreaming} onClick={() => { studio.setActiveChatSession(outline.id, item.id); setSessionsOpen(false); }}><span><strong>{item.title}</strong><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
+        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="AI Chat 会话"><div className="chat-session-popover-head"><strong>AI Chat 会话</strong></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={isStreaming} onClick={() => { cancelEditingMessage(); studio.setActiveChatSession(outline.id, item.id); setSessionsOpen(false); }}><span><strong>{item.title}</strong><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
         {sessionMenuOpen && <div className="chat-session-menu" role="menu"><button role="menuitem" type="button" onClick={() => { const title = window.prompt("会话名称", session.title); if (title?.trim()) studio.renameChatSession(outline.id, session.id, title); setSessionMenuOpen(false); }}><Icon name="edit" />重命名</button><button role="menuitem" type="button" onClick={() => { if (window.confirm("清空当前会话的全部消息？")) studio.clearChat(outline.id); setSessionMenuOpen(false); }}><Icon name="refresh" />清空消息</button><button role="menuitem" className="danger" type="button" onClick={() => { if (window.confirm("删除当前会话？")) studio.deleteChatSession(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="trash" />删除会话</button></div>}
       </header>
 
@@ -2149,29 +2281,32 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
         {session.messages.map((item, index) => {
           const isError = item.role === "assistant" && item.text.includes("错误：");
           const previousUser = item.role === "assistant" ? [...session.messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user") : null;
-          return <article className={`message ${item.role} ${isError ? "error" : ""}`} key={item.id}>
+          return <article className={`message ${item.role} ${isError ? "error" : ""} ${editingMessage?.sessionId === session.id && editingMessage.messageId === item.id ? "editing" : ""}`} key={item.id}>
             {item.role === "assistant" && <div className="avatar"><Icon name="spark" /></div>}
-            <div className="message-body"><div className="message-meta"><strong>{item.role === "user" ? "你" : chatbotName}</strong>{item.stopped && <span>已停止</span>}</div><ChatMessageContent text={item.text} />
-              <div className="message-actions">
+            <div className="message-body"><div className="message-meta"><strong>{item.role === "user" ? "你" : chatbotName}</strong>{item.stopped && <span>已停止</span>}</div>
+              {editingMessage?.sessionId === session.id && editingMessage.messageId === item.id ? <form className="inline-message-editor" onSubmit={(event) => { event.preventDefault(); void submitEditedMessage(); }}>
+                <textarea autoFocus maxLength={20000} value={editingMessage.text} aria-label="编辑聊天消息" onChange={(event) => setEditingMessage({ ...editingMessage, text: event.currentTarget.value })} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); cancelEditingMessage(); } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submitEditedMessage(); } }} />
+                <div><span>Ctrl/⌘ + Enter 发送</span><button type="button" onClick={cancelEditingMessage}>取消</button><button className="primary" type="submit" disabled={!editingMessage.text.trim()}>发送</button></div>
+              </form> : <><ChatMessageContent text={item.text} /><div className="message-actions">
                 <IconButton name={copiedId === item.id ? "check" : "copy"} label="复制消息" title="复制" size="small" onClick={() => void copyMessage(item.id, item.text)} />
-                {item.role === "user" && <IconButton name="edit" label="编辑并重发" size="small" onClick={() => { studio.replaceChatMessages(outline.id, session.messages.slice(0, index)); studio.setChatDraft(outline.id, item.text); composerRef.current?.focus(); }} />}
-                {item.role === "assistant" && previousUser && <IconButton name="refresh" label="重新生成" size="small" disabled={isStreaming} onClick={() => { studio.replaceChatMessages(outline.id, session.messages.slice(0, index)); void requestAnswer(previousUser.text, false); }} />}
+                {item.role === "user" && <IconButton name="edit" label="编辑并重发" size="small" disabled={isStreaming || Boolean(editingMessage)} onClick={() => setEditingMessage({ sessionId: session.id, messageId: item.id, text: item.text })} />}
+                {item.role === "assistant" && previousUser && <IconButton name="refresh" label="重新生成" size="small" disabled={isStreaming || Boolean(editingMessage)} onClick={() => { studio.replaceChatMessages(outline.id, session.messages.slice(0, index)); void requestAnswer(previousUser.text, false); }} />}
                 <IconButton name="branch" label="从这里分支" size="small" onClick={() => branchFrom(item.id)} />
-                {item.role === "assistant" && <IconButton name="more" label="更多写作操作" title="更多" size="small" aria-haspopup="menu" aria-expanded={messageMenuId === item.id} onClick={() => setMessageMenuId((value) => value === item.id ? "" : item.id)} />}
+                {item.role === "assistant" && <IconButton name="more" label="更多写作操作" title="更多" size="small" className="message-action-trigger" aria-haspopup="menu" aria-expanded={messageMenuId === item.id} onClick={() => setMessageMenuId((value) => value === item.id ? "" : item.id)} />}
               </div>
-              {messageMenuId === item.id && <div className="message-action-menu"><button type="button" onClick={() => saveCandidate(item.text)}><Icon name="versions" />保存为候选版本</button><button type="button" onClick={() => void appendToBody(item.text)}><Icon name="insert" />追加到正文</button><button type="button" onClick={() => { setMessageMenuId(""); onUseAsGenerate(item.text); }}><Icon name="spark" />交给 AI Generate</button></div>}
+              {messageMenuId === item.id && <div className="message-action-menu"><button type="button" onClick={() => saveCandidate(item.text)}><Icon name="versions" />保存为候选版本</button><button type="button" onClick={() => void appendToBody(item.text)}><Icon name="insert" />追加到正文</button><button type="button" onClick={() => { setMessageMenuId(""); onUseAsGenerate(item.text); }}><Icon name="spark" />交给 AI Generate</button></div>}</>}
             </div>
           </article>;
         })}
-        {isStreaming && <article className="message assistant streaming"><div className="avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><strong>{chatbotName}</strong><span>正在回复</span></div><ChatMessageContent text={streaming || "正在思考…"} /><button className="inline-stop" type="button" onClick={() => stopStreaming(true)}><Icon name="stop" />停止</button></div></article>}
+        {isStreaming && <article className="message assistant streaming"><div className="avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><strong>{chatbotName}</strong><span>正在回复</span></div><ChatMessageContent text={streaming || "正在思考…"} /><button className="inline-stop" type="button" onClick={cancelCurrentChatTask}><Icon name="stop" />停止</button></div></article>}
         <div ref={threadEndRef} />
       </div>
 
       <div className="chat-composer-wrap">
         {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="AI Chat 上下文"><header><div><strong>本次上下文</strong><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={session.includePrevious} onChange={(event) => studio.setChatSetting(outline.id, "includePrevious", event.target.checked)} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{session.includePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={session.includeCharacters} onChange={(event) => studio.setChatSetting(outline.id, "includeCharacters", event.target.checked)} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{session.includeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
-          <textarea ref={composerRef} rows={1} maxLength={20000} value={message} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="输入消息" aria-label="AI Chat 消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" value={studio.data.settings.chatModel} onChange={(event) => studio.updateSettings({ chatModel: event.target.value })}><option value="">本地 PoC 引擎</option>{studio.data.settings.chatModel && !models.some((model) => model.name === studio.data.settings.chatModel) && <option>{studio.data.settings.chatModel}</option>}{models.map((model) => <option key={model.id} value={model.name}>{model.name}</option>)}</select></label></div>{isStreaming ? <button className="composer-send stop" type="button" onClick={() => stopStreaming(true)} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim()} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="AI Chat 消息" />
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={studio.data.settings.chatModel} onChange={(event) => studio.updateSettings({ chatModel: event.target.value })}><option value="">本地 PoC 引擎</option>{studio.data.settings.chatModel && !models.some((model) => model.name === studio.data.settings.chatModel) && <option>{studio.data.settings.chatModel}</option>}{models.map((model) => <option key={model.id} value={model.name}>{model.name}</option>)}</select></label></div>{isStreaming ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage)} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
@@ -3040,7 +3175,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
         <div className="diff-legend"><span><i className="removed" />当前正文</span><span><i className="added" />{compareVersion.name}</span></div>
       </div> : <div className="version-list">
         <article className={!selectedVersionId ? "active current" : "current"}>
-          <button className="version-preview-main" type="button" onClick={onClearPreview}><div><strong>当前正文</strong><em>{studio.currentOutline.sourceVersionId ? "默认" : "空正文"}</em></div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(currentContent)} 字</p><span>正文</span></button>
+          <button className="version-preview-main" type="button" onClick={onClearPreview}><div><strong>当前正文</strong><em>{studio.currentOutline.contentOverride ? "已直接保存" : studio.currentOutline.sourceVersionId ? "当前正文" : "空正文"}</em></div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(currentContent)} 字</p><span>正文</span></button>
           {!selectedVersionId && <div className="version-content-preview" aria-label="当前正文内容">{currentContent || "（正文为空）"}</div>}
         </article>
         {versions.map((version) => {
@@ -3092,9 +3227,11 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     onClose();
   }
   function cancelTask(task: AiTask) {
-    studio.updateTask(task.id, { state: "cancelled", phase: "cancelled", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), runnerId: undefined, leaseUntil: undefined });
-    if (task.target === "AI Chat") window.dispatchEvent(new CustomEvent("writer-studio-cancel-chat-task", { detail: { taskId: task.id } }));
-    else studio.updateOutline(task.outlineId, { state: "saved" });
+    if (task.target === "AI Chat" && cancelActiveChatStream(task.id)) return;
+    const completedAt = new Date().toISOString();
+    studio.updateTask(task.id, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, runnerId: undefined, leaseUntil: undefined });
+    if (task.target !== "AI Chat") studio.updateOutline(task.outlineId, { state: "saved" });
+    void studio.saveNow();
   }
   function retryTask(task: AiTask) {
     studio.updateTask(task.id, { state: "waiting", phase: "queued", attempt: 0, startedAt: undefined, completedAt: undefined, lastProgressAt: undefined, receivedCharacters: 0, runnerId: undefined, leaseUntil: undefined, error: undefined });
@@ -3144,6 +3281,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <div className={`task-detail-status ${isStale(selectedTask) ? "stale" : ""}`}><span className={`state-dot ${selectedTask.state}`} /><strong>{isStale(selectedTask) ? "执行心跳已中断" : labels[selectedTask.state]}</strong><span>{phaseLabels[selectedTask.phase ?? "queued"]} · 已用时 {taskElapsed(selectedTask)}</span></div>
           <dl className="task-detail-metadata">
             <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${(selectedTask.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</dd></div>
+            {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}</dd></div>}
             <div><dt>模型</dt><dd>{modelDisplayLabel([], selectedTask.model || "", selectedTask.contextOptions?.modelId)}</dd></div>
             <div><dt>阶段</dt><dd>{phaseLabels[selectedTask.phase ?? "queued"]}</dd></div>
             <div><dt>尝试</dt><dd>{selectedTask.attempt ? `${selectedTask.attempt} / 3` : "—"}</dd></div>
@@ -3154,7 +3292,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
             <div className="wide"><dt>位置</dt><dd>{selectedArticle?.title ?? "已删除的文章"} / {selectedChapter?.title ?? "已删除的章节"} / {selectedOutline ? outlineDisplayTitle(selectedOutline) : "已删除的大纲"}</dd></div>
           </dl>
           <section className="task-detail-section"><h3>任务指令</h3><div className="task-detail-copy">{selectedTask.prompt || "按大纲生成（无补充指令）"}</div></section>
-          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags"><span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span>{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
+          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags">{selectedTask.target === "正文" && <span>{contentGenerationModeLabel(selectedTask.contextOptions.contentMode)}</span>}<span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span>{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.contentMode === "fresh" ? "不发送当前正文" : "包含当前正文"}</span>}{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
           {selectedTask.error && <section className="task-detail-section task-detail-error"><h3>错误</h3><div>{selectedTask.error}</div></section>}
           <section className="task-detail-section"><h3>任务结果</h3>{selectedResult ? <div className="task-detail-result" aria-label="任务结果">{selectedResult}</div> : <div className="task-detail-empty">{selectedTask.state === "waiting" || selectedTask.state === "running" ? "任务尚未产生结果" : "没有可用结果"}</div>}</section>
         </div>
@@ -3172,7 +3310,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
         return <article className="task-card" key={task.id}>
           <div className="task-state"><span className={`state-dot ${task.state}`} />{labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
           <button className="task-title" type="button" aria-label={`查看任务详情：${outline ? outlineDisplayTitle(outline) : "已删除的大纲"}`} onClick={() => setSelectedTaskId(task.id)}>{outline ? outlineDisplayTitle(outline) : "已删除的大纲"}</button>
-          <p>{article?.title ?? "未知文章"} · {chapter?.title ?? "未知章节"} · 目标：{task.target}{task.target === "正文" ? ` ${(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</p>
+          <p>{article?.title ?? "未知文章"} · {chapter?.title ?? "未知章节"} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)} · ${(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</p>
           <blockquote>{task.prompt || "按大纲生成"}</blockquote>
           {task.error && <p className="task-error">{task.error}</p>}
           <div><span>{modelDisplayLabel([], task.model || "", task.contextOptions?.modelId)}</span><span className="task-buttons">

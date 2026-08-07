@@ -1,6 +1,6 @@
 import type { Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
 import { clearBusinessData, readStudioState, searchDocuments, writeStudioState } from "@/db/runtime";
-import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
+import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 
@@ -122,7 +122,42 @@ export async function POST(request: Request, context: RouteContext) {
   if (s[0] === "versions" && s[2] === "default") return commit(request, (data) => { for (const article of data.articles) for (const chapter of article.chapters) for (const outline of chapter.outlines) { const version = outline.versions.find((item) => item.id === s[1]); if (version) { outline.contentOverride = false; outline.sourceVersionId = version.id; outline.updatedAt = now(); return outline; } } throw new Error("版本不存在"); });
   if (s[0] === "articles" && s[2] === "characters") return commit(request, (data) => { const article = findArticle(data, s[1]); if (!article) throw new Error("文章不存在"); const name = requireNonEmpty(body.name, "人物名", 120); if (article.characters.some((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error("同名人物已存在"); const character: Character = { id: id("character"), name, aliases: Array.isArray(body.aliases) ? [...new Set(body.aliases.map(String).map((item) => item.trim()).filter(Boolean))].slice(0, 50) : [], description: String(body.description ?? "").slice(0, 20000), archived: false }; article.characters.push(character); return character; });
   if (s[0] === "articles" && s[2] === "relationships") return commit(request, (data) => { const article = findArticle(data, s[1]); if (!article) throw new Error("文章不存在"); const [a, b] = [String(body.characterAId ?? ""), String(body.characterBId ?? "")].sort(); const ids = new Set(article.characters.map((item) => item.id)); if (!a || !b || a === b || !ids.has(a) || !ids.has(b) || article.relationships.some((item) => [item.characterAId, item.characterBId].sort().join(":") === `${a}:${b}`)) throw new Error("人物关系无效或已存在"); const relationship: Relationship = { id: id("relationship"), characterAId: a, characterBId: b, description: String(body.description ?? "").slice(0, 5000) }; article.relationships.push(relationship); return relationship; });
-  if (s[0] === "ai" && s[1] === "tasks" && s.length === 2) return commit(request, (data) => { const key = request.headers.get("idempotency-key"); if (!key || key.length > 200) throw new Error("Idempotency-Key 无效"); const existing = data.tasks.find((task) => task.id === key); if (existing) return existing; const articleId = String(body.articleId ?? ""), chapterId = String(body.chapterId ?? ""), outlineId = String(body.outlineId ?? ""); const found = findOutline(data, outlineId); if (!found || found.article.id !== articleId || found.chapter.id !== chapterId) throw new Error("任务目标不存在或归属不一致"); const target = body.target === "outline" ? "大纲" : body.target === "chapter-title" ? "章节标题" : body.target === "content" ? "正文" : body.target === "chat" ? "AI Chat" : null; if (!target) throw new Error("任务目标无效"); const instruction = String(body.instruction ?? "").trim().slice(0, 20000); if (target !== "正文" && !instruction) throw new Error("生成指令不能为空"); const targetWords = Number(body.targetWords ?? DEFAULT_GENERATE_TARGET_WORDS); if (target === "正文" && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`); const estimate = Number(body.estimatedCharacters ?? 0); const modelId = String(body.modelId ?? "").trim().slice(0, 300) || undefined; const task = { id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: String(body.model ?? ""), state: "waiting" as const, createdAt: now(), contextOptions: { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0, targetWords: target === "正文" ? targetWords : undefined, outlinePlanSnapshot: found.outline.plan, outlineTitleSnapshot: found.outline.title, modelId, sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined } }; data.tasks.unshift(task); trimTasks(data.tasks); return task; }, true);
+  if (s[0] === "ai" && s[1] === "tasks" && s.length === 2) return commit(request, (data) => {
+    const key = request.headers.get("idempotency-key");
+    if (!key || key.length > 200) throw new Error("Idempotency-Key 无效");
+    const existing = data.tasks.find((task) => task.id === key);
+    if (existing) return existing;
+    const articleId = String(body.articleId ?? ""), chapterId = String(body.chapterId ?? ""), outlineId = String(body.outlineId ?? "");
+    const found = findOutline(data, outlineId);
+    if (!found || found.article.id !== articleId || found.chapter.id !== chapterId) throw new Error("任务目标不存在或归属不一致");
+    const target = body.target === "outline" ? "大纲" : body.target === "chapter-title" ? "章节标题" : body.target === "content" ? "正文" : body.target === "chat" ? "AI Chat" : null;
+    if (!target) throw new Error("任务目标无效");
+    const instruction = String(body.instruction ?? "").trim().slice(0, 20000);
+    if (target !== "正文" && !instruction) throw new Error("生成指令不能为空");
+    if (target === "正文" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) throw new Error("正文生成模式无效");
+    const contentMode = normalizeContentGenerationMode(body.contentMode);
+    const targetWords = Number(body.targetWords ?? DEFAULT_GENERATE_TARGET_WORDS);
+    if (target === "正文" && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`);
+    const estimate = Number(body.estimatedCharacters ?? 0);
+    const modelId = String(body.modelId ?? "").trim().slice(0, 300) || undefined;
+    const task = {
+      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: String(body.model ?? ""), state: "waiting" as const, createdAt: now(),
+      contextOptions: {
+        includePrevious: body.includePrevious !== false,
+        includeCharacters: body.includeCharacters !== false,
+        estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
+        targetWords: target === "正文" ? targetWords : undefined,
+        contentMode: target === "正文" ? contentMode : undefined,
+        outlinePlanSnapshot: found.outline.plan,
+        outlineTitleSnapshot: found.outline.title,
+        modelId,
+        sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
+      },
+    };
+    data.tasks.unshift(task);
+    trimTasks(data.tasks);
+    return task;
+  }, true);
   if (s[0] === "ai" && s[1] === "tasks" && s[3] === "cancel") return commit(request, (data) => { const task = data.tasks.find((item) => item.id === s[2]); if (!task) throw new Error("任务不存在"); if (task.state !== "waiting" && task.state !== "running") throw new Error("只有等待或运行中的任务可以取消"); task.state = "cancelled"; return task; }, true);
   if (s[0] === "ai" && s[1] === "tasks" && s[3] === "retry") return commit(request, (data) => { const task = data.tasks.find((item) => item.id === s[2]); if (!task) throw new Error("任务不存在"); if (task.state !== "failed" && task.state !== "cancelled") throw new Error("只有失败或已取消的任务可以重试"); task.state = "waiting"; task.error = undefined; return task; }, true);
   return notFound();

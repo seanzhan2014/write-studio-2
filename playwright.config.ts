@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+const externalBaseUrl = process.env.WRITER_STUDIO_UI_BASE_URL;
+
 export default defineConfig({
   testDir: "./tests/ui",
   fullyParallel: false,
@@ -8,11 +10,11 @@ export default defineConfig({
   expect: { timeout: 8_000 },
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:3102",
+    baseURL: externalBaseUrl ?? "http://127.0.0.1:3102",
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  webServer: {
+  webServer: externalBaseUrl ? undefined : {
     command: "npm run dev:test",
     url: "http://127.0.0.1:3102/api/database/status",
     reuseExistingServer: true,

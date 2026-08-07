@@ -42,6 +42,7 @@ test("writing workspace menu supports named save-as versions", async () => {
   assert.match(app, /function saveAsCurrentContent/);
   assert.match(app, /另存为正文版本/);
   assert.match(app, /resolvedOutlineContentName\(studio\.currentOutline\)/);
+  assert.match(app, /const saved = await studio\.saveNow\(\);[\s\S]*已另存为/);
 });
 
 test("relationship snapshot insert matches the eight-column table", async () => {
@@ -92,8 +93,9 @@ test("explicit mobile outline and AI context decisions are retained", async () =
   assert.match(ai, /instruction_policy="reference-data-only"/);
   assert.match(ai, /\.\.\.fitted\.history/);
   assert.match(ai, /previous_content_tail maximum="3000"/);
+  assert.match(ai, /function renderChapterOutlines/);
   assert.match(ai, /<chapter_outlines>/);
-  assert.doesNotMatch(ai, /scope="all-unarchived-in-current-chapter"/);
+  assert.match(selector, /chapterOutlines: kind === "chapter-title" \? chapter\.outlines\.filter\(\(item\) => !item\.archived\)/);
   assert.match(app, /selectAiContext\(\{ articles: \[article\] \}/);
   assert.doesNotMatch(ai, /text\.slice\(0, 30000\)[\s\S]*text\.slice\(-30000\)/);
 });
@@ -251,6 +253,10 @@ test("AI Generate keeps the prompt primary and applies candidates safely", async
   const styles = await read("app/globals.css");
   assert.match(app, /generate-quick-prompts/);
   assert.match(app, /正文目标字数/);
+  assert.match(app, /全新生成/);
+  assert.match(app, /改写正文/);
+  assert.match(app, /续写正文/);
+  assert.match(app, /contentMode: generationMode/);
   assert.match(app, /补充指令（可选）/);
   assert.match(app, /GeneratePresetDialog/);
   assert.match(app, /aria-label="生成使用的大纲内容"/);
@@ -258,6 +264,9 @@ test("AI Generate keeps the prompt primary and applies candidates safely", async
   assert.doesNotMatch(app, /onBlur=\{\(\) => void studio\.saveNow\(\)\}/);
   assert.match(state, /generateTargetWords: number/);
   assert.match(state, /generatePresets: string\[\]/);
+  assert.match(state, /contentMode\?: ContentGenerationMode/);
+  assert.match(runtime, /context_options_json/);
+  assert.match(await read("db/ai.ts"), /appendContinuation/);
   for (const removedPreset of ["续写当前场景", "加强冲突", "补充细节", "调整语气", "收束本段"]) assert.doesNotMatch(app, new RegExp(`const quickPrompts[\\s\\S]*${removedPreset}`));
   assert.match(app, /本次生成上下文/);
   assert.match(app, /查看与对比/);
@@ -313,7 +322,7 @@ test("AI Generate bundles pending outline naming into the same model request", a
   assert.match(selector, /titleGenerationPending: outline\.titleGenerationPending === true/);
   assert.match(ai, /includeOutlineTitle = input\.target === "outline" \|\| \(input\.target === "content" && source\.currentOutline\.titleGenerationPending\)/);
   assert.match(ai, /<outline_title>大纲标题<\/outline_title>[\s\S]*<generated_text>/);
-  assert.match(ai, /return normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle\)/);
+  assert.match(ai, /const result = normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle\)/);
   assert.match(app, /outlinePlanSnapshot: outlinePlanDraft/);
   assert.match(executor, /found\.outline\.plan === task\.contextOptions\?\.outlinePlanSnapshot/);
   assert.match(runtime, /title_generation_pending INTEGER NOT NULL DEFAULT 0/);
@@ -416,6 +425,8 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.match(state, /versions: \[version, \.\.\.item\.versions\]/);
   assert.match(state, /preserveContentDraft/);
   assert.match(state, /source: "未保存内容"/);
+  assert.match(app, /className="set-default-body-button"/);
+  assert.match(app, /setDisplayedContentAsDefault/);
   assert.match(app, /设为默认/);
   assert.match(state, /setDefaultVersion/);
   assert.match(selector, /resolvedOutlineContent\(outline\)/);
@@ -436,7 +447,10 @@ test("AI Chat is a session workspace with writing-safe actions and touch-sized c
   assert.match(state, /createChatSession/);
   assert.match(state, /branchChatSession/);
   assert.match(state, /activeSessionId/);
+  assert.match(state, /lastReadMessageId/);
+  assert.match(state, /markChatSessionRead/);
   assert.match(runtime, /outline\.chat\.sessions\.forEach/);
+  assert.match(runtime, /lastReadMessageId: session\.lastReadMessageId \?\? null/);
   const chatSessionSchema = schema.match(/export const chatSessions[\s\S]*?export const chatMessages/)?.[0] ?? "";
   assert.match(chatSessionSchema, /chat_sessions_outline_updated_idx/);
   assert.doesNotMatch(chatSessionSchema, /outlineId:[^\n]+\.unique\(\)/);
@@ -445,6 +459,10 @@ test("AI Chat is a session workspace with writing-safe actions and touch-sized c
   assert.match(app, /交给 AI Generate/);
   assert.match(app, /添加文本参考/);
   assert.match(app, /sessionId: session\.id/);
+  assert.match(app, /const activeChatStreams = new Map/);
+  assert.match(app, /cancelActiveChatStream\(task\.id\)/);
+  assert.match(app, /chatSessionHasUnread/);
+  assert.match(app, /\.message-action-trigger, \.message-action-menu/);
   assert.match(app, /<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"/);
   assert.doesNotMatch(app, /const iconGlyph/);
   assert.match(styles, /\.chat-header-actions \.icon-button \{ height: 44px; width: 44px; \}/);

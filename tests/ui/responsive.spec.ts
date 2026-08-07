@@ -76,10 +76,16 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
+  await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("radio", { name: /改写正文/ })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /续写正文/ })).toBeDisabled();
   await expect(page.getByText("补充指令（可选）", { exact: false })).toBeVisible();
   await page.locator(".generate-context-summary").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText("本次生成上下文", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("前面大纲", { exact: false })).toBeVisible();
+  await expect(page.getByText("全新生成不发送", { exact: true })).toBeVisible();
+  await expect(page.getByText("本章全部大纲", { exact: false })).toHaveCount(0);
   await expect(page.locator(".context-preview").getByText("当前大纲", { exact: true })).toBeVisible();
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -124,17 +130,60 @@ test("desktop writing menu can save the current body as a named version", async 
   const saveAs = page.getByRole("button", { name: "另存为正文版本", exact: true });
   await expect(saveAs).toBeVisible();
   let dialogMessage = "";
-  page.once("dialog", async (dialog) => { dialogMessage = dialog.message(); await dialog.accept("定稿版本"); });
+  let dialogDefault = "";
+  page.once("dialog", async (dialog) => { dialogMessage = dialog.message(); dialogDefault = dialog.defaultValue(); await dialog.accept("定稿版本"); });
   await saveAs.click();
   expect(dialogMessage).toBe("另存为正文版本");
+  expect(dialogDefault).toMatch(/-复制$/);
   await expect(page.locator(".toast")).toContainText("已另存为「定稿版本」");
 
   const response = await request.get("/api/state");
   const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
   const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  expect(outline.versions[0].name).toBe("定稿版本");
-  expect(outline.versions[0].source).toBe("手动");
-  expect(outline.sourceVersionId).toBeUndefined();
+  expect({
+    name: outline.versions[0].name,
+    source: outline.versions[0].source,
+    sourceVersionId: outline.sourceVersionId,
+    versionCount: outline.versions.length,
+  }).toEqual({ name: "定稿版本", source: "手动", sourceVersionId: undefined, versionCount: 2 });
+});
+
+test("desktop writing save updates the current body without creating a version or duplicate default", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.sourceVersionId = "version-manual";
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByLabel("正文内容").waitFor({ state: "visible", timeout: 30_000 });
+  await expect(page.getByLabel("正文内容")).toHaveText("不可变版本正文");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("正文编辑器").fill("直接保存的当前正文");
+  await page.getByRole("button", { name: "保存正文", exact: true }).click();
+  await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
+
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    return {
+      content: outline.content,
+      contentOverride: outline.contentOverride,
+      sourceVersionId: outline.sourceVersionId,
+      versionCount: outline.versions.length,
+      versionContent: outline.versions[0].content,
+    };
+  }).toEqual({ content: "直接保存的当前正文", contentOverride: true, sourceVersionId: "version-manual", versionCount: 1, versionContent: "不可变版本正文" });
+
+  await page.getByRole("button", { name: "版本", exact: true }).click();
+  await expect(page.locator(".version-list article em").filter({ hasText: "默认" })).toHaveCount(1);
 });
 
 test("Generate outline editing stays local until one explicit save", async ({ page, request }, testInfo) => {
@@ -170,7 +219,7 @@ test("Generate outline editing stays local until one explicit save", async ({ pa
   await expect(page.getByRole("dialog", { name: "处理保存冲突" })).toHaveCount(0);
 });
 
-test("desktop version chooser previews the selected body before returning", async ({ page }, testInfo) => {
+test("desktop version chooser previews the selected body and can set it as default beside edit", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByRole("button", { name: "版本", exact: true }).click();
@@ -183,14 +232,59 @@ test("desktop version chooser previews the selected body before returning", asyn
   await expect(page.locator(".version-preview-bar")).toHaveCount(0);
   await expect(page.getByLabel("正文内容")).toContainText("不可变版本正文");
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
+  const setDefault = page.getByRole("button", { name: "将“手动快照”设为默认正文" });
+  await expect(setDefault).toBeVisible();
+  await expect(setDefault).toHaveCSS("min-height", "30px");
+  await setDefault.click();
+  await expect(page.locator(".toast")).toContainText("已设为默认正文");
+  await expect(page.getByRole("button", { name: "当前正文已是默认正文" })).toBeDisabled();
+
+  const response = await request.get("/api/state");
+  const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+  const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  expect({ sourceVersionId: outline.sourceVersionId, contentOverride: outline.contentOverride, versionCount: outline.versions.length }).toEqual({ sourceVersionId: "version-manual", contentOverride: false, versionCount: 1 });
 });
 
-test("opening an outline shows only its default version or an empty body", async ({ page, request }, testInfo) => {
+test("desktop direct current body creates one version when set as default", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.content = "直接保存后准备设为默认的正文";
+  target.contentName = "当前正文名称";
+  target.contentOverride = true;
+  target.sourceVersionId = "version-manual";
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await expect(page.getByLabel("正文内容")).toHaveText("直接保存后准备设为默认的正文");
+  await page.getByRole("button", { name: "将当前正文设为默认正文" }).click();
+  await expect(page.locator(".toast")).toContainText("已设为默认正文");
+
+  const response = await request.get("/api/state");
+  const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+  const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  expect(outline.contentOverride).toBe(false);
+  expect(outline.versions).toHaveLength(2);
+  expect(outline.sourceVersionId).toBe(outline.versions[0].id);
+  expect(outline.versions[0]).toMatchObject({ name: "当前正文名称", content: "直接保存后准备设为默认的正文", source: "手动" });
+});
+
+test("switching outlines shows the target default instead of the previous current body", async ({ page, request }, testInfo) => {
   const current = await request.get("/api/state");
   const state = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const currentOutline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  currentOutline.sourceVersionId = "version-manual";
+  currentOutline.content = "仅在当前大纲显示的正文";
+  currentOutline.contentOverride = true;
+  const previousOutline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")!;
+  previousOutline.versions = [{ id: "version-previous-default", name: "前序默认版本", content: "前序大纲的默认正文", source: "手动", createdAt: "2026-07-28T08:00:00.000Z", outlineSnapshot: { title: previousOutline.title, plan: previousOutline.plan } }];
+  previousOutline.sourceVersionId = "version-previous-default";
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(state.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -200,15 +294,15 @@ test("opening an outline shows only its default version or an empty body", async
   if (testInfo.project.name === "mobile-chromium") {
     await page.goto("/");
     await page.locator('[data-outline-id="outline-current"] .mobile-outline-main').click();
-    await expect(page.getByLabel("正文内容")).toContainText("不可变版本正文");
+    await expect(page.getByLabel("正文内容")).toContainText("仅在当前大纲显示的正文");
     await page.getByRole("button", { name: "返回大纲" }).click();
     await page.locator('[data-outline-id="outline-previous"] .mobile-outline-main').click();
   } else {
     await page.goto("/articles/article-main/outlines/outline-current/write");
-    await expect(page.getByLabel("正文内容")).toContainText("不可变版本正文");
+    await expect(page.getByLabel("正文内容")).toContainText("仅在当前大纲显示的正文");
     await page.getByRole("button", { name: "前序灯塔", exact: true }).click();
   }
-  await expect(page.getByLabel("正文内容")).toHaveText("（正文为空）");
+  await expect(page.getByLabel("正文内容")).toHaveText("前序大纲的默认正文");
 });
 
 test("mobile starts at outline and separates article and global entry points", async ({ page }, testInfo) => {
@@ -499,6 +593,79 @@ test("AI Chat creates a completed task linked to its conversation", async ({ pag
   await expect(page.getByRole("button", { name: "打开对应内容" })).toBeVisible();
 });
 
+test("AI Chat finishes after leaving and clears its unread marker when opened", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  await page.route("**/api/outlines/outline-current/chat/stream", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fulfill({ status: 200, contentType: "text/plain; charset=utf-8", body: "后台生成的聊天回复" });
+  });
+
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  await page.getByLabel("AI Chat 消息").fill("离开聊天后继续完成");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await page.getByRole("tab", { name: "写作", exact: true }).click();
+
+  await expect(page.getByLabel("有新生成的聊天回复")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("tab", { name: /AI Chat/ }).click();
+  await expect(page.locator(".message.assistant").last()).toContainText("后台生成的聊天回复");
+  await page.getByRole("tab", { name: "写作", exact: true }).click();
+  await expect(page.getByLabel("有新生成的聊天回复")).toHaveCount(0);
+
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    const session = outline.chat.sessions.find((item) => item.id === outline.chat.activeSessionId)!;
+    return session.lastReadMessageId === session.messages.at(-1)?.id;
+  }).toBe(true);
+});
+
+test("AI Chat can be cancelled from the task panel after leaving", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  let releaseResponse = () => undefined;
+  const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  const responseTimeout = setTimeout(() => releaseResponse(), 15_000);
+  await page.route("**/api/outlines/outline-current/chat/stream", async (route) => {
+    await responseGate;
+    await route.fulfill({ status: 200, contentType: "text/plain; charset=utf-8", body: "这条回复不应覆盖取消状态" }).catch(() => undefined);
+  });
+
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  await page.getByLabel("AI Chat 消息").fill("离开后取消这项任务");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await page.getByRole("tab", { name: "写作", exact: true }).click();
+  await page.getByRole("button", { name: /^AI 任务/ }).click();
+  const task = page.locator(".task-card").filter({ hasText: "离开后取消这项任务" });
+  await expect(task).toContainText("运行中");
+  await task.getByRole("button", { name: "取消", exact: true }).click();
+  releaseResponse();
+  clearTimeout(responseTimeout);
+
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const savedTask = state.data.tasks.find((item) => item.prompt === "离开后取消这项任务");
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    return {
+      taskState: savedTask?.state,
+      hasLateReply: outline.chat.sessions.some((session) => session.messages.some((message) => message.text.includes("不应覆盖取消状态"))),
+    };
+  }).toEqual({ taskState: "cancelled", hasLateReply: false });
+});
+
+test("AI Chat message action menu closes when clicking elsewhere", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  const trigger = page.getByRole("button", { name: "更多写作操作" }).last();
+  await trigger.click();
+  await expect(page.locator(".message-action-menu")).toBeVisible();
+  await page.getByRole("tab", { name: /AI Chat/ }).click();
+  await expect(page.locator(".message-action-menu")).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+});
+
 test("AI Chat displays the selected model id as the assistant name", async ({ page }) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
@@ -702,8 +869,10 @@ test("mobile writing view previews a selected version and explicitly saves or di
   const payload = await state.json();
   const savedOutline = payload.data.articles[0].chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current");
   expect(savedOutline.content).toBe("已明确保存的正文");
-  expect(savedOutline.sourceVersionId).toBe(savedOutline.versions[0].id);
-  expect(savedOutline.versions[0].content).toBe("已明确保存的正文");
+  expect(savedOutline.contentOverride).toBe(true);
+  expect(savedOutline.sourceVersionId).toBeUndefined();
+  expect(savedOutline.versions).toHaveLength(1);
+  expect(savedOutline.versions[0].content).toBe("不可变版本正文");
 });
 
 test("interrupted writing is recovered as an unsaved-content candidate", async ({ page }, testInfo) => {
@@ -792,6 +961,50 @@ test("desktop pointer drag can move an outline into an empty chapter", async ({ 
     const payload = await response.json();
     return payload.data.articles[0].chapters.find((chapter: { id: string }) => chapter.id === "chapter-empty").outlines.map((outline: { id: string }) => outline.id);
   }).toEqual(["outline-current"]);
+});
+
+test("dark appearance keeps application and portal surfaces dark", async ({ page, request }, testInfo) => {
+  test.setTimeout(60_000);
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  fixture.settings.theme = "dark";
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  const expectDarkSurface = async (selector: string) => {
+    const rgba = await page.locator(selector).first().evaluate((element) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = getComputedStyle(element).backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+      return Array.from(context.getImageData(0, 0, 1, 1).data);
+    });
+    expect(Math.max(...rgba.slice(0, 3))).toBeLessThan(96);
+  };
+
+  await page.goto("/settings/appearance");
+  await expect(page.locator(".settings-nav")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("html")).toHaveAttribute("data-mantine-color-scheme", "dark");
+  await expectDarkSurface(".settings-nav");
+  await expectDarkSurface(".setting-title");
+
+  await page.goto("/articles/article-main/outlines/outline-current");
+  await expectDarkSurface(".workspace-header");
+  await expectDarkSurface(".outline-snapshot-content");
+
+  await page.goto("/settings/models");
+  await page.locator(".settings-actionbar .mantine-Button-root").click();
+  await expect(page.locator(".ws-modal-content")).toBeVisible();
+  await expectDarkSurface(".ws-modal-content");
+  await expectDarkSurface(".ws-modal-content .mantine-Input-input");
 });
 
 test("desktop outline menu offers one-step ordering as a drag fallback", async ({ page }, testInfo) => {

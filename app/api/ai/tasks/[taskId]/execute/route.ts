@@ -2,7 +2,7 @@ import type { AiTask, StudioData, Version } from "@/app/studio-state";
 import { AiInputError, findModel, generateText } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
-import { timestampContentName } from "@/lib/content-name.mjs";
+import { aiGenerateContentName } from "@/lib/content-name.mjs";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -124,6 +124,7 @@ export async function POST(_request: Request, context: RouteContext) {
             outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: initialTask.model,
             target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
             includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
+            contentMode: initialTask.contextOptions?.contentMode,
           }, upstreamController.signal);
           break;
         } catch (error) {
@@ -150,7 +151,7 @@ export async function POST(_request: Request, context: RouteContext) {
           }
           const version: Version = {
             id: `version-${crypto.randomUUID()}`,
-            name: timestampContentName(),
+            name: aiGenerateContentName(model?.modelId ?? task.contextOptions?.modelId),
             content: result.text, source: "AI Generate", createdAt: new Date().toISOString(), model: task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
             outlineSnapshot: {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
