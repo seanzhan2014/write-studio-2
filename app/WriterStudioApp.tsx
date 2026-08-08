@@ -11,6 +11,7 @@ import {
   Group,
   Menu,
   Modal,
+  MultiSelect,
   NumberInput,
   PasswordInput,
   Select,
@@ -37,7 +38,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { selectAiContext, summarizeAiContext, type AiContextSummary } from "@/lib/ai-context";
+import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, type AiContextSummary, type FirstAppearanceSuggestion } from "@/lib/ai-context";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, type ContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
@@ -209,6 +210,15 @@ async function copyTextToClipboard(text: string) {
 
 type ConfiguredModel = { id: string; name: string; modelId: string; hasSecret: boolean; timeoutMs: number };
 
+function configuredModelForReference(models: ConfiguredModel[], reference: string) {
+  const normalized = reference.trim();
+  return models.find((model) => model.id === normalized || model.name === normalized);
+}
+
+function canonicalModelReference(models: ConfiguredModel[], reference: string) {
+  return configuredModelForReference(models, reference)?.id ?? reference.trim();
+}
+
 function modelIdSuffix(value: string) {
   const identifier = value.trim();
   if (!identifier) return "";
@@ -216,20 +226,17 @@ function modelIdSuffix(value: string) {
   return identifier.slice(lastSlash + 1) || identifier;
 }
 
-function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelId?: string) {
-  const name = selectedModel.trim();
-  if (!name) return "本地 PoC 引擎";
-  const configured = models.find((model) => model.name === name);
+function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelId?: string, fixedModelName?: string) {
+  const reference = selectedModel.trim();
+  if (!reference) return "本地 PoC 引擎";
+  const configured = configuredModelForReference(models, reference);
+  const name = fixedModelName?.trim() || configured?.name || reference;
   const identifier = modelIdSuffix(fixedModelId ?? configured?.modelId ?? "");
   return identifier ? `${name} ${identifier}` : name;
 }
 
-function versionModelDisplayLabel(models: ConfiguredModel[], version: Pick<Version, "model" | "modelId">) {
-  return modelDisplayLabel(models, version.model || "", version.modelId);
-}
-
 function chatbotDisplayName(models: ConfiguredModel[], selectedModel: string) {
-  const configured = models.find((model) => model.name === selectedModel);
+  const configured = configuredModelForReference(models, selectedModel);
   return modelIdSuffix(configured?.modelId || selectedModel) || "本地 PoC 引擎";
 }
 
@@ -262,9 +269,9 @@ function activeChatSession(outline: Outline) {
   return outline.chat.sessions.find((session) => session.id === outline.chat.activeSessionId) ?? outline.chat.sessions[0];
 }
 
-function generateContextSummary(article: Article, outline: Outline, instruction: string, includePrevious: boolean, includeCharacters: boolean, target: "content" | "outline" | "chapter-title" = "content", contentMode: ContentGenerationMode = "fresh"): GenerateContextSummary {
+function generateContextSummary(article: Article, outline: Outline, instruction: string, includePrevious: boolean, includeCharacters: boolean, target: "content" | "outline" | "chapter-title" = "content", contentMode: ContentGenerationMode = "fresh", firstAppearanceCharacterIds?: string[]): GenerateContextSummary {
   try {
-    const selected = selectAiContext({ articles: [article] }, outline.id, target, { includePrevious, includeCharacters, contentMode });
+    const selected = selectAiContext({ articles: [article] }, outline.id, target, { includePrevious, includeCharacters, contentMode, instruction, currentPlan: outline.plan, firstAppearanceCharacterIds });
     return summarizeAiContext({
       ...selected,
       currentOutline: { ...selected.currentOutline, title: outline.title, plan: outline.plan, content: target === "content" && contentMode !== "fresh" ? resolvedOutlineContent(outline) : selected.currentOutline.content },
@@ -438,13 +445,19 @@ function WriterStudioInner() {
     const currentStudio = studioRef.current;
     const currentTime = Date.now();
     const leaseExpired = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= currentTime);
-    const running = currentStudio.data.tasks.filter((task) => task.target !== "AI Chat" && task.state === "running" && !leaseExpired(task)).length;
-    const available = Math.max(0, currentStudio.data.settings.taskConcurrency - running);
-    currentStudio.data.tasks
+    const runningTasks = currentStudio.data.tasks.filter((task) => task.target !== "AI Chat" && task.state === "running" && !leaseExpired(task));
+    const available = Math.max(0, currentStudio.data.settings.taskConcurrency - runningTasks.length);
+    const occupiedBodyOutlines = new Set(runningTasks.filter((task) => task.target === "正文").map((task) => task.outlineId));
+    const dispatchableTasks: AiTask[] = [];
+    for (const task of currentStudio.data.tasks
       .filter((task) => task.target !== "AI Chat" && (task.state === "waiting" || leaseExpired(task)))
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-      .slice(0, available)
-      .forEach((task) => {
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())) {
+      if (dispatchableTasks.length >= available) break;
+      if (task.target === "正文" && occupiedBodyOutlines.has(task.outlineId)) continue;
+      dispatchableTasks.push(task);
+      if (task.target === "正文") occupiedBodyOutlines.add(task.outlineId);
+    }
+    dispatchableTasks.forEach((task) => {
       if (taskDispatches.current.has(task.id)) return;
       taskDispatches.current.add(task.id);
       void (async () => {
@@ -1465,6 +1478,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
   const [generatedSourceText, setGeneratedSourceText] = useState("");
   const [generatedOutlineTitle, setGeneratedOutlineTitle] = useState("");
   const [selectedModel, setSelectedModel] = useState(studio.data.settings.generateModel);
+  const selectedModelReference = canonicalModelReference(models, selectedModel);
   const targetChapter = studio.currentArticle.chapters.find((chapter) => isChapter ? chapter.id === target.id : chapter.outlines.some((outline) => outline.id === target.id));
   const targetOutline = isChapter ? targetChapter?.outlines.find((outline) => !outline.archived) : targetChapter?.outlines.find((outline) => outline.id === target.id);
   const currentValue = isChapter ? targetChapter?.title ?? target.title : targetOutline?.plan ?? "";
@@ -1475,7 +1489,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
     setLoading(true); setError("");
     try {
-      const response = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModel, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true }) });
+      const response = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true }) });
       const payload = await response.json() as { text?: string; outlineTitle?: string; error?: string };
       if (!response.ok || !payload.text) throw new Error(payload.error || "生成失败");
       setResult(payload.text);
@@ -1485,7 +1499,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     } catch (reason) { setError(reason instanceof Error ? reason.message : "生成失败"); }
     finally { setLoading(false); }
   }
-  return <div className="outline-sheet-layer"><button className="outline-sheet-scrim" type="button" aria-label="关闭结构生成" onClick={onClose} /><aside className="structure-generate-sheet"><div className="sheet-grabber" /><header><div className="structure-generate-icon"><Icon name="spark" /></div><div><span>AI Generate · 文章结构</span><strong>{isChapter ? "生成章节标题" : "生成大纲内容"}</strong><small>{target.title}</small></div><IconButton name="close" label="关闭生成" onClick={onClose} /></header><div className="structure-context"><Icon name="book" /><strong>上下文 · {contextSummary?.total.toLocaleString("zh-CN") ?? "—"} 字符</strong></div><details className="structure-current"><summary>{isChapter ? "当前章节标题" : "当前大纲内容"}</summary><p>{currentValue || "（当前内容为空）"}</p></details><label>生成要求<textarea maxLength={20000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入生成要求" /></label><label className="structure-model">本次模型<select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}><option value="">本地 PoC 引擎</option>{selectedModel && !models.some((model) => model.name === selectedModel) && <option value={selectedModel}>{selectedModel}</option>}{models.map((model) => <option value={model.name} key={model.id}>{modelDisplayLabel(models, model.name)}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></label>{error && <p className="task-error" role="alert">{error}</p>}{generated && <div className="structure-compare"><section><span>当前内容</span><p>{currentValue || "（空）"}</p></section><section><span>生成预览</span>{isChapter ? <input value={result} onChange={(event) => setResult(event.target.value)} /> : <textarea value={result} onChange={(event) => setResult(event.target.value)} />}</section></div>}<footer><button className="secondary-button" type="button" onClick={onClose}>取消</button>{generated ? <><button className="secondary-button" type="button" onClick={() => void generate()}>重新生成</button><button className="primary-compact" type="button" disabled={!result.trim()} onClick={() => onApplied(isChapter ? "已应用新的章节标题" : `已应用「${target.title}」的大纲内容`, result.trim(), !isChapter && result.trim() === generatedSourceText ? generatedOutlineTitle : undefined)}>应用结果</button></> : <button className="primary-compact" type="button" disabled={!prompt.trim() || loading} onClick={() => void generate()}><Icon name="spark" />{loading ? "正在生成…" : "生成预览"}</button>}</footer></aside></div>;
+  return <div className="outline-sheet-layer"><button className="outline-sheet-scrim" type="button" aria-label="关闭结构生成" onClick={onClose} /><aside className="structure-generate-sheet"><div className="sheet-grabber" /><header><div className="structure-generate-icon"><Icon name="spark" /></div><div><span>AI Generate · 文章结构</span><strong>{isChapter ? "生成章节标题" : "生成大纲内容"}</strong><small>{target.title}</small></div><IconButton name="close" label="关闭生成" onClick={onClose} /></header><div className="structure-context"><Icon name="book" /><strong>上下文 · {contextSummary?.total.toLocaleString("zh-CN") ?? "—"} 字符</strong></div><details className="structure-current"><summary>{isChapter ? "当前章节标题" : "当前大纲内容"}</summary><p>{currentValue || "（当前内容为空）"}</p></details><label>生成要求<textarea maxLength={20000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入生成要求" /></label><label className="structure-model">本次模型<select value={selectedModelReference} onChange={(event) => setSelectedModel(event.target.value)}><option value="">本地 PoC 引擎</option>{selectedModelReference && !configuredModelForReference(models, selectedModelReference) && <option value={selectedModelReference}>{selectedModelReference}</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></label>{error && <p className="task-error" role="alert">{error}</p>}{generated && <div className="structure-compare"><section><span>当前内容</span><p>{currentValue || "（空）"}</p></section><section><span>生成预览</span>{isChapter ? <input value={result} onChange={(event) => setResult(event.target.value)} /> : <textarea value={result} onChange={(event) => setResult(event.target.value)} />}</section></div>}<footer><button className="secondary-button" type="button" onClick={onClose}>取消</button>{generated ? <><button className="secondary-button" type="button" onClick={() => void generate()}>重新生成</button><button className="primary-compact" type="button" disabled={!result.trim()} onClick={() => onApplied(isChapter ? "已应用新的章节标题" : `已应用「${target.title}」的大纲内容`, result.trim(), !isChapter && result.trim() === generatedSourceText ? generatedOutlineTitle : undefined)}>应用结果</button></> : <button className="primary-compact" type="button" disabled={!prompt.trim() || loading} onClick={() => void generate()}><Icon name="spark" />{loading ? "正在生成…" : "生成预览"}</button>}</footer></aside></div>;
 }
 
 function MobileHeader({ title, status, onBack, onVersions, showVersions }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean }) {
@@ -1801,11 +1815,12 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
   const models = useConfiguredModels();
   const [prompt, setPrompt] = useState(initialPrompt);
   const [contextOpen, setContextOpen] = useState(false);
+  const [appearanceEditorOpen, setAppearanceEditorOpen] = useState(false);
+  const [appearanceOverrides, setAppearanceOverrides] = useState<Record<string, boolean>>({});
   const [includePrevious, setIncludePrevious] = useState(true);
   const [includeCharacters, setIncludeCharacters] = useState(true);
   const [generationMode, setGenerationMode] = useState<ContentGenerationMode>("fresh");
   const [selectedModel, setSelectedModel] = useState(studio.data.settings.generateModel);
-  const [compareCandidate, setCompareCandidate] = useState<Version | null>(null);
   const [notice, setNotice] = useState("");
   const [presetManagerOpen, setPresetManagerOpen] = useState(false);
   const [targetWordsInput, setTargetWordsInput] = useState(String(studio.data.settings.generateTargetWords));
@@ -1822,19 +1837,34 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
     if (previous.id !== studio.currentOutline.id || outlinePlanDraftRef.current === previous.plan) {
       outlinePlanDraftRef.current = outline.plan;
       setOutlinePlanDraft(outline.plan);
+      if (previous.id !== studio.currentOutline.id) setAppearanceOverrides({});
     }
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
   }, [studio.currentOutline.id, outline.plan]);
-  const summary = useMemo(() => generateContextSummary(studio.currentArticle, { ...studio.currentOutline, plan: outlinePlanDraft }, prompt, includePrevious, includeCharacters, "content", generationMode), [studio.currentArticle, studio.currentOutline, outlinePlanDraft, prompt, includePrevious, includeCharacters, generationMode]);
+  const appearanceSuggestions = useMemo(() => detectFirstAppearanceCharacters(
+    { articles: [studio.currentArticle] },
+    studio.currentOutline.id,
+    { instruction: prompt, currentPlan: outlinePlanDraft },
+  ), [studio.currentArticle, studio.currentOutline.id, outlinePlanDraft, prompt]);
+  const appearanceSuggestionMap = useMemo(() => new Map(appearanceSuggestions.map((item) => [item.characterId, item])), [appearanceSuggestions]);
+  const activeCharacters = useMemo(() => studio.currentArticle.characters.filter((character) => !character.archived), [studio.currentArticle.characters]);
+  const firstAppearanceCharacterIds = useMemo(() => activeCharacters.filter((character) => (
+    Object.prototype.hasOwnProperty.call(appearanceOverrides, character.id)
+      ? appearanceOverrides[character.id]
+      : appearanceSuggestionMap.get(character.id)?.firstAppearance === true
+  )).map((character) => character.id), [activeCharacters, appearanceOverrides, appearanceSuggestionMap]);
+  const firstAppearanceCharacters = useMemo(() => activeCharacters.filter((character) => firstAppearanceCharacterIds.includes(character.id)), [activeCharacters, firstAppearanceCharacterIds]);
+  const summary = useMemo(() => generateContextSummary(studio.currentArticle, { ...studio.currentOutline, plan: outlinePlanDraft }, prompt, includePrevious, includeCharacters, "content", generationMode, firstAppearanceCharacterIds), [studio.currentArticle, studio.currentOutline, outlinePlanDraft, prompt, includePrevious, includeCharacters, generationMode, firstAppearanceCharacterIds]);
   const outlineTasks = studio.data.tasks.filter((task) => task.outlineId === studio.currentOutline.id && task.target === "正文");
   const activeTasks = outlineTasks.filter((task) => task.state === "waiting" || task.state === "running").sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   const latestFailed = outlineTasks.find((task) => task.state === "failed");
-  const candidates = studio.currentOutline.versions.filter((version) => version.source === "AI Generate" || version.source === "AI Chat");
-  const selectedRecord = models.find((model) => model.name === selectedModel);
+  const selectedRecord = configuredModelForReference(models, selectedModel);
+  const selectedModelReference = selectedRecord?.id ?? selectedModel.trim();
+  const defaultGenerateModelReference = canonicalModelReference(models, studio.data.settings.generateModel);
   const modelOptions = [
     { value: "", label: "本地 PoC 引擎" },
-    ...(selectedModel && !models.some((model) => model.name === selectedModel) ? [{ value: selectedModel, label: selectedModel }] : []),
-    ...models.map((model) => ({ value: model.name, label: `${modelDisplayLabel(models, model.name)}${model.hasSecret ? "" : "（需密钥）"}` })),
+    ...(selectedModelReference && !selectedRecord ? [{ value: selectedModelReference, label: selectedModelReference }] : []),
+    ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
   ];
 
   const saveOutlineDraft = useCallback(async () => {
@@ -1848,15 +1878,17 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
 
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && (task.contextOptions?.targetWords ?? 5000) === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
+    const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && (task.contextOptions?.targetWords ?? 5000) === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     if (!await saveOutlineDraft() || !await studio.saveNow()) return;
-    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModel, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, estimatedCharacters: summary.total, targetWords, contentMode: generationMode, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId } });
+    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, estimatedCharacters: summary.total, targetWords, contentMode: generationMode, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId, modelName: selectedRecord?.name, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
     if (!taskId) { window.alert("已有 20 个等待或运行中的任务，请先取消一个任务后再生成。"); return; }
     setPrompt("");
     setNotice("");
     onTaskCreated();
-  }, [prompt, studio, selectedModel, selectedRecord?.modelId, selectedRecord?.timeoutMs, includePrevious, includeCharacters, summary.total, targetWords, generationMode, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
+  }, [prompt, studio, selectedModelReference, selectedRecord?.modelId, selectedRecord?.name, selectedRecord?.timeoutMs, includePrevious, includeCharacters, firstAppearanceCharacterIds, summary.total, targetWords, generationMode, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -1912,13 +1944,24 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
             <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
           </div>
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
+          <section className="generate-first-appearance" aria-label="首次出场人物">
+            <div className="generate-first-appearance-heading">
+              <div><span>人物出场</span><strong>首次出场人物</strong><small>根据当前及前序大纲中的姓名、别名推测</small></div>
+              <Button variant="default" size="compact-sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>编辑</Button>
+            </div>
+            {includeCharacters ? firstAppearanceCharacters.length > 0
+              ? <div className="generate-first-appearance-tags">{firstAppearanceCharacters.map((character) => <span key={character.id}>{character.name}</span>)}</div>
+              : <p>未推测到首次出场人物，可点击“编辑”手动指定。</p>
+              : <p>人物上下文已关闭，本次生成不会发送首次出场信息。</p>}
+          </section>
           <div className="generate-prompt-label"><span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span><Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} /></div>
           <div className="generate-submit-row">
             <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span><strong>{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</strong><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 人物 ${summary.characterCount} 位</small></span><Icon name="chevron" /></button>
-            <div className="generate-model-control"><Select label="本次模型" data={modelOptions} value={selectedModel} allowDeselect={false} onChange={(value) => setSelectedModel(value ?? "")} /><small>{selectedModel ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
+            <div className="generate-model-control"><Select label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => setSelectedModel(value ?? "")} /><small>{selectedModelReference ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
             <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
           </div>
-          {selectedModel !== studio.data.settings.generateModel && <button className="set-default-model" type="button" onClick={() => studio.updateSettings({ generateModel: selectedModel })}>将“{selectedModel || "本地 PoC 引擎"}”设为默认</button>}
+          <p className="generate-auto-apply-note">任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。</p>
+          {selectedModelReference !== defaultGenerateModelReference && <button className="set-default-model" type="button" onClick={() => studio.updateSettings({ generateModel: selectedModelReference })}>将“{selectedRecord?.name || selectedModelReference || "本地 PoC 引擎"}”设为默认</button>}
         </section>
 
         <Drawer
@@ -1940,28 +1983,84 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
 
         <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><strong>{task.prompt || "按大纲生成"}</strong><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId)} · 目标 {(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字 · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><strong>{task.prompt || "按大纲生成"}</strong><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)} · 目标 {(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字 · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
           {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><strong>{latestFailed.prompt || "按大纲生成"}</strong><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => studio.updateTask(latestFailed.id, { state: "waiting", error: undefined })}>原样重试</button></div></article>}
           {!activeTasks.length && !latestFailed && <div className="generate-empty-row">没有进行中的正文生成任务。</div>}
         </section>
 
-        <section className="generate-results">
-          <div className="generate-results-title"><div><span>版本</span><h3>候选版本 <small>{candidates.length}</small></h3></div><button type="button" onClick={onOpenTasks}>任务历史 →</button></div>
-          {candidates.map((candidate) => <article className="generation-card candidate-card" key={candidate.id}>
-            <div className="generation-state"><span className="state-dot success" />候选版本 · {formatTime(candidate.createdAt)}</div>
-            <div className="candidate-title"><div><strong>{candidate.name}</strong><span>{wordCount(candidate.content)} 字 · {versionModelDisplayLabel(models, candidate)}</span></div><em>{candidate.source}</em></div>
-            {candidate.prompt && <p className="candidate-prompt">指令：{candidate.prompt}</p>}
-            <blockquote>{candidate.content.slice(0, 480)}{candidate.content.length > 480 ? "……" : ""}</blockquote>
-            <div className="candidate-actions"><button type="button" onClick={() => void copyTextToClipboard(candidate.content).then((copied) => setNotice(copied ? "候选正文已复制" : "复制失败，请在查看与对比中长按选择正文"))}>复制</button><button className="compare-candidate" type="button" onClick={() => setCompareCandidate(candidate)}>查看与对比</button></div>
-          </article>)}
-          {!candidates.length && <div className="empty-inline">暂无候选版本</div>}
-        </section>
         {notice && <div className="generate-inline-notice" role="status"><Icon name="check" />{notice}</div>}
       </div>
       {presetManagerOpen && <GeneratePresetDialog presets={studio.data.settings.generatePresets} onClose={() => setPresetManagerOpen(false)} onSave={(presets) => { studio.updateSettings({ generatePresets: presets }); setPresetManagerOpen(false); }} />}
-      {compareCandidate && <CandidateCompare version={compareCandidate} onClose={() => setCompareCandidate(null)} onApplied={() => { setCompareCandidate(null); setNotice("候选版本已应用；原正文已保存为“应用 AI 前”版本。"); }} />}
+      {appearanceEditorOpen && <FirstAppearanceDialog
+        characters={activeCharacters}
+        suggestions={appearanceSuggestions}
+        selectedIds={firstAppearanceCharacterIds}
+        overrides={appearanceOverrides}
+        onChange={(characterId, firstAppearance) => setAppearanceOverrides((current) => ({ ...current, [characterId]: firstAppearance }))}
+        onReset={() => setAppearanceOverrides({})}
+        onClose={() => setAppearanceEditorOpen(false)}
+      />}
     </div>
   );
+}
+
+function FirstAppearanceDialog({ characters, suggestions, selectedIds, overrides, onChange, onReset, onClose }: {
+  characters: Character[];
+  suggestions: FirstAppearanceSuggestion[];
+  selectedIds: string[];
+  overrides: Record<string, boolean>;
+  onChange: (characterId: string, firstAppearance: boolean) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const compact = useMediaQuery("(max-width: 767px)") ?? false;
+  const [query, setQuery] = useState("");
+  const suggestionMap = useMemo(() => new Map(suggestions.map((item) => [item.characterId, item])), [suggestions]);
+  const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const filtered = characters.filter((character) => `${character.name}\n${character.aliases.join("\n")}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const ordered = [...filtered].sort((left, right) => {
+    const leftRelevant = suggestionMap.has(left.id) || Object.prototype.hasOwnProperty.call(overrides, left.id) ? 0 : 1;
+    const rightRelevant = suggestionMap.has(right.id) || Object.prototype.hasOwnProperty.call(overrides, right.id) ? 0 : 1;
+    return leftRelevant - rightRelevant || left.name.localeCompare(right.name, "zh-CN");
+  });
+
+  return <Modal
+    opened
+    onClose={onClose}
+    closeButtonProps={{ "aria-label": "关闭首次出场人物编辑" }}
+    title="首次出场人物"
+    size="lg"
+    fullScreen={compact}
+    centered={!compact}
+    classNames={{ content: "first-appearance-dialog ws-modal-content", header: "ws-modal-header", body: "first-appearance-dialog-body" }}
+    overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}
+  >
+    <Text size="sm" c="dimmed">系统只搜索当前大纲之前的未归档大纲，不搜索正文。你的选择优先，并会随本次生成任务保存。</Text>
+    <TextInput mt="md" label="搜索人物" placeholder="输入姓名或别名" value={query} onChange={(event) => setQuery(event.target.value)} />
+    <div className="first-appearance-list">
+      {ordered.map((character) => {
+        const suggestion = suggestionMap.get(character.id);
+        const isOverridden = Object.prototype.hasOwnProperty.call(overrides, character.id);
+        const checked = selected.has(character.id);
+        const reason = suggestion?.previousMatch
+          ? `此前在「${suggestion.previousMatch.outlineTitle}」匹配“${suggestion.previousMatch.matchedReference}”`
+          : suggestion
+            ? "当前大纲或补充指令提及；前序大纲未找到"
+            : "当前大纲与补充指令未识别；可手动指定";
+        const status = isOverridden ? checked ? "已改为首次" : "已改为非首次" : suggestion ? suggestion.firstAppearance ? "自动：首次" : "自动：非首次" : "未涉及";
+        return <div className="first-appearance-row" key={character.id}>
+          <Checkbox aria-label={`${character.name}首次出场`} checked={checked} onChange={(event) => onChange(character.id, event.target.checked)} />
+          <div><strong>{character.name}</strong>{character.aliases.length > 0 && <span>{character.aliases.join("、")}</span>}<small>{reason}</small></div>
+          <em className={checked ? "first" : "established"}>{status}</em>
+        </div>;
+      })}
+      {!ordered.length && <p className="first-appearance-empty">没有匹配的人物。</p>}
+    </div>
+    <Group justify="space-between" mt="md">
+      <Button variant="subtle" type="button" disabled={!Object.keys(overrides).length} onClick={onReset}>恢复自动判断</Button>
+      <Button type="button" onClick={onClose}>完成</Button>
+    </Group>
+  </Modal>;
 }
 
 function GeneratePresetDialog({ presets, onClose, onSave }: { presets: string[]; onClose: () => void; onSave: (presets: string[]) => void }) {
@@ -2013,21 +2112,6 @@ function ContextCard({ summary, contentMode, includePrevious, includeCharacters,
   );
 }
 
-function CandidateCompare({ version, onClose, onApplied }: { version: Version; onClose: () => void; onApplied: () => void }) {
-  const studio = useStudio();
-  const models = useConfiguredModels();
-  const [applying, setApplying] = useState(false);
-  const currentContent = resolvedOutlineContent(studio.currentOutline);
-  async function apply() {
-    setApplying(true);
-    if (!await studio.saveNow()) { setApplying(false); return; }
-    const backupId = studio.applyVersionWithBackup(studio.currentOutline.id, version.id);
-    setApplying(false);
-    if (backupId) onApplied();
-  }
-  return <div className="candidate-compare-layer"><button className="candidate-compare-scrim" type="button" aria-label="关闭候选版本对比" onClick={onClose} /><aside className="candidate-compare" role="dialog" aria-modal="true" aria-label="候选版本对比"><header><div><span>候选版本对比</span><strong>{version.name}</strong><small>{version.prompt ? `指令：${version.prompt}` : `${formatTime(version.createdAt)} · ${versionModelDisplayLabel(models, version)}`}</small></div><IconButton name="close" label="关闭对比" onClick={onClose} /></header><div className="candidate-compare-columns"><section><div><strong>当前正文</strong><span>{wordCount(currentContent)} 字</span></div><pre>{currentContent || "（当前正文为空）"}</pre></section><section><div><strong>候选版本</strong><span>{wordCount(version.content)} 字</span></div><pre>{version.content || "（候选正文为空）"}</pre></section></div><footer><div><button className="secondary-button" type="button" onClick={onClose}>保留当前正文</button><button className="primary-compact" type="button" disabled={applying} onClick={() => void apply()}>{applying ? "正在应用…" : "应用候选版本"}</button></div></footer></aside></div>;
-}
-
 function chatInline(text: string) {
   return text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) => part.startsWith("**") && part.endsWith("**") ? <strong key={index}>{part.slice(2, -2)}</strong> : part);
 }
@@ -2047,7 +2131,9 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   const models = useConfiguredModels();
   const outline = studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId) ?? studio.currentOutline;
   const outlineChapter = studio.currentArticle.chapters.find((chapter) => chapter.outlines.some((item) => item.id === outline.id)) ?? studio.currentChapter;
-  const chatbotName = chatbotDisplayName(models, studio.data.settings.chatModel);
+  const chatModelRecord = configuredModelForReference(models, studio.data.settings.chatModel);
+  const chatModelReference = chatModelRecord?.id ?? studio.data.settings.chatModel.trim();
+  const chatbotName = chatbotDisplayName(models, chatModelReference);
   const session = activeChatSession(outline);
   const message = session?.draft ?? "";
   const activeChatTask = studio.data.tasks.find((task) => task.target === "AI Chat" && task.outlineId === outline.id && (task.state === "waiting" || task.state === "running"));
@@ -2136,20 +2222,21 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
       outlineId: outline.id,
       target: "AI Chat",
       prompt: question.slice(0, 20000),
-      model: studio.data.settings.chatModel,
+      model: chatModelReference,
       state: "running",
       phase: "connecting",
       attempt: 1,
       startedAt: new Date().toISOString(),
       lastProgressAt: new Date().toISOString(),
       receivedCharacters: 0,
-      timeoutMs: models.find((model) => model.name === studio.data.settings.chatModel)?.timeoutMs ?? 600_000,
+      timeoutMs: chatModelRecord?.timeoutMs ?? 600_000,
       contextOptions: {
         includePrevious: targetSession.includePrevious,
         includeCharacters: targetSession.includeCharacters,
         estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
         sessionId: targetSessionId,
-        modelId: models.find((model) => model.name === studio.data.settings.chatModel)?.modelId,
+        modelId: chatModelRecord?.modelId,
+        modelName: chatModelRecord?.name,
       },
     });
     if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
@@ -2165,7 +2252,7 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
     streamingRef.current = "";
     registerActiveChatStream(taskId, { controller, cancel: () => stopStreaming(true) });
     try {
-      const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: question, sessionId: targetSessionId, model: studio.data.settings.chatModel, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
+      const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
       if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
       studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
       const reader = response.body.getReader();
@@ -2238,7 +2325,7 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
   }
 
   function saveCandidate(text: string) {
-    studio.saveVersion(outline.id, timestampContentName(), "AI Chat", text, { model: studio.data.settings.chatModel, modelId: models.find((model) => model.name === studio.data.settings.chatModel)?.modelId, prompt: session?.title });
+    studio.saveVersion(outline.id, timestampContentName(), "AI Chat", text, { model: chatModelRecord?.name ?? chatModelReference, modelId: chatModelRecord?.modelId, prompt: session?.title });
     setMessageMenuId("");
     onNotice("已保存为候选版本");
   }
@@ -2306,7 +2393,7 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
         {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="AI Chat 上下文"><header><div><strong>本次上下文</strong><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={session.includePrevious} onChange={(event) => studio.setChatSetting(outline.id, "includePrevious", event.target.checked)} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{session.includePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={session.includeCharacters} onChange={(event) => studio.setChatSetting(outline.id, "includeCharacters", event.target.checked)} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{session.includeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
           <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="AI Chat 消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={studio.data.settings.chatModel} onChange={(event) => studio.updateSettings({ chatModel: event.target.value })}><option value="">本地 PoC 引擎</option>{studio.data.settings.chatModel && !models.some((model) => model.name === studio.data.settings.chatModel) && <option>{studio.data.settings.chatModel}</option>}{models.map((model) => <option key={model.id} value={model.name}>{model.name}</option>)}</select></label></div>{isStreaming ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage)} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => studio.updateSettings({ chatModel: event.target.value })}><option value="">本地 PoC 引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label></div>{isStreaming ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage)} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
@@ -2491,18 +2578,20 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
   </article>;
 }
 
-function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSavePresets, onRun }: {
+function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSavePresets, onSetDefaultModel, onRun }: {
   chapters: Chapter[];
   models: ConfiguredModel[];
   presets: string[];
   initialModel: string;
   onClose: () => void;
   onSavePresets: (presets: string[]) => void;
+  onSetDefaultModel: (modelId: string) => void;
   onRun: (input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string }) => Promise<void>;
 }) {
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const availableChapters = chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && resolvedOutlineContent(outline).trim()));
-  const preferredModel = models.some((item) => item.name === initialModel) ? initialModel : models[0]?.name ?? "";
+  const preferredModel = canonicalModelReference(models, initialModel) || models[0]?.id || "";
+  const defaultModel = canonicalModelReference(models, initialModel);
   const [chapterId, setChapterId] = useState(availableChapters[0]?.id ?? "");
   const [model, setModel] = useState(preferredModel);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -2554,7 +2643,7 @@ function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSa
     <Stack gap="md">
       <div className="ai-review-basics">
         <Select label="Review 章节" value={chapterId} onChange={(value) => setChapterId(value ?? "")} data={availableChapters.map((chapter) => ({ value: chapter.id, label: chapter.title }))} disabled={running} />
-        <Select label="模型" value={model} onChange={(value) => setModel(value ?? "")} data={models.map((item) => ({ value: item.name, label: `${modelDisplayLabel(models, item.name)}${item.hasSecret ? "" : "（需密钥）"}` }))} disabled={running} />
+        <Select label="模型" value={model} onChange={(value) => setModel(value ?? "")} data={models.map((item) => ({ value: item.id, label: `${modelDisplayLabel(models, item.id)}${item.hasSecret ? "" : "（需密钥）"}` }))} disabled={running} />
       </div>
       <section className="ai-review-builtins">
         <Text fw={650} size="sm">固定检查</Text>
@@ -2574,6 +2663,7 @@ function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSa
       {error && <Alert color="red">{error}</Alert>}
       {!models.length && <Alert color="yellow">请先在模型设置中添加并配置一个支持结构化 JSON 输出的模型。</Alert>}
       <Group justify="flex-end">
+        {model && model !== defaultModel && <Button variant="subtle" type="button" disabled={running} onClick={() => onSetDefaultModel(model)}>设为 Review 默认</Button>}
         <Button variant="default" type="button" disabled={running} onClick={onClose}>取消</Button>
         <Button leftSection={<Icon name="review" />} loading={running} disabled={!chapterId || !model || !models.length} onClick={() => void submit()}>开始 AI Review</Button>
       </Group>
@@ -2849,7 +2939,7 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
       </DragOverlay>
     </DndContext>
     {mode === "outline" && chatOutlineId && <FullOutlineChatDialog outlineId={chatOutlineId} onClose={() => setChatOutlineId(null)} onNotice={onNotice} />}
-    {mode === "content" && reviewOpen && <AiReviewDialog chapters={studio.currentArticle.chapters} models={reviewModels} presets={studio.data.settings.reviewPresets} initialModel={studio.data.settings.generateModel} onClose={() => setReviewOpen(false)} onSavePresets={(presets) => studio.updateSettings({ reviewPresets: presets })} onRun={runReview} />}
+    {mode === "content" && reviewOpen && <AiReviewDialog chapters={studio.currentArticle.chapters} models={reviewModels} presets={studio.data.settings.reviewPresets} initialModel={studio.data.settings.reviewModel} onClose={() => setReviewOpen(false)} onSavePresets={(presets) => studio.updateSettings({ reviewPresets: presets })} onSetDefaultModel={(reviewModel) => studio.updateSettings({ reviewModel })} onRun={runReview} />}
   </div></div>;
 }
 
@@ -2904,7 +2994,7 @@ function Tabs({ items, active, onGo }: { items: [View, string][]; active: View; 
 function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
-  return <div className="form-card"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label>文章类型<input value={article.type} maxLength={120} onChange={(event) => studio.updateArticle({ type: event.target.value })} /></label><label>写作风格<input value={article.style} maxLength={5000} onChange={(event) => studio.updateArticle({ style: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+  return <div className="form-card"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label>文章类型<input value={article.type} maxLength={120} onChange={(event) => studio.updateArticle({ type: event.target.value })} /></label><label className="full">写作风格<textarea value={article.style} maxLength={5000} onChange={(event) => studio.updateArticle({ style: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
 }
 
 function Characters() {
@@ -2987,15 +3077,19 @@ function ModelSettings() {
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   type Model = { id: string; name: string; baseUrl: string; modelId: string; systemPrompt: string; temperature: number | null; maxOutput: number | null; timeoutMs: number; hasSecret: boolean };
   const timeoutMinutes = (timeoutMs: number) => Math.max(0.1, Math.min(10, Number((timeoutMs / 60_000).toFixed(2))));
+  const parseModelIds = (value: string) => [...new Set(value.split(",").map((modelId) => modelId.trim()).filter(Boolean))];
+  const formatModelIds = (modelIds: string[]) => modelIds.join(", ");
   const [models, setModels] = useState<Model[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [form, setForm] = useState({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2" });
   const parsedTimeoutMinutes = Number(form.timeoutMinutes);
   const timeoutIsValid = Number.isFinite(parsedTimeoutMinutes) && parsedTimeoutMinutes >= 0.1 && parsedTimeoutMinutes <= 10;
+  const requestedModelIds = selectedModelIds.length ? selectedModelIds : parseModelIds(form.modelId);
   const load = async () => { const response = await fetch("/api/models", { cache: "no-store" }); const payload = await response.json() as { models?: Model[] }; setModels(payload.models ?? []); };
   useEffect(() => {
     let active = true;
@@ -3006,16 +3100,16 @@ function ModelSettings() {
     return () => { active = false; };
   }, []);
   function closeForm() {
-    setFormOpen(false); setEditingId(null); setDiscoveredModels([]);
+    setFormOpen(false); setEditingId(null); setDiscoveredModels([]); setSelectedModelIds([]);
     setForm({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2" });
   }
   function openCreate() {
-    setError(""); setEditingId(null); setDiscoveredModels([]);
+    setError(""); setEditingId(null); setDiscoveredModels([]); setSelectedModelIds([]);
     setForm({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2" });
     setFormOpen(true);
   }
   function openEdit(model: Model) {
-    setError(""); setEditingId(model.id); setDiscoveredModels([]);
+    setError(""); setEditingId(model.id); setDiscoveredModels([]); setSelectedModelIds([]);
     setForm({ name: model.name, baseUrl: model.baseUrl, modelId: model.modelId, secret: "", systemPrompt: model.systemPrompt, timeoutMinutes: String(timeoutMinutes(model.timeoutMs)) });
     setFormOpen(true);
   }
@@ -3026,7 +3120,18 @@ function ModelSettings() {
       const payload = await response.json() as { models?: string[]; error?: string };
       if (!response.ok || !payload.models?.length) throw new Error(payload.error || "没有获取到模型");
       setDiscoveredModels(payload.models);
-      setForm((current) => ({ ...current, modelId: current.modelId.trim() || payload.models![0] }));
+      const sameEndpoint = (value: string) => value.replace(/\/$/, "") === form.baseUrl.trim().replace(/\/$/, "");
+      const savedCandidates = editingId
+        ? models.filter((model) => sameEndpoint(model.baseUrl) && payload.models!.includes(model.modelId)).map((model) => model.modelId)
+        : [];
+      const manuallyEntered = parseModelIds(form.modelId).filter((modelId) => payload.models!.includes(modelId));
+      const initiallySelected = [...new Set([
+        ...manuallyEntered,
+        ...savedCandidates,
+        ...(!editingId && !manuallyEntered.length ? [payload.models[0]] : []),
+      ])];
+      setSelectedModelIds(initiallySelected);
+      setForm((current) => ({ ...current, modelId: formatModelIds(initiallySelected) || current.modelId }));
     } catch (reason) { setError(reason instanceof Error ? reason.message : "获取模型列表失败"); }
     finally { setBusy(""); }
   }
@@ -3034,16 +3139,31 @@ function ModelSettings() {
     setBusy("save"); setError("");
     const previous = editingId ? models.find((model) => model.id === editingId) : null;
     try {
-      const response = await fetch(editingId ? `/api/models/${editingId}` : "/api/models", { method: editingId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, baseUrl: form.baseUrl, modelId: form.modelId, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000) }) });
-      const model = await response.json() as Model & { error?: string };
-      if (!response.ok) throw new Error(model.error || (editingId ? "更新失败" : "创建失败"));
-      if (form.secret.trim()) {
-        const secretResponse = await fetch(`/api/models/${model.id}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: form.secret }) });
-        if (!secretResponse.ok) throw new Error("模型配置已保存，但密钥保存失败");
-      }
-      if (previous && previous.name !== model.name) {
-        if (studio.data.settings.chatModel === previous.name) studio.updateSettings({ chatModel: model.name });
-        if (studio.data.settings.generateModel === previous.name) studio.updateSettings({ generateModel: model.name });
+      if (!editingId) {
+        const response = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, baseUrl: form.baseUrl, modelIds: requestedModelIds, secret: form.secret, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000) }) });
+        const payload = await response.json() as { models?: Model[]; skippedModelIds?: string[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "创建失败");
+        if (!payload.models?.length) throw new Error("所选模型已经存在，无需重复保存");
+      } else {
+        const primaryModelId = previous && requestedModelIds.includes(previous.modelId) ? previous.modelId : requestedModelIds[0] ?? previous?.modelId ?? "";
+        const response = await fetch(`/api/models/${editingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, baseUrl: form.baseUrl, modelId: primaryModelId, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000) }) });
+        const model = await response.json() as Model & { error?: string };
+        if (!response.ok) throw new Error(model.error || "更新失败");
+        if (form.secret.trim()) {
+          const secretResponse = await fetch(`/api/models/${model.id}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: form.secret }) });
+          if (!secretResponse.ok) throw new Error("模型配置已保存，但密钥保存失败");
+        }
+        const additionalModelIds = requestedModelIds.filter((modelId) => modelId !== model.modelId);
+        if (additionalModelIds.length) {
+          const bulkResponse = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, appendModelIdToName: true, baseUrl: form.baseUrl, existingModelId: model.id, modelIds: additionalModelIds, secret: form.secret, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000) }) });
+          const bulkPayload = await bulkResponse.json() as { error?: string };
+          if (!bulkResponse.ok) throw new Error(bulkPayload.error || "新增候选模型失败");
+        }
+        if (previous && previous.name !== model.name) {
+          if ([previous.id, previous.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: model.id });
+          if ([previous.id, previous.name].includes(studio.data.settings.generateModel)) studio.updateSettings({ generateModel: model.id });
+          if ([previous.id, previous.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: model.id });
+        }
       }
       closeForm(); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : (editingId ? "更新失败" : "创建失败")); }
@@ -3058,8 +3178,9 @@ function ModelSettings() {
   async function remove(model: Model) {
     if (!window.confirm(`删除模型「${model.name}」？`)) return;
     await fetch(`/api/models/${model.id}`, { method: "DELETE" });
-    if (studio.data.settings.chatModel === model.name) studio.updateSettings({ chatModel: "" });
-    if (studio.data.settings.generateModel === model.name) studio.updateSettings({ generateModel: "" });
+    if ([model.id, model.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
+    if ([model.id, model.name].includes(studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
+    if ([model.id, model.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
     await load();
   }
   return <>
@@ -3082,9 +3203,9 @@ function ModelSettings() {
       <Stack className="model-editor-stack" gap="md">
         {error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}
         <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-          <TextInput label="显示名称" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <TextInput label="接口地址" value={form.baseUrl} onChange={(event) => { setForm({ ...form, baseUrl: event.target.value }); setDiscoveredModels([]); }} />
-          <PasswordInput label="API 密钥" autoComplete="new-password" value={form.secret} onChange={(event) => { setForm({ ...form, secret: event.target.value }); setDiscoveredModels([]); }} />
+          <TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增候选会自动附加自己的模型 ID" : undefined} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          <TextInput label="接口地址" value={form.baseUrl} onChange={(event) => { setForm({ ...form, baseUrl: event.target.value }); setDiscoveredModels([]); setSelectedModelIds([]); }} />
+          <PasswordInput label="API 密钥" autoComplete="new-password" value={form.secret} onChange={(event) => { setForm({ ...form, secret: event.target.value }); setDiscoveredModels([]); setSelectedModelIds([]); }} />
           <NumberInput label="超时" aria-label="超时（分钟）" min={0.1} max={10} step={0.1} decimalScale={2} suffix=" 分钟" value={form.timeoutMinutes} error={!timeoutIsValid ? "请输入 0.1–10 分钟" : undefined} onChange={(value) => setForm({ ...form, timeoutMinutes: String(value) })} />
         </SimpleGrid>
         <div className="model-id-field">
@@ -3092,14 +3213,26 @@ function ModelSettings() {
             <Text component="label" htmlFor="model-id-input" size="sm" fw={500}>模型 ID</Text>
             {!compact && <Button variant="light" size="xs" aria-label="Fetch 模型列表" loading={busy === "discover"} disabled={!form.baseUrl.trim()} onClick={() => void discover()}>{discoveredModels.length ? "重新 Fetch" : "Fetch 模型"}</Button>}
           </Group>
-          <TextInput id="model-id-input" value={form.modelId} onChange={(event) => setForm({ ...form, modelId: event.target.value })} />
+          <TextInput id="model-id-input" aria-label="模型 ID" placeholder="多个模型 ID 使用逗号分隔" value={form.modelId} onChange={(event) => { const modelId = event.target.value; setForm({ ...form, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />
           {compact && <Button className="mobile-model-fetch" variant="light" fullWidth leftSection={<Icon name="refresh" />} aria-label="Fetch 模型列表" loading={busy === "discover"} disabled={!form.baseUrl.trim()} onClick={() => void discover()}>{discoveredModels.length ? "重新 Fetch 模型列表" : "Fetch 模型列表"}</Button>}
-          {discoveredModels.length > 0 && <Select className="discovered-model-select" label={`已获取 ${discoveredModels.length} 个模型`} aria-label="选择获取到的大模型" placeholder="选择模型" searchable data={discoveredModels} value={discoveredModels.includes(form.modelId) ? form.modelId : null} onChange={(value) => { if (value) setForm({ ...form, modelId: value }); }} />}
+          {discoveredModels.length > 0 && <MultiSelect
+            className="discovered-model-select"
+            label={`已获取 ${discoveredModels.length} 个模型，可多选候选`}
+            description="只有这里勾选并保存的候选才会出现在 AI Chat、Generate 和 Review 中；其余 Fetch 结果不会保存。"
+            aria-label="选择获取到的大模型"
+            placeholder="选择一个或多个候选模型"
+            searchable
+            withCheckIcon
+            checkIconPosition="right"
+            data={discoveredModels}
+            value={selectedModelIds}
+            onChange={(values) => { setSelectedModelIds(values); setForm((current) => ({ ...current, modelId: formatModelIds(values) })); }}
+          />}
         </div>
         <Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={form.systemPrompt} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
         <Group className="model-form-actions" justify="flex-end">
           <Button variant="default" onClick={closeForm}>取消</Button>
-          <Button disabled={!form.name.trim() || !form.modelId.trim() || !timeoutIsValid} loading={busy === "save"} onClick={() => void save()}>{editingId ? "保存修改" : "保存模型"}</Button>
+          <Button disabled={!requestedModelIds.length || (Boolean(editingId) && !form.name.trim()) || !timeoutIsValid} loading={busy === "save"} onClick={() => void save()}>{editingId ? requestedModelIds.length > 1 ? "保存候选配置" : "保存修改" : requestedModelIds.length > 1 ? `保存 ${requestedModelIds.length} 个候选` : "保存模型"}</Button>
         </Group>
       </Stack>
     </Modal>
@@ -3111,7 +3244,7 @@ function ModelSettings() {
             <div><h3>{model.name}</h3><p>{model.baseUrl} · {model.modelId}</p></div>
             <Badge color={model.hasSecret ? "green" : "yellow"} variant="light">{model.hasSecret ? "可用" : "缺少密钥"}</Badge>
           </Group>
-          <div className="model-card-meta"><div className="model-default-tags">{studio.data.settings.generateModel === model.name && <em>默认 AI Generate</em>}{studio.data.settings.chatModel === model.name && <em>默认 AI Chat</em>}</div></div>
+          <div className="model-card-meta"><div className="model-default-tags">{[model.id, model.name].includes(studio.data.settings.generateModel) && <em>默认 AI Generate</em>}{[model.id, model.name].includes(studio.data.settings.chatModel) && <em>默认 AI Chat</em>}{[model.id, model.name].includes(studio.data.settings.reviewModel) && <em>默认 AI Review</em>}</div></div>
         </div>
         <div className="model-card-actions">
           <Button variant="default" size="xs" onClick={() => openEdit(model)}>编辑</Button>
@@ -3119,8 +3252,9 @@ function ModelSettings() {
           <Menu position="bottom-end" withinPortal>
             <Menu.Target><Button variant="subtle" size="xs">更多</Button></Menu.Target>
             <Menu.Dropdown>
-              <Menu.Item disabled={studio.data.settings.generateModel === model.name} onClick={() => studio.updateSettings({ generateModel: model.name })}>设为 Generate 默认</Menu.Item>
-              <Menu.Item disabled={studio.data.settings.chatModel === model.name} onClick={() => studio.updateSettings({ chatModel: model.name })}>设为 Chat 默认</Menu.Item>
+              <Menu.Item disabled={studio.data.settings.generateModel === model.id} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item>
+              <Menu.Item disabled={studio.data.settings.chatModel === model.id} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item>
+              <Menu.Item disabled={studio.data.settings.reviewModel === model.id} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item>
               <Menu.Divider />
               <Menu.Item color="red" onClick={() => void remove(model)}>删除模型</Menu.Item>
             </Menu.Dropdown>
@@ -3158,7 +3292,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
     closeButtonProps={{ "aria-label": "关闭正文版本" }}
     title={<div className="ws-drawer-title"><span>正文版本</span><strong>{outlineDisplayTitle(studio.currentOutline)}</strong></div>}
     position={compact ? "bottom" : "right"}
-    size={compact ? "calc(100dvh - 10px)" : 470}
+    size={compact ? "calc(100dvh - 10px)" : 920}
     classNames={{ content: "ws-drawer-content version-drawer-shell", header: "ws-drawer-header", body: "ws-drawer-body" }}
     overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}
   >
@@ -3220,6 +3354,9 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
   const selectedOutline = selectedTask ? selectedChapter?.outlines.find((item) => item.id === selectedTask.outlineId) : undefined;
   const selectedVersion = selectedTask?.resultVersionId ? selectedOutline?.versions.find((item) => item.id === selectedTask.resultVersionId) : undefined;
   const selectedResult = selectedTask?.resultText ?? selectedVersion?.content ?? "";
+  const selectedFirstAppearanceNames = selectedArticle?.characters
+    .filter((character) => selectedTask?.contextOptions?.firstAppearanceCharacterIds?.includes(character.id))
+    .map((character) => character.name) ?? [];
   function locate(task: AiTask) {
     studio.setCurrentArticle(task.articleId);
     studio.setCurrentOutline(task.outlineId);
@@ -3237,8 +3374,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     studio.updateTask(task.id, { state: "waiting", phase: "queued", attempt: 0, startedAt: undefined, completedAt: undefined, lastProgressAt: undefined, receivedCharacters: 0, runnerId: undefined, leaseUntil: undefined, error: undefined });
   }
   function applyResult(task: AiTask) {
-    if (task.target === "正文" && task.resultVersionId) studio.applyVersionWithBackup(task.outlineId, task.resultVersionId);
-    else if (task.target === "大纲" && task.resultText) {
+    if (task.target === "大纲" && task.resultText) {
       const outline = studio.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === task.outlineId);
       const generatedTitle = normalizeOutlineTitle(task.contextOptions?.generatedOutlineTitle);
       const canApplyGeneratedTitle = Boolean(generatedTitle && outline && outline.plan === task.contextOptions?.outlinePlanSnapshot && outline.title === task.contextOptions?.outlineTitleSnapshot);
@@ -3282,7 +3418,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <dl className="task-detail-metadata">
             <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${(selectedTask.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</dd></div>
             {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}</dd></div>}
-            <div><dt>模型</dt><dd>{modelDisplayLabel([], selectedTask.model || "", selectedTask.contextOptions?.modelId)}</dd></div>
+            <div><dt>模型</dt><dd>{modelDisplayLabel([], selectedTask.model || "", selectedTask.contextOptions?.modelId, selectedTask.contextOptions?.modelName)}</dd></div>
             <div><dt>阶段</dt><dd>{phaseLabels[selectedTask.phase ?? "queued"]}</dd></div>
             <div><dt>尝试</dt><dd>{selectedTask.attempt ? `${selectedTask.attempt} / 3` : "—"}</dd></div>
             <div><dt>超时</dt><dd>{duration(selectedTask.timeoutMs ?? 600_000)}</dd></div>
@@ -3292,14 +3428,14 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
             <div className="wide"><dt>位置</dt><dd>{selectedArticle?.title ?? "已删除的文章"} / {selectedChapter?.title ?? "已删除的章节"} / {selectedOutline ? outlineDisplayTitle(selectedOutline) : "已删除的大纲"}</dd></div>
           </dl>
           <section className="task-detail-section"><h3>任务指令</h3><div className="task-detail-copy">{selectedTask.prompt || "按大纲生成（无补充指令）"}</div></section>
-          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags">{selectedTask.target === "正文" && <span>{contentGenerationModeLabel(selectedTask.contextOptions.contentMode)}</span>}<span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span>{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.contentMode === "fresh" ? "不发送当前正文" : "包含当前正文"}</span>}{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
+          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags">{selectedTask.target === "正文" && <span>{contentGenerationModeLabel(selectedTask.contextOptions.contentMode)}</span>}<span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span>{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.contentMode === "fresh" ? "不发送当前正文" : "包含当前正文"}</span>}{selectedTask.target === "正文" && selectedTask.contextOptions.firstAppearanceCharacterIds && <span>首次出场：{selectedFirstAppearanceNames.length ? selectedFirstAppearanceNames.join("、") : "无"}</span>}{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
           {selectedTask.error && <section className="task-detail-section task-detail-error"><h3>错误</h3><div>{selectedTask.error}</div></section>}
           <section className="task-detail-section"><h3>任务结果</h3>{selectedResult ? <div className="task-detail-result" aria-label="任务结果">{selectedResult}</div> : <div className="task-detail-empty">{selectedTask.state === "waiting" || selectedTask.state === "running" ? "任务尚未产生结果" : "没有可用结果"}</div>}</section>
         </div>
         <footer className="task-detail-actions">
-          <button type="button" onClick={() => locate(selectedTask)}>打开对应内容</button>
+          <button type="button" onClick={() => locate(selectedTask)}>{selectedTask.state === "success" && selectedTask.target === "正文" ? "打开当前正文" : "打开对应内容"}</button>
           {(selectedTask.state === "waiting" || selectedTask.state === "running") && <button type="button" onClick={() => cancelTask(selectedTask)}>取消</button>}
-          {selectedTask.state === "success" && selectedTask.target !== "AI Chat" && <button type="button" onClick={() => applyResult(selectedTask)}>应用结果</button>}
+          {selectedTask.state === "success" && selectedTask.target !== "AI Chat" && selectedTask.target !== "正文" && <button type="button" onClick={() => applyResult(selectedTask)}>应用结果</button>}
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
         </footer>
@@ -3313,10 +3449,10 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <p>{article?.title ?? "未知文章"} · {chapter?.title ?? "未知章节"} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)} · ${(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</p>
           <blockquote>{task.prompt || "按大纲生成"}</blockquote>
           {task.error && <p className="task-error">{task.error}</p>}
-          <div><span>{modelDisplayLabel([], task.model || "", task.contextOptions?.modelId)}</span><span className="task-buttons">
+          <div><span>{modelDisplayLabel([], task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)}</span><span className="task-buttons">
             <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
             {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
-            {task.state === "success" && task.target !== "AI Chat" && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
+            {task.state === "success" && task.target !== "AI Chat" && task.target !== "正文" && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
             {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
             {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
           </span></div>

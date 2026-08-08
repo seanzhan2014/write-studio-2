@@ -45,9 +45,9 @@ Get-NetIPAddress -AddressFamily IPv4 | Where-Object IPAddress -NotLike '127.*'
 - 写作、AI Chat、AI Generate 三个工作标签，正文写作占据主要空间；
 - AI Chat 支持每条大纲下的多会话、分支和消息级操作，只引用当前大纲及其之前的全部未归档大纲，不读取之后的大纲；
 - AI 回复可保存为候选版本、交给 AI Generate，或经确认并保护当前正文版本后追加到正文；
-- 正文 AI Generate 只生成候选正文版本；大纲内容和章节标题在大纲视图生成并预览；
+- 正文 AI Generate 完成后创建不可变版本并自动设为当前正文；大纲内容和章节标题仍在大纲视图生成并预览；
 - 800ms 自动保存、`Ctrl/Cmd+S` 手动保存、`sessionStorage` 意外恢复、多窗口 revision 冲突处理；
-- AI Generate 后台队列、取消、重试、候选版本对比和应用；
+- AI Generate 后台队列、取消、重试、自动更新当前正文及版本历史回退；
 - SQLite FTS5 派生搜索索引、数据库完整性检查；
 - 电脑侧栏支持 240–360px 调整及 56px 折叠，状态保存在轻量浏览器设置中。
 

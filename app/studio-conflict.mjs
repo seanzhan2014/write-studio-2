@@ -11,7 +11,9 @@ function outlineIndex(data) {
 }
 
 function isServerGeneratedVersion(version) {
-  return Boolean(version?.taskId) && (version.source === "AI Generate" || version.source === "AI Chat" || version.source === "AI Review");
+  const generatedResult = version?.source === "AI Generate" || version?.source === "AI Chat" || version?.source === "AI Review";
+  const protectedGenerateInput = version?.source === "手动" && String(version?.name ?? "").startsWith("AI Generate 前 · ");
+  return Boolean(version?.taskId) && (generatedResult || protectedGenerateInput);
 }
 
 /**
@@ -43,9 +45,9 @@ export function mergeAiManagedConflict(base, local, server) {
     const retainedVersions = (serverOutline.versions ?? []).filter((version) => baseVersions.has(version.id));
     const addedVersions = (serverOutline.versions ?? []).filter((version) => !baseVersions.has(version.id));
     if (retainedVersions.length !== baseVersions.size || retainedVersions.some((version) => !same(version, baseVersions.get(version.id))) || addedVersions.some((version) => !isServerGeneratedVersion(version))) return null;
-    const reviewDefault = addedVersions.find((version) => version.source === "AI Review" && version.id === serverOutline.sourceVersionId);
+    const generatedDefault = addedVersions.find((version) => (version.source === "AI Generate" || version.source === "AI Review") && version.id === serverOutline.sourceVersionId);
     const defaultChanged = serverOutline.sourceVersionId !== baseOutline.sourceVersionId || serverOutline.contentOverride !== baseOutline.contentOverride || serverOutline.contentName !== baseOutline.contentName;
-    if (defaultChanged && !reviewDefault) return null;
+    if (defaultChanged && !generatedDefault) return null;
 
     const titleChanged = serverOutline.title !== baseOutline.title || serverOutline.titleGenerationPending !== baseOutline.titleGenerationPending;
     const hasCompletedTask = (server.tasks ?? []).some((task) => task.outlineId === outlineId && task.state === "success");
@@ -53,7 +55,7 @@ export function mergeAiManagedConflict(base, local, server) {
 
     comparableOutline.versions = structuredClone(baseOutline.versions ?? []);
     comparableOutline.state = baseOutline.state;
-    if (reviewDefault) {
+    if (generatedDefault) {
       comparableOutline.sourceVersionId = baseOutline.sourceVersionId;
       comparableOutline.contentOverride = baseOutline.contentOverride;
       comparableOutline.contentName = baseOutline.contentName;
@@ -79,9 +81,12 @@ export function mergeAiManagedConflict(base, local, server) {
     const localVersionIds = new Set((localOutline.versions ?? []).map((version) => version.id));
     const serverAdditions = (serverOutline.versions ?? []).filter((version) => !baseVersionIds.has(version.id) && !localVersionIds.has(version.id));
     if (serverAdditions.length) localOutline.versions = [...structuredClone(serverAdditions), ...(localOutline.versions ?? [])];
-    const serverReviewDefault = serverAdditions.find((version) => version.source === "AI Review" && version.id === serverOutline.sourceVersionId);
-    const localChangedDefault = localOutline.sourceVersionId !== baseOutline.sourceVersionId || localOutline.contentOverride !== baseOutline.contentOverride || localOutline.contentName !== baseOutline.contentName;
-    if (serverReviewDefault && !localChangedDefault) {
+    const serverGeneratedDefault = serverAdditions.find((version) => (version.source === "AI Generate" || version.source === "AI Review") && version.id === serverOutline.sourceVersionId);
+    const localChangedCurrent = localOutline.sourceVersionId !== baseOutline.sourceVersionId
+      || localOutline.contentOverride !== baseOutline.contentOverride
+      || localOutline.contentName !== baseOutline.contentName
+      || localOutline.content !== baseOutline.content;
+    if (serverGeneratedDefault && !localChangedCurrent) {
       localOutline.sourceVersionId = serverOutline.sourceVersionId;
       localOutline.contentOverride = serverOutline.contentOverride;
       localOutline.contentName = serverOutline.contentName;

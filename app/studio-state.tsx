@@ -133,8 +133,10 @@ export type AiTask = {
     outlinePlanSnapshot?: string;
     outlineTitleSnapshot?: string;
     modelId?: string;
+    modelName?: string;
     generatedOutlineTitle?: string;
     sessionId?: string;
+    firstAppearanceCharacterIds?: string[];
   };
 };
 
@@ -150,6 +152,7 @@ export type StudioSettings = {
   taskConcurrency: number;
   chatModel: string;
   generateModel: string;
+  reviewModel: string;
   generateTargetWords: number;
   generatePresets: string[];
   reviewPresets: string[];
@@ -301,6 +304,7 @@ const seedData: StudioData = {
     taskConcurrency: 2,
     chatModel: "快速对话模型",
     generateModel: "",
+    reviewModel: "",
     generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS,
     generatePresets: [],
     reviewPresets: [],
@@ -415,6 +419,9 @@ function normalizeAiTask(task: AiTask): AiTask {
     contextOptions: task.contextOptions ? {
       ...task.contextOptions,
       ...(task.target === "正文" ? { contentMode: normalizeContentGenerationMode(task.contextOptions.contentMode) } : {}),
+      firstAppearanceCharacterIds: Array.isArray(task.contextOptions.firstAppearanceCharacterIds)
+        ? [...new Set(task.contextOptions.firstAppearanceCharacterIds.map(String))].slice(0, 200)
+        : undefined,
     } : task.contextOptions,
     phase,
     attempt: Math.max(0, Number(task.attempt ?? 0)),

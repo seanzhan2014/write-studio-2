@@ -367,14 +367,14 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     });
     const created = await api("/api/ai/tasks", {
       method: "POST", headers: { "Idempotency-Key": "task-over-limit" },
-      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "新任务", model: "", includePrevious: false, includeCharacters: true },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "新任务", model: "", includePrevious: false, includeCharacters: true, firstAppearanceCharacterIds: ["character-gu", "character-archived", "missing"] },
     });
     assert.equal(created.response.status, 200, created.text);
     const tasks = await api("/api/ai/tasks");
     assert.equal(tasks.data.data.length, 20);
     assert.ok(tasks.data.data.some((task) => task.id === "task-over-limit"));
     for (let index = 0; index < 17; index += 1) assert.ok(tasks.data.data.some((task) => task.id === `existing-task-${index}`), `active task ${index} must remain`);
-    assert.deepEqual(created.data.data.contextOptions, { includePrevious: false, includeCharacters: true, estimatedCharacters: 0, targetWords: 5000, contentMode: "fresh", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头" });
+    assert.deepEqual(created.data.data.contextOptions, { includePrevious: false, includeCharacters: true, estimatedCharacters: 0, targetWords: 5000, contentMode: "fresh", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头", firstAppearanceCharacterIds: ["character-gu"] });
 
     const cancelled = await api("/api/ai/tasks/task-over-limit/cancel", { method: "POST", body: {} });
     assert.equal(cancelled.response.status, 200, cancelled.text);

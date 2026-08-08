@@ -1,5 +1,6 @@
 import type { Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
 import { clearBusinessData, readStudioState, searchDocuments, writeStudioState } from "@/db/runtime";
+import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
 import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
@@ -140,6 +141,15 @@ export async function POST(request: Request, context: RouteContext) {
     if (target === "正文" && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`);
     const estimate = Number(body.estimatedCharacters ?? 0);
     const modelId = String(body.modelId ?? "").trim().slice(0, 300) || undefined;
+    const activeCharacterIds = new Set(found.article.characters.filter((character) => !character.archived).map((character) => character.id));
+    const requestedFirstAppearanceIds = Array.isArray(body.firstAppearanceCharacterIds)
+      ? [...new Set(body.firstAppearanceCharacterIds.map(String).filter((characterId) => activeCharacterIds.has(characterId)))].slice(0, 200)
+      : undefined;
+    const firstAppearanceCharacterIds = target === "正文"
+      ? body.includeCharacters === false
+        ? []
+        : requestedFirstAppearanceIds ?? detectFirstAppearanceCharacters(data, outlineId, { instruction, currentPlan: found.outline.plan }).filter((item) => item.firstAppearance).map((item) => item.characterId)
+      : undefined;
     const task = {
       id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: String(body.model ?? ""), state: "waiting" as const, createdAt: now(),
       contextOptions: {
@@ -151,6 +161,7 @@ export async function POST(request: Request, context: RouteContext) {
         outlinePlanSnapshot: found.outline.plan,
         outlineTitleSnapshot: found.outline.title,
         modelId,
+        firstAppearanceCharacterIds,
         sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
       },
     };
@@ -182,7 +193,7 @@ export async function PUT(request: Request, context: RouteContext) {
   const { segments: s } = await context.params; const body = await request.json().catch(() => null) as Json | null;
   if (!body) return reply({ error: "invalid_json" }, 400);
   if (s[0] === "database" && s[1] === "location") return reply({ fixed: true, location: "local-d1", message: "本地 D1 数据位置由服务管理，运行时不可切换。" });
-  if (s[0] === "settings") return commit(request, (data) => { const patch: Partial<StudioData["settings"]> = {}; if (["light", "dark", "system"].includes(String(body.theme))) patch.theme = body.theme as StudioData["settings"]["theme"]; if (["sans", "serif"].includes(String(body.editorFont))) patch.editorFont = body.editorFont as StudioData["settings"]["editorFont"]; if (body.fontSize !== undefined) patch.fontSize = Math.max(14, Math.min(24, Number(body.fontSize) || 17)); if (body.lineHeight !== undefined) patch.lineHeight = Math.max(1.4, Math.min(2.2, Number(body.lineHeight) || 1.8)); if (body.contentWidth !== undefined) patch.contentWidth = Math.max(640, Math.min(1200, Number(body.contentWidth) || 920)); if (body.outlineExpanded !== undefined) patch.outlineExpanded = Boolean(body.outlineExpanded); if (body.showArchived !== undefined) patch.showArchived = Boolean(body.showArchived); if (body.openLastArticle !== undefined) patch.openLastArticle = Boolean(body.openLastArticle); if (body.taskConcurrency !== undefined) patch.taskConcurrency = Math.max(1, Math.min(4, Math.round(Number(body.taskConcurrency) || 1))); if (body.chatModel !== undefined) patch.chatModel = String(body.chatModel); if (body.generateModel !== undefined) patch.generateModel = String(body.generateModel); data.settings = { ...data.settings, ...patch }; return data.settings; });
+  if (s[0] === "settings") return commit(request, (data) => { const patch: Partial<StudioData["settings"]> = {}; if (["light", "dark", "system"].includes(String(body.theme))) patch.theme = body.theme as StudioData["settings"]["theme"]; if (["sans", "serif"].includes(String(body.editorFont))) patch.editorFont = body.editorFont as StudioData["settings"]["editorFont"]; if (body.fontSize !== undefined) patch.fontSize = Math.max(14, Math.min(24, Number(body.fontSize) || 17)); if (body.lineHeight !== undefined) patch.lineHeight = Math.max(1.4, Math.min(2.2, Number(body.lineHeight) || 1.8)); if (body.contentWidth !== undefined) patch.contentWidth = Math.max(640, Math.min(1200, Number(body.contentWidth) || 920)); if (body.outlineExpanded !== undefined) patch.outlineExpanded = Boolean(body.outlineExpanded); if (body.showArchived !== undefined) patch.showArchived = Boolean(body.showArchived); if (body.openLastArticle !== undefined) patch.openLastArticle = Boolean(body.openLastArticle); if (body.taskConcurrency !== undefined) patch.taskConcurrency = Math.max(1, Math.min(4, Math.round(Number(body.taskConcurrency) || 1))); if (body.chatModel !== undefined) patch.chatModel = String(body.chatModel); if (body.generateModel !== undefined) patch.generateModel = String(body.generateModel); if (body.reviewModel !== undefined) patch.reviewModel = String(body.reviewModel); data.settings = { ...data.settings, ...patch }; return data.settings; });
   if (s[0] === "outlines" && s[2] === "content") return commit(request, (data) => { const found = findOutline(data, s[1]); if (!found) throw new Error("大纲不存在"); found.outline.content = String(body.text ?? ""); found.outline.updatedAt = now(); return found.outline; });
   return notFound();
 }

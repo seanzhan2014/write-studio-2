@@ -231,8 +231,12 @@ test("model settings support editing and server-side model discovery", async () 
   assert.match(app, /Fetch 模型/);
   assert.match(app, /compact && <Button className="mobile-model-fetch"/);
   assert.match(app, /选择获取到的大模型/);
+  assert.match(app, /<MultiSelect[\s\S]*?className="discovered-model-select"/);
+  assert.match(app, /withCheckIcon/);
+  assert.match(app, /多个模型 ID 使用逗号分隔/);
+  assert.match(app, /\/api\/models\/bulk/);
   assert.match(app, /model-form-error/);
-  assert.match(app, /method: editingId \? "PATCH" : "POST"/);
+  assert.match(app, /method: "PATCH"/);
   assert.match(app, /aria-label="超时（分钟）"/);
   assert.match(app, /timeoutMs: Math\.round\(parsedTimeoutMinutes \* 60_000\)/);
   assert.doesNotMatch(app, /超时（毫秒）/);
@@ -244,12 +248,14 @@ test("model settings support editing and server-side model discovery", async () 
   assert.match(ai, /\/models/);
   assert.match(ai, /Authorization: `Bearer \$\{secret\}`/);
   assert.match(ai, /本机 3002 服务无法访问模型 API/);
+  assert.match(ai, /if \(!normalized\) return null/);
 });
 
-test("AI Generate keeps the prompt primary and applies candidates safely", async () => {
+test("AI Generate keeps the prompt primary and automatically sets completed bodies as current", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const state = await read("app/studio-state.tsx");
   const runtime = await read("db/runtime.ts");
+  const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
   const styles = await read("app/globals.css");
   assert.match(app, /generate-quick-prompts/);
   assert.match(app, /正文目标字数/);
@@ -269,20 +275,24 @@ test("AI Generate keeps the prompt primary and applies candidates safely", async
   assert.match(await read("db/ai.ts"), /appendContinuation/);
   for (const removedPreset of ["续写当前场景", "加强冲突", "补充细节", "调整语气", "收束本段"]) assert.doesNotMatch(app, new RegExp(`const quickPrompts[\\s\\S]*${removedPreset}`));
   assert.match(app, /本次生成上下文/);
-  assert.match(app, /查看与对比/);
-  assert.match(app, /候选版本对比/);
+  assert.doesNotMatch(app, /候选版本对比/);
+  assert.doesNotMatch(app, /className="generation-card candidate-card"/);
+  assert.match(app, /任务成功后会自动设为该大纲的当前正文/);
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
-  assert.match(state, /applyVersionWithBackup/);
-  assert.match(state, /应用 AI 前/);
+  assert.match(executor, /found\.outline\.sourceVersionId = version\.id/);
+  assert.match(executor, /found\.outline\.contentOverride = false/);
+  assert.match(executor, /AI Generate 前/);
+  assert.match(executor, /hasEarlierBodyTask/);
+  assert.match(app, /selectedTask\.target !== "正文"/);
+  assert.match(app, /打开当前正文/);
+  assert.match(app, /size=\{compact \? "calc\(100dvh - 10px\)" : 920\}/);
   assert.match(runtime, /version\.model/);
   assert.match(runtime, /version\.prompt/);
   assert.match(runtime, /version\.taskId/);
-  assert.match(styles, /\.candidate-compare-columns/);
   assert.match(styles, /\.generate-context-scrim/);
   assert.match(styles, /\.generate-preset-dialog \{[\s\S]*background: var\(--surface\);[\s\S]*box-shadow:/);
   assert.match(styles, /\.generate-outline-editor textarea/);
-  assert.match(styles, /@media[\s\S]*\.candidate-compare \{[\s\S]*width: 100%/);
 });
 
 test("mobile Generate edits use an explicit draft save and insecure HTTP clipboard fallback", async () => {
@@ -374,7 +384,7 @@ test("AI tasks expose durable phases, heartbeats, timeout and cross-device refre
   const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
   assert.match(executor, /runnerId = `server-/);
   assert.match(executor, /setInterval[\s\S]*5_000/);
-  assert.match(executor, /found\.outline\.versions\.unshift\(version\)/);
+  assert.match(executor, /found\.outline\.versions\.unshift\(version,/);
 });
 
 test("AI Chat participates in task tracking and completed tasks can be cleared", async () => {
@@ -390,7 +400,8 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
   assert.match(app, /target: "AI Chat"[\s\S]*state: "running"/);
   assert.match(app, /studio\.updateTask\(taskId, \{ state: "success", phase: "completed"[\s\S]*resultText: streamingRef\.current/);
-  assert.match(app, /task\.target !== "AI Chat" && \(task\.state === "waiting" \|\| leaseExpired\(task\)\)/);
+  assert.match(app, /const dispatchableTasks: AiTask\[\] = \[\]/);
+  assert.match(app, /occupiedBodyOutlines/);
   assert.match(app, /清空已完成/);
   assert.match(app, /const \[selectedTaskId, setSelectedTaskId\] = useState/);
   assert.match(app, /aria-label="任务详情"/);

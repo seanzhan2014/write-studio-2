@@ -441,7 +441,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
 const defaultSettings: StudioData["settings"] = {
   theme: "light", editorFont: "sans", fontSize: 17, lineHeight: 1.8, contentWidth: 920,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2,
-  chatModel: "", generateModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
+  chatModel: "", generateModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
 };
 

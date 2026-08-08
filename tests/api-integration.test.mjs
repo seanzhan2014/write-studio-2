@@ -158,6 +158,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
   });
 
   let modelId = "";
+  let candidateModelIds = [];
   await t.test("validates model URLs and never returns the secret", async () => {
     for (const baseUrl of ["file:///tmp/model", "ftp://example.com", "https://user:pass@example.com/v1"]) {
       const invalid = await api("/api/models", { method: "POST", body: { name: "非法", baseUrl, modelId: "bad" } });
@@ -186,6 +187,50 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     const invalidDiscovery = await api("/api/models/discover", { method: "POST", body: { baseUrl: "file:///tmp/models", secret } });
     assert.equal(invalidDiscovery.response.status, 400);
     assert.ok(!invalidDiscovery.text.includes(secret));
+
+    const bulk = await api("/api/models/bulk", { method: "POST", body: { name: "候选", baseUrl: modelServer.url, modelIds: ["writer-fast", "writer-large", "writer-fast"], secret, timeoutMs: 120000 } });
+    assert.equal(bulk.response.status, 201, bulk.text);
+    assert.deepEqual(bulk.data.models.map((model) => model.modelId), ["writer-fast", "writer-large"]);
+    assert.deepEqual(bulk.data.models.map((model) => model.name), ["候选 · writer-fast", "候选 · writer-large"]);
+    assert.ok(bulk.data.models.every((model) => model.hasSecret));
+    candidateModelIds = bulk.data.models.map((model) => model.id);
+    assert.ok(!bulk.text.includes(secret));
+
+    const reusedConfiguration = await api("/api/models/bulk", { method: "POST", body: { name: "捕获模型", appendModelIdToName: true, existingModelId: modelId, modelIds: ["writer-shared-secret"] } });
+    assert.equal(reusedConfiguration.response.status, 201, reusedConfiguration.text);
+    assert.equal(reusedConfiguration.data.models[0].name, "捕获模型 · writer-shared-secret");
+    assert.equal(reusedConfiguration.data.models[0].hasSecret, true);
+    const testedSharedSecret = await api(`/api/models/${reusedConfiguration.data.models[0].id}/test`, { method: "POST" });
+    assert.equal(testedSharedSecret.response.status, 200, testedSharedSecret.text);
+    assert.equal(modelServer.received.at(-1).authorization, `Bearer ${secret}`);
+
+    const duplicateBulk = await api("/api/models/bulk", { method: "POST", body: { baseUrl: modelServer.url, modelIds: ["writer-fast", "writer-large"], secret } });
+    assert.equal(duplicateBulk.response.status, 200, duplicateBulk.text);
+    assert.deepEqual(duplicateBulk.data.models, []);
+    assert.deepEqual(duplicateBulk.data.skippedModelIds, ["writer-fast", "writer-large"]);
+
+    const state = await api("/api/state");
+    const withDefaults = structuredClone(state.data.data);
+    withDefaults.settings.chatModel = candidateModelIds[0];
+    withDefaults.settings.generateModel = candidateModelIds[1];
+    withDefaults.settings.reviewModel = candidateModelIds[0];
+    const savedDefaults = await api("/api/state", { method: "PUT", headers: { "If-Match": String(state.data.revision) }, body: { data: withDefaults } });
+    assert.equal(savedDefaults.response.status, 200, savedDefaults.text);
+    const reloadedDefaults = await api("/api/state");
+    assert.deepEqual([reloadedDefaults.data.data.settings.chatModel, reloadedDefaults.data.data.settings.generateModel, reloadedDefaults.data.data.settings.reviewModel], [candidateModelIds[0], candidateModelIds[1], candidateModelIds[0]]);
+    revision = savedDefaults.data.revision;
+  });
+
+  await t.test("resolves explicit models strictly and keeps the local engine explicit", async () => {
+    const receivedBefore = modelServer.received.length;
+    const missingGenerate = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "不应发送", model: "missing-model-id", target: "outline" } });
+    assert.equal(missingGenerate.response.status, 422, missingGenerate.text);
+    assert.match(missingGenerate.data.error, /模型不存在/);
+    const missingChat = await api("/api/outlines/outline-current/chat/stream", { method: "POST", body: { message: "不应发送", model: "missing-model-id" } });
+    assert.equal(missingChat.response.status, 422, missingChat.text);
+    const local = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "使用本地引擎", model: "", target: "outline" } });
+    assert.equal(local.response.status, 200, local.text);
+    assert.equal(modelServer.received.length, receivedBefore);
   });
 
   await t.test("rejects archived AI targets before any model request", async () => {
@@ -208,8 +253,14 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(generated.response.status, 200, generated.text);
     const messages = modelServer.received.at(-1).body.messages;
     assert.match(messages[0].content, /target_characters/);
+    assert.match(messages[0].content, /人物资料是连续性约束，不是需要逐项写入正文的描写清单/);
+    assert.match(messages[0].content, /不得因人物再次出场、说话或行动而复述或同义改写/);
     assert.match(messages[1].content, /<content_mode>fresh<\/content_mode>/);
     assert.match(messages[1].content, /<target_characters>6200<\/target_characters>/);
+    assert.match(messages[1].content, /<characters usage="continuity-constraints" repetition_policy="do-not-restate">/);
+    assert.match(messages[1].content, /<name>林澈<\/name>[\s\S]*?<appearance_status>established<\/appearance_status>/);
+    assert.match(messages[1].content, /<name>顾屿<\/name>[\s\S]*?<appearance_status>first<\/appearance_status>/);
+    assert.match(messages[1].content, /<reference_notes>海港长大的冷静修理师。<\/reference_notes>/);
     assert.match(messages[1].content, /前序灯塔/);
     assert.match(messages[1].content, /当前码头/);
     assert.doesNotMatch(messages[1].content, /<chapter_outlines>/);
@@ -222,6 +273,12 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     const defaultLength = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content" } });
     assert.equal(defaultLength.response.status, 200, defaultLength.text);
     assert.match(modelServer.received.at(-1).body.messages[1].content, /<target_characters>5000<\/target_characters>/);
+
+    const overriddenAppearance = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", firstAppearanceCharacterIds: ["character-lin"] } });
+    assert.equal(overriddenAppearance.response.status, 200, overriddenAppearance.text);
+    const overriddenPrompt = modelServer.received.at(-1).body.messages[1].content;
+    assert.match(overriddenPrompt, /<name>林澈<\/name>[\s\S]*?<appearance_status>first<\/appearance_status>/);
+    assert.match(overriddenPrompt, /<name>顾屿<\/name>[\s\S]*?<appearance_status>established<\/appearance_status>/);
 
     const receivedBeforeInvalid = modelServer.received.length;
     for (const targetWords of [99, 100001, 12.5]) {
@@ -493,6 +550,9 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(task.timeoutMs, 5000);
     assert.equal(task.runnerId, "runner-test");
     assert.equal(task.leaseUntil, "2026-07-31T00:00:20.000Z");
+    const cancelled = await api("/api/ai/tasks/task-progress-metadata/cancel", { method: "POST" });
+    assert.equal(cancelled.response.status, 200, cancelled.text);
+    revision = cancelled.data.revision;
   });
 
   await t.test("makes task creation idempotent", async () => {
@@ -506,15 +566,18 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(second.data.data.prompt, "");
     assert.equal(second.data.data.contextOptions.targetWords, 6800);
     assert.equal(second.data.data.contextOptions.contentMode, "fresh");
+    assert.deepEqual(second.data.data.contextOptions.firstAppearanceCharacterIds, ["character-gu"]);
     assert.equal(second.data.revision, revisionAfterFirst, "duplicate must not write or advance revision");
-    revision = revisionAfterFirst;
+    const cancelled = await api(`/api/ai/tasks/${first.data.data.id}/cancel`, { method: "POST" });
+    assert.equal(cancelled.response.status, 200, cancelled.text);
+    revision = cancelled.data.revision;
   });
 
   await t.test("executes Generate on the local service and persists the result without a browser runner", async () => {
     const taskId = "server-executor-task";
     const created = await api("/api/ai/tasks", {
       method: "POST", headers: { "Idempotency-Key": taskId },
-      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "SERVER_EXECUTOR", targetWords: 5000, model: "捕获模型", modelId: "provider/gpt-4.1-mini" },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "SERVER_EXECUTOR", targetWords: 5000, model: "捕获模型", modelId: "provider/gpt-4.1-mini", firstAppearanceCharacterIds: ["character-lin"] },
     });
     assert.equal(created.response.status, 200, created.text);
     assert.equal(created.data.data.phase, "queued");
@@ -528,6 +591,8 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(task.attempt, 1);
     assert.ok(task.startedAt && task.completedAt && task.lastProgressAt);
     assert.equal(task.resultText, "模型生成正文");
+    assert.deepEqual(task.contextOptions.firstAppearanceCharacterIds, ["character-lin"]);
+    assert.match(modelServer.received.at(-1).body.messages[1].content, /<name>林澈<\/name>[\s\S]*?<appearance_status>first<\/appearance_status>/);
     const outline = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
     assert.equal(outline.versions[0].taskId, taskId);
     assert.equal(outline.versions[0].content, "模型生成正文");
@@ -535,6 +600,43 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(outline.versions[0].model, "捕获模型");
     assert.equal(outline.versions[0].modelId, "fake-model");
     assert.deepEqual(outline.versions[0].outlineSnapshot, { title: "当前码头", plan: "林澈与顾屿在七码头会合。" });
+    assert.equal(outline.sourceVersionId, outline.versions[0].id);
+    assert.equal(outline.contentOverride, false);
+    assert.equal(outline.contentName, outline.versions[0].name);
+    const currentBody = await api("/api/outlines/outline-current/content");
+    assert.equal(currentBody.data.data.text, "模型生成正文");
+  });
+
+  await t.test("backs up a direct current body before Generate replaces it", async () => {
+    const current = await api("/api/state");
+    const changed = structuredClone(current.data.data);
+    const outline = changed.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    outline.content = "生成任务完成前的直接正文";
+    outline.contentName = "直接正文";
+    outline.contentOverride = true;
+    const saved = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: changed } });
+    assert.equal(saved.response.status, 200, saved.text);
+
+    const taskId = "server-executor-backup-task";
+    const created = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "BACKUP_CURRENT_BODY", targetWords: 5000, model: "捕获模型" },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 200, executed.text);
+
+    const loaded = await api("/api/state");
+    revision = loaded.data.revision;
+    const persisted = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    const generated = persisted.versions.find((version) => version.taskId === taskId);
+    const backup = persisted.versions.find((version) => version.name.startsWith("AI Generate 前 · "));
+    assert.ok(generated);
+    assert.equal(persisted.sourceVersionId, generated.id);
+    assert.equal(persisted.contentOverride, false);
+    assert.equal(backup?.content, "生成任务完成前的直接正文");
+    assert.equal(backup?.source, "手动");
+    assert.equal(backup?.taskId, taskId);
   });
 
   await t.test("applies immutable versions and cascades character relationships", async () => {

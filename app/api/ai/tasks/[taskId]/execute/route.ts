@@ -2,7 +2,7 @@ import type { AiTask, StudioData, Version } from "@/app/studio-state";
 import { AiInputError, findModel, generateText } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
-import { aiGenerateContentName } from "@/lib/content-name.mjs";
+import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -59,6 +59,16 @@ export async function POST(_request: Request, context: RouteContext) {
       if (!task) return { changed: false, value: false };
       const leaseExpired = task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= Date.now());
       if (task.state !== "waiting" && !leaseExpired) return { changed: false, value: false };
+      if (task.target === "正文") {
+        const taskCreatedAt = new Date(task.createdAt).getTime();
+        const hasEarlierBodyTask = data.tasks.some((candidate) => candidate.id !== task.id
+          && candidate.outlineId === task.outlineId
+          && candidate.target === "正文"
+          && (candidate.state === "waiting" || candidate.state === "running")
+          && (new Date(candidate.createdAt).getTime() < taskCreatedAt
+            || (candidate.createdAt === task.createdAt && candidate.id < task.id)));
+        if (hasEarlierBodyTask) return { changed: false, value: false };
+      }
       if (leaseExpired && (task.attempt ?? 0) >= 3) {
         const completedAt = new Date().toISOString();
         Object.assign(task, { state: "failed", phase: "failed", completedAt, lastProgressAt: completedAt, error: "任务执行中断，重试次数已用尽", runnerId: undefined, leaseUntil: undefined } satisfies Partial<AiTask>);
@@ -125,6 +135,7 @@ export async function POST(_request: Request, context: RouteContext) {
             target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
             includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
             contentMode: initialTask.contextOptions?.contentMode,
+            firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
           }, upstreamController.signal);
           break;
         } catch (error) {
@@ -144,6 +155,8 @@ export async function POST(_request: Request, context: RouteContext) {
         task.phase = "saving";
         const found = findOutline(data, task.outlineId);
         if (task.target === "正文" && found) {
+          const completedAt = new Date().toISOString();
+          const previousOutlineSnapshot = { title: found.outline.title, plan: found.outline.plan };
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
           if (found.outline.titleGenerationPending && Array.from(generatedTitle).length >= 10 && Array.from(generatedTitle).length <= 20 && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
             found.outline.title = generatedTitle;
@@ -151,15 +164,30 @@ export async function POST(_request: Request, context: RouteContext) {
           }
           const version: Version = {
             id: `version-${crypto.randomUUID()}`,
-            name: aiGenerateContentName(model?.modelId ?? task.contextOptions?.modelId),
-            content: result.text, source: "AI Generate", createdAt: new Date().toISOString(), model: task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
+            name: aiGenerateContentName(model?.modelId ?? task.contextOptions?.modelId, completedAt),
+            content: result.text, source: "AI Generate", createdAt: completedAt, model: model?.name ?? task.contextOptions?.modelName ?? task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
             outlineSnapshot: {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
             },
           };
-          found.outline.versions.unshift(version);
+          const directContentBackup: Version | undefined = found.outline.contentOverride && found.outline.content.trim()
+            ? {
+                id: `version-${crypto.randomUUID()}`,
+                name: `AI Generate 前 · ${localTimestampContentName(completedAt)}`,
+                content: found.outline.content,
+                source: "手动",
+                createdAt: completedAt,
+                taskId: task.id,
+                outlineSnapshot: previousOutlineSnapshot,
+              }
+            : undefined;
+          found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
+          found.outline.contentName = version.name;
+          found.outline.contentOverride = false;
+          found.outline.sourceVersionId = version.id;
           found.outline.state = "saved";
+          found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;
         } else if (found) {
           found.outline.state = "saved";
@@ -171,7 +199,7 @@ export async function POST(_request: Request, context: RouteContext) {
             generatedOutlineTitle: result.outlineTitle,
           };
         }
-        const completedAt = new Date().toISOString();
+        const completedAt = task.target === "正文" && found ? found.outline.updatedAt : new Date().toISOString();
         Object.assign(task, {
           state: "success", phase: "completed", completedAt, lastProgressAt: completedAt,
           receivedCharacters: result.text.length, resultText: result.text, runnerId: undefined, leaseUntil: undefined, error: undefined,

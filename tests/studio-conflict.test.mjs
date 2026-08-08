@@ -15,7 +15,7 @@ function fixture() {
   };
 }
 
-test("rebases outline edits over AI heartbeats and generated candidates", () => {
+test("rebases outline edits over AI completion and accepts the generated current body", () => {
   const base = fixture();
   const local = structuredClone(base);
   local.articles[0].chapters[0].outlines[0].plan = "手机修改后的大纲";
@@ -30,6 +30,10 @@ test("rebases outline edits over AI heartbeats and generated candidates", () => 
   serverOutline.state = "saved";
   serverOutline.title = "模型生成的大纲标题";
   serverOutline.titleGenerationPending = false;
+  serverOutline.contentName = "AI 生成正文";
+  serverOutline.contentOverride = false;
+  serverOutline.sourceVersionId = "version-ai";
+  serverOutline.updatedAt = "server";
   serverOutline.versions = [{ id: "version-ai", source: "AI Generate", taskId: "task", content: "生成正文" }];
 
   const merged = mergeAiManagedConflict(base, local, server);
@@ -39,8 +43,70 @@ test("rebases outline edits over AI heartbeats and generated candidates", () => 
   assert.equal(outline.title, "", "a changed plan must still receive a fresh title later");
   assert.equal(outline.titleGenerationPending, true);
   assert.deepEqual(outline.versions.map((version) => version.id), ["version-ai"]);
+  assert.equal(outline.sourceVersionId, "version-ai");
+  assert.equal(outline.contentOverride, false);
   assert.equal(merged.tasks[0].state, "success");
   assert.equal(merged.currentOutlineId, "outline-local-selection");
+});
+
+test("keeps a locally edited current body while retaining a concurrently generated version", () => {
+  const base = fixture();
+  const local = structuredClone(base);
+  const localOutline = local.articles[0].chapters[0].outlines[0];
+  localOutline.content = "本机刚保存的正文";
+  localOutline.contentName = "本机正文";
+  localOutline.contentOverride = true;
+  localOutline.updatedAt = "local";
+
+  const server = structuredClone(base);
+  const serverOutline = server.articles[0].chapters[0].outlines[0];
+  server.tasks[0] = { ...server.tasks[0], state: "success", phase: "completed", resultVersionId: "version-ai" };
+  serverOutline.state = "saved";
+  serverOutline.contentName = "AI 生成正文";
+  serverOutline.contentOverride = false;
+  serverOutline.sourceVersionId = "version-ai";
+  serverOutline.updatedAt = "server";
+  serverOutline.versions = [{ id: "version-ai", source: "AI Generate", taskId: "task", content: "生成正文" }];
+
+  const merged = mergeAiManagedConflict(base, local, server);
+  assert.ok(merged);
+  const outline = merged.articles[0].chapters[0].outlines[0];
+  assert.equal(outline.content, "本机刚保存的正文");
+  assert.equal(outline.contentOverride, true);
+  assert.equal(outline.sourceVersionId, undefined);
+  assert.deepEqual(outline.versions.map((version) => version.id), ["version-ai"]);
+});
+
+test("automatically merges the server backup created for a direct current body", () => {
+  const base = fixture();
+  const baseOutline = base.articles[0].chapters[0].outlines[0];
+  baseOutline.content = "任务开始前的直接正文";
+  baseOutline.contentName = "直接正文";
+  baseOutline.contentOverride = true;
+
+  const local = structuredClone(base);
+  local.articles[0].chapters[0].outlines[0].plan = "本机修改后的大纲";
+  local.articles[0].chapters[0].outlines[0].updatedAt = "local";
+
+  const server = structuredClone(base);
+  const serverOutline = server.articles[0].chapters[0].outlines[0];
+  server.tasks[0] = { ...server.tasks[0], state: "success", phase: "completed", resultVersionId: "version-ai" };
+  serverOutline.state = "saved";
+  serverOutline.contentName = "AI 生成正文";
+  serverOutline.contentOverride = false;
+  serverOutline.sourceVersionId = "version-ai";
+  serverOutline.updatedAt = "server";
+  serverOutline.versions = [
+    { id: "version-ai", source: "AI Generate", taskId: "task", content: "生成正文" },
+    { id: "version-backup", name: "AI Generate 前 · 2026-01-01 00:00:00", source: "手动", taskId: "task", content: "任务开始前的直接正文" },
+  ];
+
+  const merged = mergeAiManagedConflict(base, local, server);
+  assert.ok(merged);
+  const outline = merged.articles[0].chapters[0].outlines[0];
+  assert.equal(outline.plan, "本机修改后的大纲");
+  assert.equal(outline.sourceVersionId, "version-ai");
+  assert.deepEqual(outline.versions.map((version) => version.id), ["version-ai", "version-backup"]);
 });
 
 test("keeps a genuine same-data conflict for explicit user resolution", () => {

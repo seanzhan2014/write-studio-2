@@ -41,9 +41,31 @@ export type SelectedAiContext = {
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
   previousContentTail: string;
   chapterOutlines: Array<{ id: string; title: string; plan: string }>;
-  characters: Array<{ id: string; name: string; aliases: string[]; description: string }>;
+  characters: Array<{ id: string; name: string; aliases: string[]; description: string; appearanceStatus?: "first" | "established" }>;
   relationships: Array<{ characterA: string; characterB: string; description: string }>;
   recentMessages: ContextMessage[];
+};
+
+export type AiContextOptions = {
+  includePrevious?: boolean;
+  includeCharacters?: boolean;
+  sessionId?: string;
+  contentMode?: ContentGenerationMode;
+  instruction?: string;
+  currentPlan?: string;
+  firstAppearanceCharacterIds?: string[];
+};
+
+export type FirstAppearanceSuggestion = {
+  characterId: string;
+  name: string;
+  aliases: string[];
+  firstAppearance: boolean;
+  previousMatch?: {
+    outlineId: string;
+    outlineTitle: string;
+    matchedReference: string;
+  };
 };
 
 export type AiContextSummary = {
@@ -79,7 +101,43 @@ function matchesCharacterReference(searchable: string, name: string) {
   return searchable.toLocaleLowerCase().includes(candidate.toLocaleLowerCase());
 }
 
-export function selectAiContext(data: AiContextData, outlineId: string, kind: AiContextKind, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; contentMode?: ContentGenerationMode } = {}): SelectedAiContext {
+function matchedCharacterReference(searchable: string, character: ContextCharacter) {
+  return [character.name, ...character.aliases].find((name) => matchesCharacterReference(searchable, name));
+}
+
+export function detectFirstAppearanceCharacters(data: AiContextData, outlineId: string, options: { instruction?: string; currentPlan?: string } = {}): FirstAppearanceSuggestion[] {
+  const article = data.articles.find((candidate) => candidate.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === outlineId)));
+  const chapter = article?.chapters.find((candidate) => candidate.outlines.some((outline) => outline.id === outlineId));
+  const outline = chapter?.outlines.find((candidate) => candidate.id === outlineId);
+  if (!article || !chapter || !outline || chapter.archived || outline.archived) return [];
+
+  const visibleOutlines = article.chapters
+    .filter((candidate) => !candidate.archived)
+    .flatMap((candidate) => candidate.outlines.filter((item) => !item.archived));
+  const currentIndex = visibleOutlines.findIndex((candidate) => candidate.id === outline.id);
+  if (currentIndex < 0) return [];
+
+  const currentPlan = options.currentPlan ?? outline.plan;
+  const currentSearchable = `${outlineDisplayTitle({ ...outline, plan: currentPlan })}\n${currentPlan}\n${String(options.instruction ?? "")}`;
+  const previousOutlines = visibleOutlines.slice(0, currentIndex);
+  return article.characters.filter((character) => !character.archived && Boolean(matchedCharacterReference(currentSearchable, character))).map((character) => {
+    for (const previous of previousOutlines) {
+      const matchedReference = matchedCharacterReference(`${outlineDisplayTitle(previous)}\n${previous.plan}`, character);
+      if (matchedReference) {
+        return {
+          characterId: character.id,
+          name: character.name,
+          aliases: [...character.aliases],
+          firstAppearance: false,
+          previousMatch: { outlineId: previous.id, outlineTitle: outlineDisplayTitle(previous), matchedReference },
+        };
+      }
+    }
+    return { characterId: character.id, name: character.name, aliases: [...character.aliases], firstAppearance: true };
+  });
+}
+
+export function selectAiContext(data: AiContextData, outlineId: string, kind: AiContextKind, options: AiContextOptions = {}): SelectedAiContext {
   const article = data.articles.find((candidate) => candidate.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === outlineId)));
   if (!article) throw new AiContextSelectionError("大纲不存在", "not_found");
   const chapter = article.chapters.find((candidate) => candidate.outlines.some((outline) => outline.id === outlineId));
@@ -98,8 +156,15 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
   const contentMode = normalizeContentGenerationMode(options.contentMode);
   const includeCurrentContent = kind === "chat" || (kind === "content" && contentMode !== "fresh");
   const currentContent = includeCurrentContent ? resolvedOutlineContent(outline) : "";
-  const searchable = `${outlineDisplayTitle(outline)}\n${outline.plan}\n${currentContent}`;
-  const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : article.characters.filter((person) => !person.archived && [person.name, ...person.aliases].some((name) => matchesCharacterReference(searchable, name)));
+  const currentPlan = options.currentPlan ?? outline.plan;
+  const searchable = `${outlineDisplayTitle({ ...outline, plan: currentPlan })}\n${currentPlan}\n${currentContent}\n${String(options.instruction ?? "")}`;
+  const hasExplicitFirstAppearances = Array.isArray(options.firstAppearanceCharacterIds);
+  const firstAppearanceIds = new Set(hasExplicitFirstAppearances
+    ? options.firstAppearanceCharacterIds.filter((id): id is string => typeof id === "string")
+    : kind === "content"
+      ? detectFirstAppearanceCharacters(data, outlineId, { instruction: options.instruction, currentPlan }).filter((item) => item.firstAppearance).map((item) => item.characterId)
+      : []);
+  const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : article.characters.filter((person) => !person.archived && (firstAppearanceIds.has(person.id) || Boolean(matchedCharacterReference(searchable, person))));
   const characterIds = new Set(matchedCharacters.map((person) => person.id));
   const characterNames = new Map(matchedCharacters.map((person) => [person.id, person.name]));
   const activeSession = outline.chat.sessions.find((session) => session.id === (options.sessionId || outline.chat.activeSessionId)) ?? outline.chat.sessions[0];
@@ -118,7 +183,10 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
     previousOutlines: kind === "chapter-title" ? [] : previous.map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })),
     previousContentTail: kind === "content" && previousOutline ? resolvedOutlineContent(previousOutline).slice(-3000) : "",
     chapterOutlines: kind === "chapter-title" ? chapter.outlines.filter((item) => !item.archived).map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })) : [],
-    characters: matchedCharacters.map((person) => ({ id: person.id, name: person.name, aliases: [...person.aliases], description: person.description })),
+    characters: matchedCharacters.map((person) => ({
+      id: person.id, name: person.name, aliases: [...person.aliases], description: person.description,
+      appearanceStatus: kind === "content" ? firstAppearanceIds.has(person.id) ? "first" : "established" : undefined,
+    })),
     relationships: article.relationships
       .filter((relationship) => characterIds.has(relationship.characterAId) && characterIds.has(relationship.characterBId))
       .map((relationship) => ({ characterA: characterNames.get(relationship.characterAId) ?? "", characterB: characterNames.get(relationship.characterBId) ?? "", description: relationship.description })),

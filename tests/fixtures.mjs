@@ -49,7 +49,7 @@ export function fullStudioFixture() {
     settings: {
       theme: "light", editorFont: "sans", fontSize: 17, lineHeight: 1.8, contentWidth: 920,
       outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2,
-      chatModel: "", generateModel: "",
+      chatModel: "", generateModel: "", reviewModel: "",
     },
   };
 }

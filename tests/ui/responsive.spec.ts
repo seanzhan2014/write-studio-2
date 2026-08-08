@@ -60,8 +60,19 @@ test("model settings uses a viewport-safe editor and fetches models on mobile", 
     await expect(fetchModels).toContainText("Fetch 模型列表");
   }
   await fetchModels.click();
-  await expect(page.getByLabel("选择获取到的大模型")).toBeVisible();
-  await expect(page.getByLabel("选择获取到的大模型")).toHaveValue("writer-fast");
+  const discovered = page.getByLabel("选择获取到的大模型");
+  await expect(discovered).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("writer-fast", { exact: true })).toBeVisible();
+  await discovered.click();
+  await page.getByRole("option", { name: "writer-large", exact: true }).click();
+  await expect(page.getByLabel("模型 ID")).toHaveValue("writer-fast, writer-large");
+  await discovered.click();
+  for (const name of ["writer-fast", "writer-large"]) {
+    const option = page.getByRole("option", { name, exact: true });
+    await expect(option).toHaveAttribute("aria-selected", "true");
+    await expect(option.locator("svg")).toHaveCount(1);
+  }
+  await expect(page.getByRole("button", { name: "保存 2 个候选" })).toBeVisible();
 
   const bounds = await page.getByRole("dialog").boundingBox();
   const viewport = page.viewportSize()!;
@@ -72,6 +83,47 @@ test("model settings uses a viewport-safe editor and fetches models on mobile", 
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
 });
 
+test("model candidates can be assigned as independent task defaults", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop model settings");
+  await page.route("**/api/models/discover", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: ["deepseek-chat", "deepseek-reasoner", "writer-large"] }) });
+  });
+  await page.route("**/api/models", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ models: [
+        { id: "deepseek-candidate", name: "DeepSeek", baseUrl: "https://models.example/v1", modelId: "deepseek-chat", systemPrompt: "", hasSecret: true, timeoutMs: 120000 },
+        { id: "writer-candidate", name: "Writer", baseUrl: "https://models.example/v1", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000 },
+      ] }),
+    });
+  });
+  await page.goto("/settings/models");
+  const deepseek = page.locator(".model-card").filter({ hasText: "DeepSeek" });
+  const writer = page.locator(".model-card").filter({ hasText: "Writer" });
+  await deepseek.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "设为 Chat 默认" }).click();
+  await deepseek.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "设为 Review 默认" }).click();
+  await writer.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("menuitem", { name: "设为 Generate 默认" }).click();
+  await expect(deepseek).toContainText("默认 AI Chat");
+  await expect(deepseek).toContainText("默认 AI Review");
+  await expect(writer).toContainText("默认 AI Generate");
+
+  await deepseek.getByRole("button", { name: "编辑" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Fetch 模型列表" }).click();
+  const candidates = dialog.getByLabel("选择获取到的大模型");
+  await expect(candidates).toBeVisible();
+  await expect(dialog).toContainText("只有这里勾选并保存的候选才会出现在 AI Chat、Generate 和 Review 中");
+  await candidates.click();
+  await page.getByRole("option", { name: "deepseek-reasoner", exact: true }).click();
+  await expect(dialog.getByLabel("模型 ID")).toHaveValue("deepseek-chat, writer-large, deepseek-reasoner");
+  await expect(dialog.getByRole("button", { name: "保存候选配置" })).toBeVisible();
+});
+
 test("generate controls and context drawer fit the desktop viewport", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
@@ -80,6 +132,19 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   await expect(page.getByRole("radio", { name: /改写正文/ })).toBeDisabled();
   await expect(page.getByRole("radio", { name: /续写正文/ })).toBeDisabled();
   await expect(page.getByText("补充指令（可选）", { exact: false })).toBeVisible();
+  const firstAppearance = page.getByLabel("首次出场人物");
+  await expect(firstAppearance).toContainText("顾屿");
+  await expect(firstAppearance).not.toContainText("林澈");
+  await firstAppearance.getByRole("button", { name: "编辑" }).click();
+  const appearanceDialog = page.getByRole("dialog").filter({ hasText: "首次出场人物" });
+  await expect(appearanceDialog.getByLabel("顾屿首次出场")).toBeChecked();
+  await expect(appearanceDialog.getByLabel("林澈首次出场")).not.toBeChecked();
+  await expect(appearanceDialog).toContainText("此前在「前序灯塔」匹配“林澈”");
+  await appearanceDialog.getByLabel("林澈首次出场").check();
+  await appearanceDialog.getByLabel("顾屿首次出场").uncheck();
+  await appearanceDialog.getByRole("button", { name: "完成" }).click();
+  await expect(firstAppearance).toContainText("林澈");
+  await expect(firstAppearance).not.toContainText("顾屿");
   await page.locator(".generate-context-summary").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText("本次生成上下文", { exact: true })).toBeVisible();
@@ -92,7 +157,27 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test("AI Generate shows the configured model name and id suffix", async ({ page, request }) => {
+test("first appearance editor is usable on mobile", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const firstAppearance = page.getByLabel("首次出场人物");
+  await expect(firstAppearance).toContainText("顾屿");
+  await firstAppearance.getByRole("button", { name: "编辑" }).click();
+  const dialog = page.getByRole("dialog").filter({ hasText: "首次出场人物" });
+  await expect(dialog).toBeVisible();
+  const bounds = await dialog.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+  await dialog.getByLabel("顾屿首次出场").uncheck();
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect(firstAppearance).toContainText("未推测到首次出场人物");
+});
+
+test("AI Generate shows the configured model and no longer lists candidate bodies", async ({ page, request }) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
       status: 200,
@@ -120,7 +205,9 @@ test("AI Generate shows the configured model name and id suffix", async ({ page,
   await expect(page.getByRole("option", { name: "Remote Writer gpt-4.2-current" })).toBeVisible();
   await page.getByRole("option", { name: "Remote Writer gpt-4.2-current" }).click();
   await expect(model).toHaveValue("Remote Writer gpt-4.2-current");
-  await expect(page.locator(".candidate-card").first()).toContainText("Remote Writer gpt-4.1-mini");
+  await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".candidate-card")).toHaveCount(0);
+  await expect(page.getByText("任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。", { exact: true })).toBeVisible();
 });
 
 test("desktop writing menu can save the current body as a named version", async ({ page, request }, testInfo) => {
@@ -223,6 +310,13 @@ test("desktop version chooser previews the selected body and can set it as defau
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByRole("button", { name: "版本", exact: true }).click();
+  const [bodyBounds, versionBounds] = await Promise.all([
+    page.locator(".writing-canvas").boundingBox(),
+    page.locator(".version-drawer-shell").boundingBox(),
+  ]);
+  expect(bodyBounds).not.toBeNull();
+  expect(versionBounds).not.toBeNull();
+  expect(Math.abs(versionBounds!.width - bodyBounds!.width)).toBeLessThanOrEqual(1);
   const candidate = page.locator(".version-list article").filter({ hasText: "手动快照" });
   await candidate.locator(".version-preview-main").click();
   await expect(page.getByRole("dialog")).toBeVisible();
@@ -567,6 +661,12 @@ test("AI tasks are ordered by submission time regardless of status", async ({ pa
   expect(actionsBox!.y + actionsBox!.height).toBeLessThanOrEqual(viewport!.height + 1);
   await expect(page).not.toHaveURL(/settings\/models/);
   await page.getByRole("button", { name: "返回任务列表" }).click();
+  const completedBodyTask = page.locator(".task-card").filter({ hasText: "中间提交的成功任务" });
+  await expect(completedBodyTask.getByRole("button", { name: "应用结果" })).toHaveCount(0);
+  await completedBodyTask.getByRole("button", { name: "打开", exact: true }).click();
+  await expect(page.getByRole("button", { name: "打开当前正文" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "应用结果" })).toHaveCount(0);
+  await page.getByRole("button", { name: "返回任务列表" }).click();
   await page.getByRole("button", { name: "清空已完成 (1)" }).click();
   await expect(page.locator(".task-card blockquote")).toHaveText([
     "最新提交的取消任务",
@@ -677,7 +777,7 @@ test("AI Chat displays the selected model id as the assistant name", async ({ pa
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   const model = page.getByLabel("聊天模型");
   await expect(model).toBeVisible();
-  await model.selectOption("Remote Writer");
+  await model.selectOption("model-remote");
   await expect(page.locator(".message.assistant .message-meta strong").first()).toHaveText("gpt-4.1-mini");
 });
 
@@ -836,6 +936,21 @@ test("mobile writing view previews a selected version and explicitly saves or di
   expect(readerBounds).not.toBeNull();
   expect(readerBounds!.height).toBeGreaterThan(450);
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
+  const headingName = page.locator(".editor-heading > span").first();
+  await headingName.evaluate((element) => { element.textContent = "这是一个用于验证手机端按钮不会被压缩变形的非常长的正文名称"; });
+  const headingLayout = await page.locator(".editor-heading").evaluate((element) => {
+    const title = element.querySelector(":scope > span") as HTMLElement;
+    const actions = element.querySelector(":scope > div") as HTMLElement;
+    const buttons = Array.from(actions.querySelectorAll("button")) as HTMLElement[];
+    return {
+      titleTruncated: title.scrollWidth > title.clientWidth,
+      actionsShrink: getComputedStyle(actions).flexShrink,
+      buttonShrink: buttons.map((button) => getComputedStyle(button).flexShrink),
+    };
+  });
+  expect(headingLayout.titleTruncated).toBe(true);
+  expect(headingLayout.actionsShrink).toBe("0");
+  expect(headingLayout.buttonShrink.every((value) => value === "0")).toBe(true);
 
   await page.getByRole("button", { name: "选择正文版本" }).click();
   await expect(page.getByText("正文版本", { exact: true })).toBeVisible();

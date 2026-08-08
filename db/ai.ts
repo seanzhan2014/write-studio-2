@@ -1,5 +1,5 @@
 import { ensureDatabase, getD1, readStudioState } from "./runtime";
-import { AiContextSelectionError, selectAiContext, type AiContextKind, type SelectedAiContext } from "../lib/ai-context";
+import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
 import { applyReviewEdits, createReviewBlocks, parseReviewResponse, reviewSourceDigest, type ReviewOutlineSource } from "../lib/ai-review.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGenerateTargetWords, type ContentGenerationMode } from "../lib/generate-options";
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "../lib/review-options";
@@ -89,7 +89,70 @@ export async function listModels() {
 
 export async function findModel(reference?: string) {
   const models = await listModels();
-  return models.find((model) => model.id === reference || model.name === reference) ?? models[0] ?? null;
+  const normalized = String(reference ?? "").trim();
+  if (!normalized) return null;
+  return models.find((model) => model.id === normalized || model.name === normalized) ?? null;
+}
+
+function modelNameSuffix(value: string) {
+  const normalized = value.trim();
+  const slash = normalized.lastIndexOf("/");
+  return (slash >= 0 ? normalized.slice(slash + 1) : normalized) || normalized;
+}
+
+export async function createModels(input: {
+  name?: unknown;
+  appendModelIdToName?: unknown;
+  baseUrl?: unknown;
+  existingModelId?: unknown;
+  modelIds?: unknown;
+  secret?: unknown;
+  systemPrompt?: unknown;
+  temperature?: unknown;
+  maxOutput?: unknown;
+  timeoutMs?: unknown;
+}) {
+  const requestedIds = Array.isArray(input.modelIds)
+    ? [...new Set(input.modelIds.map((value) => String(value).trim().slice(0, 300)).filter(Boolean))]
+    : [];
+  if (!requestedIds.length) throw new Error("请至少选择一个模型");
+  if (requestedIds.length > 100) throw new Error("一次最多保存 100 个模型");
+
+  const existingModelId = String(input.existingModelId ?? "").trim();
+  const sourceModel = existingModelId ? await findModel(existingModelId) : null;
+  if (existingModelId && (!sourceModel || sourceModel.id !== existingModelId)) throw new Error("用于复用配置的模型不存在");
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? sourceModel?.baseUrl ?? "https://api.openai.com/v1"));
+  const existing = await listModels();
+  const existingKeys = new Set(existing.map((model) => `${model.baseUrl}\n${model.modelId}`));
+  const skippedModelIds = requestedIds.filter((modelId) => existingKeys.has(`${baseUrl}\n${modelId}`));
+  const modelIds = requestedIds.filter((modelId) => !existingKeys.has(`${baseUrl}\n${modelId}`));
+  if (!modelIds.length) return { models: [] as AiModelRecord[], skippedModelIds };
+
+  const now = new Date().toISOString();
+  const prefix = String(input.name ?? "").trim().slice(0, 80);
+  const appendModelIdToName = Boolean(input.appendModelIdToName);
+  const systemPrompt = String(input.systemPrompt ?? "").slice(0, 20000);
+  const temperature = input.temperature == null ? null : boundedNumber(input.temperature, 1, 0, 2);
+  const maxOutput = input.maxOutput == null ? null : boundedNumber(input.maxOutput, 4096, 1, 1000000);
+  const timeoutMs = boundedNumber(input.timeoutMs, 120000, 5000, 600000);
+  const secret = String(input.secret ?? "").trim() || (sourceModel ? await readModelSecret(sourceModel.id) : "");
+  const storedSecret = secret ? await encryptSecret(secret) : null;
+  const models: AiModelRecord[] = modelIds.map((modelId) => ({
+    id: crypto.randomUUID(),
+    name: (modelIds.length === 1 && prefix && !appendModelIdToName ? prefix : prefix ? `${prefix} · ${modelNameSuffix(modelId)}` : modelNameSuffix(modelId)).slice(0, 80),
+    baseUrl,
+    modelId,
+    systemPrompt,
+    temperature,
+    maxOutput,
+    timeoutMs,
+    hasSecret: Boolean(storedSecret),
+    createdAt: now,
+    updatedAt: now,
+  }));
+  await getD1().batch(models.map((model) => getD1().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.timeoutMs, model.hasSecret ? 1 : 0, storedSecret, now, now)));
+  return { models, skippedModelIds };
 }
 
 export async function createModel(input: Partial<AiModelRecord>) {
@@ -276,7 +339,8 @@ const GENERATE_SYSTEM_PROMPTS: Record<GenerateTarget, string> = {
    - fresh：独立生成完整正文；请求中不会提供 current_content，不得假装看过旧正文。
    - rewrite：以 current_content 为原稿，返回完整的改写后正文；不得只返回修改片段，也不得原样照抄。
    - continue：把 current_content 视为已经完成的正文，只返回应追加在其后的新正文，不得重复已有正文；系统会在保存前完成拼接。
-6. fresh 和 rewrite 的输出长度尽量接近 target_characters；continue 的新增正文长度尽量接近 target_characters。允许为完整收束自然浮动。`,
+6. fresh 和 rewrite 的输出长度尽量接近 target_characters；continue 的新增正文长度尽量接近 target_characters。允许为完整收束自然浮动。
+7. 人物资料是连续性约束，不是需要逐项写入正文的描写清单。仅当人物的 appearance_status 为 first 时，才把当前段落视为该人物的首次出场，并且只自然建立当前场景需要的少量特征；appearance_status 为 established 时不得重新介绍人物。已经建立且没有新变化的外貌、伤痕、服饰、性格标签、身份和身世，不得因人物再次出场、说话或行动而复述或同义改写。优先使用姓名、代词和当前动作自然承接，避免用固定特征反复代称人物。特征变化只以当前大纲、当前请求或 current_content 明确提供的信息为准，不得自行把换一种说法视为变化。`,
   outline: `你是 Writer Studio 的大纲规划助手。
 
 不可覆盖的产品规则：
@@ -340,7 +404,7 @@ export class AiInputError extends Error {
   }
 }
 
-async function selectPromptContext(outlineId: string, kind: AiContextKind, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; contentMode?: ContentGenerationMode } = {}) {
+async function selectPromptContext(outlineId: string, kind: AiContextKind, options: AiContextOptions = {}) {
   const { data } = await readStudioState();
   if (!data) throw new AiInputError("没有可用文章");
   try {
@@ -359,11 +423,16 @@ type PromptSource = SelectedAiContext;
 
 function renderPeople(source: PromptSource, descriptions: string[]) {
   if (!source.characters.length) return "";
-  const characters = source.characters.map((person, index) => `<character>\n${xmlElement("name", person.name)}\n${xmlElement("aliases", person.aliases.join("、"))}\n${xmlElement("description", descriptions[index])}\n</character>`).join("\n");
+  const characters = source.characters.map((person, index) => `<character>\n${[
+    xmlElement("name", person.name),
+    xmlElement("aliases", person.aliases.join("、")),
+    person.appearanceStatus ? xmlElement("appearance_status", person.appearanceStatus) : "",
+    xmlElement("reference_notes", descriptions[index]),
+  ].filter(Boolean).join("\n")}\n</character>`).join("\n");
   const relationships = source.relationships.map((relationship) => {
-    return `<relationship>\n${xmlElement("characters", `${relationship.characterA} ↔ ${relationship.characterB}`)}\n${xmlElement("description", relationship.description)}\n</relationship>`;
+    return `<relationship>\n${xmlElement("characters", `${relationship.characterA} ↔ ${relationship.characterB}`)}\n${xmlElement("reference_notes", relationship.description)}\n</relationship>`;
   }).join("\n");
-  return `<characters>\n${characters}${relationships ? `\n<relationships>\n${relationships}\n</relationships>` : ""}\n</characters>`;
+  return `<characters usage="continuity-constraints" repetition_policy="do-not-restate">\n${characters}${relationships ? `\n<relationships>\n${relationships}\n</relationships>` : ""}\n</characters>`;
 }
 
 function renderPrevious(previous: Array<{ title: string; plan: string }>) {
@@ -482,9 +551,9 @@ function generatePrompt(source: PromptSource, instruction: string, target: Gener
   };
 }
 
-export async function buildContext(outlineId: string, instruction: string, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; target?: GenerateTarget; targetWords?: number; contentMode?: ContentGenerationMode } = {}) {
+export async function buildContext(outlineId: string, instruction: string, options: { includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; target?: GenerateTarget; targetWords?: number; contentMode?: ContentGenerationMode; firstAppearanceCharacterIds?: string[] } = {}) {
   const target = options.target ?? "content";
-  const source = await selectPromptContext(outlineId, target, options);
+  const source = await selectPromptContext(outlineId, target, { ...options, instruction });
   const system = GENERATE_SYSTEM_PROMPTS[target];
   const prompt = generatePrompt(source, instruction, target, system, options.targetWords, normalizeContentGenerationMode(options.contentMode));
   return { article: source.article, chapter: source.currentChapter, outline: source.currentOutline, previousCount: source.previousOutlines.length, people: source.characters.map((item) => item.name), text: prompt.context, characters: prompt.context.length };
@@ -527,7 +596,7 @@ function normalizeGenerateResult(target: GenerateTarget, value: string, includeO
   return outlineTitle ? { text, outlineTitle } : { text };
 }
 
-export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; targetWords?: number; contentMode?: ContentGenerationMode }, signal?: AbortSignal) {
+export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; targetWords?: number; contentMode?: ContentGenerationMode; firstAppearanceCharacterIds?: string[] }, signal?: AbortSignal) {
   const contentMode = normalizeContentGenerationMode(input.contentMode);
   const source = await selectPromptContext(input.outlineId, input.target, input);
   const instruction = String(input.instruction ?? "").trim();
@@ -537,6 +606,7 @@ export async function generateText(input: { outlineId: string; instruction?: str
   }
   const includeOutlineTitle = input.target === "outline" || (input.target === "content" && source.currentOutline.titleGenerationPending);
   const model = await findModel(input.model);
+  if (input.model && !model) throw new AiInputError("所选模型不存在，请重新选择");
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, targetWords, includeOutlineTitle, contentMode);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle);
   const prompt = generatePrompt(source, instruction, input.target, system, targetWords, contentMode);
@@ -708,6 +778,7 @@ function localGenerate(target: GenerateTarget, title: string, plan: string, cont
 export async function streamChat(input: { outlineId: string; message: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string }, signal?: AbortSignal) {
   const source = await selectPromptContext(input.outlineId, "chat", input);
   const model = await findModel(input.model);
+  if (input.model && !model) throw new AiInputError("所选聊天模型不存在，请重新选择");
   if (!model) {
     const answer = `我参考了当前大纲、${source.previousOutlines.length} 条相关前文结构${source.characters.length ? `，并匹配到人物 ${source.characters.map((item) => item.name).join("、")}` : ""}。当前段落已经承接已有线索，建议把角色此刻必须行动的原因再明确一拍：先确认一个无法回避的事实，再作出选择，让冲突自然升级。`;
     return plainTextStream(answer, signal);
