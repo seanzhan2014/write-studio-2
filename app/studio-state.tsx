@@ -3,11 +3,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, type ContentGenerationMode } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
+import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
+import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { mergeAiManagedConflict } from "./studio-conflict.mjs";
-import { moveOutlineBetweenChapters, moveOutlineToChapterEnd, type OutlinePlacement } from "./outline-order.mjs";
+import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
+
+type OutlinePlacement = "before" | "after";
 
 export type Message = {
   id: string;
@@ -43,6 +47,7 @@ export type Version = {
     title: string;
     plan: string;
   };
+  excellentFragments?: ExcellentFragment[];
 };
 
 export type Outline = {
@@ -57,6 +62,7 @@ export type Outline = {
   state: "saved" | "running" | "failed";
   updatedAt: string;
   sourceVersionId?: string;
+  excellentFragments?: ExcellentFragment[];
   versions: Version[];
   chat: {
     sessions: ChatSession[];
@@ -92,6 +98,8 @@ export type Article = {
   summary: string;
   type: string;
   style: string;
+  chapterNaming: NamingProfile;
+  outlineNaming: NamingProfile;
   createdAt: string;
   updatedAt: string;
   lastOutlineId: string;
@@ -135,10 +143,16 @@ export type AiTask = {
     modelId?: string;
     modelName?: string;
     generatedOutlineTitle?: string;
+    generatedOutlineTitleError?: string;
+    includeOutlineTitle?: boolean;
     sessionId?: string;
     firstAppearanceCharacterIds?: string[];
+    includeExcellentFragments?: boolean;
+    excellentFragmentIds?: string[];
   };
 };
+
+export type { ExcellentFragment };
 
 export type StudioSettings = {
   theme: "light" | "dark" | "system";
@@ -152,6 +166,8 @@ export type StudioSettings = {
   taskConcurrency: number;
   chatModel: string;
   generateModel: string;
+  namingModelMode: "inherit" | "fixed";
+  namingModel: string;
   reviewModel: string;
   generateTargetWords: number;
   generatePresets: string[];
@@ -188,7 +204,7 @@ function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"]
 }
 
 function outline(id: string, title: string, plan: string, content: string, state: Outline["state"] = "saved"): Outline {
-  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, content, contentName: timestampContentName(now), state, archived: false, updatedAt: now, versions: [], chat: emptyChat(id) };
+  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, content, contentName: timestampContentName(now), state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
 }
 
 const openingContent = "雨从凌晨开始落，到清晨也没有停下来的意思。\n\n林澈推开修理铺的百叶门时，海风正沿着旧街一路灌进来，带着盐、铁锈和昨夜没有散尽的雾。门后的铜铃只响了半声，像被谁在梦里按住。\n\n工作台上多了一封信。\n\n信封是最普通的牛皮纸，边缘却被海水泡得发白。她翻到背面，没有邮票，也没有寄件人的名字，只有一行熟悉得让她停住呼吸的字：给二〇三三年的林澈。\n\n那是她自己的笔迹。\n\n她没有立刻拆开。墙上的挂钟走到八点十七分，老旧的秒针轻轻颤了一下。远处，港口的雾笛在看不见的海面上响起，低沉得像某种迟到了很多年的回答。";
@@ -220,6 +236,8 @@ const seedData: StudioData = {
       summary: "林澈收到一封来自七年后的信。为了弄清寄信人，她回到停用的旧码头，也重新遇见了那个本应消失的人。",
       type: "近未来悬疑",
       style: "克制、写实，重视环境细节",
+      chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
+      outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-07-12T09:00:00.000Z",
       updatedAt: now,
       lastOutlineId: "outline-1",
@@ -267,6 +285,8 @@ const seedData: StudioData = {
       summary: "关于旧城街巷与家庭记忆的短篇集。",
       type: "现实题材",
       style: "温柔、含蓄",
+      chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
+      outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-06-02T09:00:00.000Z",
       updatedAt: "2026-07-20T12:00:00.000Z",
       lastOutlineId: "south-outline-1",
@@ -280,6 +300,8 @@ const seedData: StudioData = {
       summary: "一段发生在海边小镇的成长故事。",
       type: "青春小说",
       style: "明亮、松弛",
+      chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
+      outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-05-18T09:00:00.000Z",
       updatedAt: "2026-07-18T12:00:00.000Z",
       lastOutlineId: "summer-outline-1",
@@ -304,6 +326,8 @@ const seedData: StudioData = {
     taskConcurrency: 2,
     chatModel: "快速对话模型",
     generateModel: "",
+    namingModelMode: "inherit",
+    namingModel: "",
     reviewModel: "",
     generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS,
     generatePresets: [],
@@ -323,10 +347,11 @@ type StudioContextValue = {
   setCurrentArticle: (articleId: string) => void;
   setCurrentOutline: (outlineId: string) => void;
   createArticle: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => string;
-  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style">>) => void;
+  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "chapterNaming" | "outlineNaming">>) => void;
   deleteArticle: (articleId: string) => void;
   createChapter: (title?: string) => string;
   updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived">>) => void;
+  applyGeneratedNames: (chapterId: string, chapterTitle: string | undefined, outlineTitles: Array<{ id: string; title: string }>) => void;
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
@@ -334,14 +359,15 @@ type StudioContextValue = {
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
-  saveCurrentContent: (outlineId: string, text: string) => Promise<boolean>;
+  saveCurrentContent: (outlineId: string, text: string, sourceVersionId?: string) => Promise<boolean>;
   commitContentEdit: (outlineId: string, text: string) => Promise<boolean>;
   preserveContentDraft: (outlineId: string, text: string, savedAt?: string) => Promise<boolean>;
   moveOutline: (sourceId: string, targetId: string, placement: OutlinePlacement) => void;
   moveOutlineToChapter: (outlineId: string, chapterId: string) => void;
   copyOutline: (outlineId: string) => string | null;
   deleteOutline: (outlineId: string) => void;
-  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot">) => string;
+  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot" | "excellentFragments">) => string;
+  toggleExcellentFragment: (outlineId: string, versionId: string | undefined, start: number, end: number) => "added" | "removed" | "none";
   setDefaultVersion: (outlineId: string, versionId?: string) => void;
   applyVersion: (outlineId: string, versionId: string) => void;
   applyVersionWithBackup: (outlineId: string, versionId: string) => string | null;
@@ -397,6 +423,12 @@ function firstOutline(article: Article) {
   return article.chapters.flatMap((chapter) => chapter.outlines).find((item) => !item.archived)?.id ?? article.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
 }
 
+function activeExcellentFragments(outline: Outline) {
+  if (outline.contentOverride) return normalizeExcellentFragments(outline.content, outline.excellentFragments);
+  const version = outline.versions.find((item) => item.id === outline.sourceVersionId);
+  return version ? normalizeExcellentFragments(version.content, version.excellentFragments) : [];
+}
+
 function normalizeCharacter(source: unknown): Character {
   const item = source as Partial<Character> & Record<string, unknown>;
   const legacyDescription = [item.role, item.appearance, item.personality, item.abilities, item.background]
@@ -422,6 +454,10 @@ function normalizeAiTask(task: AiTask): AiTask {
       firstAppearanceCharacterIds: Array.isArray(task.contextOptions.firstAppearanceCharacterIds)
         ? [...new Set(task.contextOptions.firstAppearanceCharacterIds.map(String))].slice(0, 200)
         : undefined,
+      includeExcellentFragments: task.contextOptions.includeExcellentFragments === true,
+      excellentFragmentIds: Array.isArray(task.contextOptions.excellentFragmentIds)
+        ? [...new Set(task.contextOptions.excellentFragmentIds.map(String))].slice(0, 200)
+        : undefined,
     } : task.contextOptions,
     phase,
     attempt: Math.max(0, Number(task.attempt ?? 0)),
@@ -430,8 +466,8 @@ function normalizeAiTask(task: AiTask): AiTask {
 }
 
 const emptyChapter: Chapter = { id: "", title: "", archived: false, outlines: [] };
-const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", content: "", contentName: timestampContentName(now), archived: false, state: "saved", updatedAt: now, versions: [], chat: emptyChat("empty") };
-const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
+const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", content: "", contentName: timestampContentName(now), archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
+const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
 
 function emptyStudioData(settings: StudioSettings): StudioData {
   return { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings };
@@ -444,18 +480,30 @@ function normalizeStudioData(source: StudioData): StudioData {
     settings: {
       ...seedData.settings,
       ...(source.settings ?? {}),
+      namingModelMode: source.settings?.namingModelMode === "fixed" ? "fixed" : "inherit",
+      namingModel: String(source.settings?.namingModel ?? ""),
       generateTargetWords: normalizeGenerateTargetWords(source.settings?.generateTargetWords),
       generatePresets: normalizeGeneratePresets(source.settings?.generatePresets),
       reviewPresets: normalizeReviewPresets(source.settings?.reviewPresets),
     },
     articles: source.articles.map((article) => ({
       ...article,
+      chapterNaming: normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
+      outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
       characters: (article.characters ?? []).map(normalizeCharacter),
       chapters: article.chapters.map((chapter) => ({
         ...chapter,
         outlines: chapter.outlines.map((item) => {
           const normalizedTitle = normalizeOutlineTitle(item.title);
-          const normalizedItem = { ...item, title: normalizedTitle, contentName: item.contentName?.trim() || timestampContentName(item.updatedAt), contentOverride: item.contentOverride === true, titleGenerationPending: item.titleGenerationPending ?? !normalizedTitle };
+          const normalizedItem = {
+            ...item,
+            title: normalizedTitle,
+            contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
+            contentOverride: item.contentOverride === true,
+            titleGenerationPending: item.titleGenerationPending ?? !normalizedTitle,
+            excellentFragments: normalizeExcellentFragments(item.content, item.excellentFragments),
+            versions: (item.versions ?? []).map((version) => ({ ...version, excellentFragments: normalizeExcellentFragments(version.content, version.excellentFragments) })),
+          };
           const legacy = item.chat as typeof item.chat & { messages?: Message[]; draft?: string; includePrevious?: boolean; includeCharacters?: boolean };
           if (Array.isArray(legacy.sessions) && legacy.sessions.length) {
             const sessions = legacy.sessions.map((session) => ({
@@ -531,7 +579,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             loaded = { ...loaded, articles: loaded.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => {
               if (outline.id !== draft.outlineId || outline.content === draft.text || outline.versions.some((version) => version.source === "未保存内容" && version.content === draft.text)) return outline;
               recovered = true;
-              const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(createdAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt, outlineSnapshot: { title: outline.title, plan: outline.plan } };
+              const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(createdAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt, outlineSnapshot: { title: outline.title, plan: outline.plan }, excellentFragments: cloneExcellentFragments(draft.text, reanchorExcellentFragments(resolvedOutlineContent(outline), draft.text, activeExcellentFragments(outline))) };
               return { ...outline, versions: [version, ...outline.versions] };
             }) })) })) };
             if (recovered) recoveredDraftKeys.push(key);
@@ -709,6 +757,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const article: Article = {
         id: articleId,
         ...fields,
+        chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
+        outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
         createdAt,
         updatedAt: createdAt,
         lastOutlineId: outlineId,
@@ -736,6 +786,25 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     updateChapter(chapterId, patch) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, chapters: article.chapters.map((chapter) => chapter.id === chapterId ? { ...chapter, ...patch } : chapter) } : article) }));
+    },
+    applyGeneratedNames(chapterId, chapterTitle, outlineTitles) {
+      const generated = new Map(outlineTitles.map((item) => [item.id, normalizeOutlineTitle(item.title)]));
+      const updatedAt = new Date().toISOString();
+      setData((current) => ({
+        ...current,
+        articles: current.articles.map((article) => article.id !== current.currentArticleId ? article : {
+          ...article,
+          updatedAt,
+          chapters: article.chapters.map((chapter) => chapter.id !== chapterId ? chapter : {
+            ...chapter,
+            ...(chapterTitle?.trim() ? { title: chapterTitle.trim().slice(0, 120) } : {}),
+            outlines: chapter.outlines.map((outline) => {
+              const title = generated.get(outline.id);
+              return title ? { ...outline, title, titleGenerationPending: false, updatedAt } : outline;
+            }),
+          }),
+        }),
+      }));
     },
     moveChapter(chapterId, direction) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => {
@@ -809,9 +878,15 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     clearContentDraft(outlineId) {
       window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
     },
-    saveCurrentContent(outlineId, text) {
+    saveCurrentContent(outlineId, text, sourceVersionId) {
       const updatedAt = new Date().toISOString();
-      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, content: text, contentName: item.contentName?.trim() || timestampContentName(updatedAt), contentOverride: true, updatedAt } : item) })) })) };
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        const sourceVersion = sourceVersionId ? item.versions.find((version) => version.id === sourceVersionId) : undefined;
+        const sourceContent = sourceVersion?.content ?? resolvedOutlineContent(item);
+        const sourceFragments = sourceVersion ? normalizeExcellentFragments(sourceVersion.content, sourceVersion.excellentFragments) : activeExcellentFragments(item);
+        return { ...item, content: text, contentName: item.contentName?.trim() || timestampContentName(updatedAt), contentOverride: true, excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(sourceContent, text, sourceFragments)), updatedAt };
+      }) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
       return enqueueSave(snapshot);
@@ -820,8 +895,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const updatedAt = new Date().toISOString();
       const versionId = makeId("version");
       const existing = dataRef.current.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
-      const version: Version = { id: versionId, name: timestampContentName(updatedAt), content: text, source: "手动", createdAt: updatedAt, outlineSnapshot: { title: existing?.title ?? "", plan: existing?.plan ?? "" } };
-      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, content: text, contentName: version.name, contentOverride: false, sourceVersionId: versionId, updatedAt, versions: [version, ...item.versions] } : item) })) })) };
+      const version: Version = { id: versionId, name: timestampContentName(updatedAt), content: text, source: "手动", createdAt: updatedAt, outlineSnapshot: { title: existing?.title ?? "", plan: existing?.plan ?? "" }, excellentFragments: existing ? cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) : [] };
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, content: text, contentName: version.name, contentOverride: false, excellentFragments: [], sourceVersionId: versionId, updatedAt, versions: [version, ...item.versions] } : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
       return enqueueSave(snapshot);
@@ -832,7 +907,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
         return true;
       }
-      const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(savedAt).toLocaleString("zh-CN")}`, content: text, source: "未保存内容", createdAt: savedAt, outlineSnapshot: { title: existing.title, plan: existing.plan } };
+      const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(savedAt).toLocaleString("zh-CN")}`, content: text, source: "未保存内容", createdAt: savedAt, outlineSnapshot: { title: existing.title, plan: existing.plan }, excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) };
       const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, versions: [version, ...item.versions] } : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
@@ -886,22 +961,49 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     saveVersion(outlineId, name, source = "手动", content, metadata) {
       const id = makeId("version");
       const createdAt = new Date().toISOString();
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: content ?? resolvedOutlineContent(item), outlineSnapshot: metadata?.outlineSnapshot ?? { title: item.title, plan: item.plan }, ...metadata }, ...item.versions] } : item) })) })) }));
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        const nextContent = content ?? resolvedOutlineContent(item);
+        const excellentFragments = metadata?.excellentFragments
+          ? cloneExcellentFragments(nextContent, metadata.excellentFragments)
+          : cloneExcellentFragments(nextContent, reanchorExcellentFragments(resolvedOutlineContent(item), nextContent, activeExcellentFragments(item)));
+        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? { title: item.title, plan: item.plan }, ...metadata, excellentFragments }, ...item.versions] };
+      }) })) })) }));
       return id;
+    },
+    toggleExcellentFragment(outlineId, versionId, start, end) {
+      let action: "added" | "removed" | "none" = "none";
+      const createdAt = new Date().toISOString();
+      const id = makeId("excellent");
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        if (versionId) {
+          return { ...item, versions: item.versions.map((version) => {
+            if (version.id !== versionId) return version;
+            const toggled = toggleExcellentFragment(version.content, version.excellentFragments ?? [], { start, end }, { id, createdAt });
+            action = toggled.action;
+            return { ...version, excellentFragments: toggled.fragments };
+          }) };
+        }
+        const toggled = toggleExcellentFragment(item.content, item.excellentFragments ?? [], { start, end }, { id, createdAt });
+        action = toggled.action;
+        return { ...item, excellentFragments: toggled.fragments };
+      }) })) })) }));
+      return action;
     },
     setDefaultVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
         if (versionId && !item.versions.some((version) => version.id === versionId)) return item;
         const selected = item.versions.find((version) => version.id === versionId);
-        return { ...item, contentName: selected?.name ?? item.contentName, contentOverride: selected ? false : item.contentOverride, sourceVersionId: versionId, updatedAt: new Date().toISOString() };
+        return { ...item, contentName: selected?.name ?? item.contentName, contentOverride: selected ? false : item.contentOverride, excellentFragments: selected ? [] : item.excellentFragments, sourceVersionId: versionId, updatedAt: new Date().toISOString() };
       }) })) })) }));
     },
     applyVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
         const selected = item.versions.find((version) => version.id === versionId);
-        return selected ? { ...item, content: selected.content, contentName: selected.name, contentOverride: false, sourceVersionId: selected.id, updatedAt: new Date().toISOString() } : item;
+        return selected ? { ...item, content: selected.content, contentName: selected.name, contentOverride: false, excellentFragments: [], sourceVersionId: selected.id, updatedAt: new Date().toISOString() } : item;
       }) })) })) }));
     },
     applyVersionWithBackup(outlineId, versionId) {
@@ -913,8 +1015,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         if (item.id !== outlineId) return item;
         const selected = item.versions.find((version) => version.id === versionId);
         if (!selected) return item;
-        const backup: Version = { id: backupId, name: `应用 AI 前 · ${new Date().toLocaleString("zh-CN")}`, content: resolvedOutlineContent(item), source: "手动", createdAt, outlineSnapshot: { title: item.title, plan: item.plan } };
-        return { ...item, content: selected.content, contentName: selected.name, contentOverride: false, sourceVersionId: selected.id, updatedAt: createdAt, versions: [backup, ...item.versions] };
+        const backup: Version = { id: backupId, name: `应用 AI 前 · ${new Date().toLocaleString("zh-CN")}`, content: resolvedOutlineContent(item), source: "手动", createdAt, outlineSnapshot: { title: item.title, plan: item.plan }, excellentFragments: cloneExcellentFragments(resolvedOutlineContent(item), activeExcellentFragments(item)) };
+        return { ...item, content: selected.content, contentName: selected.name, contentOverride: false, excellentFragments: [], sourceVersionId: selected.id, updatedAt: createdAt, versions: [backup, ...item.versions] };
       }) })) })) }));
       return backupId;
     },

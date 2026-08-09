@@ -3,6 +3,8 @@ import { AiInputError, findModel, generateText } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
+import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
+import { resolvedOutlineContent } from "@/lib/outline-content";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -21,6 +23,12 @@ function findOutline(data: StudioData, outlineId: string) {
     if (outline) return { article, chapter, outline };
   }
   return null;
+}
+
+function activeExcellentFragments(outline: StudioData["articles"][number]["chapters"][number]["outlines"][number]) {
+  if (outline.contentOverride) return normalizeExcellentFragments(outline.content, outline.excellentFragments);
+  const version = outline.versions.find((item) => item.id === outline.sourceVersionId);
+  return version ? normalizeExcellentFragments(version.content, version.excellentFragments) : [];
 }
 
 async function mutateState<T>(mutate: (data: StudioData) => Mutation<T>): Promise<T> {
@@ -134,8 +142,11 @@ export async function POST(_request: Request, context: RouteContext) {
             outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: initialTask.model,
             target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
             includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
+            includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
+            excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
             contentMode: initialTask.contextOptions?.contentMode,
             firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
+            includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
           }, upstreamController.signal);
           break;
         } catch (error) {
@@ -158,7 +169,7 @@ export async function POST(_request: Request, context: RouteContext) {
           const completedAt = new Date().toISOString();
           const previousOutlineSnapshot = { title: found.outline.title, plan: found.outline.plan };
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
-          if (found.outline.titleGenerationPending && Array.from(generatedTitle).length >= 10 && Array.from(generatedTitle).length <= 20 && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
+          if (task.contextOptions?.includeOutlineTitle && generatedTitle && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
             found.outline.title = generatedTitle;
             found.outline.titleGenerationPending = false;
           }
@@ -170,6 +181,9 @@ export async function POST(_request: Request, context: RouteContext) {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
             },
+            excellentFragments: task.contextOptions?.contentMode && task.contextOptions.contentMode !== "fresh"
+              ? cloneExcellentFragments(result.text, reanchorExcellentFragments(resolvedOutlineContent(found.outline), result.text, activeExcellentFragments(found.outline)))
+              : [],
           };
           const directContentBackup: Version | undefined = found.outline.contentOverride && found.outline.content.trim()
             ? {
@@ -180,15 +194,25 @@ export async function POST(_request: Request, context: RouteContext) {
                 createdAt: completedAt,
                 taskId: task.id,
                 outlineSnapshot: previousOutlineSnapshot,
+                excellentFragments: cloneExcellentFragments(found.outline.content, normalizeExcellentFragments(found.outline.content, found.outline.excellentFragments)),
               }
             : undefined;
           found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
           found.outline.contentName = version.name;
           found.outline.contentOverride = false;
+          found.outline.excellentFragments = [];
           found.outline.sourceVersionId = version.id;
           found.outline.state = "saved";
           found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;
+          task.contextOptions = {
+            includePrevious: task.contextOptions?.includePrevious ?? true,
+            includeCharacters: task.contextOptions?.includeCharacters ?? true,
+            estimatedCharacters: task.contextOptions?.estimatedCharacters ?? 0,
+            ...task.contextOptions,
+            generatedOutlineTitle: result.outlineTitle,
+            generatedOutlineTitleError: result.outlineTitleError,
+          };
         } else if (found) {
           found.outline.state = "saved";
           task.contextOptions = {

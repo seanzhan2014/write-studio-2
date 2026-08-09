@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { once } from "node:events";
+import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -9,6 +10,23 @@ const port = process.env.WRITER_STUDIO_PORT ?? "3002";
 const logDirectory = path.join(workspace, "logs");
 const vinextCli = path.join(workspace, "node_modules", "vinext", "dist", "cli.js");
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
+
+function portIsAvailable(hostname, portNumber) {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", (error) => {
+      if (error.code === "EADDRINUSE" || error.code === "EACCES") {
+        resolve(false);
+        return;
+      }
+      reject(error);
+    });
+    probe.listen({ host: hostname, port: portNumber, exclusive: true }, () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
 
 await mkdir(logDirectory, { recursive: true });
 const removedLogCount = await removeExpiredLogs();
@@ -60,11 +78,40 @@ class DailyLogger {
 const serviceLogger = new DailyLogger(`dev-${port}-service`);
 const accessLogger = new DailyLogger(`dev-${port}-access`);
 
+const numericPort = Number(port);
+if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
+  const message = `Invalid WRITER_STUDIO_PORT=${port}`;
+  serviceLogger.write("error", message);
+  process.stderr.write(`${message}\n`);
+  await serviceLogger.flush();
+  process.exit(1);
+}
+
+if (!(await portIsAvailable(host, numericPort))) {
+  const message = `Port ${port} is already occupied. Writer Studio will not move to another port.`;
+  serviceLogger.write("error", message);
+  process.stderr.write(`${message}\n`);
+  await serviceLogger.flush();
+  process.exit(1);
+}
+
 const ansiEscape = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const accessLine = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE)\s+\S+\s+\d{3}(?:\s|$)/;
+const portDriftLine = /Port\s+\d+\s+is in use, trying another one/i;
+let child;
+let portDriftDetected = false;
 
 function writeOutput(source, line) {
-  if (source === "stdout" && accessLine.test(line.replace(ansiEscape, "").trimStart())) {
+  const plainLine = line.replace(ansiEscape, "").trimStart();
+  if (portDriftLine.test(plainLine)) {
+    portDriftDetected = true;
+    serviceLogger.write("error", `PORT_DRIFT_BLOCKED requestedPort=${port} output=${plainLine}`);
+    process.stderr.write(`Writer Studio refused to move away from port ${port}.\n`);
+    setImmediate(() => {
+      if (child && child.exitCode === null) child.kill();
+    });
+  }
+  if (source === "stdout" && accessLine.test(plainLine)) {
     accessLogger.write("access", line);
     return;
   }
@@ -104,7 +151,7 @@ const cleanupTimer = setInterval(() => {
     .catch((error) => serviceLogger.write("error", `Log cleanup failed: ${error.stack ?? error.message}`));
 }, 60 * 60 * 1000);
 
-const child = spawn(process.execPath, [vinextCli, "dev", "--hostname", host, "--port", port], {
+child = spawn(process.execPath, [vinextCli, "dev", "--hostname", host, "--port", port], {
   cwd: workspace,
   env: process.env,
   stdio: ["inherit", "pipe", "pipe"],
@@ -135,6 +182,6 @@ child.on("error", (error) => {
 const [code, signal] = await once(child, "exit");
 await Promise.all(outputDone);
 clearInterval(cleanupTimer);
-serviceLogger.write("lifecycle", `Child exited code=${code ?? "null"} signal=${signal ?? "null"}`);
+serviceLogger.write("lifecycle", `Child exited code=${code ?? "null"} signal=${signal ?? "null"} portDriftDetected=${portDriftDetected}`);
 await Promise.all([serviceLogger.flush(), accessLogger.flush()]);
-process.exitCode = typeof code === "number" ? code : 1;
+process.exitCode = portDriftDetected ? 1 : typeof code === "number" ? code : 1;

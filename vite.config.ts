@@ -48,9 +48,14 @@ export default defineConfig(async () => {
     optimizeDeps: {
       exclude: ["@mantine/core", "@mantine/hooks"],
     },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // Writer Studio and its manager have fixed roles on 3002 and 3003.
+      // Never let Vite silently move the application onto the manager port.
+      strictPort: true,
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),

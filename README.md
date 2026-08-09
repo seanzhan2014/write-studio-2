@@ -2,13 +2,36 @@
 
 ## Service logging
 
-`npm run dev` now starts the 3002 development service through `scripts/dev-server.mjs`.
+`npm run dev` starts the 3002 development service through `scripts/dev-server.mjs`.
 The wrapper writes two daily log files and removes matching files older than 30 days:
 
 - `logs/dev-3002-service-YYYY-MM-DD.log`: lifecycle events, startup output, errors, child PID, exit code, and termination signal.
 - `logs/dev-3002-access-YYYY-MM-DD.log`: HTTP access lines emitted by Vinext.
 
 Both streams are also mirrored to the terminal.
+
+## Service manager
+
+Use the 3003 management service when Writer Studio needs to run as a long-lived local service:
+
+```powershell
+npm run service
+```
+
+It automatically starts the 3002 main service and opens a simple control page at `http://127.0.0.1:3003/`. The page monitors the 3002 port and can start, stop, or restart the process managed by 3003. The manager log is written to `logs/service-manager.log`.
+
+The ports are strict: if 3002 is already occupied, Writer Studio reports an error instead of silently moving the application to 3003. This keeps 3002 as the application and 3003 as the management page.
+
+Use `npm run service` as the only long-running startup command. Do not run `npm run dev` in another terminal at the same time, because that creates a separate application process which the manager cannot control. If an older Vinext process had already moved to 3003 before strict ports were enabled, stop that process completely and start again; a Vite hot restart keeps the old listening port.
+
+By default, 3003 binds to `127.0.0.1` because its endpoints can stop the application. To make the manager reachable from a trusted LAN, set `WRITER_STUDIO_MANAGER_HOST=0.0.0.0` before starting it, and only do so on a trusted network. The main service remains on `0.0.0.0:3002` by default.
+
+```powershell
+$env:WRITER_STUDIO_MANAGER_HOST = "0.0.0.0"
+npm run service
+```
+
+Set `WRITER_STUDIO_MANAGER_AUTOSTART=0` if the manager should start without automatically launching 3002. Stopping the 3003 process also stops the 3002 process it started.
 
 Useful checks when the port stops responding:
 
@@ -66,6 +89,8 @@ npm run build
 npm test
 npm run db:generate
 ```
+
+涉及菜单、抽屉、弹窗或移动端固定定位界面时，必须遵循 [移动端浮层开发契约](docs/mobile-overlay-contract.md)，并完成仓库 PR 模板中的四档视口检查。
 
 主要代码：
 

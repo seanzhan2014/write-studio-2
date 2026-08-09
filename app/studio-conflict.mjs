@@ -85,7 +85,8 @@ export function mergeAiManagedConflict(base, local, server) {
     const localChangedCurrent = localOutline.sourceVersionId !== baseOutline.sourceVersionId
       || localOutline.contentOverride !== baseOutline.contentOverride
       || localOutline.contentName !== baseOutline.contentName
-      || localOutline.content !== baseOutline.content;
+      || localOutline.content !== baseOutline.content
+      || !same(localOutline.excellentFragments ?? [], baseOutline.excellentFragments ?? []);
     if (serverGeneratedDefault && !localChangedCurrent) {
       localOutline.sourceVersionId = serverOutline.sourceVersionId;
       localOutline.contentOverride = serverOutline.contentOverride;

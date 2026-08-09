@@ -57,8 +57,23 @@ async function fakeModelServer() {
       return;
     }
     response.writeHead(200, { "Content-Type": "application/json" });
+    if (prompt.includes('purpose="outline-naming"')) {
+      response.end(JSON.stringify({ choices: [{ message: { content: "<outline_title>七码头潮汐密钥</outline_title>" } }] }));
+      return;
+    }
+    if (prompt.includes('purpose="chapter-and-outline-naming"')) {
+      const names = ["七码头潮汐", "密钥的回声", "雾港旧来信", "退潮后真相"];
+      const outputContract = prompt.match(/<output_contract>([\s\S]*?)<\/output_contract>/)?.[1] ?? "";
+      const keys = [...outputContract.matchAll(/<outline_title key="([^"]+)"/g)].map((match) => match[1]);
+      const content = [
+        outputContract.includes("<chapter_title>") ? "<chapter_title>潮汐密钥</chapter_title>" : "",
+        keys.length ? `<outline_titles>\n${keys.map((key, index) => `<outline_title key="${key}">${names[index] ?? `潮汐线索${index + 1}`}</outline_title>`).join("\n")}\n</outline_titles>` : "",
+      ].filter(Boolean).join("\n");
+      response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      return;
+    }
     const primaryContent = prompt.includes("EMPTY_RESPONSE") ? "" : prompt.includes("TITLE_NORMALIZATION") ? "```text\n“# 潮汐回声”\n不应保留的解释\n```" : "```text\n模型生成正文\n```";
-    const outlineTitle = prompt.includes("SHORT_OUTLINE_TITLE") ? "太短" : "七码头会合揭开潮汐密钥真相";
+    const outlineTitle = prompt.includes("SHORT_OUTLINE_TITLE") ? "太短" : "七码头潮汐密钥";
     const content = primaryContent && systemPrompt.includes("<outline_title>")
       ? `<outline_title>${outlineTitle}</outline_title>\n<generated_text>\n${primaryContent}\n</generated_text>`
       : primaryContent;
@@ -168,6 +183,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(created.response.status, 201, created.text);
     modelId = created.data.id;
     assert.equal(created.data.timeoutMs, 5000);
+    assert.equal(created.data.maxInputCharacters, 60000);
     const secret = "test-secret-must-never-leak";
     const saved = await api(`/api/models/${modelId}/secret`, { method: "PUT", body: { secret } });
     assert.equal(saved.response.status, 200);
@@ -292,7 +308,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(modelServer.received.length, receivedBeforeInvalid);
   });
 
-  await t.test("generates a pending outline title with the next content in one model call", async () => {
+  await t.test("generates an outline title with content only when explicitly selected", async () => {
     const current = await api("/api/state");
     const changed = structuredClone(current.data.data);
     const outline = changed.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
@@ -304,27 +320,87 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     revision = saved.data.revision;
 
     const receivedBefore = modelServer.received.length;
-    const invalidTitle = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "SHORT_OUTLINE_TITLE", model: "捕获模型", target: "content", targetWords: 5000 } });
-    assert.equal(invalidTitle.response.status, 200, invalidTitle.text);
+    const notSelected = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "SHORT_OUTLINE_TITLE", model: "捕获模型", target: "content", targetWords: 5000 } });
+    assert.equal(notSelected.response.status, 200, notSelected.text);
     assert.equal(modelServer.received.length, receivedBefore + 1);
+    assert.equal(notSelected.data.outlineTitle, undefined, "待命名状态不能隐式触发大纲名生成");
+    assert.doesNotMatch(modelServer.received.at(-1).body.messages[0].content, /<outline_title>/);
+
+    const invalidTitle = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "SHORT_OUTLINE_TITLE", model: "捕获模型", target: "content", targetWords: 5000, includeOutlineTitle: true } });
+    assert.equal(invalidTitle.response.status, 200, invalidTitle.text);
+    assert.equal(modelServer.received.length, receivedBefore + 2);
     assert.equal(invalidTitle.data.text, "模型生成正文");
     assert.equal(invalidTitle.data.outlineTitle, undefined, "无效标题不能影响主要生成结果，也不能清除待命名状态");
+    assert.match(invalidTitle.data.outlineTitleError, /4–12/);
 
-    const generated = await api("/api/ai/generate-stream", { method: "POST", body: { outlineId: "outline-current", instruction: "", model: "捕获模型", target: "content", targetWords: 5000 } });
+    const generated = await api("/api/ai/generate-stream", { method: "POST", body: { outlineId: "outline-current", instruction: "", model: "捕获模型", target: "content", targetWords: 5000, includeOutlineTitle: true } });
     assert.equal(generated.response.status, 200, generated.text);
-    assert.equal(modelServer.received.length, receivedBefore + 2, "每次正文和大纲标题必须共用一次模型请求");
+    assert.equal(modelServer.received.length, receivedBefore + 3, "正文和大纲标题必须共用一次模型请求");
     assert.equal(generated.data.text, "模型生成正文");
-    assert.equal(generated.data.outlineTitle, "七码头会合揭开潮汐密钥真相");
-    assert.ok(Array.from(generated.data.outlineTitle).length >= 10 && Array.from(generated.data.outlineTitle).length <= 20);
+    assert.equal(generated.data.outlineTitle, "七码头潮汐密钥");
     assert.doesNotMatch(generated.data.text, /outline_title|generated_text/);
     const systemPrompt = modelServer.received.at(-1).body.messages[0].content;
-    assert.match(systemPrompt, /10–20/);
+    assert.match(systemPrompt, /4–12/);
     assert.match(systemPrompt, /<outline_title>/);
     assert.match(systemPrompt, /<generated_text>/);
 
     const restored = await api("/api/state", { method: "PUT", headers: { "If-Match": String(revision) }, body: { data: fullStudioFixture() } });
     assert.equal(restored.response.status, 200, restored.text);
     revision = restored.data.revision;
+  });
+
+  await t.test("dedicated naming sends no body content and uses one model call", async () => {
+    const beforeOutline = modelServer.received.length;
+    const outlineNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "outline", model: "捕获模型" } });
+    assert.equal(outlineNames.response.status, 200, outlineNames.text);
+    assert.equal(modelServer.received.length, beforeOutline + 1);
+    assert.deepEqual(outlineNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐密钥" }]);
+    const outlinePrompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(outlinePrompt, /林澈与顾屿在七码头会合/);
+    assert.doesNotMatch(outlinePrompt, /灯塔正文|不可变版本正文|alternate-session-secret/);
+
+    const beforeChapter = modelServer.received.length;
+    const chapterNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", model: "捕获模型" } });
+    assert.equal(chapterNames.response.status, 200, chapterNames.text);
+    assert.equal(modelServer.received.length, beforeChapter + 1, "整章名称必须共用一次模型请求");
+    assert.equal(chapterNames.data.chapterTitle, "潮汐密钥");
+    assert.equal(chapterNames.data.outlineTitles.length, 3);
+    const chapterPrompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(chapterPrompt, /灯塔取得前序线索/);
+    assert.doesNotMatch(chapterPrompt, /归档内容绝不能进入上下文|灯塔正文|不可变版本正文|alternate-session-secret/);
+
+    const beforeSelected = modelServer.received.length;
+    const selectedNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", includeChapter: false, outlineIds: ["outline-current"], model: "捕获模型" } });
+    assert.equal(selectedNames.response.status, 200, selectedNames.text);
+    assert.equal(modelServer.received.length, beforeSelected + 1, "选择多个名称的初次生成仍只能调用一次模型");
+    assert.equal(selectedNames.data.chapterTitle, undefined);
+    assert.deepEqual(selectedNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐" }]);
+    const selectedPrompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(selectedPrompt, /林澈与顾屿在七码头会合/);
+    assert.doesNotMatch(selectedPrompt, /灯塔取得前序线索/);
+  });
+
+  await t.test("rejects oversized chapter naming before calling the model", async () => {
+    const configured = await api(`/api/models/${modelId}`, { method: "PATCH", body: { maxInputCharacters: 4000 } });
+    assert.equal(configured.response.status, 200, configured.text);
+    const current = await api("/api/state");
+    const changed = structuredClone(current.data.data);
+    const chapter = changed.articles[0].chapters.find((item) => item.id === "chapter-main");
+    for (const outline of chapter.outlines.filter((item) => !item.archived)) outline.plan = "潮".repeat(1800);
+    const saved = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: changed } });
+    assert.equal(saved.response.status, 200, saved.text);
+    revision = saved.data.revision;
+    const receivedBefore = modelServer.received.length;
+    const oversized = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", model: "捕获模型" } });
+    assert.equal(oversized.response.status, 413, oversized.text);
+    assert.equal(modelServer.received.length, receivedBefore, "超限时不能请求模型");
+    assert.ok(oversized.data.inputCharacters > oversized.data.maxInputCharacters);
+
+    const restored = await api("/api/state", { method: "PUT", headers: { "If-Match": String(revision) }, body: { data: fullStudioFixture() } });
+    assert.equal(restored.response.status, 200, restored.text);
+    revision = restored.data.revision;
+    const resetModel = await api(`/api/models/${modelId}`, { method: "PATCH", body: { maxInputCharacters: 60000 } });
+    assert.equal(resetModel.response.status, 200, resetModel.text);
   });
 
   await t.test("treats an outline without a default version as empty reference content", async () => {
@@ -435,6 +511,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     previousOutline.versions.unshift({ id: "version-previous-default", name: "前序默认正文", content: "灯塔正文", source: "手动", createdAt: "2026-07-28T08:00:00.000Z" });
     previousOutline.sourceVersionId = "version-previous-default";
     currentOutline.sourceVersionId = "version-manual";
+    currentOutline.versions.find((version) => version.id === "version-manual").excellentFragments = [{ id: "excellent-current", start: 0, end: 3, text: "不可变", prefix: "", suffix: "版本正文", sourceHash: "", createdAt: "2026-08-08T00:00:00.000Z", updatedAt: "2026-08-08T00:00:00.000Z" }];
     const prepared = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: withPreviousDefault } });
     assert.equal(prepared.response.status, 200, prepared.text);
     revision = prepared.data.revision;
@@ -453,21 +530,24 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.match(contentMessages[1].content, /<output_contract>continuation_only<\/output_contract>/);
     assert.match(contentMessages[1].content, /<current_content>[\s\S]*不可变版本正文[\s\S]*<\/current_content>/);
     assert.match(contentMessages[1].content, /<current_request>\s*继续正文\s*<\/current_request>/);
+    assert.doesNotMatch(contentMessages[1].content, /<excellent_fragments/);
     assert.doesNotMatch(contentMessages[1].content, /这是当前大纲之后的内容/);
     assert.doesNotMatch(contentMessages[1].content, /recent-message-21/);
 
-    const rewritten = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "调整叙事节奏", model: "捕获模型", target: "content", contentMode: "rewrite" } });
+    const rewritten = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "调整叙事节奏", model: "捕获模型", target: "content", contentMode: "rewrite", includeExcellentFragments: true, excellentFragmentIds: ["excellent-current"] } });
     assert.equal(rewritten.response.status, 200, rewritten.text);
     assert.equal(rewritten.data.text, "模型生成正文");
     const rewriteMessages = modelServer.received.at(-1).body.messages;
     assert.match(rewriteMessages[1].content, /<content_mode>rewrite<\/content_mode>/);
     assert.match(rewriteMessages[1].content, /<output_contract>complete_candidate<\/output_contract>/);
     assert.match(rewriteMessages[1].content, /不可变版本正文/);
+    assert.match(rewriteMessages[1].content, /<excellent_fragments[\s\S]*<text>不可变<\/text>[\s\S]*<\/excellent_fragments>/);
+    assert.doesNotMatch(rewriteMessages[1].content, /<source_outline>/);
 
     const outline = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "调整事件推进", model: "捕获模型", target: "outline", includePrevious: true, includeCharacters: true } });
     assert.equal(outline.response.status, 200, outline.text);
     assert.equal(outline.data.text, "模型生成正文");
-    assert.equal(outline.data.outlineTitle, "七码头会合揭开潮汐密钥真相");
+    assert.equal(outline.data.outlineTitle, undefined, "大纲内容生成不应隐式改名");
     const outlineMessages = modelServer.received.at(-1).body.messages;
     assert.match(outlineMessages[0].content, /只输出当前大纲的“大纲内容”/);
     assert.doesNotMatch(outlineMessages[1].content, /<current_content>/);
@@ -637,6 +717,43 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(backup?.content, "生成任务完成前的直接正文");
     assert.equal(backup?.source, "手动");
     assert.equal(backup?.taskId, taskId);
+  });
+
+  await t.test("saves Generate with excellent fragments without duplicate database keys", async () => {
+    const current = await api("/api/state");
+    const changed = structuredClone(current.data.data);
+    const outline = changed.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    outline.content = "带有优秀片段的当前正文";
+    outline.contentOverride = true;
+    outline.excellentFragments = [{ id: "excellent-direct-current", start: 2, end: 6, text: "优秀片段", prefix: "带有", suffix: "的当前", sourceHash: "", createdAt: "2026-08-08T00:00:00.000Z", updatedAt: "2026-08-08T00:00:00.000Z" }];
+    const prepared = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: changed } });
+    assert.equal(prepared.response.status, 200, prepared.text);
+    revision = prepared.data.revision;
+
+    const taskId = "server-executor-excellent-fragments-task";
+    const created = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "GENERATE_WITH_EXCELLENT", targetWords: 5000, model: "捕获模型", includeExcellentFragments: true, excellentFragmentIds: ["excellent-direct-current"] },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 200, executed.text);
+
+    const loaded = await api("/api/state");
+    revision = loaded.data.revision;
+    const persisted = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    const task = loaded.data.data.tasks.find((item) => item.id === taskId);
+    const generated = persisted.versions.find((version) => version.taskId === taskId);
+    const backup = persisted.versions.find((version) => version.taskId === taskId && version.source === "手动");
+    assert.equal(task.state, "success");
+    assert.ok(generated);
+    assert.ok(backup);
+    assert.equal(persisted.contentOverride, false);
+    assert.equal(persisted.excellentFragments.length, 0);
+    assert.equal(backup.excellentFragments[0].text, "优秀片段");
+    assert.notEqual(backup.excellentFragments[0].id, "excellent-direct-current");
+    assert.match(modelServer.received.at(-1).body.messages[1].content, /<excellent_fragments[\s\S]*<text>优秀片段<\/text>/);
+    assert.doesNotMatch(modelServer.received.at(-1).body.messages[1].content, /<source_outline>/);
   });
 
   await t.test("applies immutable versions and cascades character relationships", async () => {

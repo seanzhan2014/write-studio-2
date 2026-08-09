@@ -3,6 +3,9 @@ import { env } from "cloudflare:workers";
 import type { StudioData } from "@/app/studio-state";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "@/lib/generate-options";
+import { DEFAULT_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
+import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
+import { normalizeExcellentFragments, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
@@ -30,7 +33,7 @@ const schemaStatements = [
   "PRAGMA foreign_keys = ON",
   `CREATE TABLE IF NOT EXISTS articles (
     id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
-    article_type TEXT NOT NULL DEFAULT '', style TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    article_type TEXT NOT NULL DEFAULT '', style TEXT NOT NULL DEFAULT '', chapter_naming_json TEXT NOT NULL DEFAULT '{}', outline_naming_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL, last_opened_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1
   )`,
   "CREATE INDEX IF NOT EXISTS articles_last_opened_idx ON articles(last_opened_at)",
@@ -62,6 +65,16 @@ const schemaStatements = [
     task_id TEXT, outline_snapshot_json TEXT, created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS versions_outline_created_idx ON versions(outline_id, created_at DESC)",
+  `CREATE TABLE IF NOT EXISTS excellent_fragments (
+    id TEXT PRIMARY KEY NOT NULL, outline_id TEXT NOT NULL REFERENCES outlines(id) ON DELETE CASCADE,
+    version_id TEXT REFERENCES versions(id) ON DELETE CASCADE,
+    start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL, selected_text TEXT NOT NULL,
+    prefix_context TEXT NOT NULL DEFAULT '', suffix_context TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    CHECK(start_offset >= 0), CHECK(end_offset > start_offset)
+  )`,
+  "CREATE INDEX IF NOT EXISTS excellent_fragments_outline_idx ON excellent_fragments(outline_id)",
+  "CREATE INDEX IF NOT EXISTS excellent_fragments_version_idx ON excellent_fragments(version_id)",
   `CREATE TABLE IF NOT EXISTS characters (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     name TEXT NOT NULL COLLATE NOCASE, aliases_json TEXT NOT NULL DEFAULT '[]',
@@ -107,7 +120,7 @@ const schemaStatements = [
   "CREATE INDEX IF NOT EXISTS ai_tasks_article_created_idx ON ai_tasks(article_id, created_at DESC)",
   `CREATE TABLE IF NOT EXISTS ai_models (
     id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
-    system_prompt TEXT NOT NULL DEFAULT '', temperature REAL, max_output INTEGER,
+    system_prompt TEXT NOT NULL DEFAULT '', temperature REAL, max_output INTEGER, max_input_characters INTEGER NOT NULL DEFAULT 60000,
     timeout_ms INTEGER NOT NULL, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
@@ -154,6 +167,8 @@ export async function ensureDatabase() {
       const db = getD1();
       for (const statement of schemaStatements) await db.prepare(statement).run();
       await ensureAiModelSecretColumn(db);
+      await ensureAiModelMaxInputCharactersColumn(db);
+      await ensureArticleNamingColumns(db);
       await ensureCharacterDescriptionShape(db);
       await ensureMultipleChatSessions(db);
       await ensureOutlineTitleGenerationColumn(db);
@@ -302,12 +317,13 @@ async function ensureMultipleChatSessions(db: D1Database) {
 export async function readStudioState(): Promise<{ data: StudioData | null; revision: number }> {
   await ensureDatabase();
   const db = getD1();
-  const [articleResult, chapterResult, outlineResult, contentResult, versionResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
+  const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
     db.prepare("SELECT * FROM articles ORDER BY last_opened_at DESC").all(),
     db.prepare("SELECT * FROM chapters ORDER BY article_id, position").all(),
     db.prepare("SELECT * FROM outlines ORDER BY chapter_id, position").all(),
     db.prepare("SELECT * FROM contents").all(),
     db.prepare("SELECT * FROM versions ORDER BY created_at DESC").all(),
+    db.prepare("SELECT * FROM excellent_fragments ORDER BY created_at").all(),
     db.prepare("SELECT * FROM characters ORDER BY created_at").all(),
     db.prepare("SELECT * FROM relationships ORDER BY created_at").all(),
     db.prepare("SELECT * FROM chat_sessions").all(),
@@ -327,6 +343,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const outlines = rows(outlineResult) as Record<string, unknown>[];
   const contents = new Map((rows(contentResult) as Record<string, unknown>[]).map((row) => [String(row.outline_id), row]));
   const versions = rows(versionResult) as Record<string, unknown>[];
+  const excellentFragments = rows(excellentFragmentResult) as Record<string, unknown>[];
   const characters = rows(characterResult) as Record<string, unknown>[];
   const relationships = rows(relationshipResult) as Record<string, unknown>[];
   const sessions = rows(sessionResult) as Record<string, unknown>[];
@@ -387,18 +404,27 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           createdAt: String(outlineRow.updated_at), updatedAt: String(outlineRow.updated_at),
         };
         const activeSessionId = String(outlineSessionRows.find((row) => safeJson<{ active?: boolean }>(row.context_options_json, {}).active)?.id ?? sessionItems[0]?.id ?? fallbackSession.id);
+        const mapExcellentFragments = (sourceText: string, versionId?: string): ExcellentFragment[] => normalizeExcellentFragments(sourceText, excellentFragments
+          .filter((row) => row.outline_id === outlineId && (versionId ? row.version_id === versionId : !row.version_id))
+          .map((row) => ({
+            id: String(row.id), start: Number(row.start_offset), end: Number(row.end_offset), text: String(row.selected_text),
+            prefix: String(row.prefix_context ?? ""), suffix: String(row.suffix_context ?? ""), sourceHash: String(row.source_hash ?? ""),
+            createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+          })));
         return {
           id: outlineId, title: normalizeOutlineTitle(outlineRow.title), plan: String(outlineRow.summary),
           titleGenerationPending: bool(outlineRow.title_generation_pending),
           content: String(content?.text ?? ""), contentName: String(content?.content_name ?? "").trim() || timestampContentName(String(outlineRow.updated_at)), contentOverride: bool(content?.content_override), archived: bool(outlineRow.archived),
           state: String(outlineRow.state) as "saved" | "running" | "failed", updatedAt: String(outlineRow.updated_at),
           sourceVersionId: content?.source_version_id ? String(content.source_version_id) : undefined,
+          excellentFragments: mapExcellentFragments(String(content?.text ?? "")),
           versions: versions.filter((row) => row.outline_id === outlineId).map((row) => ({
             id: String(row.id), name: String(row.name), content: String(row.text),
             source: row.source === "ai-generate" ? "AI Generate" as const : row.source === "ai-chat" ? "AI Chat" as const : row.source === "ai-review" ? "AI Review" as const : row.source === "unsaved" ? "未保存内容" as const : "手动" as const,
             createdAt: String(row.created_at), model: row.model_name ? String(row.model_name) : row.model_id ? String(row.model_id) : undefined, modelId: row.model_name && row.model_id ? String(row.model_id) : undefined,
             prompt: row.prompt ? String(row.prompt) : undefined, taskId: row.task_id ? String(row.task_id) : undefined,
             outlineSnapshot: row.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(row.outline_snapshot_json, undefined) : undefined,
+            excellentFragments: mapExcellentFragments(String(row.text), String(row.id)),
           })),
           chat: { sessions: sessionItems.length ? sessionItems : [fallbackSession], activeSessionId },
         };
@@ -408,6 +434,8 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
     return {
       id: articleId, title: String(articleRow.title), summary: String(articleRow.summary), type: String(articleRow.article_type),
       style: String(articleRow.style), createdAt: String(articleRow.created_at), updatedAt: String(articleRow.updated_at),
+      chapterNaming: normalizeNamingProfile(safeJson(articleRow.chapter_naming_json, {}), DEFAULT_CHAPTER_NAMING_PROFILE),
+      outlineNaming: normalizeNamingProfile(safeJson(articleRow.outline_naming_json, {}), DEFAULT_OUTLINE_NAMING_PROFILE),
       lastOutlineId: String(safeJson<string>(settingsMap.get(`last_outline:${articleId}`), "")), chapters: articleChapters,
       characters: characters.filter((row) => row.article_id === articleId).map((row) => ({
         id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
@@ -441,7 +469,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
 const defaultSettings: StudioData["settings"] = {
   theme: "light", editorFont: "sans", fontSize: 17, lineHeight: 1.8, contentWidth: 920,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2,
-  chatModel: "", generateModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
+  chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
 };
 
@@ -450,6 +478,8 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
   return {
     ...defaultSettings,
     ...settings,
+    namingModelMode: settings.namingModelMode === "fixed" ? "fixed" : "inherit",
+    namingModel: String(settings.namingModel ?? ""),
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
@@ -457,6 +487,26 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
 }
 
 function insert(db: D1Database, sql: string, values: unknown[]) { return db.prepare(sql).bind(...values); }
+
+function uniqueExcellentFragments(content: string, fragments: unknown, usedIds: Set<string>) {
+  return normalizeExcellentFragments(content, fragments).map((fragment) => {
+    let id = fragment.id;
+    while (usedIds.has(id)) id = `excellent-${crypto.randomUUID()}`;
+    usedIds.add(id);
+    return id === fragment.id ? fragment : { ...fragment, id };
+  });
+}
+
+async function ensureAiModelMaxInputCharactersColumn(db: D1Database) {
+  const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("max_input_characters")) await db.prepare(`ALTER TABLE ai_models ADD COLUMN max_input_characters INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_INPUT_CHARACTERS}`).run();
+}
+
+async function ensureArticleNamingColumns(db: D1Database) {
+  const columns = rows(await db.prepare("PRAGMA table_info('articles')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("chapter_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN chapter_naming_json TEXT NOT NULL DEFAULT '{}'").run();
+  if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
+}
 
 export async function writeStudioState(data: StudioData, expectedRevision: number, force = false) {
   await ensureDatabase();
@@ -470,8 +520,9 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
+  const writtenExcellentFragmentIds = new Set<string>();
   for (const article of data.articles) {
-    statements.push(insert(db, "INSERT INTO articles VALUES(?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
+    statements.push(insert(db, "INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
     statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)", [`last_outline:${article.id}`, JSON.stringify(article.lastOutlineId), now]));
     article.chapters.forEach((chapter, chapterIndex) => {
       statements.push(insert(db, "INSERT INTO chapters VALUES(?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
@@ -482,7 +533,11 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,summary,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, outline.plan.slice(0, 10000), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,updated_at,revision) VALUES(?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), outline.contentOverride ? 1 : 0, outline.sourceVersionId ?? null, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
-        outline.versions.forEach((version) => statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.createdAt])));
+        outline.versions.forEach((version) => {
+          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.createdAt]));
+          uniqueExcellentFragments(version.content, version.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
+        });
+        uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         outline.chat.sessions.forEach((session) => {
           statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
           session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));

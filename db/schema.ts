@@ -6,6 +6,8 @@ export const articles = sqliteTable("articles", {
   summary: text("summary").notNull().default(""),
   articleType: text("article_type").notNull().default(""),
   style: text("style").notNull().default(""),
+  chapterNamingJson: text("chapter_naming_json").notNull().default("{}"),
+  outlineNamingJson: text("outline_naming_json").notNull().default("{}"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   lastOpenedAt: text("last_opened_at").notNull(),
@@ -68,6 +70,23 @@ export const versions = sqliteTable("versions", {
   outlineSnapshotJson: text("outline_snapshot_json"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("versions_outline_created_idx").on(table.outlineId, table.createdAt)]);
+
+export const excellentFragments = sqliteTable("excellent_fragments", {
+  id: text("id").primaryKey(),
+  outlineId: text("outline_id").notNull().references(() => outlines.id, { onDelete: "cascade" }),
+  versionId: text("version_id").references(() => versions.id, { onDelete: "cascade" }),
+  startOffset: integer("start_offset").notNull(),
+  endOffset: integer("end_offset").notNull(),
+  selectedText: text("selected_text").notNull(),
+  prefixContext: text("prefix_context").notNull().default(""),
+  suffixContext: text("suffix_context").notNull().default(""),
+  sourceHash: text("source_hash").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("excellent_fragments_outline_idx").on(table.outlineId),
+  index("excellent_fragments_version_idx").on(table.versionId),
+]);
 
 export const characters = sqliteTable("characters", {
   id: text("id").primaryKey(),
@@ -155,6 +174,7 @@ export const aiModels = sqliteTable("ai_models", {
   systemPrompt: text("system_prompt").notNull().default(""),
   temperature: real("temperature"),
   maxOutput: integer("max_output"),
+  maxInputCharacters: integer("max_input_characters").notNull().default(60000),
   timeoutMs: integer("timeout_ms").notNull(),
   hasSecret: integer("has_secret", { mode: "boolean" }).notNull().default(false),
   secret: text("secret"),

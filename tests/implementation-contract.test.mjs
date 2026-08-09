@@ -56,7 +56,7 @@ test("schema-extensible inserts name their columns explicitly", async () => {
   const ai = await read("db/ai.ts");
   assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,summary,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,updated_at,revision\)/);
-  assert.match(ai, /INSERT INTO ai_models\(id,name,base_url,model_id,system_prompt,temperature,max_output,timeout_ms,has_secret,created_at,updated_at\)/);
+  assert.match(ai, /INSERT INTO ai_models\(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at\)/);
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
 
@@ -197,22 +197,38 @@ test("empty outline titles derive a single-line display name from outline conten
 });
 
 test("shared component framework owns responsive overlays and form controls", async () => {
-  const [pkg, layout, app, styles, vite] = await Promise.all([
+  const [pkg, layout, app, overlays, styles, vite, overlayGuide, pullRequestTemplate] = await Promise.all([
     read("package.json"),
     read("app/layout.tsx"),
     read("app/WriterStudioApp.tsx"),
+    read("app/ui/overlays.tsx"),
     read("app/globals.css"),
     read("vite.config.ts"),
+    read("docs/mobile-overlay-contract.md"),
+    read(".github/pull_request_template.md"),
   ]);
   for (const dependency of ["@mantine/core", "@mantine/hooks", "@dnd-kit/core", "@dnd-kit/sortable"]) assert.match(pkg, new RegExp(dependency.replace("/", "\\/")));
   assert.match(layout, /@mantine\/core\/styles\.css/);
   assert.match(layout, /<MantineProvider/);
-  assert.match(app, /<Modal[\s\S]*opened=\{formOpen\}[\s\S]*fullScreen=\{compact\}/);
-  assert.match(app, /function VersionDrawer[\s\S]*<Drawer/);
-  assert.match(app, /function TaskPanel[\s\S]*<Drawer/);
+  for (const primitive of ["MobileActionSheet", "ScrollableDrawer", "ResponsiveModal"]) assert.match(overlays, new RegExp(`export function ${primitive}`));
+  assert.doesNotMatch(app, /<(?:Modal|Drawer)\b/);
+  assert.doesNotMatch(app, /className="(?:modal-layer|outline-sheet-layer|desktop-action-layer)"/);
+  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{formOpen\}/);
+  assert.match(app, /function VersionDrawer[\s\S]*<ScrollableDrawer/);
+  assert.match(app, /function TaskPanel[\s\S]*<ScrollableDrawer/);
+  assert.match(app, /function ChapterActionSheet[\s\S]*<MobileActionSheet/);
   assert.match(app, /title="本次生成上下文"[\s\S]*position=\{compact \? "bottom" : "right"\}/);
-  assert.match(styles, /\.ws-drawer-body \{[\s\S]*min-height: 0;[\s\S]*overflow: hidden;/);
+  assert.match(overlays, /data-ui-overlay="drawer"/);
+  assert.match(overlays, /data-ui-overlay="modal"/);
+  assert.match(overlays, /data-ui-overlay-scroll/);
+  assert.match(styles, /\.ws-overlay-surface \{[\s\S]*max-height: calc\(100dvh/);
+  assert.match(styles, /\.ws-overlay-body--scroll,[\s\S]*overflow-y: auto/);
+  assert.match(styles, /\.ws-overlay-body--contained \{[\s\S]*overflow: hidden/);
   assert.match(styles, /\.studio-shell,[\s\S]*\.main-area \{[\s\S]*height: 100dvh;/);
+  for (const viewport of ["390 × 844", "320 × 568", "667 × 375", "390 × 480"]) {
+    assert.match(overlayGuide, new RegExp(viewport));
+    assert.match(pullRequestTemplate, new RegExp(viewport.replace(" × ", "×")));
+  }
   assert.match(vite, /exclude: \["@mantine\/core", "@mantine\/hooks"\]/);
 });
 
@@ -317,26 +333,51 @@ test("mobile Generate edits use an explicit draft save and insecure HTTP clipboa
   assert.match(styles, /\.conflict-actions[\s\S]*@media \(max-width: 767px\)/);
 });
 
-test("AI Generate bundles pending outline naming into the same model request", async () => {
-  const [app, state, runtime, ai, selector, migration, executor] = await Promise.all([
+test("AI Generate only bundles outline naming when the user opts in", async () => {
+  const [app, state, runtime, ai, naming, migration, executor] = await Promise.all([
     read("app/WriterStudioApp.tsx"),
     read("app/studio-state.tsx"),
     read("db/runtime.ts"),
     read("db/ai.ts"),
-    read("lib/ai-context.ts"),
-    read("drizzle/0003_high_vertigo.sql"),
+    read("lib/naming-options.ts"),
+    read("drizzle/0010_broad_aqueduct.sql"),
     read("app/api/ai/tasks/[taskId]/execute/route.ts"),
   ]);
-  assert.match(state, /titleGenerationPending: boolean/);
-  assert.match(state, /planChanged[\s\S]*titleGenerationPending/);
-  assert.match(selector, /titleGenerationPending: outline\.titleGenerationPending === true/);
-  assert.match(ai, /includeOutlineTitle = input\.target === "outline" \|\| \(input\.target === "content" && source\.currentOutline\.titleGenerationPending\)/);
+  assert.match(state, /includeOutlineTitle\?: boolean/);
+  assert.match(app, /aria-label="同时生成大纲名"/);
+  assert.match(ai, /includeOutlineTitle = input\.target === "content" && input\.includeOutlineTitle === true/);
+  assert.doesNotMatch(ai, /source\.currentOutline\.titleGenerationPending/);
   assert.match(ai, /<outline_title>大纲标题<\/outline_title>[\s\S]*<generated_text>/);
-  assert.match(ai, /const result = normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle\)/);
+  assert.match(ai, /const result = normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle, outlineNaming\)/);
+  assert.match(naming, /NAMING_STYLE_OPTIONS/);
+  assert.match(naming, /采用简化词牌风格/);
+  assert.match(naming, /词牌名.*绝对不要出现在结果中/);
+  assert.match(app, /NAMING_EXPRESSION_OPTIONS/);
+  assert.match(app, /生成句数/);
   assert.match(app, /outlinePlanSnapshot: outlinePlanDraft/);
+  assert.match(app, /includeOutlineTitle, excellentFragmentIds/);
   assert.match(executor, /found\.outline\.plan === task\.contextOptions\?\.outlinePlanSnapshot/);
-  assert.match(runtime, /title_generation_pending INTEGER NOT NULL DEFAULT 0/);
-  assert.match(migration, /UPDATE `outlines` SET `title_generation_pending` = true WHERE TRIM\(`title`\) = ''/);
+  assert.match(runtime, /max_input_characters INTEGER NOT NULL DEFAULT 60000/);
+  assert.match(migration, /max_input_characters/);
+});
+
+test("dedicated naming is one call, has a preview, and blocks oversized chapters before upstream", async () => {
+  const [app, ai, route] = await Promise.all([
+    read("app/WriterStudioApp.tsx"),
+    read("db/ai.ts"),
+    read("app/api/ai/names/route.ts"),
+  ]);
+  assert.match(app, /重新生成大纲名字/);
+  assert.match(app, /AI生成名称/);
+  assert.match(app, /取消全选/);
+  assert.match(app, /应用所有名称/);
+  assert.match(app, /regenerateItem/);
+  assert.match(app, /function NameGenerateDialog/);
+  assert.match(app, /studio\.applyGeneratedNames/);
+  assert.match(ai, /export async function generateNames/);
+  assert.match(ai, /if \(characters > maximum\) throw new AiPromptTooLongError/);
+  assert.doesNotMatch(ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "", /for \(const .*upstream/);
+  assert.match(route, /status = error instanceof AiPromptTooLongError \? 413/);
 });
 
 test("AI task panel orders every status by submission time", async () => {
@@ -478,4 +519,25 @@ test("AI Chat is a session workspace with writing-safe actions and touch-sized c
   assert.doesNotMatch(app, /const iconGlyph/);
   assert.match(styles, /\.chat-header-actions \.icon-button \{ height: 44px; width: 44px; \}/);
   assert.match(styles, /\.composer-send \{ border-radius: 50%; flex-basis: 44px; height: 44px; width: 44px; \}/);
+});
+
+test("shared UI controls use one type and action scale across native and component buttons", async () => {
+  const styles = await read("app/globals.css");
+  const app = await read("app/WriterStudioApp.tsx");
+  const layout = await read("app/layout.tsx");
+  assert.match(styles, /--font-ui: 13px/);
+  assert.match(styles, /--font-label: 12px/);
+  assert.match(styles, /--control-height: 36px/);
+  assert.match(styles, /--accent: #755835/);
+  assert.doesNotMatch(styles, /#2563eb|#1d4ed8|37, 99, 235/);
+  assert.match(layout, /primaryColor: "studio"/);
+  assert.doesNotMatch(layout, /primaryColor: "blue"/);
+  assert.doesNotMatch(app, /color="blue"/);
+  assert.match(styles, /\.mantine-Button-root \{[\s\S]*font-size: var\(--font-ui\)/);
+  assert.match(styles, /\.model-card-actions \.mantine-Button-root \{[\s\S]*min-height: var\(--control-height\)/);
+  assert.match(styles, /\.info-page \.page-header \{[\s\S]*flex-direction: row/);
+  assert.match(styles, /\.mantine-Modal-root \.mantine-Button-root,[\s\S]*min-height: 44px/);
+  assert.match(styles, /\.setting-row \.toggle span \{[\s\S]*height: 24px/);
+  assert.match(app, /<Button variant="default" size="xs" loading=\{busy === model\.id\}[\s\S]{0,220}测试<\/Button>/);
+  assert.match(app, /<Menu\.Target><Button variant="default" size="xs">更多<\/Button><\/Menu\.Target>/);
 });
