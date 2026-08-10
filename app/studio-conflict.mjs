@@ -46,8 +46,16 @@ export function mergeAiManagedConflict(base, local, server) {
     const addedVersions = (serverOutline.versions ?? []).filter((version) => !baseVersions.has(version.id));
     if (retainedVersions.length !== baseVersions.size || retainedVersions.some((version) => !same(version, baseVersions.get(version.id))) || addedVersions.some((version) => !isServerGeneratedVersion(version))) return null;
     const generatedDefault = addedVersions.find((version) => (version.source === "AI Generate" || version.source === "AI Review") && version.id === serverOutline.sourceVersionId);
-    const defaultChanged = serverOutline.sourceVersionId !== baseOutline.sourceVersionId || serverOutline.contentOverride !== baseOutline.contentOverride || serverOutline.contentName !== baseOutline.contentName;
-    if (defaultChanged && !generatedDefault) return null;
+    const generatedCurrent = addedVersions.find((version) => version.source === "AI Generate"
+      && serverOutline.contentOverride === true
+      && version.name === serverOutline.contentName
+      && version.content === serverOutline.content);
+    const currentChanged = serverOutline.sourceVersionId !== baseOutline.sourceVersionId
+      || serverOutline.contentOverride !== baseOutline.contentOverride
+      || serverOutline.contentName !== baseOutline.contentName
+      || serverOutline.content !== baseOutline.content
+      || !same(serverOutline.excellentFragments ?? [], baseOutline.excellentFragments ?? []);
+    if (currentChanged && !generatedDefault && !generatedCurrent) return null;
 
     const titleChanged = serverOutline.title !== baseOutline.title || serverOutline.titleGenerationPending !== baseOutline.titleGenerationPending;
     const hasCompletedTask = (server.tasks ?? []).some((task) => task.outlineId === outlineId && task.state === "success");
@@ -55,10 +63,12 @@ export function mergeAiManagedConflict(base, local, server) {
 
     comparableOutline.versions = structuredClone(baseOutline.versions ?? []);
     comparableOutline.state = baseOutline.state;
-    if (generatedDefault) {
+    if (generatedDefault || generatedCurrent) {
       comparableOutline.sourceVersionId = baseOutline.sourceVersionId;
       comparableOutline.contentOverride = baseOutline.contentOverride;
       comparableOutline.contentName = baseOutline.contentName;
+      comparableOutline.content = baseOutline.content;
+      comparableOutline.excellentFragments = structuredClone(baseOutline.excellentFragments);
     }
     if (titleChanged) {
       comparableOutline.title = baseOutline.title;
@@ -82,15 +92,21 @@ export function mergeAiManagedConflict(base, local, server) {
     const serverAdditions = (serverOutline.versions ?? []).filter((version) => !baseVersionIds.has(version.id) && !localVersionIds.has(version.id));
     if (serverAdditions.length) localOutline.versions = [...structuredClone(serverAdditions), ...(localOutline.versions ?? [])];
     const serverGeneratedDefault = serverAdditions.find((version) => (version.source === "AI Generate" || version.source === "AI Review") && version.id === serverOutline.sourceVersionId);
+    const serverGeneratedCurrent = serverAdditions.find((version) => version.source === "AI Generate"
+      && serverOutline.contentOverride === true
+      && version.name === serverOutline.contentName
+      && version.content === serverOutline.content);
     const localChangedCurrent = localOutline.sourceVersionId !== baseOutline.sourceVersionId
       || localOutline.contentOverride !== baseOutline.contentOverride
       || localOutline.contentName !== baseOutline.contentName
       || localOutline.content !== baseOutline.content
       || !same(localOutline.excellentFragments ?? [], baseOutline.excellentFragments ?? []);
-    if (serverGeneratedDefault && !localChangedCurrent) {
+    if ((serverGeneratedDefault || serverGeneratedCurrent) && !localChangedCurrent) {
       localOutline.sourceVersionId = serverOutline.sourceVersionId;
       localOutline.contentOverride = serverOutline.contentOverride;
       localOutline.contentName = serverOutline.contentName;
+      localOutline.content = serverOutline.content;
+      localOutline.excellentFragments = structuredClone(serverOutline.excellentFragments);
     }
 
     const serverTitleChanged = serverOutline.title !== baseOutline.title || serverOutline.titleGenerationPending !== baseOutline.titleGenerationPending;

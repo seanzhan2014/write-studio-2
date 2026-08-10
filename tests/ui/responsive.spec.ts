@@ -559,6 +559,10 @@ test("desktop version chooser previews the selected body and can set it as defau
   await setDefault.click();
   await expect(page.locator(".toast")).toContainText("已设为默认正文");
   await expect(page.getByRole("button", { name: "当前正文已是默认正文" })).toBeDisabled();
+  await page.getByRole("button", { name: "版本", exact: true }).click();
+  await expect(page.locator(".version-list article")).toHaveCount(1);
+  await expect(page.locator(".version-list article").filter({ hasText: "手动快照" })).toHaveCount(1);
+  await page.getByRole("button", { name: "关闭正文版本" }).click();
 
   const response = await request.get("/api/state");
   const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };

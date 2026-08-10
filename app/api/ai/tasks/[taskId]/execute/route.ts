@@ -4,7 +4,7 @@ import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { resolvedOutlineContent } from "@/lib/outline-content";
+import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -185,7 +185,7 @@ export async function POST(_request: Request, context: RouteContext) {
               ? cloneExcellentFragments(result.text, reanchorExcellentFragments(resolvedOutlineContent(found.outline), result.text, activeExcellentFragments(found.outline)))
               : [],
           };
-          const directContentBackup: Version | undefined = found.outline.contentOverride && found.outline.content.trim()
+          const directContentBackup: Version | undefined = found.outline.contentOverride && found.outline.content.trim() && !currentOutlineVersion(found.outline)
             ? {
                 id: `version-${crypto.randomUUID()}`,
                 name: `AI Generate 前 · ${localTimestampContentName(completedAt)}`,
@@ -198,10 +198,10 @@ export async function POST(_request: Request, context: RouteContext) {
               }
             : undefined;
           found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
+          found.outline.content = version.content;
           found.outline.contentName = version.name;
-          found.outline.contentOverride = false;
-          found.outline.excellentFragments = [];
-          found.outline.sourceVersionId = version.id;
+          found.outline.contentOverride = true;
+          found.outline.excellentFragments = cloneExcellentFragments(version.content, version.excellentFragments);
           found.outline.state = "saved";
           found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;

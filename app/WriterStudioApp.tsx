@@ -40,7 +40,7 @@ import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, t
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments, paragraphRangeAt } from "@/lib/excellent-fragments.mjs";
 import { MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, type ContentGenerationMode } from "@/lib/generate-options";
-import { resolvedOutlineContent } from "@/lib/outline-content";
+import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { BUILTIN_REVIEW_REQUIREMENTS, MAX_REVIEW_PRESETS, MAX_REVIEW_PRESET_CHARACTERS, normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
@@ -2159,7 +2159,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   async function setDisplayedContentAsDefault() {
     if (!displayedContent.trim() || displayedIsDefault || settingDefault) return;
     setSettingDefault(true);
-    const versionId = previewVersion?.id ?? studio.saveVersion(
+    const versionId = previewVersion?.id ?? currentOutlineVersion(studio.currentOutline)?.id ?? studio.saveVersion(
       studio.currentOutline.id,
       resolvedOutlineContentName(studio.currentOutline),
       "手动",
@@ -3792,6 +3792,8 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
   const currentContent = resolvedOutlineContent(studio.currentOutline);
   const currentContentName = resolvedOutlineContentName(studio.currentOutline);
   const currentExcellentFragments = resolvedExcellentFragments(studio.currentOutline);
+  const currentVersion = currentOutlineVersion(studio.currentOutline);
+  const showStandaloneCurrent = !currentVersion;
   return <ScrollableDrawer
     scrollMode="content"
     opened
@@ -3815,16 +3817,17 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
         <p><ins>{compareVersion.content.slice(0, 500) || "（版本正文为空）"}</ins></p>
         <div className="diff-legend"><span><i className="removed" />{currentContentName}</span><span><i className="added" />{compareVersion.name}</span></div>
       </div> : <div className="version-list" data-ui-overlay-scroll>
-        <article className={!selectedVersionId ? "active current" : "current"}>
+        {showStandaloneCurrent && <article className={!selectedVersionId ? "active current" : "current"}>
           <button className="version-preview-main" type="button" onClick={onClearPreview}><div><span className="ui-title" title={currentContentName}>{currentContentName}</span>{currentExcellentFragments.length > 0 && <i className="excellent-fragment-dot" title="含优秀片段" />}<em>{studio.currentOutline.contentOverride ? "已直接保存" : studio.currentOutline.sourceVersionId ? "当前正文" : "空正文"}</em></div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(currentContent)} 字</p><span>正文</span></button>
           {!selectedVersionId && <div className="version-content-preview" aria-label="当前正文内容">{currentContent ? <ExcellentText text={currentContent} fragments={currentExcellentFragments} /> : "（正文为空）"}</div>}
-        </article>
+        </article>}
         {versions.map((version) => {
           const isDefault = studio.currentOutline.sourceVersionId === version.id;
-          const isActive = selectedVersionId === version.id;
+          const isCurrent = currentVersion?.id === version.id;
+          const isActive = selectedVersionId ? selectedVersionId === version.id : isCurrent;
           const excellentFragments = normalizeExcellentFragments(version.content, version.excellentFragments);
-          return <article className={`${isDefault ? "default" : ""} ${isActive ? "active" : ""}`} key={version.id}>
-            <button className="version-preview-main" type="button" onClick={() => onPreview(version.id)}><div><span className="ui-title">{version.name}</span>{excellentFragments.length > 0 && <i className="excellent-fragment-dot" title="含优秀片段" />}{isDefault && <em>默认</em>}</div><p>{formatTime(version.createdAt)} · {wordCount(version.content)} 字</p><span>{version.source}</span></button>
+          return <article className={`${isDefault ? "default" : ""} ${isCurrent ? "current" : ""} ${isActive ? "active" : ""}`} key={version.id}>
+            <button className="version-preview-main" type="button" onClick={() => isCurrent ? onClearPreview() : onPreview(version.id)}><div><span className="ui-title">{version.name}</span>{excellentFragments.length > 0 && <i className="excellent-fragment-dot" title="含优秀片段" />}{isCurrent && <em>当前</em>}{isDefault && <em>默认</em>}</div><p>{formatTime(version.createdAt)} · {wordCount(version.content)} 字</p><span>{version.source}</span></button>
             {isActive && <div className="version-content-preview" aria-label={`${version.name}正文内容`}>{version.content ? <ExcellentText text={version.content} fragments={excellentFragments} /> : "（正文为空）"}</div>}
             <div className="version-actions">
               <button type="button" onClick={() => setCompareVersionId(version.id)}>对比</button>

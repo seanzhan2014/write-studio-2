@@ -680,8 +680,9 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(outline.versions[0].model, "捕获模型");
     assert.equal(outline.versions[0].modelId, "fake-model");
     assert.deepEqual(outline.versions[0].outlineSnapshot, { title: "当前码头", plan: "林澈与顾屿在七码头会合。" });
-    assert.equal(outline.sourceVersionId, outline.versions[0].id);
-    assert.equal(outline.contentOverride, false);
+    assert.equal(outline.sourceVersionId, "version-manual", "Generate must retain the existing default body");
+    assert.equal(outline.contentOverride, true);
+    assert.equal(outline.content, outline.versions[0].content);
     assert.equal(outline.contentName, outline.versions[0].name);
     const currentBody = await api("/api/outlines/outline-current/content");
     assert.equal(currentBody.data.data.text, "模型生成正文");
@@ -694,6 +695,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     outline.content = "生成任务完成前的直接正文";
     outline.contentName = "直接正文";
     outline.contentOverride = true;
+    outline.sourceVersionId = "version-manual";
     const saved = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: changed } });
     assert.equal(saved.response.status, 200, saved.text);
 
@@ -712,8 +714,9 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     const generated = persisted.versions.find((version) => version.taskId === taskId);
     const backup = persisted.versions.find((version) => version.name.startsWith("AI Generate 前 · "));
     assert.ok(generated);
-    assert.equal(persisted.sourceVersionId, generated.id);
-    assert.equal(persisted.contentOverride, false);
+    assert.equal(persisted.sourceVersionId, "version-manual", "Generate must retain the existing default selection");
+    assert.equal(persisted.contentOverride, true);
+    assert.equal(persisted.content, generated.content);
     assert.equal(backup?.content, "生成任务完成前的直接正文");
     assert.equal(backup?.source, "手动");
     assert.equal(backup?.taskId, taskId);
@@ -748,8 +751,8 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     assert.equal(task.state, "success");
     assert.ok(generated);
     assert.ok(backup);
-    assert.equal(persisted.contentOverride, false);
-    assert.equal(persisted.excellentFragments.length, 0);
+    assert.equal(persisted.contentOverride, true);
+    assert.equal(persisted.excellentFragments.length, generated.excellentFragments.length);
     assert.equal(backup.excellentFragments[0].text, "优秀片段");
     assert.notEqual(backup.excellentFragments[0].id, "excellent-direct-current");
     assert.match(modelServer.received.at(-1).body.messages[1].content, /<excellent_fragments[\s\S]*<text>优秀片段<\/text>/);

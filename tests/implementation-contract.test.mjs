@@ -296,8 +296,9 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /任务成功后会自动设为该大纲的当前正文/);
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
-  assert.match(executor, /found\.outline\.sourceVersionId = version\.id/);
-  assert.match(executor, /found\.outline\.contentOverride = false/);
+  assert.doesNotMatch(executor, /found\.outline\.sourceVersionId = version\.id/);
+  assert.match(executor, /found\.outline\.contentOverride = true/);
+  assert.match(executor, /found\.outline\.content = version\.content/);
   assert.match(executor, /AI Generate 前/);
   assert.match(executor, /hasEarlierBodyTask/);
   assert.match(app, /selectedTask\.target !== "正文"/);
