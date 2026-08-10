@@ -30,7 +30,7 @@ export function fullStudioFixture() {
     currentArticleId: "article-main",
     currentOutlineId: "outline-current",
     articles: [{
-      id: "article-main", title: "严格测试文章", summary: "用于真实 D1 和 API 回归测试。", type: "悬疑", style: "克制",
+      id: "article-main", title: "严格测试文章", summary: "用于真实 SQLite 和 API 回归测试。", type: "悬疑", style: "克制",
       createdAt: now, updatedAt: now, lastOutlineId: "outline-current",
       chapters: [
         { id: "chapter-main", title: "第一章", archived: false, outlines: [previous, current, after, archived] },

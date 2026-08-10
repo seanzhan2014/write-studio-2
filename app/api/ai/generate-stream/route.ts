@@ -1,5 +1,5 @@
 import { AiInputError, assertAiTargetAvailable, generateText } from "@/db/ai";
-import { ensureDatabase, getD1 } from "@/db/runtime";
+import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
         await ensureDatabase();
         while (!settled && !upstreamController.signal.aborted) {
           await new Promise((resolve) => setTimeout(resolve, 150));
-          const task = await getD1().prepare("SELECT status FROM ai_tasks WHERE id=?").bind(taskId).first<{ status: string }>();
+          const task = await getDatabase().prepare("SELECT status FROM ai_tasks WHERE id=?").bind(taskId).first<{ status: string }>();
           if (task?.status === "cancelled") abortUpstream();
         }
       })().catch(() => undefined);

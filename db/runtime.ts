@@ -1,5 +1,3 @@
-import { env } from "cloudflare:workers";
-
 import type { StudioData } from "@/app/studio-state";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "@/lib/generate-options";
@@ -9,25 +7,9 @@ import { normalizeExcellentFragments, type ExcellentFragment } from "@/lib/excel
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
+import { getDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
-type D1Result<T = Record<string, unknown>> = {
-  success: boolean;
-  results?: T[];
-  meta?: Record<string, unknown>;
-  error?: string;
-};
-
-type D1Statement = {
-  bind: (...values: unknown[]) => D1Statement;
-  run: <T = Record<string, unknown>>() => Promise<D1Result<T>>;
-  all: <T = Record<string, unknown>>() => Promise<D1Result<T>>;
-  first: <T = Record<string, unknown>>(column?: string) => Promise<T | null>;
-};
-
-type D1Database = {
-  prepare: (query: string) => D1Statement;
-  batch: <T = Record<string, unknown>>(statements: D1Statement[]) => Promise<D1Result<T>[]>;
-};
+export { getDatabase } from "./sqlite";
 
 const schemaStatements = [
   "PRAGMA foreign_keys = ON",
@@ -131,13 +113,7 @@ const schemaStatements = [
 
 let initialized: Promise<void> | null = null;
 
-export function getD1(): D1Database {
-  const database = (env as unknown as { DB?: D1Database }).DB;
-  if (!database) throw new Error("本地 D1 数据库绑定 DB 不可用");
-  return database;
-}
-
-async function createSearchIndex(db: D1Database) {
+async function createSearchIndex(db: SqliteDatabase) {
   try {
     await db.prepare(`CREATE VIRTUAL TABLE IF NOT EXISTS search_documents USING fts5(
       article_id UNINDEXED, chapter_id UNINDEXED, outline_id UNINDEXED,
@@ -164,7 +140,7 @@ async function createSearchIndex(db: D1Database) {
 export async function ensureDatabase() {
   if (!initialized) {
     initialized = (async () => {
-      const db = getD1();
+      const db = getDatabase();
       for (const statement of schemaStatements) await db.prepare(statement).run();
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
@@ -187,7 +163,7 @@ export async function ensureDatabase() {
   return initialized;
 }
 
-function rows<T>(result: D1Result<T>) {
+function rows<T>(result: SqliteResult<T>) {
   return result.results ?? [];
 }
 
@@ -197,12 +173,12 @@ function safeJson<T>(value: unknown, fallback: T): T {
 
 function bool(value: unknown) { return Number(value) === 1; }
 
-async function ensureAiModelSecretColumn(db: D1Database) {
+async function ensureAiModelSecretColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("secret")) await db.prepare("ALTER TABLE ai_models ADD COLUMN secret TEXT").run();
 }
 
-async function ensureOutlineTitleGenerationColumn(db: D1Database) {
+async function ensureOutlineTitleGenerationColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('outlines')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("title_generation_pending")) {
     await db.prepare("ALTER TABLE outlines ADD COLUMN title_generation_pending INTEGER NOT NULL DEFAULT 0").run();
@@ -210,27 +186,27 @@ async function ensureOutlineTitleGenerationColumn(db: D1Database) {
   }
 }
 
-async function ensureContentOverrideColumn(db: D1Database) {
+async function ensureContentOverrideColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('contents')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("content_override")) await db.prepare("ALTER TABLE contents ADD COLUMN content_override INTEGER NOT NULL DEFAULT 0").run();
 }
 
-async function ensureContentNameColumn(db: D1Database) {
+async function ensureContentNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('contents')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("content_name")) await db.prepare("ALTER TABLE contents ADD COLUMN content_name TEXT NOT NULL DEFAULT ''").run();
 }
 
-async function ensureVersionOutlineSnapshotColumn(db: D1Database) {
+async function ensureVersionOutlineSnapshotColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("outline_snapshot_json")) await db.prepare("ALTER TABLE versions ADD COLUMN outline_snapshot_json TEXT").run();
 }
 
-async function ensureVersionModelNameColumn(db: D1Database) {
+async function ensureVersionModelNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("model_name")) await db.prepare("ALTER TABLE versions ADD COLUMN model_name TEXT").run();
 }
 
-async function ensureAiTaskProgressColumns(db: D1Database) {
+async function ensureAiTaskProgressColumns(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('ai_tasks')").all<Record<string, unknown>>()).map((row) => String(row.name));
   const additions = [
     ["phase", "TEXT"],
@@ -245,7 +221,7 @@ async function ensureAiTaskProgressColumns(db: D1Database) {
   }
 }
 
-async function ensureCharacterDescriptionShape(db: D1Database) {
+async function ensureCharacterDescriptionShape(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('characters')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (columns.includes("description") && !columns.some((column) => ["role", "appearance", "personality", "abilities", "background", "color"].includes(column))) return;
   const legacy = new Set(columns);
@@ -284,7 +260,7 @@ async function ensureCharacterDescriptionShape(db: D1Database) {
   ]);
 }
 
-async function ensureMultipleChatSessions(db: D1Database) {
+async function ensureMultipleChatSessions(db: SqliteDatabase) {
   const indexes = rows(await db.prepare("PRAGMA index_list('chat_sessions')").all<Record<string, unknown>>());
   const hasOutlineUnique = indexes.some((row) => Number(row.unique) === 1 && String(row.origin) === "u");
   if (!hasOutlineUnique) return;
@@ -316,7 +292,7 @@ async function ensureMultipleChatSessions(db: D1Database) {
 
 export async function readStudioState(): Promise<{ data: StudioData | null; revision: number }> {
   await ensureDatabase();
-  const db = getD1();
+  const db = getDatabase();
   const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
     db.prepare("SELECT * FROM articles ORDER BY last_opened_at DESC").all(),
     db.prepare("SELECT * FROM chapters ORDER BY article_id, position").all(),
@@ -486,7 +462,7 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
   };
 }
 
-function insert(db: D1Database, sql: string, values: unknown[]) { return db.prepare(sql).bind(...values); }
+function insert(db: SqliteDatabase, sql: string, values: unknown[]) { return db.prepare(sql).bind(...values); }
 
 function uniqueExcellentFragments(content: string, fragments: unknown, usedIds: Set<string>) {
   return normalizeExcellentFragments(content, fragments).map((fragment) => {
@@ -497,12 +473,12 @@ function uniqueExcellentFragments(content: string, fragments: unknown, usedIds: 
   });
 }
 
-async function ensureAiModelMaxInputCharactersColumn(db: D1Database) {
+async function ensureAiModelMaxInputCharactersColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("max_input_characters")) await db.prepare(`ALTER TABLE ai_models ADD COLUMN max_input_characters INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_INPUT_CHARACTERS}`).run();
 }
 
-async function ensureArticleNamingColumns(db: D1Database) {
+async function ensureArticleNamingColumns(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('articles')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("chapter_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN chapter_naming_json TEXT NOT NULL DEFAULT '{}'").run();
   if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
@@ -510,13 +486,13 @@ async function ensureArticleNamingColumns(db: D1Database) {
 
 export async function writeStudioState(data: StudioData, expectedRevision: number, force = false) {
   await ensureDatabase();
-  const db = getD1();
+  const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   if (!force && current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
 
   const now = new Date().toISOString();
   const nextRevision = current + 1;
-  const statements: D1Statement[] = [
+  const statements: SqliteStatement[] = [
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
@@ -564,14 +540,14 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
 
 export async function databaseStatus() {
   const state = await readStudioState();
-  const db = getD1();
+  const db = getDatabase();
   const searchMode = await db.prepare("SELECT value_json FROM app_settings WHERE key='search_mode'").first<string>("value_json");
-  return { connected: true, engine: "Cloudflare D1 / SQLite", revision: state.revision, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
+  return { connected: true, engine: "SQLite", revision: state.revision, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
 }
 
 export async function integrityCheck() {
   await ensureDatabase();
-  const db = getD1();
+  const db = getDatabase();
   const result = await db.prepare("PRAGMA foreign_key_check").all();
   return { ok: rows(result).length === 0, issues: rows(result) };
 }
@@ -579,13 +555,13 @@ export async function integrityCheck() {
 export async function searchDocuments(articleId: string, query: string) {
   await ensureDatabase();
   const pattern = `%${query}%`;
-  const result = await getD1().prepare("SELECT article_id,chapter_id,outline_id,entity_type,entity_id,title,body FROM search_documents WHERE article_id=? AND (title LIKE ? OR body LIKE ?) LIMIT 100").bind(articleId, pattern, pattern).all<Record<string, unknown>>();
+  const result = await getDatabase().prepare("SELECT article_id,chapter_id,outline_id,entity_type,entity_id,title,body FROM search_documents WHERE article_id=? AND (title LIKE ? OR body LIKE ?) LIMIT 100").bind(articleId, pattern, pattern).all<Record<string, unknown>>();
   return result.results ?? [];
 }
 
 export async function clearBusinessData() {
   await ensureDatabase();
-  const db = getD1();
+  const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   const now = new Date().toISOString();
   await db.batch([

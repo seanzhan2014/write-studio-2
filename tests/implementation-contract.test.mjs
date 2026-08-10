@@ -60,7 +60,7 @@ test("schema-extensible inserts name their columns explicitly", async () => {
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
 
-test("business data uses D1 with revision conflicts and interrupted-draft candidates", async () => {
+test("business data uses server SQLite with revision conflicts and interrupted-draft candidates", async () => {
   const state = await read("app/studio-state.tsx");
   const runtime = await read("db/runtime.ts");
   assert.match(state, /fetch\("\/api\/state"/);

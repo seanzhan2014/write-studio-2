@@ -7,8 +7,11 @@ import { spawn } from "node:child_process";
 const workspace = process.cwd();
 const host = process.env.WRITER_STUDIO_HOST ?? "0.0.0.0";
 const port = process.env.WRITER_STUDIO_PORT ?? "3002";
-const logDirectory = path.join(workspace, "logs");
+const runtimeMode = process.env.WRITER_STUDIO_RUNTIME_MODE === "production" ? "production" : "development";
+const logDirectory = path.resolve(workspace, process.env.WRITER_STUDIO_LOG_DIR ?? "logs");
 const vinextCli = path.join(workspace, "node_modules", "vinext", "dist", "cli.js");
+const prodServerScript = path.join(workspace, "scripts", "prod-server.mjs");
+const logPrefix = runtimeMode === "production" ? "prod" : "dev";
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
 
 function portIsAvailable(hostname, portNumber) {
@@ -38,7 +41,7 @@ function timestamp() {
 async function removeExpiredLogs() {
   const entries = await readdir(logDirectory, { withFileTypes: true });
   let removed = 0;
-  const logName = new RegExp(`^dev-${port}-(?:service|access)-\\d{4}-\\d{2}-\\d{2}\\.log$`);
+  const logName = new RegExp(`^(?:dev|prod)-${port}-(?:service|access)-\\d{4}-\\d{2}-\\d{2}\\.log$`);
 
   for (const entry of entries) {
     if (!entry.isFile() || !logName.test(entry.name)) continue;
@@ -75,8 +78,8 @@ class DailyLogger {
   }
 }
 
-const serviceLogger = new DailyLogger(`dev-${port}-service`);
-const accessLogger = new DailyLogger(`dev-${port}-access`);
+const serviceLogger = new DailyLogger(`${logPrefix}-${port}-service`);
+const accessLogger = new DailyLogger(`${logPrefix}-${port}-access`);
 
 const numericPort = Number(port);
 if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) {
@@ -139,9 +142,9 @@ function connectOutput(source, input, output) {
 
 serviceLogger.write(
   "lifecycle",
-  `START pid=${process.pid} host=${host} port=${port} retentionDays=30 removedLogs=${removedLogCount}`,
+  `START pid=${process.pid} mode=${runtimeMode} host=${host} port=${port} retentionDays=30 removedLogs=${removedLogCount}`,
 );
-serviceLogger.write("lifecycle", `Launching Vinext cli=${vinextCli}`);
+serviceLogger.write("lifecycle", runtimeMode === "production" ? `Launching production server=${prodServerScript}` : `Launching Vinext cli=${vinextCli}`);
 
 const cleanupTimer = setInterval(() => {
   removeExpiredLogs()
@@ -151,7 +154,10 @@ const cleanupTimer = setInterval(() => {
     .catch((error) => serviceLogger.write("error", `Log cleanup failed: ${error.stack ?? error.message}`));
 }, 60 * 60 * 1000);
 
-child = spawn(process.execPath, [vinextCli, "dev", "--hostname", host, "--port", port], {
+const childArgs = runtimeMode === "production"
+  ? [prodServerScript]
+  : [vinextCli, "dev", "--hostname", host, "--port", port];
+child = spawn(process.execPath, childArgs, {
   cwd: workspace,
   env: process.env,
   stdio: ["inherit", "pipe", "pipe"],

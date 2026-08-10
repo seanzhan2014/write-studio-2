@@ -20,7 +20,7 @@ export default defineConfig({
     reuseExistingServer: true,
     timeout: 120_000,
     env: {
-      WRITER_STUDIO_TEST_DB: ".wrangler/playwright-state",
+      WRITER_STUDIO_DB_PATH: ".test-data/playwright-direct.sqlite",
     },
   },
   projects: [

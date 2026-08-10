@@ -1,4 +1,4 @@
-import { ensureDatabase, getD1, readStudioState } from "./runtime";
+import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
 import { applyReviewEdits, createReviewBlocks, parseReviewResponse, reviewSourceDigest, type ReviewOutlineSource } from "../lib/ai-review.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGenerateTargetWords, type ContentGenerationMode } from "../lib/generate-options";
@@ -58,7 +58,7 @@ async function decryptSecret(stored: string) {
 }
 
 async function readModelSecret(id: string) {
-  const row = await getD1().prepare("SELECT secret FROM ai_models WHERE id=?").bind(id).first<Record<string, unknown>>();
+  const row = await getDatabase().prepare("SELECT secret FROM ai_models WHERE id=?").bind(id).first<Record<string, unknown>>();
   const stored = String(row?.secret ?? "");
   if (!stored) return "";
   try { return await decryptSecret(stored); } catch { return ""; }
@@ -87,7 +87,7 @@ export function validateModelUrl(value: string) {
 
 export async function listModels() {
   await ensureDatabase();
-  const result = await getD1().prepare("SELECT * FROM ai_models ORDER BY created_at").all<Record<string, unknown>>();
+  const result = await getDatabase().prepare("SELECT * FROM ai_models ORDER BY created_at").all<Record<string, unknown>>();
   return (result.results ?? []).map(modelFromRow);
 }
 
@@ -157,7 +157,7 @@ export async function createModels(input: {
     createdAt: now,
     updatedAt: now,
   }));
-  await getD1().batch(models.map((model) => getD1().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.hasSecret ? 1 : 0, storedSecret, now, now)));
   return { models, skippedModelIds };
 }
@@ -176,7 +176,7 @@ export async function createModel(input: Partial<AiModelRecord>) {
   };
   if (!model.name || !model.modelId) throw new Error("模型名称和模型 ID 不能为空");
   await ensureDatabase();
-  await getD1().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, 0, now, now).run();
+  await getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, 0, now, now).run();
   return model;
 }
 
@@ -196,13 +196,13 @@ export async function updateModel(id: string, input: Partial<AiModelRecord>) {
     updatedAt: new Date().toISOString(), hasSecret: existing.hasSecret,
   };
   if (!updated.name || !updated.modelId) throw new Error("模型名称和模型 ID 不能为空");
-  await getD1().prepare("UPDATE ai_models SET name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,has_secret=?,updated_at=? WHERE id=?").bind(updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.hasSecret ? 1 : 0, updated.updatedAt, id).run();
+  await getDatabase().prepare("UPDATE ai_models SET name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,has_secret=?,updated_at=? WHERE id=?").bind(updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.hasSecret ? 1 : 0, updated.updatedAt, id).run();
   return updated;
 }
 
 export async function deleteModel(id: string) {
   await ensureDatabase();
-  await getD1().prepare("DELETE FROM ai_models WHERE id=?").bind(id).run();
+  await getDatabase().prepare("DELETE FROM ai_models WHERE id=?").bind(id).run();
 }
 
 export async function setModelSecret(id: string, secret: string) {
@@ -210,12 +210,12 @@ export async function setModelSecret(id: string, secret: string) {
   if (!model || model.id !== id) throw new Error("模型不存在");
   if (!secret.trim()) throw new Error("密钥不能为空");
   const stored = await encryptSecret(secret.trim());
-  await getD1().prepare("UPDATE ai_models SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
+  await getDatabase().prepare("UPDATE ai_models SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
 }
 
 export async function clearModelSecret(id: string) {
   await ensureDatabase();
-  await getD1().prepare("UPDATE ai_models SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
+  await getDatabase().prepare("UPDATE ai_models SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
 }
 
 export async function discoverModelIds(input: { baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
@@ -956,6 +956,7 @@ function plainTextStream(text: string, signal?: AbortSignal) {
         controller.enqueue(encoder.encode(text.slice(index, index + 3)));
         await new Promise((resolve) => setTimeout(resolve, 18));
       }
+      if (!signal?.aborted) controller.enqueue(encoder.encode("\u001e"));
       controller.close();
     },
   });

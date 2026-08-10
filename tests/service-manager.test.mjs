@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { ServiceController } from "../scripts/service-manager-core.mjs";
+
+const workspace = fileURLToPath(new URL("..", import.meta.url));
 
 test("Vite keeps the application on its requested port", async () => {
   const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
@@ -62,4 +66,39 @@ test("service controller starts, monitors, stops, and restarts its child", async
 
   await controller.stop();
   await waitFor(async () => (await controller.status()).service.state === "stopped");
+});
+
+test("service controller runs the production build with local SQLite", async () => {
+  const servicePort = await freePort();
+  const databasePath = path.join(".test-data", `service-manager-${process.pid}.sqlite`);
+  const databaseFiles = [databasePath, `${databasePath}-shm`, `${databasePath}-wal`];
+  const removeDatabase = () => Promise.all(databaseFiles.map((file) => rm(path.join(workspace, file), { force: true })));
+  await removeDatabase();
+
+  const controller = new ServiceController({
+    workspace,
+    servicePort,
+    serviceHost: "127.0.0.1",
+    probeHost: "127.0.0.1",
+    managerPort: 0,
+    managerHost: "127.0.0.1",
+    env: {
+      WRITER_STUDIO_RUNTIME_MODE: "production",
+      WRITER_STUDIO_DB_PATH: databasePath,
+    },
+    stdio: "ignore",
+  });
+
+  try {
+    const start = await controller.start();
+    assert.equal(start.ok, true);
+    await waitFor(async () => (await controller.status()).service.state === "running", 15_000);
+    const response = await fetch(`http://127.0.0.1:${servicePort}/api/database/status`);
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.engine, "SQLite");
+  } finally {
+    await controller.stop();
+    await removeDatabase();
+  }
 });

@@ -1,0 +1,22 @@
+[Unit]
+Description=Writer Studio self-hosted service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=writer-studio
+Group=writer-studio
+WorkingDirectory=/opt/writer-studio
+Environment=NODE_ENV=production
+Environment=WRITER_STUDIO_DB_PATH=/var/lib/writer-studio/writer-studio.sqlite
+Environment=WRITER_STUDIO_LOG_DIR=/var/log/writer-studio
+EnvironmentFile=-/etc/writer-studio.env
+ExecStart=/usr/bin/node /opt/writer-studio/scripts/service-manager.mjs
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

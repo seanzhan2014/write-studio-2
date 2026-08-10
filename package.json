@@ -11,11 +11,12 @@
     "service:manager": "node scripts/service-manager.mjs",
     "dev:test": "vinext dev --hostname 127.0.0.1 --port 3102",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "node scripts/prod-server.mjs",
     "test": "npm run build && node scripts/run-tests.mjs && npm run test:ui",
     "test:ui": "node scripts/run-ui-tests.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:d1": "node scripts/migrate-d1-to-sqlite.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -26,10 +27,10 @@
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "vinext": "0.0.50"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
     "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
@@ -43,9 +44,7 @@
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.0.13"
   },
   "type": "module"
 }

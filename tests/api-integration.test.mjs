@@ -84,7 +84,7 @@ async function fakeModelServer() {
   return { server, received, url: `http://127.0.0.1:${address.port}/v1` };
 }
 
-test("isolated D1, REST, AI and security integration", async (t) => {
+test("isolated SQLite, REST, AI and security integration", async (t) => {
   assert.ok(baseUrl, "WRITER_STUDIO_TEST_BASE_URL is required");
   const modelServer = await fakeModelServer();
   t.after(() => new Promise((resolve) => {
@@ -92,7 +92,7 @@ test("isolated D1, REST, AI and security integration", async (t) => {
     modelServer.server.closeAllConnections();
   }));
 
-  await t.test("initializes an empty isolated D1", async () => {
+  await t.test("initializes an empty isolated SQLite database", async () => {
     await api("/api/database/business-data", { method: "DELETE" });
     const { response, data } = await api("/api/database/status");
     assert.equal(response.status, 200);

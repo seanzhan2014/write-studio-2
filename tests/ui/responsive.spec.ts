@@ -1072,7 +1072,7 @@ test("AI Chat displays the selected model id as the assistant name", async ({ pa
   const model = page.getByLabel("聊天模型");
   await expect(model).toBeVisible();
   await model.selectOption("model-remote");
-  await expect(page.locator(".message.assistant .message-meta strong").first()).toHaveText("gpt-4.1-mini");
+  await expect(page.locator(".message.assistant .message-meta .ui-label").first()).toHaveText("gpt-4.1-mini");
 });
 
 test("mobile icon controls use glass surfaces and consistent touch sizing", async ({ page }, testInfo) => {
@@ -1119,7 +1119,7 @@ test("empty outline titles use the beginning of the outline as a one-line name",
 
   if (testInfo.project.name === "mobile-chromium") {
     await page.goto("/");
-    await expect(page.locator('[data-outline-id="outline-current"] .mobile-outline-main strong')).toHaveText(expected);
+    await expect(page.locator('[data-outline-id="outline-current"] .mobile-outline-main .ui-title')).toHaveText(expected);
   } else {
     await page.goto("/articles/article-main/outlines/outline-current/write");
     await expect(page.locator(".outline-row.selected .outline-title")).toHaveText(expected);
@@ -1300,7 +1300,7 @@ test("mobile writing view previews a selected version and explicitly saves or di
 
   await page.getByRole("button", { name: "选择正文版本" }).click();
   await expect(page.getByText("正文版本", { exact: true })).toBeVisible();
-  await expect(page.locator(".version-list article.current strong")).not.toHaveText("当前正文");
+  await expect(page.locator(".version-list article.current em")).toHaveText("空正文");
   await expect(page.getByRole("button", { name: "保存当前正文为新版本" })).toBeVisible();
   const candidate = page.locator(".version-list article").filter({ hasText: "手动快照" });
   await candidate.locator(".version-preview-main").click();

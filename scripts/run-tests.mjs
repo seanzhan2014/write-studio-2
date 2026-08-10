@@ -1,10 +1,15 @@
 import { once } from "node:events";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 const workspace = process.cwd();
+const testDatabase = path.join(".test-data", `node-${process.pid}.sqlite`);
+
+async function removeTestDatabase() {
+  await Promise.all([testDatabase, `${testDatabase}-shm`, `${testDatabase}-wal`].map((file) => rm(path.join(workspace, file), { force: true })));
+}
 
 async function freePort() {
   const server = net.createServer();
@@ -44,6 +49,7 @@ async function stopTree(child) {
 const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
+await removeTestDatabase();
 const child = spawn(process.execPath, [
   path.join(workspace, "node_modules", "vinext", "dist", "cli.js"),
   "dev", "--hostname", "127.0.0.1", "--port", String(port),
@@ -51,9 +57,7 @@ const child = spawn(process.execPath, [
   cwd: workspace,
   env: {
     ...process.env,
-    WRITER_STUDIO_TEST_DB: `.wrangler/test-state-${process.pid}`,
-    MINIFLARE_REGISTRY_PATH: `.wrangler/test-registry-${process.pid}`,
-    WRANGLER_WRITE_LOGS: "false",
+    WRITER_STUDIO_DB_PATH: testDatabase,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -74,5 +78,6 @@ try {
   [exitCode] = await once(runner, "exit");
 } finally {
   await stopTree(child);
+  await removeTestDatabase();
 }
 process.exitCode = Number(exitCode ?? 1);

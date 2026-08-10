@@ -2721,11 +2721,18 @@ function ChatView({ outlineId, outlineTitle, onUseAsGenerate, onNotice }: { outl
       studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      const hasStreamTerminator = response.headers.get("X-Writer-Studio-Stream-Terminator") === "record-separator";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        streamingRef.current += decoder.decode(value, { stream: true });
+        const decoded = decoder.decode(value, { stream: true });
+        const terminatorIndex = hasStreamTerminator ? decoded.indexOf("\u001e") : -1;
+        streamingRef.current += terminatorIndex >= 0 ? decoded.slice(0, terminatorIndex) : decoded;
         studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, resultText: streamingRef.current });
+        if (terminatorIndex >= 0) {
+          void reader.cancel();
+          break;
+        }
       }
       if (controller.signal.aborted) return;
       if (!streamingRef.current) throw new Error(`${chatbotName} 返回了空结果`);
@@ -3778,7 +3785,7 @@ function DatabaseSettings() {
   const [checking, setChecking] = useState(false);
   useEffect(() => { void fetch("/api/database/status", { cache: "no-store" }).then((response) => response.json()).then(setStatus); }, [studio.saveStatus]);
   async function check() { setChecking(true); const response = await fetch("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; setChecking(false); window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); }
-  return <><SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "本地 D1 / SQLite"}</span><p>修订号 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert("数据库由本机 3002 服务管理，电脑和同一局域网内的手机访问同一份数据。")}>数据位置</button></div></SettingSection><SettingSection title="维护"><SettingRow title="数据完整性检查"><button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>{checking ? "正在检查…" : "开始检查"}</button></SettingRow></SettingSection><SettingSection title="危险操作"><SettingRow title="清除全部业务数据"><button className="danger-button" type="button" onClick={() => { const confirmText = window.prompt("输入 CLEAR 确认清除全部文章、正文、版本、人物、聊天和 AI 任务"); if (confirmText === "CLEAR") void studio.clearBusinessData(); }}>清除全部业务数据</button></SettingRow></SettingSection></>;
+  return <><SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "SQLite"}</span><p>修订号 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert("SQLite 数据库由本机 3002 服务管理，电脑和同一局域网内的手机访问同一份数据。")}>数据位置</button></div></SettingSection><SettingSection title="维护"><SettingRow title="数据完整性检查"><button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>{checking ? "正在检查…" : "开始检查"}</button></SettingRow></SettingSection><SettingSection title="危险操作"><SettingRow title="清除全部业务数据"><button className="danger-button" type="button" onClick={() => { const confirmText = window.prompt("输入 CLEAR 确认清除全部文章、正文、版本、人物、聊天和 AI 任务"); if (confirmText === "CLEAR") void studio.clearBusinessData(); }}>清除全部业务数据</button></SettingRow></SettingSection></>;
 }
 
 function SystemSettings() { const studio = useStudio(); return <><SettingSection title="运行状态"><SettingRow title="应用版本"><span className="readonly-value">Writer Studio 2.1.0 PoC</span></SettingRow><SettingRow title="本地服务"><span className="status-online">运行正常</span></SettingRow><SettingRow title="最近错误"><span className="readonly-value">暂无错误</span></SettingRow></SettingSection><SettingSection title="诊断"><SettingRow title="脱敏诊断信息"><button className="secondary-button" type="button" onClick={() => void copyTextToClipboard(JSON.stringify({ version: "2.1.0-poc", articles: studio.data.articles.length, tasks: studio.data.tasks.map((task) => task.state), browser: navigator.userAgent }, null, 2))}>复制诊断信息</button></SettingRow><SettingRow title="非业务缓存"><button className="secondary-button" type="button" onClick={() => window.alert("非业务缓存已清除，创作数据未受影响。")}>清除缓存</button></SettingRow></SettingSection></>; }
@@ -3845,15 +3852,13 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
 
 function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: string, next?: "write" | "chat") => void }) {
   const studio = useStudio();
-  const refreshTasks = studio.refreshFromServer;
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
-    const timer = window.setInterval(() => { setClock(Date.now()); void refreshTasks(); }, 3000);
-    void refreshTasks();
+    const timer = window.setInterval(() => setClock(Date.now()), 3000);
     return () => window.clearInterval(timer);
-  }, [refreshTasks]);
+  }, []);
   const tasks = [...studio.data.tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const activeCount = tasks.filter((task) => task.state === "running" || task.state === "waiting").length;

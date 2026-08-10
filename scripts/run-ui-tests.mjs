@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -6,6 +7,11 @@ import { spawn } from "node:child_process";
 const workspace = process.cwd();
 const vinextCli = path.join(workspace, "node_modules", "vinext", "dist", "cli.js");
 const playwrightCli = path.join(workspace, "node_modules", "@playwright", "test", "cli.js");
+const testDatabase = path.join(".test-data", `playwright-${process.pid}.sqlite`);
+
+async function removeTestDatabase() {
+  await Promise.all([testDatabase, `${testDatabase}-shm`, `${testDatabase}-wal`].map((file) => rm(path.join(workspace, file), { force: true })));
+}
 
 async function freePort() {
   const server = net.createServer();
@@ -40,13 +46,12 @@ async function stopServer(child) {
 const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
+await removeTestDatabase();
 const server = spawn(process.execPath, [vinextCli, "dev", "--hostname", "127.0.0.1", "--port", String(port)], {
   cwd: workspace,
   env: {
     ...process.env,
-    WRITER_STUDIO_TEST_DB: `.wrangler/playwright-state-${process.pid}`,
-    MINIFLARE_REGISTRY_PATH: `.wrangler/playwright-registry-${process.pid}`,
-    WRANGLER_WRITE_LOGS: "false",
+    WRITER_STUDIO_DB_PATH: testDatabase,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -68,6 +73,7 @@ try {
   [exitCode] = await once(runner, "exit");
 } finally {
   await stopServer(server);
+  await removeTestDatabase();
 }
 
 process.exitCode = Number(exitCode ?? 1);

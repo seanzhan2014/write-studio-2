@@ -9,7 +9,8 @@ const managerHost = process.env.WRITER_STUDIO_MANAGER_HOST ?? "127.0.0.1";
 const managerPort = Number(process.env.WRITER_STUDIO_MANAGER_PORT ?? DEFAULT_MANAGER_PORT);
 const serviceHost = process.env.WRITER_STUDIO_HOST ?? "0.0.0.0";
 const servicePort = Number(process.env.WRITER_STUDIO_PORT ?? DEFAULT_SERVICE_PORT);
-const logDirectory = path.join(workspace, "logs");
+const serviceMode = process.env.WRITER_STUDIO_SERVICE_MODE === "development" ? "development" : "production";
+const logDirectory = path.resolve(workspace, process.env.WRITER_STUDIO_LOG_DIR ?? "logs");
 const managerLog = path.join(logDirectory, "service-manager.log");
 
 if (managerPort === servicePort) {
@@ -34,6 +35,7 @@ const controller = new ServiceController({
   servicePort,
   managerHost,
   managerPort,
+  env: { WRITER_STUDIO_RUNTIME_MODE: serviceMode },
   onLog: (message) => void log(message),
 });
 
@@ -84,7 +86,7 @@ server.on("error", (error) => {
 });
 
 server.listen(managerPort, managerHost, async () => {
-  await log(`START manager pid=${process.pid} host=${managerHost} port=${managerPort} service=${serviceHost}:${servicePort}`);
+  await log(`START manager pid=${process.pid} host=${managerHost} port=${managerPort} service=${serviceHost}:${servicePort} mode=${serviceMode}`);
   if (process.env.WRITER_STUDIO_MANAGER_AUTOSTART !== "0") {
     await controller.start();
   }
