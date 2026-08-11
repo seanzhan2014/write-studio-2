@@ -1,5 +1,7 @@
 import { AiInputError, AiPromptTooLongError, generateNames } from "@/db/ai";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Parameters<typeof generateNames>[0];
@@ -11,7 +13,6 @@ export async function POST(request: Request) {
     body.instruction = String(body.instruction ?? "").trim();
     body.includeChapter = body.includeChapter !== false;
     body.outlineIds = Array.isArray(body.outlineIds) ? [...new Set(body.outlineIds.map(String))].slice(0, 500) : undefined;
-    body.reservedTitles = Array.isArray(body.reservedTitles) ? body.reservedTitles.map(String).slice(0, 500) : undefined;
     if (!body.articleId || !body.chapterId || (body.target === "outline" && !body.outlineId)) return Response.json({ error: "命名目标不完整" }, { status: 400 });
     if (body.instruction.length > 20000) return Response.json({ error: "补充要求不能超过 20,000 字符" }, { status: 400 });
     return Response.json(await generateNames(body, request.signal));

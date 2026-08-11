@@ -30,6 +30,39 @@ async function swipeOutlineLeft(target: Locator) {
   });
 }
 
+async function selectReaderTextAndOpenMenu(target: Locator, selectedText: string) {
+  await target.evaluate((element, value) => {
+    const text = element.textContent ?? "";
+    const start = text.indexOf(value);
+    if (start < 0) throw new Error(`selection text missing: ${value}`);
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let offset = 0;
+    while (node && offset + (node.textContent?.length ?? 0) <= start) {
+      offset += node.textContent?.length ?? 0;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error("selection text node missing");
+    const range = document.createRange();
+    range.setStart(node, start - offset);
+    range.setEnd(node, start - offset + value.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const bounds = range.getBoundingClientRect();
+    element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: bounds.left + 4, clientY: bounds.bottom + 4 }));
+  }, selectedText);
+}
+
+async function doubleTouch(target: Locator) {
+  await target.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const options = { bubbles: true, cancelable: true, pointerType: "touch", clientX: bounds.left + 24, clientY: bounds.top + 24 };
+    element.dispatchEvent(new PointerEvent("pointerup", { ...options, pointerId: 11 }));
+    element.dispatchEvent(new PointerEvent("pointerup", { ...options, pointerId: 12 }));
+  });
+}
+
 const mobileOverlayViewports = [
   { name: "常见竖屏", width: 390, height: 844 },
   { name: "小型竖屏", width: 320, height: 568 },
@@ -397,7 +430,80 @@ test("first appearance editor is usable on mobile", async ({ page }, testInfo) =
   await expect(firstAppearance).toContainText("未推测到首次出场人物");
 });
 
-test("AI Generate shows the configured model and no longer lists candidate bodies", async ({ page, request }) => {
+test("AI Generate controls keep mobile touch sizes and allow an unlimited word target", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+
+  const wordTarget = page.getByRole("textbox", { name: "正文目标字数" });
+  await wordTarget.scrollIntoViewIfNeeded();
+  const wordBounds = await wordTarget.boundingBox();
+  expect(wordBounds).not.toBeNull();
+  expect(wordBounds!.width).toBeGreaterThanOrEqual(150);
+  expect(wordBounds!.height).toBeGreaterThanOrEqual(44);
+
+  const optionBar = page.locator(".generate-option-bar");
+  const optionMetrics = await optionBar.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+  expect(optionMetrics.scrollWidth).toBeLessThanOrEqual(optionMetrics.clientWidth);
+  for (const selector of [".generate-excellent-fragments-toggle", ".generate-outline-title-toggle"]) {
+    const bounds = await page.locator(selector).boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.height).toBeGreaterThanOrEqual(48);
+  }
+
+  const submit = page.getByRole("button", { name: "开始生成" });
+  const submitBounds = await submit.boundingBox();
+  expect(submitBounds).not.toBeNull();
+  expect(submitBounds!.width).toBeGreaterThanOrEqual(250);
+  expect(submitBounds!.height).toBeGreaterThanOrEqual(48);
+
+  const singleLineText = page.locator([
+    ".generate-mode-options button > span:not(.ui-title)",
+    ".generate-excellent-fragments-toggle .ui-label",
+    ".generate-excellent-fragments-toggle small",
+    ".generate-outline-title-toggle .ui-label",
+    ".generate-outline-title-toggle small",
+    ".generate-first-appearance-heading small",
+    ".generate-context-copy .ui-title",
+    ".generate-model-control .mantine-Select-input",
+    ".generate-auto-apply-note",
+  ].join(","));
+  const textMetrics = await singleLineText.evaluateAll((elements) => elements.map((element) => {
+    const style = getComputedStyle(element);
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2;
+    return { height: element.getBoundingClientRect().height, lineHeight, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+  }));
+  expect(textMetrics.length).toBeGreaterThan(0);
+  for (const metric of textMetrics) {
+    expect(metric.height).toBeLessThanOrEqual(metric.lineHeight + 2);
+    expect(metric.scrollWidth).toBeLessThanOrEqual(metric.clientWidth + 1);
+  }
+
+  await wordTarget.fill("0");
+  await wordTarget.press("Tab");
+  await expect(wordTarget).toHaveValue("");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
+    return payload.data.settings.generateTargetWords;
+  }).toBe(0);
+
+  await wordTarget.fill("500");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
+    return payload.data.settings.generateTargetWords;
+  }).toBe(500);
+  await wordTarget.fill("");
+  await wordTarget.press("Tab");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
+    return payload.data.settings.generateTargetWords;
+  }).toBe(0);
+});
+
+test("AI Generate shows the configured model and no longer lists candidate bodies", async ({ page, request }, testInfo) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
       status: 200,
@@ -434,7 +540,7 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Writer gpt-4.2-current");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
-  await expect(page.getByText("任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。", { exact: true })).toBeVisible();
+  await expect(page.getByText(testInfo.project.name === "mobile-chromium" ? "成功后自动设为当前正文，并保留为版本。" : "任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。", { exact: true })).toBeVisible();
 });
 
 test("desktop writing menu can save the current body as a named version", async ({ page, request }, testInfo) => {
@@ -478,7 +584,7 @@ test("desktop writing save updates the current body without creating a version o
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByLabel("正文内容").waitFor({ state: "visible", timeout: 30_000 });
   await expect(page.getByLabel("正文内容")).toHaveText("不可变版本正文");
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByLabel("正文内容").dblclick();
   await page.getByLabel("正文编辑器").fill("直接保存的当前正文");
   await page.getByRole("button", { name: "保存正文", exact: true }).click();
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
@@ -533,7 +639,7 @@ test("Generate outline editing stays local until one explicit save", async ({ pa
   await expect(page.getByRole("dialog", { name: "处理保存冲突" })).toHaveCount(0);
 });
 
-test("desktop version chooser previews the selected body and can set it as default beside edit", async ({ page, request }, testInfo) => {
+test("desktop version chooser previews the selected body and title double-click sets it as default", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByRole("button", { name: "版本", exact: true }).click();
@@ -553,12 +659,13 @@ test("desktop version chooser previews the selected body and can set it as defau
   await expect(page.locator(".version-preview-bar")).toHaveCount(0);
   await expect(page.getByLabel("正文内容")).toContainText("不可变版本正文");
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
-  const setDefault = page.getByRole("button", { name: "将“手动快照”设为默认正文" });
-  await expect(setDefault).toBeVisible();
-  await expect(setDefault).toHaveCSS("min-height", "30px");
-  await setDefault.click();
+  await expect(page.locator(".content-word-count")).toHaveText("7 字");
+  await expect(page.locator(".start-edit-button,.appreciate-body-button,.set-default-body-button")).toHaveCount(0);
+  const bodyTitle = page.getByRole("button", { name: "正文标题，双击设为默认正文" });
+  await expect(bodyTitle).toContainText("手动快照");
+  await bodyTitle.dblclick();
   await expect(page.locator(".toast")).toContainText("已设为默认正文");
-  await expect(page.getByRole("button", { name: "当前正文已是默认正文" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "正文标题，双击取消默认正文" })).toContainText("默认");
   await page.getByRole("button", { name: "版本", exact: true }).click();
   await expect(page.locator(".version-list article")).toHaveCount(1);
   await expect(page.locator(".version-list article").filter({ hasText: "手动快照" })).toHaveCount(1);
@@ -588,7 +695,7 @@ test("desktop direct current body creates one version when set as default", asyn
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存后准备设为默认的正文");
-  await page.getByRole("button", { name: "将当前正文设为默认正文" }).click();
+  await page.getByRole("button", { name: "正文标题，双击设为默认正文" }).dblclick();
   await expect(page.locator(".toast")).toContainText("已设为默认正文");
 
   const response = await request.get("/api/state");
@@ -600,7 +707,33 @@ test("desktop direct current body creates one version when set as default", asyn
   expect(outline.versions[0]).toMatchObject({ name: "当前正文名称", content: "直接保存后准备设为默认的正文", source: "手动" });
 });
 
-test("appreciation mode persists excellent fragments, marks candidates, and exposes AI context", async ({ page, request }, testInfo) => {
+test("desktop title double-click cancels the current default body", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.sourceVersionId = "version-manual";
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await expect(page.getByLabel("正文内容")).toHaveText("不可变版本正文");
+  await page.getByRole("button", { name: "正文标题，双击取消默认正文" }).dblclick();
+  await expect(page.locator(".toast")).toContainText("已取消默认正文");
+  await expect(page.getByLabel("正文内容")).toHaveText("（正文为空）");
+
+  const response = await request.get("/api/state");
+  const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+  const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  expect(outline.sourceVersionId).toBeUndefined();
+  expect(outline.versions).toHaveLength(1);
+});
+
+test("selection context menu toggles appreciation, marks candidates, and exposes AI context", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop text selection");
   const current = await request.get("/api/state");
   const payload = await current.json() as { revision: number };
@@ -622,33 +755,25 @@ test("appreciation mode persists excellent fragments, marks candidates, and expo
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("button", { name: "欣赏", exact: true }).click();
   const reader = page.getByLabel("正文内容");
-  await reader.evaluate((element) => {
-    const text = element.textContent ?? "";
-    const start = text.indexOf("值得欣赏");
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-    let node = walker.nextNode();
-    let offset = 0;
-    while (node && offset + (node.textContent?.length ?? 0) < start) {
-      offset += node.textContent?.length ?? 0;
-      node = walker.nextNode();
-    }
-    if (!node) throw new Error("selection text node missing");
-    const range = document.createRange();
-    range.setStart(node, start - offset);
-    range.setEnd(node, start - offset + "值得欣赏".length);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, detail: 1 }));
-  });
+  await selectReaderTextAndOpenMenu(reader, "值得欣赏");
+  await page.getByRole("menuitemcheckbox", { name: "欣赏" }).click();
   await expect(reader.locator("mark.excellent-fragment")).toHaveText("值得欣赏");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: { articles: Array<{ chapters: Array<{ outlines: Array<{ id: string; excellentFragments?: Array<{ text: string }> }> }> }> } };
     return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.excellentFragments?.[0]?.text;
   }).toBe("值得欣赏");
+
+  await selectReaderTextAndOpenMenu(reader, "值得欣赏");
+  const checkedAppreciation = page.getByRole("menuitemcheckbox", { name: "欣赏" });
+  await expect(checkedAppreciation).toHaveAttribute("aria-checked", "true");
+  await checkedAppreciation.click();
+  await expect(reader.locator("mark.excellent-fragment")).toHaveCount(0);
+
+  await selectReaderTextAndOpenMenu(reader, "值得欣赏");
+  await page.getByRole("menuitemcheckbox", { name: "欣赏" }).click();
+  await expect(reader.locator("mark.excellent-fragment")).toHaveText("值得欣赏");
 
   await page.getByRole("button", { name: "版本" }).click();
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
@@ -660,6 +785,16 @@ test("appreciation mode persists excellent fragments, marks candidates, and expo
   await expect(excellentOption).not.toBeChecked();
   await excellentOption.check();
   await expect(page.locator(".generate-context-panel")).toContainText("1 个");
+});
+
+test("body double-click and touch double-tap both enter editing", async ({ page }, testInfo) => {
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const reader = page.getByLabel("正文内容");
+  if (testInfo.project.name === "mobile-chromium") await doubleTouch(reader);
+  else await reader.dblclick();
+  await expect(page.getByLabel("正文编辑器")).toBeVisible();
+  await page.getByRole("button", { name: "退出编辑" }).click();
+  await expect(page.getByLabel("正文内容")).toBeVisible();
 });
 
 test("switching outlines shows the target default instead of the previous current body", async ({ page, request }, testInfo) => {
@@ -724,6 +859,41 @@ test("mobile starts at outline and separates article and global entry points", a
   for (const name of ["常规", "外观与编辑器", "AI 模型", "AI 任务", "数据库", "系统与诊断"]) await expect(page.getByRole("button", { name })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("mobile outline and chapter menus share a compact readable action layout", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
+  await page.goto("/");
+
+  async function expectReadableMenu(expectedActionCount: number) {
+    const sheet = page.locator(".outline-action-drawer");
+    await expectOverlayContract(page, sheet);
+    const actions = sheet.locator(".ws-action-sheet-list > button");
+    await expect(actions).toHaveCount(expectedActionCount);
+    const metrics = await actions.evaluateAll((buttons) => buttons.map((button) => {
+      const label = button.querySelector(":scope > span:last-child") as HTMLElement | null;
+      return {
+        iconCount: button.querySelectorAll(":scope > .ws-action-sheet-icon").length,
+        labelWidth: label?.getBoundingClientRect().width ?? 0,
+        lineHeight: label ? Number.parseFloat(getComputedStyle(label).lineHeight) : 0,
+        fontSize: label ? Number.parseFloat(getComputedStyle(label).fontSize) : 0,
+      };
+    }));
+    expect(metrics.every((item) => item.iconCount === 1)).toBe(true);
+    expect(Math.min(...metrics.map((item) => item.labelWidth))).toBeGreaterThan(74);
+    expect(metrics.every((item) => item.lineHeight >= item.fontSize * 1.3)).toBe(true);
+    const sheetBounds = await sheet.boundingBox();
+    expect(sheetBounds).not.toBeNull();
+    expect(sheetBounds!.height).toBeLessThan(page.viewportSize()!.height * 0.75);
+  }
+
+  await page.getByRole("button", { name: "当前码头更多操作", exact: true }).click();
+  await expectReadableMenu(10);
+  await page.getByRole("button", { name: "关闭大纲操作", exact: true }).click();
+
+  await page.getByRole("button", { name: "第一章更多操作", exact: true }).click();
+  await expectReadableMenu(7);
+  await page.getByRole("button", { name: "关闭章节菜单", exact: true }).click();
 });
 
 test("mobile outline swipe archives and restores without opening the more menu", async ({ page, request }, testInfo) => {
@@ -1178,13 +1348,14 @@ test("dedicated naming menus preview one response before applying", async ({ pag
   await page.goto("/");
   await page.locator('[data-outline-id="outline-current"] .row-more').click();
   await page.getByRole("button", { name: "重新生成大纲名字" }).click();
-  await expect(page.getByText("只发送文章资料、当前章节信息和大纲内容，不发送正文、正文版本或聊天记录。")).toBeVisible();
+  await expect(page.getByText("只发送文章资料、命名设置和当前大纲内容，不发送现有章节名、大纲名、正文、正文版本或聊天记录。")).toBeVisible();
   await expect(page.getByRole("combobox", { name: "名称生成模型" })).toHaveValue(/继承 AI Generate/);
   await page.getByRole("button", { name: "生成名称" }).click();
   await expect(page.getByLabel("生成的大纲名：当前码头")).toHaveValue("七码头潮汐密钥");
   expect(calls).toBe(1);
   expect(requestBody).toMatchObject({ target: "outline", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current" });
   expect(requestBody).not.toHaveProperty("content");
+  expect(requestBody).not.toHaveProperty("reservedTitles");
   await page.getByRole("button", { name: "应用名称" }).click();
   await expect(page.locator('[data-outline-id="outline-current"] .outline-title')).toHaveText("七码头潮汐密钥");
 
@@ -1201,6 +1372,7 @@ test("dedicated naming menus preview one response before applying", async ({ pag
   await expect(page.getByLabel("生成的章节名")).toHaveValue("潮汐密钥");
   expect(calls).toBe(2);
   expect(requestBody).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: [] });
+  expect(requestBody).not.toHaveProperty("reservedTitles");
   await page.getByRole("button", { name: "重新生成" }).click();
   await expect(page.getByLabel("生成的章节名")).toHaveValue("雾港密钥");
   expect(calls).toBe(3);

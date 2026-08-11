@@ -264,7 +264,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(modelServer.received.length, receivedBefore, "archived targets must never reach the model service");
   });
 
-  await t.test("allows content generation without an instruction and sends the target length", async () => {
+  await t.test("allows content generation without an instruction and only sends an explicit target length", async () => {
     const generated = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "", model: "捕获模型", target: "content", targetWords: 6200 } });
     assert.equal(generated.response.status, 200, generated.text);
     const messages = modelServer.received.at(-1).body.messages;
@@ -286,9 +286,13 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.doesNotMatch(messages[0].content, /<outline_title>/);
     assert.equal(generated.data.outlineTitle, undefined);
 
-    const defaultLength = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content" } });
-    assert.equal(defaultLength.response.status, 200, defaultLength.text);
-    assert.match(modelServer.received.at(-1).body.messages[1].content, /<target_characters>5000<\/target_characters>/);
+    const unlimitedLength = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content" } });
+    assert.equal(unlimitedLength.response.status, 200, unlimitedLength.text);
+    assert.doesNotMatch(modelServer.received.at(-1).body.messages[1].content, /target_characters/);
+
+    const zeroLength = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", targetWords: 0 } });
+    assert.equal(zeroLength.response.status, 200, zeroLength.text);
+    assert.doesNotMatch(modelServer.received.at(-1).body.messages[1].content, /target_characters/);
 
     const overriddenAppearance = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", firstAppearanceCharacterIds: ["character-lin"] } });
     assert.equal(overriddenAppearance.response.status, 200, overriddenAppearance.text);
@@ -357,7 +361,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.deepEqual(outlineNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐密钥" }]);
     const outlinePrompt = modelServer.received.at(-1).body.messages.at(-1).content;
     assert.match(outlinePrompt, /林澈与顾屿在七码头会合/);
-    assert.doesNotMatch(outlinePrompt, /灯塔正文|不可变版本正文|alternate-session-secret/);
+    assert.doesNotMatch(outlinePrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔正文|不可变版本正文|alternate-session-secret/);
 
     const beforeChapter = modelServer.received.length;
     const chapterNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", model: "捕获模型" } });
@@ -367,7 +371,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(chapterNames.data.outlineTitles.length, 3);
     const chapterPrompt = modelServer.received.at(-1).body.messages.at(-1).content;
     assert.match(chapterPrompt, /灯塔取得前序线索/);
-    assert.doesNotMatch(chapterPrompt, /归档内容绝不能进入上下文|灯塔正文|不可变版本正文|alternate-session-secret/);
+    assert.doesNotMatch(chapterPrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|归档秘密|归档内容绝不能进入上下文|灯塔正文|不可变版本正文|alternate-session-secret/);
 
     const beforeSelected = modelServer.received.length;
     const selectedNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", includeChapter: false, outlineIds: ["outline-current"], model: "捕获模型" } });
@@ -377,7 +381,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.deepEqual(selectedNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐" }]);
     const selectedPrompt = modelServer.received.at(-1).body.messages.at(-1).content;
     assert.match(selectedPrompt, /林澈与顾屿在七码头会合/);
-    assert.doesNotMatch(selectedPrompt, /灯塔取得前序线索/);
+    assert.doesNotMatch(selectedPrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔取得前序线索/);
   });
 
   await t.test("rejects oversized chapter naming before calling the model", async () => {
@@ -651,6 +655,16 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const cancelled = await api(`/api/ai/tasks/${first.data.data.id}/cancel`, { method: "POST" });
     assert.equal(cancelled.response.status, 200, cancelled.text);
     revision = cancelled.data.revision;
+
+    const unlimited = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": "unlimited-task-key" },
+      body: { ...body, targetWords: 0 },
+    });
+    assert.equal(unlimited.response.status, 200, unlimited.text);
+    assert.equal(unlimited.data.data.contextOptions.targetWords, undefined);
+    const cancelledUnlimited = await api(`/api/ai/tasks/${unlimited.data.data.id}/cancel`, { method: "POST" });
+    assert.equal(cancelledUnlimited.response.status, 200, cancelledUnlimited.text);
+    revision = cancelledUnlimited.data.revision;
   });
 
   await t.test("executes Generate on the local service and persists the result without a browser runner", async () => {

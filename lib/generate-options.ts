@@ -18,6 +18,15 @@ export function normalizeContentGenerationMode(value: unknown): ContentGeneratio
 export function normalizeGenerateTargetWords(value: unknown) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed)) return DEFAULT_GENERATE_TARGET_WORDS;
+  if (parsed === 0) return 0;
+  return Math.max(MIN_GENERATE_TARGET_WORDS, Math.min(MAX_GENERATE_TARGET_WORDS, parsed));
+}
+
+export function normalizeOptionalGenerateTargetWords(value: unknown) {
+  if (value === undefined || value === null || String(value).trim() === "") return undefined;
+  const parsed = Number(value);
+  if (parsed === 0) return undefined;
+  if (!Number.isInteger(parsed)) return undefined;
   return Math.max(MIN_GENERATE_TARGET_WORDS, Math.min(MAX_GENERATE_TARGET_WORDS, parsed));
 }
 

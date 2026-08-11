@@ -377,7 +377,12 @@ test("dedicated naming is one call, has a preview, and blocks oversized chapters
   assert.match(app, /studio\.applyGeneratedNames/);
   assert.match(ai, /export async function generateNames/);
   assert.match(ai, /if \(characters > maximum\) throw new AiPromptTooLongError/);
-  assert.doesNotMatch(ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "", /for \(const .*upstream/);
+  const namingImplementation = ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "";
+  assert.doesNotMatch(namingImplementation, /for \(const .*upstream/);
+  assert.doesNotMatch(namingImplementation, /current_title|current_chapter|sibling_titles|reservedTitles|reserved_outline_titles/);
+  assert.match(route, /export const dynamic = "force-dynamic"/);
+  assert.match(route, /generateNames\(body, request\.signal\)/);
+  assert.doesNotMatch(app.match(/function NameGenerateDialog[\s\S]*?function NamingProfileEditor/)?.[0] ?? "", /reservedTitles/);
   assert.match(route, /status = error instanceof AiPromptTooLongError \? 413/);
 });
 
@@ -478,9 +483,14 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.match(state, /versions: \[version, \.\.\.item\.versions\]/);
   assert.match(state, /preserveContentDraft/);
   assert.match(state, /source: "未保存内容"/);
-  assert.match(app, /className="set-default-body-button"/);
-  assert.match(app, /setDisplayedContentAsDefault/);
-  assert.match(app, /设为默认/);
+  assert.doesNotMatch(app, /className="set-default-body-button"|className="start-edit-button"|className=\{`appreciate-body-button/);
+  assert.match(app, /className=\{`body-title-toggle/);
+  assert.match(app, /toggleDisplayedContentDefault/);
+  assert.match(app, /className="content-word-count"/);
+  assert.match(app, /className="content-selection-menu" role="menu"/);
+  assert.match(app, /role="menuitemcheckbox"/);
+  assert.match(app, /onDoubleClick=\{\(event\) => \{ event\.preventDefault\(\); beginEditing\(\); \}\}/);
+  assert.match(app, /isTouchDoubleTap\(event, lastReaderTouchRef\)/);
   assert.match(state, /setDefaultVersion/);
   assert.match(selector, /resolvedOutlineContent\(outline\)/);
   assert.match(resolver, /defaultOutlineVersion\(outline\)\?\.content \?\? ""/);
@@ -489,6 +499,8 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.match(api, /defaultVersionId: found\.outline\.sourceVersionId/);
   assert.match(styles, /\.content-editor-section \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
   assert.match(styles, /\.content-editor \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
+  assert.match(styles, /\.content-reader \{[\s\S]*touch-action: manipulation/);
+  assert.match(styles, /\.content-selection-menu \{/);
 });
 
 test("AI Chat is a session workspace with writing-safe actions and touch-sized controls", async () => {

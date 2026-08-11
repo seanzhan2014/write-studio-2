@@ -1,7 +1,7 @@
 import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
 import { clearBusinessData, readStudioState, searchDocuments, writeStudioState } from "@/db/runtime";
 import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
-import { DEFAULT_GENERATE_TARGET_WORDS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
+import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
@@ -138,8 +138,9 @@ export async function POST(request: Request, context: RouteContext) {
     if (target !== "正文" && !instruction) throw new Error("生成指令不能为空");
     if (target === "正文" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) throw new Error("正文生成模式无效");
     const contentMode = normalizeContentGenerationMode(body.contentMode);
-    const targetWords = Number(body.targetWords ?? DEFAULT_GENERATE_TARGET_WORDS);
-    if (target === "正文" && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`);
+    const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;
+    const targetWords = targetWordsUnset ? undefined : Number(body.targetWords);
+    if (target === "正文" && targetWords !== undefined && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数`);
     const estimate = Number(body.estimatedCharacters ?? 0);
     const modelId = String(body.modelId ?? "").trim().slice(0, 300) || undefined;
     const activeCharacterIds = new Set(found.article.characters.filter((character) => !character.archived).map((character) => character.id));
@@ -161,7 +162,7 @@ export async function POST(request: Request, context: RouteContext) {
         includeCharacters: body.includeCharacters !== false,
         ...(target === "正文" && body.includeExcellentFragments === true ? { includeExcellentFragments: true, excellentFragmentIds } : {}),
         estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
-        targetWords: target === "正文" ? targetWords : undefined,
+        ...(target === "正文" && targetWords !== undefined ? { targetWords } : {}),
         contentMode: target === "正文" ? contentMode : undefined,
         ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
         outlinePlanSnapshot: found.outline.plan,

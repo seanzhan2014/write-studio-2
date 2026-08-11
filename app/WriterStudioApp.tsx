@@ -38,7 +38,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, type AiContextSummary, type FirstAppearanceSuggestion } from "@/lib/ai-context";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
-import { normalizeExcellentFragments, paragraphRangeAt } from "@/lib/excellent-fragments.mjs";
+import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, type ContentGenerationMode } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
@@ -142,7 +142,7 @@ const iconPaths: Record<Exclude<IconName, "stop">, string[]> = {
 };
 
 function Icon({ name }: { name: IconName }) {
-  return <span className={`icon icon-${name}`} aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">{name === "stop" ? <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" /> : iconPaths[name].map((path) => <path d={path} key={path} />)}</svg></span>;
+  return <span className={`icon icon-${name}`} aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">{name === "stop" ? <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none" /> : name === "more" ? [5, 12, 19].map((cx) => <circle cx={cx} cy="12" r="1.45" fill="currentColor" stroke="none" key={cx} />) : iconPaths[name].map((path) => <path d={path} key={path} />)}</svg></span>;
 }
 
 function clientId(prefix: string) {
@@ -277,7 +277,7 @@ function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fix
   const configured = configuredModelForReference(models, reference);
   const name = fixedModelName?.trim() || configured?.name || reference;
   const identifier = modelIdSuffix(fixedModelId ?? configured?.modelId ?? "");
-  return identifier ? `${name} ${identifier}` : name;
+  return identifier && !name.toLocaleLowerCase().includes(identifier.toLocaleLowerCase()) ? `${name} ${identifier}` : name;
 }
 
 function chatbotDisplayName(models: ConfiguredModel[], selectedModel: string) {
@@ -300,14 +300,18 @@ function useConfiguredModels() {
 
 type GenerateContextSummary = AiContextSummary;
 
-const contentGenerationModes: Array<{ value: ContentGenerationMode; label: string; description: string }> = [
-  { value: "fresh", label: "全新生成", description: "只依据当前大纲独立创作，不发送现有正文。" },
-  { value: "rewrite", label: "改写正文", description: "以现有正文为原稿，返回完整的改写候选。" },
-  { value: "continue", label: "续写正文", description: "模型只生成新增部分，保存时自动接到现有正文后。" },
+const contentGenerationModes: Array<{ value: ContentGenerationMode; label: string; description: string; mobileDescription: string }> = [
+  { value: "fresh", label: "全新生成", description: "只依据当前大纲独立创作，不发送现有正文。", mobileDescription: "仅依据大纲，不发送现有正文" },
+  { value: "rewrite", label: "改写正文", description: "以现有正文为原稿，返回完整的改写候选。", mobileDescription: "基于现有正文，返回完整候选" },
+  { value: "continue", label: "续写正文", description: "模型只生成新增部分，保存时自动接到现有正文后。", mobileDescription: "只生成新增正文，保存时自动追加" },
 ];
 
 function contentGenerationModeLabel(mode?: ContentGenerationMode) {
   return contentGenerationModes.find((item) => item.value === mode)?.label ?? "全新生成";
+}
+
+function generateTargetWordsLabel(targetWords?: number) {
+  return targetWords && targetWords > 0 ? `${targetWords.toLocaleString("zh-CN")} 字` : "不限字数";
 }
 
 function activeChatSession(outline: Outline) {
@@ -1191,7 +1195,7 @@ function MobileOutlineHome({
                 <button className={`mobile-disclosure ${expanded[group.id] ? "expanded" : ""}`} type="button" aria-label={`${expanded[group.id] ? "折叠" : "展开"}${group.title}`} aria-expanded={expanded[group.id]} onClick={() => setExpanded((state) => ({ ...state, [group.id]: !state[group.id] }))}><Icon name="chevron" /></button>
                 <button className="mobile-chapter-title" type="button" onClick={() => { if (group.items[0]) studio.setCurrentOutline(group.items[0].id); onChapter(); }}><span>第 {groupIndex + 1} 章</span><span className="ui-title">{group.title.replace(/^第.+?·\s*/, "")}</span></button>
                 <span className="chapter-count">{group.items.length}</span>
-                <IconButton name="more" label={`${group.title}更多操作`} aria-haspopup="dialog" aria-expanded={chapterMenu?.id === group.id} onClick={() => setChapterMenu(group)} />
+                <IconButton name="more" label={`${group.title}更多操作`} className="mobile-row-more" aria-haspopup="dialog" aria-expanded={chapterMenu?.id === group.id} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setChapterMenu(group); }} />
               </MobileChapterDropHeader>
                 {expanded[group.id] && <SortableContext items={group.items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
                   {group.items.length === 0 ? <EmptyChapterDropZone chapterId={group.id} mobile /> : virtualizeTree && group.items.length > 50 ? <VirtualList items={group.items} rowHeight={61} maxHeight={549} className="mobile-outline-items" renderItem={(item, index, style) => (
@@ -1410,7 +1414,7 @@ function MobileOutlineRow({
           {item.state !== "saved" && <span>{item.state === "running" ? "AI Generate 运行中" : "生成失败"}</span>}
         </button>
         {item.state !== "saved" && <span className={`state-dot ${item.state}`} />}
-        <IconButton name="more" label={`${displayTitle}更多操作`} aria-haspopup="dialog" aria-expanded={menuOpen} onClick={onMore} />
+        <IconButton name="more" label={`${displayTitle}更多操作`} className="mobile-row-more" aria-haspopup="dialog" aria-expanded={menuOpen} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onMore(); }} />
       </div>
     </div>
   );
@@ -1443,7 +1447,7 @@ function OutlineActionSheet({ title, archived, onClose, onEdit, onGenerate, onRe
   }
   const actions: ActionSheetItem[] = definitions.map((action) => ({
     ...action,
-    className: `${action.key === "generate" || action.key === "rename-ai" ? "ai-structure-action" : action.key === "chat" ? "ai-chat-action" : ""} ${action.danger ? "sheet-danger" : ""}`.trim(),
+    className: action.key === "generate" || action.key === "rename-ai" ? "ai-structure-action" : action.key === "chat" ? "ai-chat-action" : "",
     icon: <Icon name={action.icon} />,
     onSelect: () => handle(action.key),
   }));
@@ -1455,7 +1459,7 @@ function OutlineActionSheet({ title, archived, onClose, onEdit, onGenerate, onRe
     eyebrow="大纲操作"
     onClose={onClose}
     title={title}
-    classNames={{ content: "outline-action-drawer", body: "outline-action-drawer-body", list: "sheet-actions" }}
+    classNames={{ content: "outline-action-drawer", body: "outline-action-drawer-body" }}
   />;
 }
 
@@ -1498,19 +1502,19 @@ function DesktopOutlineMenu({ outline, onClose, onOpenChat, onGenerate, onRename
 
 function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline, onGenerate }: { chapter: Chapter; onClose: () => void; onNotice: (message: string) => void; onOpenOutline: (id: string) => void; onGenerate: () => void }) {
   const studio = useStudio();
-  const items = [
-    ["重命名", () => { const title = window.prompt("章节标题", chapter.title); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } }],
-    ["AI生成名称", onGenerate],
-    ["新建大纲", () => { const id = studio.createOutline(chapter.id); onOpenOutline(id); }],
-    ["上移", () => studio.moveChapter(chapter.id, -1)],
-    ["下移", () => studio.moveChapter(chapter.id, 1)],
-    [chapter.archived ? "恢复章节" : "归档章节", () => studio.updateChapter(chapter.id, { archived: !chapter.archived })],
-  ] as const;
-  const actions: ActionSheetItem[] = [
-    ...items.map(([label, action]) => ({ key: label, label, onSelect: action })),
-    { key: "delete", label: "删除章节", danger: true, onSelect: () => { const typed = window.prompt(`章节包含 ${chapter.outlines.length} 条大纲。输入章节标题以确认删除：`, ""); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除"); } } },
+  const items: Array<{ key: string; label: string; icon: IconName; className?: string; onSelect: () => void }> = [
+    { key: "rename", label: "重命名", icon: "edit", onSelect: () => { const title = window.prompt("章节标题", chapter.title); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } } },
+    { key: "rename-ai", label: "AI生成名称", icon: "spark", className: "ai-structure-action", onSelect: onGenerate },
+    { key: "create", label: "新建大纲", icon: "plus", onSelect: () => { const id = studio.createOutline(chapter.id); onOpenOutline(id); } },
+    { key: "move-up", label: "上移", icon: "move", onSelect: () => studio.moveChapter(chapter.id, -1) },
+    { key: "move-down", label: "下移", icon: "move", onSelect: () => studio.moveChapter(chapter.id, 1) },
+    { key: "archive", label: chapter.archived ? "恢复章节" : "归档章节", icon: chapter.archived ? "refresh" : "archive", onSelect: () => studio.updateChapter(chapter.id, { archived: !chapter.archived }) },
   ];
-  return <MobileActionSheet actions={actions} ariaLabel={`章节操作：${chapter.title}`} closeLabel="关闭章节菜单" eyebrow="章节操作" onClose={onClose} responsiveDesktopMenu title={chapter.title} />;
+  const actions: ActionSheetItem[] = [
+    ...items.map((item) => ({ ...item, icon: <Icon name={item.icon} /> })),
+    { key: "delete", label: "删除章节", icon: <Icon name="trash" />, danger: true, onSelect: () => { const typed = window.prompt(`章节包含 ${chapter.outlines.length} 条大纲。输入章节标题以确认删除：`, ""); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除"); } } },
+  ];
+  return <MobileActionSheet actions={actions} ariaLabel={`章节操作：${chapter.title}`} classNames={{ content: "outline-action-drawer", body: "outline-action-drawer-body" }} closeLabel="关闭章节菜单" eyebrow="章节操作" onClose={onClose} responsiveDesktopMenu title={chapter.title} />;
 }
 
 function OutlineEditSheet({ target, onClose, onSave }: { target: { id: string; title: string; plan: string }; onClose: () => void; onSave: (title: string, plan: string) => void }) {
@@ -1694,9 +1698,6 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
     const selectedOutlineIds = target.kind === "chapter"
       ? eligibleOutlines.filter((item) => selectedKeys.includes(outlineNameKey(item.id))).map((item) => item.id)
       : [];
-    const reservedTitles = target.kind === "chapter"
-      ? eligibleOutlines.filter((item) => !selectedOutlineIds.includes(item.id)).map((item) => outlineDisplayTitle(item))
-      : [];
     const signatures = Object.fromEntries(requestedKeys.map((key) => [key, currentSourceSignature(key)]));
     setLoadingKey("batch");
     setError("");
@@ -1704,7 +1705,7 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
     try {
       const payload = await requestNames(target.kind === "outline"
         ? { target: "outline", outlineId: outline!.id }
-        : { target: "chapter", includeChapter: selectedKeys.includes(CHAPTER_NAME_KEY), outlineIds: selectedOutlineIds, reservedTitles });
+        : { target: "chapter", includeChapter: selectedKeys.includes(CHAPTER_NAME_KEY), outlineIds: selectedOutlineIds });
       setPreview({ chapterTitle: payload.chapterTitle, outlineTitles: payload.outlineTitles, inputCharacters: payload.inputCharacters, maxInputCharacters: payload.maxInputCharacters });
       setSourceSignatures(signatures);
       setAppliedKeys([]);
@@ -1725,10 +1726,9 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
     setError("");
     setNotice("");
     try {
-      const previewOutlineNames = preview.outlineTitles.map((item) => item.title.trim()).filter(Boolean);
       const payload = key === CHAPTER_NAME_KEY
-        ? await requestNames({ target: "chapter", includeChapter: true, outlineIds: [], reservedTitles: previewOutlineNames })
-        : await requestNames({ target: "outline", outlineId: currentOutline!.id, reservedTitles: previewOutlineNames.filter((title) => title !== preview.outlineTitles.find((item) => item.id === currentOutline!.id)?.title.trim()) });
+        ? await requestNames({ target: "chapter", includeChapter: true, outlineIds: [] })
+        : await requestNames({ target: "outline", outlineId: currentOutline!.id });
       setPreview((current) => {
         if (!current) return current;
         if (key === CHAPTER_NAME_KEY) return { ...current, chapterTitle: payload.chapterTitle, inputCharacters: payload.inputCharacters, maxInputCharacters: payload.maxInputCharacters };
@@ -1845,7 +1845,7 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
     overlayProps={{ backgroundOpacity: 0.46, blur: 2 }}
   >
     <Stack gap="md">
-      <Text size="sm" c="dimmed">{target.kind === "chapter" ? "选择本次需要生成的章节名和大纲名。初次生成所选名称只调用一次模型；不发送正文、正文版本或聊天记录。" : "只发送文章资料、当前章节信息和大纲内容，不发送正文、正文版本或聊天记录。"}</Text>
+      <Text size="sm" c="dimmed">{target.kind === "chapter" ? "选择本次需要生成的章节名和大纲名。初次生成所选名称只调用一次模型；不发送现有章节名、大纲名、正文、正文版本或聊天记录。" : "只发送文章资料、命名设置和当前大纲内容，不发送现有章节名、大纲名、正文、正文版本或聊天记录。"}</Text>
       <Select label="名称生成模型" description={`最大输入字符数：${maximum.toLocaleString("zh-CN")}`} data={modelData} value={namingSelection} allowDeselect={false} onChange={selectNamingModel} />
       {settings.namingModelMode === "inherit" && <Alert color="studio" variant="light">当前继承 AI Generate 默认模型。首次明确选择其他模型后，之后的名称生成会继续使用该模型。</Alert>}
       <Textarea label="补充命名要求（可选）" maxLength={20000} autosize minRows={2} maxRows={6} value={instruction} onChange={(event) => { setInstruction(event.target.value); clearPreview(); }} placeholder="例如：避免剧透，突出人物选择" />
@@ -1941,7 +1941,6 @@ function OutlineWorkspace({
         ) : <span className="ui-title">专注写作</span>}
         <div className="workspace-meta">
           <span className={`save-state ${studio.saveStatus}`}><i /> {saveStatusLabel(studio.saveStatus)}</span>
-          <span>{wordCount(outline.content)} 字</span>
           {!focusMode && <button className="text-button" type="button" onClick={onVersions}><Icon name="versions" />版本</button>}
           <IconButton name={focusMode ? "close" : "focus"} label={focusMode ? "退出专注写作" : "专注写作"} onClick={onFocus} />
           {!focusMode && <IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={() => setMoreOpen((open) => !open)} />}
@@ -1978,10 +1977,12 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
-  const [appreciating, setAppreciating] = useState(false);
+  const [selectionMenu, setSelectionMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
-  const appreciationTimerRef = useRef<number | null>(null);
+  const lastReaderTouchRef = useRef<{ at: number; x: number; y: number } | null>(null);
+  const lastTitleTouchRef = useRef<{ at: number; x: number; y: number } | null>(null);
+  const settingDefaultRef = useRef(false);
   const editingRef = useRef(false);
   const draftRef = useRef("");
   const baselineRef = useRef("");
@@ -2003,16 +2004,15 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   const displayedFragments = displayedVersion
     ? normalizeExcellentFragments(displayedVersion.content, displayedVersion.excellentFragments)
     : normalizeExcellentFragments(displayedContent, studio.currentOutline.excellentFragments);
+  const selectedFragmentIsExcellent = Boolean(selectionMenu && displayedFragments.some((fragment) => selectionMenu.start >= fragment.start && selectionMenu.end <= fragment.end));
+
+  useDismissOnOutside(Boolean(selectionMenu), () => setSelectionMenu(null), ".content-selection-menu");
 
   useEffect(() => () => {
     if (!editingRef.current || draftRef.current === baselineRef.current || preservingRef.current) return;
     preservingRef.current = true;
     void studioRef.current.preserveContentDraft(editingOutlineId, draftRef.current, draftSavedAtRef.current || new Date().toISOString());
   }, [editingOutlineId]);
-
-  useEffect(() => () => {
-    if (appreciationTimerRef.current !== null) window.clearTimeout(appreciationTimerRef.current);
-  }, []);
 
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
@@ -2062,7 +2062,8 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   }
 
   function beginEditing() {
-    setAppreciating(false);
+    if (editingRef.current) return;
+    setSelectionMenu(null);
     baselineRef.current = displayedContent;
     draftRef.current = displayedContent;
     draftSavedAtRef.current = new Date().toISOString();
@@ -2156,9 +2157,19 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
     onNotice(saved ? `正文已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
   }
 
-  async function setDisplayedContentAsDefault() {
-    if (!displayedContent.trim() || displayedIsDefault || settingDefault) return;
+  async function toggleDisplayedContentDefault() {
+    if (!displayedContent.trim() || settingDefaultRef.current) return;
+    settingDefaultRef.current = true;
     setSettingDefault(true);
+    if (displayedIsDefault) {
+      studio.setDefaultVersion(studio.currentOutline.id);
+      onClearPreview();
+      const saved = await studio.saveNow();
+      settingDefaultRef.current = false;
+      setSettingDefault(false);
+      onNotice(saved ? "已取消默认正文" : "取消默认正文未完成，请查看保存状态");
+      return;
+    }
     const versionId = previewVersion?.id ?? currentOutlineVersion(studio.currentOutline)?.id ?? studio.saveVersion(
       studio.currentOutline.id,
       resolvedOutlineContentName(studio.currentOutline),
@@ -2168,43 +2179,45 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
     studio.setDefaultVersion(studio.currentOutline.id, versionId);
     onClearPreview();
     const saved = await studio.saveNow();
+    settingDefaultRef.current = false;
     setSettingDefault(false);
     onNotice(saved ? "已设为默认正文" : "设置默认正文未完成，请查看保存状态");
   }
 
   function applyAppreciationRange(range: { start: number; end: number }) {
-    if (!appreciating || !displayedContent.trim()) return;
+    if (!displayedContent.trim()) return;
     const action = studio.toggleExcellentFragment(studio.currentOutline.id, displayedVersion?.id, range.start, range.end);
+    setSelectionMenu(null);
     window.getSelection()?.removeAllRanges();
     if (action === "added") onNotice("已标记优秀片段");
     if (action === "removed") onNotice("已取消优秀片段");
   }
 
-  function applyCurrentSelection() {
+  function openSelectionMenu(event: React.MouseEvent<HTMLDivElement>) {
     const reader = readerRef.current;
     if (!reader) return;
     const range = selectedRangeWithin(reader);
-    if (range) applyAppreciationRange(range);
+    if (!range) return;
+    event.preventDefault();
+    const selectionRect = window.getSelection()?.getRangeAt(0).getBoundingClientRect();
+    const desiredLeft = event.clientX || selectionRect?.left || 12;
+    const desiredTop = event.clientY || selectionRect?.bottom || 12;
+    setSelectionMenu({
+      left: Math.max(8, Math.min(desiredLeft, window.innerWidth - 132)),
+      top: Math.max(8, Math.min(desiredTop, window.innerHeight - 52)),
+      ...range,
+    });
   }
 
-  function queueCurrentSelection() {
-    if (appreciationTimerRef.current !== null) window.clearTimeout(appreciationTimerRef.current);
-    appreciationTimerRef.current = window.setTimeout(() => {
-      appreciationTimerRef.current = null;
-      applyCurrentSelection();
-    }, 180);
-  }
-
-  function appreciateParagraph() {
-    if (appreciationTimerRef.current !== null) window.clearTimeout(appreciationTimerRef.current);
-    appreciationTimerRef.current = null;
-    const reader = readerRef.current;
-    if (!reader) return;
-    const selection = window.getSelection();
-    const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
-    const offset = range ? textOffsetWithin(reader, range.startContainer, range.startOffset) : null;
-    const paragraph = offset === null ? null : paragraphRangeAt(displayedContent, offset);
-    if (paragraph) applyAppreciationRange(paragraph);
+  function isTouchDoubleTap(event: React.PointerEvent<HTMLElement>, ref: typeof lastReaderTouchRef) {
+    if (event.pointerType !== "touch") return false;
+    const current = { at: performance.now(), x: event.clientX, y: event.clientY };
+    const previous = ref.current;
+    ref.current = current;
+    if (!previous || current.at - previous.at > 380 || Math.hypot(current.x - previous.x, current.y - previous.y) > 28) return false;
+    ref.current = null;
+    event.preventDefault();
+    return true;
   }
 
   return (
@@ -2219,11 +2232,12 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
         )}
 
         <section className="content-editor-section">
-          <div className="editor-heading"><span title={displayedContentName}>{displayedContentName}</span><div>{editing ? <><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></> : <><button className="set-default-body-button" type="button" disabled={!displayedContent.trim() || displayedIsDefault || settingDefault} aria-label={displayedIsDefault ? "当前正文已是默认正文" : displayedVersion ? `将“${displayedVersion.name}”设为默认正文` : "将当前正文设为默认正文"} onClick={() => void setDisplayedContentAsDefault()}><Icon name="check" />{displayedIsDefault ? "已默认" : settingDefault ? "设置中" : "设为默认"}</button><button className={`appreciate-body-button ${appreciating ? "active" : ""}`} type="button" disabled={!displayedContent.trim()} aria-pressed={appreciating} onClick={() => setAppreciating((value) => !value)}>{appreciating ? "退出欣赏" : "欣赏"}</button><button className="start-edit-button" type="button" onClick={beginEditing}><Icon name="edit" />编辑</button></>}</div></div>
+          <div className="editor-heading"><button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={`正文标题，双击${displayedIsDefault ? "取消" : "设为"}默认正文`} title={`${displayedContentName} · 双击${displayedIsDefault ? "取消" : "设为"}默认正文`} onClick={(event) => { if (event.detail === 0) void toggleDisplayedContentDefault(); }} onDoubleClick={() => void toggleDisplayedContentDefault()} onPointerUp={(event) => { if (isTouchDoubleTap(event, lastTitleTouchRef)) void toggleDisplayedContentDefault(); }}><span>{displayedContentName}</span>{displayedIsDefault && <em>默认</em>}</button><div>{editing ? <><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div></div>
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
-          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <div ref={readerRef} className="content-reader" data-appreciating={appreciating || undefined} role="region" aria-label="正文内容" onMouseUp={(event) => { const reader = readerRef.current; if (appreciating && event.detail < 2 && reader && selectedRangeWithin(reader)) queueCurrentSelection(); }} onTouchEnd={() => { if (appreciating) window.setTimeout(applyCurrentSelection, 50); }} onKeyUp={(event) => { if (appreciating && !event.shiftKey) queueCurrentSelection(); }} onDoubleClick={(event) => { if (appreciating) { event.preventDefault(); appreciateParagraph(); } }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div>}
+          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-description="双击或按 Enter 进入编辑" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerUp={(event) => { if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div>}
         </section>
       </div>
+      {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" style={{ left: selectionMenu.left, top: selectionMenu.top }}><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button></div>}
       {planPeek && <ScrollableDrawer
         opened
         onClose={() => setPlanPeek(false)}
@@ -2260,13 +2274,15 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
   const selectedModel = studio.data.settings.generateModel;
   const [notice, setNotice] = useState("");
   const [presetManagerOpen, setPresetManagerOpen] = useState(false);
-  const [targetWordsInput, setTargetWordsInput] = useState(String(studio.data.settings.generateTargetWords));
+  const [targetWordsInput, setTargetWordsInput] = useState(() => studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : "");
   const [outlinePlanDraft, setOutlinePlanDraft] = useState(outline.plan);
   const outlinePlanDraftRef = useRef(outline.plan);
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);
   const parsedTargetWords = Number(targetWordsInput);
-  const targetWords = Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS ? parsedTargetWords : studio.data.settings.generateTargetWords;
+  const targetWordsUnset = targetWordsInput.trim() === "" || parsedTargetWords === 0;
+  const targetWordsValid = targetWordsUnset || (Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS);
+  const targetWords = targetWordsValid && !targetWordsUnset ? parsedTargetWords : undefined;
   const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
   const outlinePlanDirty = outlinePlanDraft !== outline.plan;
   useEffect(() => {
@@ -2278,6 +2294,9 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
     }
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
   }, [studio.currentOutline.id, outline.plan]);
+  useEffect(() => {
+    setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : "");
+  }, [studio.data.settings.generateTargetWords]);
   const appearanceSuggestions = useMemo(() => detectFirstAppearanceCharacters(
     { articles: [studio.currentArticle] },
     studio.currentOutline.id,
@@ -2330,19 +2349,20 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
 
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
+    if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && (task.contextOptions?.targetWords ?? 5000) === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && task.contextOptions?.includeExcellentFragments === includeExcellentFragments && task.contextOptions?.includeOutlineTitle === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && task.contextOptions?.includeExcellentFragments === includeExcellentFragments && task.contextOptions?.includeOutlineTitle === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     if (!await saveOutlineDraft() || !await studio.saveNow()) return;
-    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, estimatedCharacters: summary.total, targetWords, contentMode: generationMode, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId, modelName: selectedRecord?.name, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
+    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, estimatedCharacters: summary.total, ...(targetWords === undefined ? {} : { targetWords }), contentMode: generationMode, outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId, modelName: selectedRecord?.name, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
     if (!taskId) { window.alert("已有 20 个等待或运行中的任务，请先取消一个任务后再生成。"); return; }
     setPrompt("");
     setIncludeOutlineTitle(false);
     setNotice("");
     onTaskCreated();
-  }, [prompt, studio, selectedModelReference, selectedRecord?.modelId, selectedRecord?.name, selectedRecord?.timeoutMs, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, generationMode, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
+  }, [prompt, studio, selectedModelReference, selectedRecord?.modelId, selectedRecord?.name, selectedRecord?.timeoutMs, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -2388,13 +2408,13 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
               {contentGenerationModes.map((item) => {
                 const disabled = item.value !== "fresh" && !hasCurrentContent;
-                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} disabled={disabled} key={item.value} onClick={() => setGenerationMode(item.value)}><span className="ui-title">{item.label}</span><span>{item.description}</span></button>;
+                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} disabled={disabled} key={item.value} onClick={() => setGenerationMode(item.value)}><span className="ui-title">{item.label}</span><span>{compact ? item.mobileDescription : item.description}</span></button>;
               })}
             </div>
             {!hasCurrentContent && <p className="generate-mode-hint">当前正文为空，只能使用全新生成。</p>}
           </section>
           <div className="generate-option-bar">
-            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={MIN_GENERATE_TARGET_WORDS} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => setTargetWordsInput(String(studio.data.settings.generateTargetWords))} />
+            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数（可选）" : "目标字数（可选）"} description={compact ? undefined : "留空或 0 表示不限字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限字数" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) studio.updateSettings({ generateTargetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); studio.updateSettings({ generateTargetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : ""); }} />
             <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
             <label className="generate-excellent-fragments-toggle">
               <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => setIncludeExcellentFragments(event.currentTarget.checked)} />
@@ -2402,13 +2422,13 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
             </label>
             <label className="generate-outline-title-toggle">
               <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => setIncludeOutlineTitle(event.currentTarget.checked)} />
-              <span><span className="ui-label">同时生成大纲名</span><small>遵循文章的大纲命名设置</small></span>
+              <span><span className="ui-label">同时生成大纲名</span><small>{compact ? "按大纲命名设置" : "遵循文章的大纲命名设置"}</small></span>
             </label>
           </div>
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
           <section className="generate-first-appearance" aria-label="首次出场人物">
             <div className="generate-first-appearance-heading">
-              <div><span>人物出场</span><span className="ui-title">首次出场人物</span><small>根据当前及前序大纲中的姓名、别名推测</small></div>
+              <div><span>人物出场</span><span className="ui-title">首次出场人物</span><small>{compact ? "自动识别，可手动调整" : "根据当前及前序大纲中的姓名、别名推测"}</small></div>
               <Button className="generate-first-appearance-edit" variant="default" size="compact-sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>编辑</Button>
             </div>
             {includeCharacters ? firstAppearanceCharacters.length > 0
@@ -2418,11 +2438,11 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
           </section>
           <div className="generate-prompt-label"><span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span><Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} /></div>
           <div className="generate-submit-row">
-            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span><span className="ui-title">{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 优秀片段 {summary.excellentFragmentCount} 个 · 人物 ${summary.characterCount} 位</small></span><Icon name="chevron" /></button>
-            <div className="generate-model-control"><Select label="本次模型" description={`输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符；选择后保存为默认模型`} data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} /><small>{selectedModelReference ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
-            <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
+            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 优秀片段 {summary.excellentFragmentCount} 个 · 人物 {summary.characterCount} 位</small></span><Icon name="chevron" /></button>
+            <div className="generate-model-control"><Select label="本次模型" description={compact ? `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符` : `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符；选择后保存为默认模型`} data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} /><small>{selectedModelReference ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
+            <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
           </div>
-          <p className="generate-auto-apply-note">任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。</p>
+          <p className="generate-auto-apply-note">{compact ? "成功后自动设为当前正文，并保留为版本。" : "任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。"}</p>
         </section>
 
         <ScrollableDrawer
@@ -2445,7 +2465,7 @@ function GenerateView({ outline, initialPrompt = "", onTaskCreated, onOpenTasks 
 
         <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)} · 目标 {(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字 · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
           {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><span className="ui-title">{latestFailed.prompt || "按大纲生成"}</span><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => studio.updateTask(latestFailed.id, { state: "waiting", error: undefined })}>原样重试</button></div></article>}
           {!activeTasks.length && !latestFailed && <div className="generate-empty-row">没有进行中的正文生成任务。</div>}
         </section>
@@ -3933,7 +3953,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
         <div className="task-detail-body" data-ui-overlay-scroll>
           <div className={`task-detail-status ${isStale(selectedTask) ? "stale" : ""}`}><span className={`state-dot ${selectedTask.state}`} /><span className="ui-label">{isStale(selectedTask) ? "执行心跳已中断" : labels[selectedTask.state]}</span><span>{phaseLabels[selectedTask.phase ?? "queued"]} · 已用时 {taskElapsed(selectedTask)}</span></div>
           <dl className="task-detail-metadata">
-            <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${(selectedTask.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</dd></div>
+            <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${generateTargetWordsLabel(selectedTask.contextOptions?.targetWords)}` : ""}</dd></div>
             {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}</dd></div>}
             <div><dt>模型</dt><dd>{modelDisplayLabel([], selectedTask.model || "", selectedTask.contextOptions?.modelId, selectedTask.contextOptions?.modelName)}</dd></div>
             <div><dt>阶段</dt><dd>{phaseLabels[selectedTask.phase ?? "queued"]}</dd></div>
@@ -3964,7 +3984,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
         return <article className="task-card" key={task.id}>
           <div className="task-state"><span className={`state-dot ${task.state}`} />{labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
           <button className="task-title" type="button" aria-label={`查看任务详情：${outline ? outlineDisplayTitle(outline) : "已删除的大纲"}`} onClick={() => setSelectedTaskId(task.id)}>{outline ? outlineDisplayTitle(outline) : "已删除的大纲"}</button>
-          <p>{article?.title ?? "未知文章"} · {chapter?.title ?? "未知章节"} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)} · ${(task.contextOptions?.targetWords ?? 5000).toLocaleString("zh-CN")} 字` : ""}</p>
+          <p>{article?.title ?? "未知文章"} · {chapter?.title ?? "未知章节"} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
           <blockquote>{task.prompt || "按大纲生成"}</blockquote>
           {task.error && <p className="task-error">{task.error}</p>}
           <div><span>{modelDisplayLabel([], task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)}</span><span className="task-buttons">
