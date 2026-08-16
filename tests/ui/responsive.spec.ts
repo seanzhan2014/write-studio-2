@@ -1523,6 +1523,71 @@ test("AI Chat creates a completed task linked to its conversation", async ({ pag
   await expect(page.getByRole("button", { name: "打开对应内容" })).toBeVisible();
 });
 
+test("AI Chat acknowledges immediately and ignores rapid duplicate submits while saving", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  test.setTimeout(60_000);
+  let delayNextStatePut = false;
+  let delayedStatePuts = 0;
+  let streamRequests = 0;
+  await page.route("**/api/state", async (route) => {
+    if (route.request().method() === "PUT" && delayNextStatePut && delayedStatePuts === 0) {
+      delayedStatePuts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    await route.continue();
+  });
+  await page.route("**/api/outlines/outline-current/chat/stream", async (route) => {
+    streamRequests += 1;
+    await route.fulfill({ status: 200, contentType: "text/plain; charset=utf-8", body: "唯一的聊天回复" });
+  });
+
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  const question = "慢保存期间只提交一次";
+  await page.getByLabel("AI Chat 消息").fill(question);
+  delayNextStatePut = true;
+  await page.getByRole("button", { name: "发送消息" }).evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+
+  await expect(page.locator(".message.user").filter({ hasText: question })).toHaveCount(1);
+  await expect(page.getByText("正在提交", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await expect(page.locator(".message.assistant").last()).toContainText("唯一的聊天回复", { timeout: 20_000 });
+  await expect.poll(() => streamRequests).toBe(1);
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    const userMessages = outline.chat.sessions.flatMap((item) => item.messages).filter((item) => item.role === "user" && item.text === question);
+    const tasks = state.data.tasks.filter((item) => item.target === "AI Chat" && item.prompt === question);
+    return { userMessages: userMessages.length, tasks: tasks.length, taskState: tasks[0]?.state };
+  }, { timeout: 20_000 }).toEqual({ userMessages: 1, tasks: 1, taskState: "success" });
+});
+
+test("AI Chat releases its short submission lock after a save failure", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  let failNextStatePut = false;
+  await page.route("**/api/state", async (route) => {
+    if (route.request().method() === "PUT" && failNextStatePut) {
+      failNextStatePut = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ message: "模拟保存失败" }) });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  await page.getByLabel("AI Chat 消息").fill("这次保存会失败");
+  failNextStatePut = true;
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.locator(".message.assistant.error").last()).toContainText("消息保存失败", { timeout: 15_000 });
+
+  const composer = page.getByLabel("AI Chat 消息");
+  await composer.fill("保存失败后仍可继续提交");
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
+});
+
 test("AI Chat finishes after leaving and clears its unread marker when opened", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.route("**/api/outlines/outline-current/chat/stream", async (route) => {

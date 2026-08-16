@@ -139,6 +139,13 @@ export const chatMessages = sqliteTable("chat_messages", {
   createdAt: text("created_at").notNull(),
 }, (table) => [uniqueIndex("chat_messages_session_order_unique").on(table.sessionId, table.orderIndex)]);
 
+export const chatRequestClaims = sqliteTable("chat_request_claims", {
+  requestId: text("request_id").primaryKey(),
+  requestHash: text("request_hash").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [index("chat_request_claims_expires_idx").on(table.expiresAt)]);
+
 export const aiTasks = sqliteTable("ai_tasks", {
   id: text("id").primaryKey(),
   articleId: text("article_id").notNull().references(() => articles.id, { onDelete: "cascade" }),

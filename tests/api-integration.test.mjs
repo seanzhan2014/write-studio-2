@@ -534,6 +534,23 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.ok(Date.now() - startedAt < 2500, "收到 [DONE] 后应立即结束，不能等待上游 keep-alive 关闭");
   });
 
+  await t.test("deduplicates repeated Chat stream requests by idempotency key", async () => {
+    const requestId = `chat-idempotency-${Date.now()}`;
+    const receivedBefore = modelServer.received.length;
+    const body = { requestId, message: "只允许提交一次", model: "捕获模型", includePrevious: false, includeCharacters: false };
+    const first = await api("/api/outlines/outline-current/chat/stream", { method: "POST", headers: { "Idempotency-Key": requestId }, body });
+    assert.equal(first.response.status, 200, first.text);
+    const duplicate = await api("/api/outlines/outline-current/chat/stream", { method: "POST", headers: { "Idempotency-Key": requestId }, body });
+    assert.equal(duplicate.response.status, 409, duplicate.text);
+    assert.match(duplicate.data.error, /已经提交/);
+    assert.equal(modelServer.received.length, receivedBefore + 1, "重复请求不得再次调用模型");
+
+    const mismatched = await api("/api/outlines/outline-current/chat/stream", { method: "POST", headers: { "Idempotency-Key": requestId }, body: { ...body, message: "不能复用到另一条消息" } });
+    assert.equal(mismatched.response.status, 409, mismatched.text);
+    assert.match(mismatched.data.error, /其他消息/);
+    assert.equal(modelServer.received.length, receivedBefore + 1);
+  });
+
   await t.test("normalizes Generate output and rejects empty output", async () => {
     const current = await api("/api/state");
     const withPreviousDefault = structuredClone(current.data.data);

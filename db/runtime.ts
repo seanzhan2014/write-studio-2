@@ -86,6 +86,11 @@ const schemaStatements = [
     status TEXT NOT NULL DEFAULT 'complete' CHECK(status IN ('complete','stopped')),
     order_index INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, order_index)
   )`,
+  `CREATE TABLE IF NOT EXISTS chat_request_claims (
+    request_id TEXT PRIMARY KEY NOT NULL, request_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS chat_request_claims_expires_idx ON chat_request_claims(expires_at)",
   `CREATE TABLE IF NOT EXISTS ai_tasks (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -603,6 +608,21 @@ export async function databaseStatus() {
   const db = getDatabase();
   const searchMode = await db.prepare("SELECT value_json FROM app_settings WHERE key='search_mode'").first<string>("value_json");
   return { connected: true, engine: databaseEngine(), revision: state.revision, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
+}
+
+export async function claimChatRequest(requestId: string, requestHash: string) {
+  await ensureDatabase();
+  const db = getDatabase();
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const results = await db.batch([
+    db.prepare("DELETE FROM chat_request_claims WHERE expires_at <= ?").bind(createdAt),
+    db.prepare("INSERT INTO chat_request_claims(request_id,request_hash,created_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(request_id) DO NOTHING").bind(requestId, requestHash, createdAt, expiresAt),
+  ]);
+  if (Number(results[1]?.meta?.changes ?? 0) > 0) return "claimed" as const;
+  const existing = await db.prepare("SELECT request_hash FROM chat_request_claims WHERE request_id=?").bind(requestId).first<{ request_hash?: string }>();
+  return existing?.request_hash === requestHash ? "duplicate" as const : "mismatch" as const;
 }
 
 export async function integrityCheck() {

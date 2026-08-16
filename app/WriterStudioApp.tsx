@@ -153,6 +153,7 @@ function clientId(prefix: string) {
 }
 
 type ActiveChatStream = { controller: AbortController; cancel: () => void };
+type ChatStreamState = { taskId: string; sessionId: string; submissionToken: string; controller: AbortController; result: string; finalized: boolean };
 const activeChatStreams = new Map<string, ActiveChatStream>();
 
 function registerActiveChatStream(taskId: string, stream: ActiveChatStream) {
@@ -513,7 +514,7 @@ function WriterStudioInner() {
   }, [studio.data.tasks]);
 
   useEffect(() => {
-    if (!studio.hydrated) return;
+    if (!studio.hydrated || studio.saveStatus === "failed" || studio.saveStatus === "conflict") return;
     const currentStudio = studioRef.current;
     const currentTime = Date.now();
     const leaseExpired = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= currentTime);
@@ -542,7 +543,7 @@ function WriterStudioInner() {
         }
       })();
     });
-  }, [studio.hydrated, studio.data.tasks, studio.data.settings.taskConcurrency, taskLeaseTick]);
+  }, [studio.hydrated, studio.saveStatus, studio.data.tasks, studio.data.settings.taskConcurrency, taskLeaseTick]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -2816,11 +2817,14 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const chatThreadRef = useRef<HTMLDivElement>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const streamController = useRef<AbortController | null>(null);
-  const streamTaskId = useRef("");
-  const streamSessionId = useRef("");
+  const currentStream = useRef<ChatStreamState | null>(null);
+  const submissionLock = useRef("");
+  const [submittingTaskId, setSubmittingTaskId] = useState("");
   const chatStudioRef = useRef(studio);
-  const streamingRef = useRef("");
+  const isSubmitting = Boolean(submittingTaskId);
+  const chatBusy = isStreaming || isSubmitting;
+  const chatProgressLabel = isSubmitting ? "正在提交" : activeChatTask?.phase === "connecting" ? "正在连接" : "正在回复";
+  const chatProgressText = streaming || (isSubmitting ? "正在保存消息并创建任务…" : activeChatTask?.phase === "connecting" ? "正在连接模型…" : "正在思考…");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
   try {
     chatContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: session?.includePrevious, includeCharacters: session?.includeCharacters, sessionId: session?.id });
@@ -2850,20 +2854,21 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
     if (session && chatSessionHasUnread(session)) studio.markChatSessionRead(outline.id, session.id);
   }, [outline.id, session, studio]);
 
-  function stopStreaming(stopped = true) {
-    const taskId = streamTaskId.current;
-    const targetSessionId = streamSessionId.current;
-    const partialResult = streamingRef.current;
-    const controller = streamController.current;
-    controller?.abort();
-    if (taskId && controller) releaseActiveChatStream(taskId, controller);
-    streamController.current = null;
-    if (partialResult) studio.addChatMessage(outline.id, { id: clientId("message"), role: "assistant", text: partialResult, createdAt: new Date().toISOString(), stopped }, targetSessionId || undefined);
-    if (taskId) studio.updateTask(taskId, { state: "cancelled", phase: "cancelled", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: partialResult.length, resultText: partialResult || undefined, error: stopped ? "用户停止了聊天回复" : undefined });
-    streamTaskId.current = "";
-    streamSessionId.current = "";
-    streamingRef.current = "";
-    void chatStudioRef.current.saveNow();
+  function stopStream(stream: ChatStreamState, stopped = true) {
+    if (stream.finalized) return;
+    stream.finalized = true;
+    stream.controller.abort();
+    releaseActiveChatStream(stream.taskId, stream.controller);
+    const currentStudio = chatStudioRef.current;
+    if (stream.result) currentStudio.addChatMessage(outline.id, { id: clientId("message"), role: "assistant", text: stream.result, createdAt: new Date().toISOString(), stopped }, stream.sessionId);
+    const completedAt = new Date().toISOString();
+    currentStudio.updateTask(stream.taskId, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, receivedCharacters: stream.result.length, resultText: stream.result || undefined, error: stopped ? "用户停止了聊天回复" : undefined });
+    if (currentStream.current === stream) currentStream.current = null;
+    if (submissionLock.current === stream.submissionToken) {
+      submissionLock.current = "";
+      setSubmittingTaskId("");
+    }
+    void currentStudio.saveNow();
   }
   useEffect(() => {
     chatStudioRef.current = studio;
@@ -2877,94 +2882,111 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   }
 
   async function requestAnswer(question: string, addUser: boolean, targetSessionId = session?.id, targetSession = session) {
-    if (!targetSessionId || !targetSession || isStreaming || streamTaskId.current || !await studio.saveNow()) return;
-    const taskId = studio.addTask({
-      articleId: studio.currentArticle.id,
-      chapterId: outlineChapter.id,
-      outlineId: outline.id,
-      target: "AI Chat",
-      prompt: question.slice(0, 20000),
-      model: chatModelReference,
-      state: "running",
-      phase: "connecting",
-      attempt: 1,
-      startedAt: new Date().toISOString(),
-      lastProgressAt: new Date().toISOString(),
-      receivedCharacters: 0,
-      timeoutMs: chatModelRecord?.timeoutMs ?? 600_000,
-      contextOptions: {
-        includePrevious: targetSession.includePrevious,
-        includeCharacters: targetSession.includeCharacters,
-        estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
-        sessionId: targetSessionId,
-        modelId: chatModelRecord?.modelId,
-        modelName: chatModelRecord?.name,
-      },
-    });
-    if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
-    streamTaskId.current = taskId;
-    streamSessionId.current = targetSessionId;
-    if (addUser) {
-      studio.addChatMessage(outline.id, { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() }, targetSessionId);
-      studio.setChatDraft(outline.id, "", targetSessionId);
-      if (targetSession.title === "新对话") studio.renameChatSession(outline.id, targetSessionId, question.slice(0, 24));
-    }
-    const controller = new AbortController();
-    streamController.current = controller;
-    streamingRef.current = "";
-    registerActiveChatStream(taskId, { controller, cancel: () => stopStreaming(true) });
+    if (!targetSessionId || !targetSession || isStreaming || submissionLock.current || currentStream.current) return;
+    const submissionToken = clientId("chat-submit");
+    submissionLock.current = submissionToken;
+    setSubmittingTaskId("pending");
+    const releaseSubmission = () => {
+      if (submissionLock.current !== submissionToken) return;
+      submissionLock.current = "";
+      setSubmittingTaskId("");
+    };
     try {
-      const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
-      if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
-      studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          streamingRef.current += decoder.decode();
-          break;
-        }
-        const decoded = decoder.decode(value, { stream: true });
-        // The local stream uses a record separator so the UI can finish even when
-        // a development proxy delays the response close or strips custom headers.
-        const terminatorIndex = decoded.indexOf("\u001e");
-        streamingRef.current += terminatorIndex >= 0 ? decoded.slice(0, terminatorIndex) : decoded;
-        studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, resultText: streamingRef.current });
-        if (terminatorIndex >= 0) {
-          void reader.cancel();
-          break;
-        }
+      const taskId = studio.addTask({
+        articleId: studio.currentArticle.id,
+        chapterId: outlineChapter.id,
+        outlineId: outline.id,
+        target: "AI Chat",
+        prompt: question.slice(0, 20000),
+        model: chatModelReference,
+        state: "running",
+        phase: "preparing",
+        attempt: 1,
+        startedAt: new Date().toISOString(),
+        lastProgressAt: new Date().toISOString(),
+        receivedCharacters: 0,
+        timeoutMs: chatModelRecord?.timeoutMs ?? 600_000,
+        contextOptions: {
+          includePrevious: targetSession.includePrevious,
+          includeCharacters: targetSession.includeCharacters,
+          estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
+          sessionId: targetSessionId,
+          modelId: chatModelRecord?.modelId,
+          modelName: chatModelRecord?.name,
+        },
+      });
+      if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
+      setSubmittingTaskId(taskId);
+      if (addUser) {
+        studio.addChatMessage(outline.id, { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() }, targetSessionId);
+        studio.setChatDraft(outline.id, "", targetSessionId);
+        if (targetSession.title === "新对话") studio.renameChatSession(outline.id, targetSessionId, question.slice(0, 24));
       }
-      if (controller.signal.aborted) return;
-      if (!streamingRef.current) throw new Error(`${chatbotName} 返回了空结果`);
-      studio.addChatMessage(outline.id, { id: clientId("message-assistant"), role: "assistant", text: streamingRef.current, createdAt: new Date().toISOString() }, targetSessionId);
-      studio.updateTask(taskId, { state: "success", phase: "completed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, resultText: streamingRef.current, error: undefined });
-      await chatStudioRef.current.saveNow();
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        const errorMessage = error instanceof Error ? error.message : "请求失败";
-        studio.addChatMessage(outline.id, { id: clientId("message-error"), role: "assistant", text: `${chatbotName} 错误：${errorMessage}`, createdAt: new Date().toISOString() }, targetSessionId);
-        studio.updateTask(taskId, { state: "failed", phase: "failed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: streamingRef.current.length, error: errorMessage });
-        await chatStudioRef.current.saveNow();
+      const controller = new AbortController();
+      const stream: ChatStreamState = { taskId, sessionId: targetSessionId, submissionToken, controller, result: "", finalized: false };
+      currentStream.current = stream;
+      registerActiveChatStream(taskId, { controller, cancel: () => stopStream(stream, true) });
+      try {
+        const saved = await studio.saveNow();
+        releaseSubmission();
+        if (!saved) throw new Error("消息保存失败，尚未调用 AI，请检查保存提示后重试");
+        if (controller.signal.aborted) return;
+        studio.updateTask(taskId, { phase: "connecting", lastProgressAt: new Date().toISOString() });
+        const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
+        if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
+        studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            stream.result += decoder.decode();
+            break;
+          }
+          const decoded = decoder.decode(value, { stream: true });
+          // The local stream uses a record separator so the UI can finish even when
+          // a development proxy delays the response close or strips custom headers.
+          const terminatorIndex = decoded.indexOf("\u001e");
+          stream.result += terminatorIndex >= 0 ? decoded.slice(0, terminatorIndex) : decoded;
+          studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, resultText: stream.result });
+          if (terminatorIndex >= 0) {
+            void reader.cancel();
+            break;
+          }
+        }
+        if (controller.signal.aborted) return;
+        if (!stream.result) throw new Error(`${chatbotName} 返回了空结果`);
+        stream.finalized = true;
+        studio.addChatMessage(outline.id, { id: clientId("message-assistant"), role: "assistant", text: stream.result, createdAt: new Date().toISOString() }, targetSessionId);
+        studio.updateTask(taskId, { state: "success", phase: "completed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, resultText: stream.result, error: undefined });
+        void chatStudioRef.current.saveNow();
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          stream.finalized = true;
+          const errorMessage = error instanceof Error ? error.message : "请求失败";
+          studio.addChatMessage(outline.id, { id: clientId("message-error"), role: "assistant", text: `${chatbotName} 错误：${errorMessage}`, createdAt: new Date().toISOString() }, targetSessionId);
+          studio.updateTask(taskId, { state: "failed", phase: "failed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, error: errorMessage });
+          if (errorMessage.startsWith("消息保存失败")) onNotice(errorMessage);
+          void chatStudioRef.current.saveNow();
+        }
+      } finally {
+        releaseActiveChatStream(taskId, controller);
+        if (currentStream.current === stream) currentStream.current = null;
+        stream.finalized = true;
       }
     } finally {
-      releaseActiveChatStream(taskId, controller);
-      if (streamController.current === controller) streamController.current = null;
-      if (streamTaskId.current === taskId) streamTaskId.current = "";
-      if (streamSessionId.current === targetSessionId) streamSessionId.current = "";
-      streamingRef.current = "";
+      releaseSubmission();
     }
   }
 
   async function send() {
     const question = message.trim();
-    if (!question || isStreaming || editingMessage) return;
+    if (!question || chatBusy || editingMessage) return;
     await requestAnswer(question, true);
   }
 
   async function submitEditedMessage() {
-    if (!editingMessage || isStreaming) return;
+    if (!editingMessage || chatBusy) return;
     const sourceSession = outline.chat.sessions.find((item) => item.id === editingMessage.sessionId);
     const messageIndex = sourceSession?.messages.findIndex((item) => item.id === editingMessage.messageId) ?? -1;
     const originalMessage = messageIndex >= 0 ? sourceSession?.messages[messageIndex] : undefined;
@@ -3029,15 +3051,15 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
           <span className="chat-header-icon"><Icon name="chat" /></span><span><span className="ui-title">{session.title}</span><small>{session.messages.length} 条消息</small></span><Icon name="chevron" />
         </button>
         <div className="chat-header-actions">
-          <IconButton name="plus" label="新建 AI Chat 会话" className="chat-new-session" onClick={() => { if (!isStreaming) { cancelEditingMessage(); studio.createChatSession(outline.id); setSessionsOpen(false); composerRef.current?.focus(); } }} />
+          <IconButton name="plus" label="新建 AI Chat 会话" className="chat-new-session" disabled={chatBusy} onClick={() => { if (!chatBusy) { cancelEditingMessage(); studio.createChatSession(outline.id); setSessionsOpen(false); composerRef.current?.focus(); } }} />
           <IconButton name="more" label="会话操作" aria-haspopup="menu" aria-expanded={sessionMenuOpen} onClick={() => { setSessionMenuOpen((value) => !value); setSessionsOpen(false); }} />
         </div>
-        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="AI Chat 会话"><div className="chat-session-popover-head"><span className="ui-title">AI Chat 会话</span></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={isStreaming} onClick={() => { cancelEditingMessage(); studio.setActiveChatSession(outline.id, item.id); setSessionsOpen(false); }}><span><span className="ui-title">{item.title}</span><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
+        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="AI Chat 会话"><div className="chat-session-popover-head"><span className="ui-title">AI Chat 会话</span></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={chatBusy} onClick={() => { cancelEditingMessage(); studio.setActiveChatSession(outline.id, item.id); setSessionsOpen(false); }}><span><span className="ui-title">{item.title}</span><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
         {sessionMenuOpen && <div className="chat-session-menu" role="menu"><button role="menuitem" type="button" onClick={() => { const title = window.prompt("会话名称", session.title); if (title?.trim()) studio.renameChatSession(outline.id, session.id, title); setSessionMenuOpen(false); }}><Icon name="edit" />重命名</button><button role="menuitem" type="button" onClick={() => { if (window.confirm("清空当前会话的全部消息？")) studio.clearChat(outline.id); setSessionMenuOpen(false); }}><Icon name="refresh" />清空消息</button><button role="menuitem" className="danger" type="button" onClick={() => { if (window.confirm("删除当前会话？")) studio.deleteChatSession(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="trash" />删除会话</button></div>}
       </header>
 
       <div className="chat-thread" ref={chatThreadRef}>
-        {!session.messages.length && !isStreaming && <div className="chat-empty"><span><Icon name="spark" /></span><h2>和 {chatbotName} 讨论「{outlineTitle}」</h2><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, prompt); composerRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
+        {!session.messages.length && !chatBusy && <div className="chat-empty"><span><Icon name="spark" /></span><h2>和 {chatbotName} 讨论「{outlineTitle}」</h2><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, prompt); composerRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
         {session.messages.map((item, index) => {
           const isError = item.role === "assistant" && item.text.includes("错误：");
           const previousUser = item.role === "assistant" ? [...session.messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user") : null;
@@ -3049,8 +3071,8 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
                 <div><span>Ctrl/⌘ + Enter 发送</span><button type="button" onClick={cancelEditingMessage}>取消</button><button className="primary" type="submit" disabled={!editingMessage.text.trim()}>发送</button></div>
               </form> : <><ChatMessageContent text={item.text} /><div className="message-actions">
                 <IconButton name={copiedId === item.id ? "check" : "copy"} label="复制消息" title="复制" size="small" onClick={() => void copyMessage(item.id, item.text)} />
-                {item.role === "user" && <IconButton name="edit" label="编辑并重发" size="small" disabled={isStreaming || Boolean(editingMessage)} onClick={() => setEditingMessage({ sessionId: session.id, messageId: item.id, text: item.text })} />}
-                {item.role === "assistant" && previousUser && <IconButton name="refresh" label="重新生成" size="small" disabled={isStreaming || Boolean(editingMessage)} onClick={() => { studio.replaceChatMessages(outline.id, session.messages.slice(0, index)); void requestAnswer(previousUser.text, false); }} />}
+                {item.role === "user" && <IconButton name="edit" label="编辑并重发" size="small" disabled={chatBusy || Boolean(editingMessage)} onClick={() => setEditingMessage({ sessionId: session.id, messageId: item.id, text: item.text })} />}
+                {item.role === "assistant" && previousUser && <IconButton name="refresh" label="重新生成" size="small" disabled={chatBusy || Boolean(editingMessage)} onClick={() => { studio.replaceChatMessages(outline.id, session.messages.slice(0, index)); void requestAnswer(previousUser.text, false); }} />}
                 <IconButton name="branch" label="从这里分支" size="small" onClick={() => branchFrom(item.id)} />
                 {item.role === "assistant" && <IconButton name="more" label="更多写作操作" title="更多" size="small" className="message-action-trigger" aria-haspopup="menu" aria-expanded={messageMenuId === item.id} onClick={() => setMessageMenuId((value) => value === item.id ? "" : item.id)} />}
               </div>
@@ -3058,7 +3080,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
             </div>
           </article>;
         })}
-        {isStreaming && <article className="message assistant streaming"><div className="avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><span className="ui-label">{chatbotName}</span><span>正在回复</span></div><ChatMessageContent text={streaming || "正在思考…"} /><button className="inline-stop" type="button" onClick={cancelCurrentChatTask}><Icon name="stop" />停止</button></div></article>}
+        {chatBusy && <article className="message assistant streaming" aria-live="polite"><div className="avatar"><Icon name="spark" /></div><div className="message-body"><div className="message-meta"><span className="ui-label">{chatbotName}</span><span>{chatProgressLabel}</span></div><ChatMessageContent text={chatProgressText} /><button className="inline-stop" type="button" onClick={cancelCurrentChatTask}><Icon name="stop" />停止</button></div></article>}
         <div ref={threadEndRef} />
       </div>
 
@@ -3066,7 +3088,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
         {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="AI Chat 上下文"><header><div><span className="ui-title">本次上下文</span><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={session.includePrevious} onChange={(event) => studio.setChatSetting(outline.id, "includePrevious", event.target.checked)} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{session.includePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={session.includeCharacters} onChange={(event) => studio.setChatSetting(outline.id, "includeCharacters", event.target.checked)} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{session.includeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
           <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="AI Chat 消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { studio.updateSettings({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地 PoC 引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{isStreaming ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage)} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { studio.updateSettings({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地 PoC 引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>

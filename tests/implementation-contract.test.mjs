@@ -444,6 +444,8 @@ test("AI tasks expose durable phases, heartbeats, timeout and cross-device refre
   assert.match(app, /最近更新/);
   assert.match(app, /重新执行/);
   assert.match(app, /\/api\/ai\/tasks\/\$\{encodeURIComponent\(task\.id\)\}\/execute/);
+  assert.match(app, /studio\.saveStatus === "failed" \|\| studio\.saveStatus === "conflict"/);
+  assert.doesNotMatch(state, /id: "task-running"/);
   const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
   assert.match(executor, /runnerId = `server-/);
   assert.match(executor, /setInterval[\s\S]*5_000/);
@@ -462,7 +464,10 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
   assert.match(state, /clearCompletedTasks: \(\) => void/);
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
   assert.match(app, /target: "AI Chat"[\s\S]*state: "running"/);
-  assert.match(app, /studio\.updateTask\(taskId, \{ state: "success", phase: "completed"[\s\S]*resultText: streamingRef\.current/);
+  assert.match(app, /studio\.updateTask\(taskId, \{ state: "success", phase: "completed"[\s\S]*resultText: stream\.result/);
+  assert.match(app, /submissionLock\.current = submissionToken/);
+  assert.match(app, /"Idempotency-Key": taskId/);
+  assert.match(app, /正在保存消息并创建任务/);
   assert.match(app, /const dispatchableTasks: AiTask\[\] = \[\]/);
   assert.match(app, /occupiedBodyOutlines/);
   assert.match(app, /清空已完成/);

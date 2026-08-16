@@ -323,7 +323,7 @@ const seedData: StudioData = {
     },
   ],
   tasks: [
-    { id: "task-running", articleId: "harbor-letters", chapterId: "chapter-1", outlineId: "outline-2", target: "正文", prompt: "延续悬疑氛围，让林澈和顾屿在旧码头重逢", model: "创作主模型", state: "running", createdAt: "2026-07-28T14:31:00.000Z" },
+    { id: "task-demo", articleId: "harbor-letters", chapterId: "chapter-1", outlineId: "outline-2", target: "正文", prompt: "延续悬疑氛围，让林澈和顾屿在旧码头重逢", model: "创作主模型", state: "cancelled", createdAt: "2026-07-28T14:31:00.000Z", error: "演示任务，不会自动执行" },
     { id: "task-failed", articleId: "harbor-letters", chapterId: "chapter-2", outlineId: "outline-5", target: "正文", prompt: "让海图显示出不存在的航线", model: "创作主模型", state: "failed", createdAt: "2026-07-28T13:50:00.000Z", error: "模拟服务暂时不可用" },
   ],
   settings: {
@@ -422,6 +422,7 @@ type StudioContextValue = {
 const StudioContext = createContext<StudioContextValue | null>(null);
 const legacyStorageKey = "writer-studio-poc-v2";
 const draftPrefix = "writer-studio:draft:";
+const saveRequestTimeoutMs = 45_000;
 
 function makeId(prefix: string) {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
@@ -654,9 +655,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     if (!force && serialized === lastSavedRef.current) return true;
     setSaveStatus("saving");
     setSaveError("");
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort("save-timeout"), saveRequestTimeoutMs);
     try {
       const response = await fetch("/api/state", {
         method: "PUT",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json", "If-Match": String(revisionRef.current) },
         body: JSON.stringify({ data: snapshot, conflictResolution: force ? "keep-local" : undefined }),
       });
@@ -689,9 +693,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       pendingRecoveredDraftKeysRef.current = [];
       return true;
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "保存失败");
+      setSaveError(controller.signal.reason === "save-timeout" ? "保存超时，请检查网络后重试" : error instanceof Error ? error.message : "保存失败");
       setSaveStatus("failed");
       return false;
+    } finally {
+      globalThis.clearTimeout(timeout);
     }
   }, [setData]);
 
