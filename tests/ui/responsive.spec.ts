@@ -263,8 +263,7 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await request.put("/api/state", { headers: { "If-Match": String(snapshot.revision) }, data: { data: snapshot.data, conflictResolution: "keep-local" } });
 
   const gotoSettled = async (url: string) => {
-    await page.goto(url);
-    await page.waitForTimeout(250);
+    await page.goto(url, { waitUntil: "networkidle" });
   };
 
   await gotoSettled("/");
@@ -644,8 +643,11 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     if (route.request().method() === "PUT") await saveGate;
     await route.continue();
   });
-  await page.locator(".section-heading").click();
-  await expect(page.locator(".save-state")).toContainText("未保存");
+  await page.getByRole("tab", { name: "AI Generate" }).click();
+  const model = page.getByRole("combobox", { name: "本次模型" });
+  await model.click();
+  await page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" }).click();
+  await expect(page.locator(".save-state")).toContainText(/未保存|正在保存/);
 
   try {
     await page.getByRole("tab", { name: "AI Chat" }).click();
@@ -1612,7 +1614,11 @@ test("AI Chat finishes after leaving and clears its unread marker when opened", 
     const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
     const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
     const session = outline.chat.sessions.find((item) => item.id === outline.chat.activeSessionId)!;
-    return session.lastReadMessageId === session.messages.at(-1)?.id;
+    const latestMessageId = session.messages.at(-1)?.id;
+    return page.evaluate(({ sessionId, latestId }) => {
+      const local = JSON.parse(window.localStorage.getItem("writer-studio:device-ui-v1") ?? "{}") as { lastReadBySession?: Record<string, string | null> };
+      return local.lastReadBySession?.[sessionId] === latestId;
+    }, { sessionId: session.id, latestId: latestMessageId });
   }).toBe(true);
 });
 

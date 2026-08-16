@@ -19,9 +19,9 @@ export async function PUT(request: Request) {
   try {
     const expectedRevision = Number(request.headers.get("if-match"));
     if (!Number.isFinite(expectedRevision)) return json({ error: "if_match_required" }, 428);
-    const body = await request.json() as { data?: StudioData; conflictResolution?: "keep-local" };
+    const body = await request.json() as { data?: StudioData };
     if (!body.data || body.data.version !== 1 || !Array.isArray(body.data.articles)) return json({ error: "invalid_state" }, 400);
-    const result = await writeStudioState(body.data, expectedRevision, body.conflictResolution === "keep-local");
+    const result = await writeStudioState(body.data, expectedRevision);
     if (result.conflict) return json({ error: "revision_conflict", ...result.current }, 409);
     return json({ revision: result.revision });
   } catch (error) {

@@ -130,8 +130,8 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const chat = loaded.data.data.articles[0].chapters[0].outlines[1].chat;
     assert.equal(chat.sessions.length, 2);
     assert.equal(chat.sessions[0].messages.length, 22);
-    assert.equal(chat.sessions[0].lastReadMessageId, "message-21");
-    assert.equal(chat.sessions[1].draft, "分支草稿");
+    assert.equal(chat.sessions[0].lastReadMessageId, null, "read position is device-local UI state");
+    assert.equal(chat.sessions[1].draft, "", "chat drafts are device-local UI state");
     assert.equal(chat.sessions[1].lastReadMessageId, null);
     assert.equal(chat.activeSessionId, "chat:outline-current");
     assert.equal(loaded.data.data.settings.generateTargetWords, 5000);
@@ -172,6 +172,23 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(result.response.status, 409);
     assert.equal(result.data.data.articles[0].title, "严格测试文章");
     assert.equal(result.data.revision, revision);
+  });
+
+  await t.test("allows exactly one of two simultaneous writes for the same revision", async () => {
+    const current = await api("/api/state");
+    const first = structuredClone(current.data.data);
+    const second = structuredClone(current.data.data);
+    first.articles[0].summary = "并发写入 A";
+    second.articles[0].summary = "并发写入 B";
+    const [firstResult, secondResult] = await Promise.all([
+      api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: first } }),
+      api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: second } }),
+    ]);
+    assert.deepEqual([firstResult.response.status, secondResult.response.status].sort(), [200, 409]);
+    const loaded = await api("/api/state");
+    assert.equal(loaded.data.revision, current.data.revision + 1);
+    assert.ok(["并发写入 A", "并发写入 B"].includes(loaded.data.data.articles[0].summary));
+    revision = loaded.data.revision;
   });
 
   await t.test("keeps FTS-derived search synchronized", async () => {

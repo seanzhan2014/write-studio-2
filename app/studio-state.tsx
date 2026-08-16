@@ -8,7 +8,7 @@ import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot 
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
-import { mergeAiManagedConflict } from "./studio-conflict.mjs";
+import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
 import { duplicateArticlesForImport, duplicateOutlineForImport } from "@/lib/data-transfer";
 
@@ -352,7 +352,7 @@ type StudioContextValue = {
   hydrated: boolean;
   saveStatus: "loading" | "saved" | "unsaved" | "saving" | "failed" | "conflict";
   saveError: string;
-  conflict: { local: StudioData; server: StudioData; serverRevision: number } | null;
+  conflict: { base: StudioData; local: StudioData; server: StudioData; serverRevision: number; details: StudioConflictDetail[] } | null;
   currentArticle: Article;
   currentChapter: Chapter;
   currentOutline: Outline;
@@ -421,6 +421,7 @@ type StudioContextValue = {
 
 const StudioContext = createContext<StudioContextValue | null>(null);
 const legacyStorageKey = "writer-studio-poc-v2";
+const deviceUiStorageKey = "writer-studio:device-ui-v1";
 const draftPrefix = "writer-studio:draft:";
 const saveRequestTimeoutMs = 45_000;
 
@@ -439,6 +440,126 @@ function findOutlineInArticle(article: Article, outlineId: string) {
 
 function firstOutline(article: Article) {
   return article.chapters.flatMap((chapter) => chapter.outlines).find((item) => !item.archived)?.id ?? article.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
+}
+
+type DeviceUiState = {
+  currentArticleId?: string;
+  currentOutlineId?: string;
+  lastOutlineByArticle?: Record<string, string>;
+  activeSessionByOutline?: Record<string, string>;
+  chatDraftBySession?: Record<string, string>;
+  lastReadBySession?: Record<string, string | null>;
+  chatOptionsBySession?: Record<string, { includePrevious: boolean; includeCharacters: boolean }>;
+  settings?: Pick<StudioSettings, "theme" | "editorFont" | "fontSize" | "lineHeight" | "contentWidth" | "outlineExpanded" | "showArchived" | "openLastArticle">;
+};
+
+function deviceUiFromData(data: StudioData): DeviceUiState {
+  const result: DeviceUiState = {
+    currentArticleId: data.currentArticleId,
+    currentOutlineId: data.currentOutlineId,
+    lastOutlineByArticle: {},
+    activeSessionByOutline: {},
+    chatDraftBySession: {},
+    lastReadBySession: {},
+    chatOptionsBySession: {},
+    settings: {
+      theme: data.settings.theme,
+      editorFont: data.settings.editorFont,
+      fontSize: data.settings.fontSize,
+      lineHeight: data.settings.lineHeight,
+      contentWidth: data.settings.contentWidth,
+      outlineExpanded: data.settings.outlineExpanded,
+      showArchived: data.settings.showArchived,
+      openLastArticle: data.settings.openLastArticle,
+    },
+  };
+  for (const article of data.articles) {
+    result.lastOutlineByArticle![article.id] = article.lastOutlineId;
+    for (const chapter of article.chapters) for (const outline of chapter.outlines) {
+      result.activeSessionByOutline![outline.id] = outline.chat.activeSessionId;
+      for (const session of outline.chat.sessions) {
+        if (session.draft) result.chatDraftBySession![session.id] = session.draft;
+        result.lastReadBySession![session.id] = session.lastReadMessageId ?? null;
+        result.chatOptionsBySession![session.id] = { includePrevious: session.includePrevious, includeCharacters: session.includeCharacters };
+      }
+    }
+  }
+  return result;
+}
+
+function readDeviceUi(): DeviceUiState {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(deviceUiStorageKey) ?? "{}") as DeviceUiState;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function deviceUiForCurrentPath(source: DeviceUiState, data: StudioData): DeviceUiState {
+  const ui = structuredClone(source);
+  const articleId = window.location.pathname.match(/\/articles\/([^/]+)/)?.[1];
+  const outlineId = window.location.pathname.match(/\/outlines\/([^/]+)/)?.[1];
+  const chapterId = window.location.pathname.match(/\/chapters\/([^/]+)/)?.[1];
+  const outlineOwner = outlineId
+    ? data.articles.find((article) => article.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === outlineId)))
+    : undefined;
+  const chapterOwner = !outlineOwner && chapterId
+    ? data.articles.find((article) => article.chapters.some((chapter) => chapter.id === chapterId))
+    : undefined;
+  const article = outlineOwner ?? chapterOwner ?? data.articles.find((item) => item.id === articleId);
+  const requestedOutlineId = outlineOwner
+    ? outlineId
+    : chapterOwner?.chapters.find((chapter) => chapter.id === chapterId)?.outlines[0]?.id;
+  if (article) ui.currentArticleId = article.id;
+  if (article && requestedOutlineId) {
+    ui.currentOutlineId = requestedOutlineId;
+    ui.lastOutlineByArticle = { ...(ui.lastOutlineByArticle ?? {}), [article.id]: requestedOutlineId };
+  }
+  return ui;
+}
+
+function applyDeviceUi(source: StudioData, ui: DeviceUiState): StudioData {
+  const data = structuredClone(source);
+  if (ui.settings) data.settings = { ...data.settings, ...ui.settings };
+  for (const article of data.articles) {
+    const outlineIds = new Set(article.chapters.flatMap((chapter) => chapter.outlines.map((outline) => outline.id)));
+    const requested = ui.lastOutlineByArticle?.[article.id];
+    article.lastOutlineId = requested && outlineIds.has(requested) ? requested : firstOutline(article);
+    for (const chapter of article.chapters) for (const outline of chapter.outlines) {
+      const sessionIds = new Set(outline.chat.sessions.map((session) => session.id));
+      const activeSessionId = ui.activeSessionByOutline?.[outline.id];
+      outline.chat.activeSessionId = activeSessionId && sessionIds.has(activeSessionId) ? activeSessionId : outline.chat.sessions[0]?.id ?? "";
+      for (const session of outline.chat.sessions) {
+        session.draft = ui.chatDraftBySession?.[session.id] ?? "";
+        session.lastReadMessageId = Object.prototype.hasOwnProperty.call(ui.lastReadBySession ?? {}, session.id)
+          ? ui.lastReadBySession?.[session.id] ?? null
+          : null;
+        const options = ui.chatOptionsBySession?.[session.id];
+        if (options) {
+          session.includePrevious = options.includePrevious;
+          session.includeCharacters = options.includeCharacters;
+        }
+      }
+    }
+  }
+  const requestedArticle = data.articles.find((article) => article.id === ui.currentArticleId);
+  const requestedOutlineOwner = data.articles.find((article) => article.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === ui.currentOutlineId)));
+  const article = requestedArticle ?? requestedOutlineOwner ?? data.articles[0];
+  data.currentArticleId = article?.id ?? "";
+  const articleOutlineIds = new Set(article?.chapters.flatMap((chapter) => chapter.outlines.map((outline) => outline.id)) ?? []);
+  data.currentOutlineId = ui.currentOutlineId && articleOutlineIds.has(ui.currentOutlineId)
+    ? ui.currentOutlineId
+    : article?.lastOutlineId ?? "";
+  return data;
+}
+
+function durableSnapshot(data: StudioData) {
+  return durableStudioData(data);
+}
+
+function serializeDurable(data: StudioData) {
+  return stableStudioStringify(durableSnapshot(data));
 }
 
 function activeExcellentFragments(outline: Outline) {
@@ -579,6 +700,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const saveEpochRef = useRef(0);
   const pendingRecoveredDraftKeysRef = useRef<string[]>([]);
+  const pendingLegacyMigrationRef = useRef(false);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
 
   const setData = useCallback((update: StudioData | ((current: StudioData) => StudioData)) => {
@@ -596,21 +718,25 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         const response = await fetch("/api/state", { cache: "no-store" });
         if (!response.ok) throw new Error(`数据库加载失败（${response.status}）`);
         const payload = await response.json() as { data: StudioData | null; revision: number };
-        let loaded = payload.data;
+        const databaseData = normalizeStudioData(payload.data ?? emptyStudioData(seedData.settings));
+        let loaded = databaseData;
+        let migratedLegacy = false;
         revisionRef.current = payload.revision;
-        if (!loaded) {
+        if (loaded.articles.length === 0 && payload.revision === 0) {
           const legacy = window.localStorage.getItem(legacyStorageKey);
           if (legacy) {
             try {
               const parsed = JSON.parse(legacy) as StudioData;
-              if (parsed.version === 1 && parsed.articles?.length) loaded = parsed;
+              if (parsed.version === 1 && parsed.articles?.length) {
+                loaded = normalizeStudioData(parsed);
+                migratedLegacy = true;
+              }
             } catch { /* Invalid legacy data is ignored during one-time migration. */ }
           }
-          loaded ??= emptyStudioData(seedData.settings);
-          window.localStorage.removeItem(legacyStorageKey);
         }
-        if (loaded) loaded = normalizeStudioData(loaded);
-        const databaseSnapshot = JSON.stringify(loaded);
+        const databaseSnapshot = serializeDurable(databaseData);
+        const deviceUi = deviceUiForCurrentPath(migratedLegacy ? deviceUiFromData(loaded) : readDeviceUi(), loaded);
+        loaded = applyDeviceUi(loaded, deviceUi);
         const recoveredDraftKeys: string[] = [];
         const storedDraftKeys = Array.from({ length: window.sessionStorage.length }, (_, index) => window.sessionStorage.key(index)).filter((key): key is string => Boolean(key?.startsWith(draftPrefix)));
         for (const key of storedDraftKeys) {
@@ -636,6 +762,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         dataRef.current = loaded;
         lastSavedRef.current = databaseSnapshot;
         pendingRecoveredDraftKeysRef.current = recoveredDraftKeys;
+        pendingLegacyMigrationRef.current = migratedLegacy;
         setSaveStatus("saved");
       } catch (error) {
         if (!active) return;
@@ -649,10 +776,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     return () => { active = false; };
   }, [setData]);
 
-  const persist = useCallback(async function persistSnapshot(snapshot: StudioData, force = false, epoch = saveEpochRef.current, rebaseAttempt = 0): Promise<boolean> {
-    if (!force && epoch !== saveEpochRef.current) return false;
-    const serialized = JSON.stringify(snapshot);
-    if (!force && serialized === lastSavedRef.current) return true;
+  const persist = useCallback(async function persistSnapshot(snapshot: StudioData, epoch = saveEpochRef.current, rebaseAttempt = 0): Promise<boolean> {
+    if (epoch !== saveEpochRef.current) return false;
+    const durable = durableSnapshot(snapshot);
+    const serialized = stableStudioStringify(durable);
+    if (serialized === lastSavedRef.current) return true;
     setSaveStatus("saving");
     setSaveError("");
     const controller = new AbortController();
@@ -662,25 +790,39 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         method: "PUT",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", "If-Match": String(revisionRef.current) },
-        body: JSON.stringify({ data: snapshot, conflictResolution: force ? "keep-local" : undefined }),
+        body: JSON.stringify({ data: durable }),
       });
       const payload = await response.json() as { revision?: number; data?: StudioData; message?: string };
       if (response.status === 409 && payload.data) {
-        if (!force && rebaseAttempt < 2 && lastSavedRef.current) {
+        if (rebaseAttempt < 3 && lastSavedRef.current) {
           try {
             const base = JSON.parse(lastSavedRef.current) as StudioData;
-            const server = normalizeStudioData(payload.data);
-            const merged = mergeAiManagedConflict(base, snapshot, server);
-            if (merged) {
+            const server = durableSnapshot(normalizeStudioData(payload.data));
+            const latestUi = deviceUiFromData(dataRef.current);
+            const latestLocal = durableSnapshot(dataRef.current);
+            const result = mergeStudioConflict(base, latestLocal, server);
+            if (!result.conflicts.length) {
+              saveEpochRef.current += 1;
+              const rebasedEpoch = saveEpochRef.current;
               revisionRef.current = Number(payload.revision ?? revisionRef.current);
+              lastSavedRef.current = stableStudioStringify(server);
+              const merged = applyDeviceUi(result.merged, latestUi);
               dataRef.current = merged;
               setData(merged);
-              return persistSnapshot(merged, false, epoch, rebaseAttempt + 1);
+              return persistSnapshot(merged, rebasedEpoch, rebaseAttempt + 1);
             }
+            saveEpochRef.current += 1;
+            setConflict({ base, local: latestLocal, server, serverRevision: Number(payload.revision ?? revisionRef.current), details: result.conflicts });
+            setSaveStatus("conflict");
+            return false;
           } catch { /* A malformed base snapshot falls through to explicit resolution. */ }
         }
         saveEpochRef.current += 1;
-        setConflict({ local: snapshot, server: normalizeStudioData(payload.data), serverRevision: Number(payload.revision ?? revisionRef.current) });
+        const server = durableSnapshot(normalizeStudioData(payload.data));
+        const base = lastSavedRef.current ? JSON.parse(lastSavedRef.current) as StudioData : server;
+        const latestLocal = durableSnapshot(dataRef.current);
+        const result = mergeStudioConflict(base, latestLocal, server);
+        setConflict({ base, local: latestLocal, server, serverRevision: Number(payload.revision ?? revisionRef.current), details: result.conflicts });
         setSaveStatus("conflict");
         return false;
       }
@@ -691,6 +833,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("saved");
       pendingRecoveredDraftKeysRef.current.forEach((key) => window.sessionStorage.removeItem(key));
       pendingRecoveredDraftKeysRef.current = [];
+      if (pendingLegacyMigrationRef.current) {
+        window.localStorage.removeItem(legacyStorageKey);
+        pendingLegacyMigrationRef.current = false;
+      }
       return true;
     } catch (error) {
       setSaveError(controller.signal.reason === "save-timeout" ? "保存超时，请检查网络后重试" : error instanceof Error ? error.message : "保存失败");
@@ -701,14 +847,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     }
   }, [setData]);
 
-  const enqueueSave = useCallback((snapshot: StudioData, force = false) => {
+  const enqueueSave = useCallback((snapshot: StudioData) => {
     const epoch = saveEpochRef.current;
-    saveQueueRef.current = saveQueueRef.current.then(() => persist(snapshot, force, epoch), () => persist(snapshot, force, epoch));
+    saveQueueRef.current = saveQueueRef.current.then(() => persist(snapshot, epoch), () => persist(snapshot, epoch));
     return saveQueueRef.current;
   }, [persist]);
 
   const refreshFromServer = useCallback(async () => {
-    if (!hydrated || conflict || JSON.stringify(dataRef.current) !== lastSavedRef.current) return false;
+    if (!hydrated || conflict || serializeDurable(dataRef.current) !== lastSavedRef.current) return false;
     if (refreshPromiseRef.current) return refreshPromiseRef.current;
     const requestedSnapshot = lastSavedRef.current;
     const request = (async () => {
@@ -716,14 +862,15 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         const response = await fetch("/api/state", { cache: "no-store" });
         const payload = await response.json() as { data?: StudioData | null; revision?: number };
         if (!response.ok || !payload.data || payload.revision === undefined) return false;
-        if (JSON.stringify(dataRef.current) !== requestedSnapshot || lastSavedRef.current !== requestedSnapshot) return false;
-        const server = normalizeStudioData(payload.data);
-        const serialized = JSON.stringify(server);
+        if (serializeDurable(dataRef.current) !== requestedSnapshot || lastSavedRef.current !== requestedSnapshot) return false;
+        const server = durableSnapshot(normalizeStudioData(payload.data));
+        const serialized = stableStudioStringify(server);
         revisionRef.current = payload.revision;
         if (serialized !== lastSavedRef.current) {
-          dataRef.current = server;
+          const withDeviceUi = applyDeviceUi(server, deviceUiFromData(dataRef.current));
+          dataRef.current = withDeviceUi;
           lastSavedRef.current = serialized;
-          setData(server);
+          setData(withDeviceUi);
         }
         return true;
       } catch {
@@ -738,12 +885,19 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || conflict) return;
-    const serialized = JSON.stringify(data);
+    const serialized = serializeDurable(data);
     if (serialized === lastSavedRef.current) return;
     setSaveStatus("unsaved");
     const timer = window.setTimeout(() => { void enqueueSave(data); }, 800);
     return () => window.clearTimeout(timer);
   }, [data, hydrated, conflict, enqueueSave]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(deviceUiStorageKey, JSON.stringify(deviceUiFromData(data)));
+    } catch { /* Device-local UI state is an optional convenience. */ }
+  }, [data, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -791,11 +945,16 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       });
     },
     setCurrentOutline(outlineId) {
-      setData((current) => ({
-        ...current,
-        currentOutlineId: outlineId,
-        articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, lastOutlineId: outlineId } : article),
-      }));
+      setData((current) => {
+        const owner = current.articles.find((article) => Boolean(findOutlineInArticle(article, outlineId)));
+        if (!owner) return current;
+        return {
+          ...current,
+          currentArticleId: owner.id,
+          currentOutlineId: outlineId,
+          articles: current.articles.map((article) => article.id === owner.id ? { ...article, lastOutlineId: outlineId } : article),
+        };
+      });
     },
     createArticle(fields) {
       const articleId = makeId("article");
@@ -1296,7 +1455,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         revisionRef.current = payload.revision;
         const cleared = emptyStudioData(dataRef.current.settings);
         dataRef.current = cleared;
-        lastSavedRef.current = JSON.stringify(cleared);
+        lastSavedRef.current = serializeDurable(cleared);
         setData(cleared);
         setConflict(null);
         setSaveStatus("saved");
@@ -1320,27 +1479,26 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     async resolveConflict(choice) {
       if (!conflict) return;
-      if (choice === "use-server") {
-        let server = conflict.server;
-        let serverRevision = conflict.serverRevision;
-        try {
-          const response = await fetch("/api/state", { cache: "no-store" });
-          const payload = await response.json() as { data?: StudioData | null; revision?: number };
-          if (response.ok && payload.data && payload.revision !== undefined) {
-            server = payload.data;
-            serverRevision = payload.revision;
-          }
-        } catch { /* The conflict response is still a valid database snapshot. */ }
-        revisionRef.current = serverRevision;
-        lastSavedRef.current = JSON.stringify(server);
-        dataRef.current = server;
-        setData(server);
-        setConflict(null);
-        setSaveStatus("saved");
-        return;
-      }
-      revisionRef.current = conflict.serverRevision;
-      await enqueueSave(conflict.local, true);
+      let server = conflict.server;
+      let serverRevision = conflict.serverRevision;
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        const payload = await response.json() as { data?: StudioData | null; revision?: number };
+        if (response.ok && payload.data && payload.revision !== undefined) {
+          server = durableSnapshot(normalizeStudioData(payload.data));
+          serverRevision = payload.revision;
+        }
+      } catch { /* The conflict response is still a valid database snapshot. */ }
+      const resolved = resolveStudioConflict(conflict.base, conflict.local, server, choice === "keep-local" ? "local" : "server");
+      const withDeviceUi = applyDeviceUi(resolved, deviceUiFromData(dataRef.current));
+      saveEpochRef.current += 1;
+      revisionRef.current = serverRevision;
+      lastSavedRef.current = stableStudioStringify(server);
+      dataRef.current = withDeviceUi;
+      setData(withDeviceUi);
+      setConflict(null);
+      setSaveStatus("unsaved");
+      await enqueueSave(withDeviceUi);
     },
   }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, enqueueSave, refreshFromServer, setData]);
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeAiManagedConflict } from "../app/studio-conflict.mjs";
+import { durableStudioData, mergeAiManagedConflict, mergeStudioConflict, resolveStudioConflict } from "../app/studio-conflict.mjs";
 
 function fixture() {
   return {
@@ -110,4 +110,70 @@ test("keeps a genuine same-data conflict for explicit user resolution", () => {
   local.articles[0].chapters[0].outlines[0].plan = "本机大纲";
   server.articles[0].chapters[0].outlines[0].plan = "其他设备大纲";
   assert.equal(mergeAiManagedConflict(base, local, server), null);
+});
+
+test("merges edits to one article with a concurrently imported article", () => {
+  const base = fixture();
+  const local = structuredClone(base);
+  local.articles[0].chapters[0].outlines[0].plan = "本设备修改";
+  const server = structuredClone(base);
+  server.articles.push({ id: "imported", title: "新导入文章", lastOutlineId: "", updatedAt: "server", chapters: [] });
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(result.merged.articles.length, 2);
+  assert.equal(result.merged.articles.find((article) => article.id === "article").chapters[0].outlines[0].plan, "本设备修改");
+});
+
+test("reports the exact entity and field for a real conflict", () => {
+  const base = fixture();
+  const local = structuredClone(base);
+  const server = structuredClone(base);
+  local.articles[0].title = "本设备标题";
+  server.articles[0].title = "数据库标题";
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 1);
+  assert.equal(result.conflicts[0].entityId, "article");
+  assert.match(result.conflicts[0].label, /文章.*标题/);
+  assert.equal(result.conflicts[0].localText, "本设备标题");
+  assert.equal(result.conflicts[0].serverText, "数据库标题");
+});
+
+test("keeping a local conflicting field preserves unrelated server additions", () => {
+  const base = fixture();
+  const local = structuredClone(base);
+  const server = structuredClone(base);
+  local.articles[0].title = "本设备标题";
+  server.articles[0].title = "数据库标题";
+  server.articles.push({ id: "imported", title: "新导入文章", lastOutlineId: "", updatedAt: "server", chapters: [] });
+
+  const resolved = resolveStudioConflict(base, local, server, "local");
+  assert.equal(resolved.articles.find((article) => article.id === "article").title, "本设备标题");
+  assert.equal(resolved.articles.find((article) => article.id === "imported").title, "新导入文章");
+});
+
+test("device-only navigation and composing state are excluded from durable snapshots", () => {
+  const data = fixture();
+  const outline = data.articles[0].chapters[0].outlines[0];
+  outline.chat = { activeSessionId: "session-2", sessions: [
+    { id: "session-1", draft: "草稿", lastReadMessageId: "message-1", includePrevious: false, includeCharacters: false },
+    { id: "session-2", draft: "另一个草稿", lastReadMessageId: null, includePrevious: true, includeCharacters: true },
+  ] };
+  data.settings = { theme: "dark", editorFont: "serif", fontSize: 22, lineHeight: 2, contentWidth: 1100, outlineExpanded: false, showArchived: true, openLastArticle: false };
+  data.currentArticleId = "article";
+  data.currentOutlineId = "outline";
+  data.articles[0].lastOutlineId = "outline";
+
+  const durable = durableStudioData(data);
+  assert.equal(durable.currentArticleId, "");
+  assert.equal(durable.currentOutlineId, "");
+  assert.equal(durable.articles[0].lastOutlineId, "");
+  assert.equal(durable.articles[0].chapters[0].outlines[0].chat.activeSessionId, "");
+  assert.equal(durable.articles[0].chapters[0].outlines[0].chat.sessions[0].draft, "");
+  assert.equal(durable.articles[0].chapters[0].outlines[0].chat.sessions[0].lastReadMessageId, null);
+  assert.equal(durable.articles[0].chapters[0].outlines[0].chat.sessions[0].includePrevious, true);
+  assert.equal(durable.articles[0].chapters[0].outlines[0].chat.sessions[0].includeCharacters, true);
+  assert.equal(durable.settings.theme, "light");
+  assert.equal(durable.settings.editorFont, "sans");
 });

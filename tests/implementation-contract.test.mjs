@@ -343,8 +343,9 @@ test("mobile Generate edits use an explicit draft save and insecure HTTP clipboa
   assert.doesNotMatch(app, /id="generate-outline-plan"[\s\S]{0,700}onBlur=\{\(\) => void studio\.saveNow\(\)\}/);
   assert.match(app, /await saveOutlineDraft\(\)/);
   assert.match(state, /saveOutlinePlan: \(outlineId: string, plan: string\) => Promise<boolean>/);
-  assert.match(state, /mergeAiManagedConflict/);
-  assert.match(merge, /serverAdditions/);
+  assert.match(state, /mergeStudioConflict/);
+  assert.match(state, /durableSnapshot/);
+  assert.match(merge, /resolveStudioConflict/);
   assert.match(app, /fullScreen=\{compact\}/);
   assert.match(styles, /\.conflict-actions[\s\S]*@media \(max-width: 767px\)/);
 });

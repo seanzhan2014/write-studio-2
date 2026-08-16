@@ -164,6 +164,7 @@ export async function ensureDatabase() {
       await ensureAiTaskProgressColumns(db);
       await createSearchIndex(db);
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(new Date().toISOString()).run();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(new Date().toISOString()).run();
     })().catch((error) => {
       initialized = null;
       throw error;
@@ -344,17 +345,17 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   await ensureDatabase();
   const db = getDatabase();
   const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
-    db.prepare("SELECT * FROM articles ORDER BY last_opened_at DESC").all(),
-    db.prepare("SELECT * FROM chapters ORDER BY article_id, position").all(),
-    db.prepare("SELECT * FROM outlines ORDER BY chapter_id, position").all(),
+    db.prepare("SELECT * FROM articles ORDER BY last_opened_at DESC, rowid").all(),
+    db.prepare("SELECT * FROM chapters ORDER BY article_id, position, id").all(),
+    db.prepare("SELECT * FROM outlines ORDER BY chapter_id, position, id").all(),
     db.prepare("SELECT * FROM contents").all(),
-    db.prepare("SELECT * FROM versions ORDER BY created_at DESC").all(),
-    db.prepare("SELECT * FROM excellent_fragments ORDER BY created_at").all(),
-    db.prepare("SELECT * FROM characters ORDER BY created_at").all(),
-    db.prepare("SELECT * FROM relationships ORDER BY created_at").all(),
-    db.prepare("SELECT * FROM chat_sessions").all(),
+    db.prepare("SELECT * FROM versions ORDER BY created_at DESC, rowid").all(),
+    db.prepare("SELECT * FROM excellent_fragments ORDER BY created_at, rowid").all(),
+    db.prepare("SELECT * FROM characters ORDER BY created_at, rowid").all(),
+    db.prepare("SELECT * FROM relationships ORDER BY created_at, rowid").all(),
+    db.prepare("SELECT * FROM chat_sessions ORDER BY outline_id, created_at, rowid").all(),
     db.prepare("SELECT * FROM chat_messages ORDER BY session_id, order_index").all(),
-    db.prepare("SELECT * FROM ai_tasks ORDER BY created_at DESC LIMIT 20").all(),
+    db.prepare("SELECT * FROM ai_tasks ORDER BY created_at DESC, rowid LIMIT 20").all(),
     db.prepare("SELECT * FROM app_settings").all(),
   ]);
   const articleRows = rows(articleResult);
@@ -414,12 +415,10 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
             id: String(sessionRow.id),
             title: options.title?.trim() || "新对话",
             messages: sessionMessages,
-            draft: String(sessionRow.draft ?? ""),
+            draft: "",
             includePrevious: options.includePrevious !== false,
             includeCharacters: options.includeCharacters !== false,
-            lastReadMessageId: Object.prototype.hasOwnProperty.call(options, "lastReadMessageId")
-              ? options.lastReadMessageId ?? null
-              : sessionMessages.filter((message) => message.role === "assistant").at(-1)?.id ?? null,
+            lastReadMessageId: null,
             createdAt: String(sessionRow.created_at),
             updatedAt: String(sessionRow.updated_at),
           };
@@ -429,7 +428,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           lastReadMessageId: null,
           createdAt: String(outlineRow.updated_at), updatedAt: String(outlineRow.updated_at),
         };
-        const activeSessionId = String(outlineSessionRows.find((row) => safeJson<{ active?: boolean }>(row.context_options_json, {}).active)?.id ?? sessionItems[0]?.id ?? fallbackSession.id);
+        const activeSessionId = String(sessionItems[0]?.id ?? fallbackSession.id);
         const mapExcellentFragments = (sourceText: string, versionId?: string): ExcellentFragment[] => normalizeExcellentFragments(sourceText, excellentFragments
           .filter((row) => row.outline_id === outlineId && (versionId ? row.version_id === versionId : !row.version_id))
           .map((row) => ({
@@ -472,7 +471,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
       style: String(articleRow.style), createdAt: String(articleRow.created_at), updatedAt: String(articleRow.updated_at),
       chapterNaming: normalizeNamingProfile(safeJson(articleRow.chapter_naming_json, {}), DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(safeJson(articleRow.outline_naming_json, {}), DEFAULT_OUTLINE_NAMING_PROFILE),
-      lastOutlineId: String(safeJson<string>(settingsMap.get(`last_outline:${articleId}`), "")), chapters: articleChapters,
+      lastOutlineId: "", chapters: articleChapters,
       characters: characters.filter((row) => row.article_id === articleId).map((row) => ({
         id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
         description: String(row.description), archived: bool(row.archived),
@@ -483,18 +482,15 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
     };
   });
   const ui = safeJson<Partial<StudioData>>(settingsMap.get("studio_ui"), {});
-  const requestedArticleId = String(ui.currentArticleId ?? "");
-  const currentArticleId = articles.some((article) => article.id === requestedArticleId) ? requestedArticleId : articles[0].id;
-  const selectedArticle = articles.find((article) => article.id === currentArticleId) ?? articles[0];
-  const requestedOutlineId = String(ui.currentOutlineId ?? "");
-  const selectedOutlineIds = new Set(selectedArticle.chapters.flatMap((chapter) => chapter.outlines.map((outline) => outline.id)));
-  const preferredOutlineId = selectedOutlineIds.has(selectedArticle.lastOutlineId) ? selectedArticle.lastOutlineId : selectedArticle.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
+  const currentArticleId = articles[0].id;
+  const selectedArticle = articles[0];
+  const currentOutlineId = selectedArticle.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
   return {
     revision,
     data: {
       version: 1,
       currentArticleId,
-      currentOutlineId: selectedOutlineIds.has(requestedOutlineId) ? requestedOutlineId : preferredOutlineId,
+      currentOutlineId,
       articles,
       tasks,
       settings: normalizeStudioSettings(ui.settings),
@@ -544,22 +540,22 @@ async function ensureArticleNamingColumns(db: SqliteDatabase) {
   if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
 }
 
-export async function writeStudioState(data: StudioData, expectedRevision: number, force = false) {
+export async function writeStudioState(data: StudioData, expectedRevision: number) {
   await ensureDatabase();
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
-  if (!force && current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
+  if (current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
 
   const now = new Date().toISOString();
-  const nextRevision = current + 1;
+  const nextRevision = expectedRevision + 1;
   const statements: SqliteStatement[] = [
+    db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, crypto.randomUUID(), now),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
   const writtenExcellentFragmentIds = new Set<string>();
   for (const article of data.articles) {
     statements.push(insert(db, "INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
-    statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)", [`last_outline:${article.id}`, JSON.stringify(article.lastOutlineId), now]));
     article.chapters.forEach((chapter, chapterIndex) => {
       statements.push(insert(db, "INSERT INTO chapters VALUES(?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, null, "chapter", chapter.id, chapter.title, ""]));
@@ -597,9 +593,15 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   for (const task of data.tasks.slice(0, 20)) {
     statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
   }
-  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ currentArticleId: data.currentArticleId, currentOutlineId: data.currentOutlineId, settings: normalizeStudioSettings(data.settings) }), now]));
+  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
-  await db.batch(statements);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    const actual = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+    if (actual !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
+    throw error;
+  }
   return { conflict: false as const, revision: nextRevision };
 }
 

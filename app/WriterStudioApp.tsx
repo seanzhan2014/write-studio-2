@@ -720,17 +720,15 @@ function PersistenceNotices() {
   const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [copyFeedback, setCopyFeedback] = useState({ revision: -1, message: "" });
-  const localOutline = studio.conflict?.local.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((outline) => outline.id === studio.conflict?.local.currentOutlineId);
-  const serverOutline = studio.conflict?.server.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((outline) => outline.id === studio.conflict?.server.currentOutlineId);
-  const comparingPlan = Boolean(localOutline && serverOutline && (localOutline.plan !== serverOutline.plan || localOutline.title !== serverOutline.title));
-  const currentLocal = comparingPlan ? localOutline?.plan ?? "" : localOutline ? resolvedOutlineContent(localOutline) : "";
-  const currentServer = comparingPlan ? serverOutline?.plan ?? "" : serverOutline ? resolvedOutlineContent(serverOutline) : "";
+  const detail = studio.conflict?.details[0];
+  const currentLocal = detail?.localText ?? "";
+  const currentServer = detail?.serverText ?? "";
   const conflictRevision = studio.conflict?.serverRevision ?? -1;
   const copyState = copyFeedback.revision === conflictRevision ? copyFeedback.message : "";
   return <>
     {studio.saveStatus === "failed" && <div className="persistence-banner error" role="alert"><span><span className="ui-label">保存失败</span>{studio.saveError || "本地数据库暂时不可用，正文仍保留在本次会话中。"}</span><button type="button" onClick={() => void studio.retrySave()}>重试保存</button></div>}
     <ResponsiveModal opened={Boolean(studio.conflict)} onClose={() => undefined} withCloseButton={false} closeOnClickOutside={false} closeOnEscape={false} centered={!compact} fullScreen={compact} size="lg" title="处理保存冲突" classNames={{ content: "conflict-modal", header: "conflict-modal-header", body: "conflict-modal-body" }} overlayProps={{ backgroundOpacity: 0.48, blur: 3 }}>
-      {studio.conflict && <div className="conflict-card"><p>同一项{comparingPlan ? "大纲" : "正文"}在其他窗口或设备上也被修改，请选择要保留的版本。</p><div className="conflict-columns"><section><span className="ui-label">本机修改</span><pre tabIndex={0}>{currentLocal.slice(0, 10000) || "（空）"}</pre></section><section><span className="ui-label">数据库版本</span><pre tabIndex={0}>{currentServer.slice(0, 10000) || "（空）"}</pre></section></div>{copyState && <div className={`conflict-copy-state ${copyState === "已复制" ? "success" : "error"}`} role="status">{copyState}</div>}<div className="conflict-actions"><Button variant="default" type="button" leftSection={<Icon name="copy" />} onClick={() => void copyTextToClipboard(currentLocal).then((copied) => setCopyFeedback({ revision: conflictRevision, message: copied ? "已复制" : "复制失败，请长按上方文字进行选择" }))}>复制本机内容</Button><Button variant="default" type="button" onClick={() => void studio.resolveConflict("use-server")}>使用数据库版本</Button><Button type="button" onClick={() => void studio.resolveConflict("keep-local")}>保留本机修改</Button></div></div>}
+      {studio.conflict && <div className="conflict-card"><p><strong>{detail?.label ?? "同一项数据"}</strong>在其他窗口或设备上也被修改，请选择要保留的内容。{studio.conflict.details.length > 1 ? ` 另有 ${studio.conflict.details.length - 1} 项冲突将采用相同选择。` : ""}</p><div className="conflict-columns"><section><span className="ui-label">本设备待保存内容</span><pre tabIndex={0}>{currentLocal.slice(0, 10000) || "（空）"}</pre></section><section><span className="ui-label">数据库当前内容</span><pre tabIndex={0}>{currentServer.slice(0, 10000) || "（空）"}</pre></section></div>{copyState && <div className={`conflict-copy-state ${copyState === "已复制" ? "success" : "error"}`} role="status">{copyState}</div>}<div className="conflict-actions"><Button variant="default" type="button" leftSection={<Icon name="copy" />} onClick={() => void copyTextToClipboard(currentLocal).then((copied) => setCopyFeedback({ revision: conflictRevision, message: copied ? "已复制" : "复制失败，请长按上方文字进行选择" }))}>复制待保存内容</Button><Button variant="default" type="button" onClick={() => void studio.resolveConflict("use-server")}>使用数据库内容</Button><Button type="button" onClick={() => void studio.resolveConflict("keep-local")}>保留本设备修改</Button></div></div>}
     </ResponsiveModal>
   </>;
 }
