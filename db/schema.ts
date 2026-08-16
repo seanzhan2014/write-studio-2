@@ -53,6 +53,10 @@ export const contents = sqliteTable("contents", {
   contentName: text("content_name").notNull().default(""),
   contentOverride: integer("content_override", { mode: "boolean" }).notNull().default(false),
   sourceVersionId: text("source_version_id"),
+  currentVersionId: text("current_version_id"),
+  defaultVersionId: text("default_version_id"),
+  outlineSnapshotJson: text("outline_snapshot_json"),
+  manualExcellent: integer("manual_excellent", { mode: "boolean" }).notNull().default(false),
   updatedAt: text("updated_at").notNull(),
   revision: integer("revision").notNull().default(1),
 });
@@ -68,6 +72,7 @@ export const versions = sqliteTable("versions", {
   prompt: text("prompt"),
   taskId: text("task_id"),
   outlineSnapshotJson: text("outline_snapshot_json"),
+  manualExcellent: integer("manual_excellent", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("versions_outline_created_idx").on(table.outlineId, table.createdAt)]);
 

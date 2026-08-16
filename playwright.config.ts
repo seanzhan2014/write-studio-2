@@ -17,10 +17,11 @@ export default defineConfig({
   webServer: externalBaseUrl ? undefined : {
     command: "npm run dev:test",
     url: "http://127.0.0.1:3102/api/database/status",
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 120_000,
     env: {
       WRITER_STUDIO_DB_PATH: ".test-data/playwright-direct.sqlite",
+      WRITER_STUDIO_TEST_MODE: "1",
     },
   },
   projects: [

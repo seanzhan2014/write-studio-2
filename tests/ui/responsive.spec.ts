@@ -54,6 +54,29 @@ async function selectReaderTextAndOpenMenu(target: Locator, selectedText: string
   }, selectedText);
 }
 
+async function selectReaderText(target: Locator, selectedText: string) {
+  await target.evaluate((element, value) => {
+    const text = element.textContent ?? "";
+    const start = text.indexOf(value);
+    if (start < 0) throw new Error(`selection text missing: ${value}`);
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let offset = 0;
+    while (node && offset + (node.textContent?.length ?? 0) <= start) {
+      offset += node.textContent?.length ?? 0;
+      node = walker.nextNode();
+    }
+    if (!node) throw new Error("selection text node missing");
+    const range = document.createRange();
+    range.setStart(node, start - offset);
+    range.setEnd(node, start - offset + value.length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  }, selectedText);
+}
+
 async function doubleTouch(target: Locator) {
   await target.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
@@ -382,8 +405,17 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
   await expect(page.getByLabel("同时生成大纲名")).not.toBeChecked();
   await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
-  await expect(page.getByRole("radio", { name: /改写正文/ })).toBeDisabled();
-  await expect(page.getByRole("radio", { name: /续写正文/ })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /改写正文/ })).toBeEnabled();
+  await expect(page.getByRole("radio", { name: /续写正文/ })).toBeEnabled();
+  await page.getByRole("radio", { name: /改写正文/ }).click();
+  const retention = page.getByRole("slider", { name: "原文保留度" });
+  await expect(retention).toBeVisible();
+  await expect(page.getByText("平衡 · 平衡改写", { exact: true })).toBeVisible();
+  await retention.focus();
+  await retention.press("End");
+  await expect(page.getByText("高保留 · 轻度润色", { exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: /全新生成/ }).click();
+  await expect(retention).toHaveCount(0);
   await expect(page.getByText("补充指令（可选）", { exact: false })).toBeVisible();
   const firstAppearance = page.getByLabel("首次出场人物");
   await expect(firstAppearance).toContainText("顾屿");
@@ -413,6 +445,14 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
 test("first appearance editor is usable on mobile", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await page.getByRole("radio", { name: /改写正文/ }).click();
+  const retention = page.getByRole("slider", { name: "原文保留度" });
+  await expect(retention).toBeVisible();
+  const retentionBounds = await page.locator(".rewrite-retention-control").boundingBox();
+  const mobileViewport = page.viewportSize()!;
+  expect(retentionBounds).not.toBeNull();
+  expect(retentionBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(retentionBounds!.x + retentionBounds!.width).toBeLessThanOrEqual(mobileViewport.width);
   const firstAppearance = page.getByLabel("首次出场人物");
   await expect(firstAppearance).toContainText("顾屿");
   await firstAppearance.getByRole("button", { name: "编辑" }).click();
@@ -528,19 +568,53 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   const model = page.getByRole("combobox", { name: "本次模型" });
   await expect(model).toBeVisible();
   await model.click();
-  await expect(page.getByRole("option", { name: "Remote Writer gpt-4.2-current" })).toBeVisible();
-  await page.getByRole("option", { name: "Remote Writer gpt-4.2-current" }).click();
-  await expect(model).toHaveValue("Remote Writer gpt-4.2-current");
+  await expect(page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" })).toBeVisible();
+  await page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" }).click();
+  await expect(model).toHaveValue("Remote Writer · gpt-4.2-current");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
     return payload.data.settings.generateModel;
   }).toBe("model-remote");
   await page.reload();
-  await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Writer gpt-4.2-current");
+  await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Writer · gpt-4.2-current");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
   await expect(page.getByText(testInfo.project.name === "mobile-chromium" ? "成功后自动设为当前正文，并保留为版本。" : "任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。", { exact: true })).toBeVisible();
+});
+
+test("workspace AI tabs render before a background save finishes and reuse the preloaded model list", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop timing contract");
+  let modelRequests = 0;
+  await page.route("**/api/models", async (route) => {
+    modelRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ models: [{ id: "model-remote", name: "Remote Writer", modelId: "provider/gpt-4.2-current", hasSecret: true, timeoutMs: 600_000 }] }),
+    });
+  });
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await expect.poll(() => modelRequests).toBe(1);
+
+  let releaseSave = () => undefined;
+  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  await page.route("**/api/state", async (route) => {
+    if (route.request().method() === "PUT") await saveGate;
+    await route.continue();
+  });
+  await page.locator(".section-heading").click();
+  await expect(page.locator(".save-state")).toContainText("未保存");
+
+  try {
+    await page.getByRole("tab", { name: "AI Chat" }).click();
+    await expect(page.locator(".chat-view")).toBeVisible({ timeout: 800 });
+  } finally {
+    releaseSave();
+  }
+  await page.getByRole("tab", { name: "AI Generate" }).click();
+  await expect(page.locator(".generate-view")).toBeVisible();
+  expect(modelRequests).toBe(1);
 });
 
 test("desktop writing menu can save the current body as a named version", async ({ page, request }, testInfo) => {
@@ -563,9 +637,10 @@ test("desktop writing menu can save the current body as a named version", async 
   expect({
     name: outline.versions[0].name,
     source: outline.versions[0].source,
-    sourceVersionId: outline.sourceVersionId,
+    currentVersionId: outline.currentVersionId,
+    defaultVersionId: outline.defaultVersionId,
     versionCount: outline.versions.length,
-  }).toEqual({ name: "定稿版本", source: "手动", sourceVersionId: undefined, versionCount: 2 });
+  }).toEqual({ name: "定稿版本", source: "手动", currentVersionId: null, defaultVersionId: null, versionCount: 2 });
 });
 
 test("desktop writing save updates the current body without creating a version or duplicate default", async ({ page, request }, testInfo) => {
@@ -574,7 +649,8 @@ test("desktop writing save updates the current body without creating a version o
   const payload = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  target.sourceVersionId = "version-manual";
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(payload.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -588,6 +664,7 @@ test("desktop writing save updates the current body without creating a version o
   await page.getByLabel("正文编辑器").fill("直接保存的当前正文");
   await page.getByRole("button", { name: "保存正文", exact: true }).click();
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
+  await expect(page.getByLabel("此正文大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
 
   await expect.poll(async () => {
     const response = await request.get("/api/state");
@@ -595,15 +672,78 @@ test("desktop writing save updates the current body without creating a version o
     const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
     return {
       content: outline.content,
-      contentOverride: outline.contentOverride,
-      sourceVersionId: outline.sourceVersionId,
+      currentVersionId: outline.currentVersionId,
+      defaultVersionId: outline.defaultVersionId,
+      outlineSnapshot: outline.contentOutlineSnapshot,
       versionCount: outline.versions.length,
       versionContent: outline.versions[0].content,
     };
-  }).toEqual({ content: "直接保存的当前正文", contentOverride: true, sourceVersionId: "version-manual", versionCount: 1, versionContent: "不可变版本正文" });
+  }).toEqual({
+    content: "直接保存的当前正文",
+    currentVersionId: null,
+    defaultVersionId: "version-manual",
+    outlineSnapshot: { title: "生成时码头", plan: "生成时的大纲快照：林澈在七码头确认潮汐密钥。" },
+    versionCount: 1,
+    versionContent: "不可变版本正文",
+  });
+
+  await page.reload();
+  await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
+  await expect(page.getByLabel("此正文大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
 
   await page.getByRole("button", { name: "版本", exact: true }).click();
   await expect(page.locator(".version-list article em").filter({ hasText: "默认" })).toHaveCount(1);
+});
+
+test("editing a previewed body inherits that version's outline snapshot", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
+  target.versions.unshift({
+    id: "version-preview-source",
+    name: "预览来源正文",
+    content: "准备手动修改的预览正文",
+    source: "AI Generate",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    outlineSnapshot: { title: "预览生成时标题", plan: "预览正文独有的大纲快照。" },
+  });
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "版本", exact: true }).click();
+  await page.locator(".version-list article").filter({ hasText: "预览来源正文" }).locator(".version-preview-main").click();
+  await page.getByRole("button", { name: "关闭正文版本" }).click();
+  await expect(page.getByLabel("正文内容")).toHaveText("准备手动修改的预览正文");
+  await page.getByLabel("正文内容").dblclick();
+  await page.getByLabel("正文编辑器").fill("从预览版本修改并保存的当前正文");
+  await page.getByRole("button", { name: "保存正文", exact: true }).click();
+
+  await expect(page.getByLabel("正文内容")).toHaveText("从预览版本修改并保存的当前正文");
+  await expect(page.getByLabel("此正文大纲内容")).toHaveText("预览正文独有的大纲快照。");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    return {
+      currentVersionId: outline.currentVersionId,
+      defaultVersionId: outline.defaultVersionId,
+      outlineSnapshot: outline.contentOutlineSnapshot,
+      versionCount: outline.versions.length,
+    };
+  }).toEqual({
+    currentVersionId: null,
+    defaultVersionId: "version-manual",
+    outlineSnapshot: { title: "预览生成时标题", plan: "预览正文独有的大纲快照。" },
+    versionCount: 2,
+  });
 });
 
 test("Generate outline editing stays local until one explicit save", async ({ page, request }, testInfo) => {
@@ -639,7 +779,7 @@ test("Generate outline editing stays local until one explicit save", async ({ pa
   await expect(page.getByRole("dialog", { name: "处理保存冲突" })).toHaveCount(0);
 });
 
-test("desktop version chooser previews the selected body and title double-click sets it as default", async ({ page, request }, testInfo) => {
+test("desktop version chooser previews the selected body and P sets it as default", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByRole("button", { name: "版本", exact: true }).click();
@@ -661,11 +801,21 @@ test("desktop version chooser previews the selected body and title double-click 
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
   await expect(page.locator(".content-word-count")).toHaveText("7 字");
   await expect(page.locator(".start-edit-button,.appreciate-body-button,.set-default-body-button")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toBeVisible();
   const bodyTitle = page.getByRole("button", { name: "正文标题，双击设为默认正文" });
   await expect(bodyTitle).toContainText("手动快照");
-  await bodyTitle.dblclick();
+  const previewState = await request.get("/api/state");
+  const previewPayload = await previewState.json() as { data: ReturnType<typeof fullStudioFixture> };
+  const previewOutline = previewPayload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  expect({ currentVersionId: previewOutline.currentVersionId, defaultVersionId: previewOutline.defaultVersionId }).toEqual({ currentVersionId: null, defaultVersionId: null });
+  await page.getByRole("button", { name: "设为当前", exact: true }).click();
+  await expect(page.locator(".toast")).toContainText("已设为当前正文");
+  await expect(page.getByText("当前", { exact: true })).toBeVisible();
+  const defaultButton = page.getByRole("button", { name: "设为默认正文", exact: true });
+  await expect(defaultButton).toHaveAttribute("aria-pressed", "false");
+  await defaultButton.click();
   await expect(page.locator(".toast")).toContainText("已设为默认正文");
-  await expect(page.getByRole("button", { name: "正文标题，双击取消默认正文" })).toContainText("默认");
+  await expect(page.getByRole("button", { name: "取消默认正文", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "版本", exact: true }).click();
   await expect(page.locator(".version-list article")).toHaveCount(1);
   await expect(page.locator(".version-list article").filter({ hasText: "手动快照" })).toHaveCount(1);
@@ -674,7 +824,7 @@ test("desktop version chooser previews the selected body and title double-click 
   const response = await request.get("/api/state");
   const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
   const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  expect({ sourceVersionId: outline.sourceVersionId, contentOverride: outline.contentOverride, versionCount: outline.versions.length }).toEqual({ sourceVersionId: "version-manual", contentOverride: false, versionCount: 1 });
+  expect({ currentVersionId: outline.currentVersionId, defaultVersionId: outline.defaultVersionId, versionCount: outline.versions.length }).toEqual({ currentVersionId: "version-manual", defaultVersionId: "version-manual", versionCount: 1 });
 });
 
 test("desktop direct current body creates one version when set as default", async ({ page, request }, testInfo) => {
@@ -685,8 +835,8 @@ test("desktop direct current body creates one version when set as default", asyn
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
   target.content = "直接保存后准备设为默认的正文";
   target.contentName = "当前正文名称";
-  target.contentOverride = true;
-  target.sourceVersionId = "version-manual";
+  target.currentVersionId = null;
+  target.defaultVersionId = "version-manual";
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(payload.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -695,25 +845,26 @@ test("desktop direct current body creates one version when set as default", asyn
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存后准备设为默认的正文");
-  await page.getByRole("button", { name: "正文标题，双击设为默认正文" }).dblclick();
+  await page.getByRole("button", { name: "设为默认正文", exact: true }).click();
   await expect(page.locator(".toast")).toContainText("已设为默认正文");
 
   const response = await request.get("/api/state");
   const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
   const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  expect(outline.contentOverride).toBe(false);
   expect(outline.versions).toHaveLength(2);
-  expect(outline.sourceVersionId).toBe(outline.versions[0].id);
+  expect(outline.currentVersionId).toBe(outline.versions[0].id);
+  expect(outline.defaultVersionId).toBe(outline.versions[0].id);
   expect(outline.versions[0]).toMatchObject({ name: "当前正文名称", content: "直接保存后准备设为默认的正文", source: "手动" });
 });
 
-test("desktop title double-click cancels the current default body", async ({ page, request }, testInfo) => {
+test("desktop P cancels the current default body", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   const current = await request.get("/api/state");
   const payload = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  target.sourceVersionId = "version-manual";
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(payload.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -722,15 +873,64 @@ test("desktop title double-click cancels the current default body", async ({ pag
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await expect(page.getByLabel("正文内容")).toHaveText("不可变版本正文");
-  await page.getByRole("button", { name: "正文标题，双击取消默认正文" }).dblclick();
+  await page.getByRole("button", { name: "取消默认正文", exact: true }).click();
   await expect(page.locator(".toast")).toContainText("已取消默认正文");
-  await expect(page.getByLabel("正文内容")).toHaveText("（正文为空）");
+  await expect(page.getByLabel("正文内容")).toHaveText("不可变版本正文");
 
   const response = await request.get("/api/state");
   const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
   const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  expect(outline.sourceVersionId).toBeUndefined();
+  expect(outline.currentVersionId).toBe("version-manual");
+  expect(outline.defaultVersionId).toBeNull();
   expect(outline.versions).toHaveLength(1);
+});
+
+test("body title markers expose default and persist manual excellence", async ({ page, request }, testInfo) => {
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const title = page.getByRole("button", { name: "正文标题，双击取消默认正文" });
+  const defaultButton = page.getByRole("button", { name: "取消默认正文", exact: true });
+  const excellentButton = page.getByRole("button", { name: "设为优秀正文", exact: true });
+  await expect(title).toContainText("手动快照");
+  await expect(defaultButton).toHaveText("P");
+  await expect(defaultButton).toHaveAttribute("aria-pressed", "true");
+  await expect(excellentButton).toHaveText("★");
+  await expect(excellentButton).toHaveAttribute("aria-pressed", "false");
+  const [titleBounds, defaultBounds, excellentBounds] = await Promise.all([title.boundingBox(), defaultButton.boundingBox(), excellentButton.boundingBox()]);
+  expect(titleBounds).not.toBeNull();
+  expect(defaultBounds).not.toBeNull();
+  expect(excellentBounds).not.toBeNull();
+  expect(defaultBounds!.x).toBeGreaterThanOrEqual(titleBounds!.x + titleBounds!.width - 1);
+  expect(defaultBounds!.x - (titleBounds!.x + titleBounds!.width)).toBeLessThanOrEqual(5);
+  expect(excellentBounds!.x).toBeGreaterThan(defaultBounds!.x);
+  expect(defaultBounds!.width).toBeLessThanOrEqual(testInfo.project.name === "mobile-chromium" ? 34 : 26);
+
+  await excellentButton.click();
+  await expect(page.locator(".toast")).toContainText("已手动设为优秀正文");
+  await expect(page.getByRole("button", { name: "取消手动优秀正文", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> & { articles: Array<{ chapters: Array<{ outlines: Array<{ id: string; manualExcellent?: boolean; versions: Array<{ id: string; manualExcellent?: boolean }> }> }> }> } };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    return { outline: outline.manualExcellent, version: outline.versions.find((version) => version.id === "version-manual")?.manualExcellent };
+  }).toEqual({ outline: false, version: true });
+
+  await page.reload();
+  const persistedButton = page.getByRole("button", { name: "取消手动优秀正文", exact: true });
+  await expect(persistedButton).toHaveAttribute("aria-pressed", "true");
+  await persistedButton.click();
+  await expect(page.getByRole("button", { name: "设为优秀正文", exact: true })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("selection context menu toggles appreciation, marks candidates, and exposes AI context", async ({ page, request }, testInfo) => {
@@ -741,12 +941,12 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")! as unknown as {
     content: string;
     contentName?: string;
-    contentOverride?: boolean;
+    currentVersionId: string | null;
     excellentFragments?: unknown[];
   };
   target.content = "第一段值得欣赏的文字。\n\n第二段保持普通。";
   target.contentName = "欣赏测试正文";
-  target.contentOverride = true;
+  target.currentVersionId = null;
   target.excellentFragments = [];
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(payload.revision) },
@@ -759,6 +959,7 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await selectReaderTextAndOpenMenu(reader, "值得欣赏");
   await page.getByRole("menuitemcheckbox", { name: "欣赏" }).click();
   await expect(reader.locator("mark.excellent-fragment")).toHaveText("值得欣赏");
+  await expect(page.getByRole("button", { name: "手动保留优秀正文", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: { articles: Array<{ chapters: Array<{ outlines: Array<{ id: string; excellentFragments?: Array<{ text: string }> }> }> }> } };
@@ -787,26 +988,82 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await expect(page.locator(".generate-context-panel")).toContainText("1 个");
 });
 
-test("body double-click and touch double-tap both enter editing", async ({ page }, testInfo) => {
+test("selecting body text automatically opens the appreciation menu on desktop and mobile", async ({ page, request }, testInfo) => {
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.content = "手机和桌面选中文字后，都应显示应用内欣赏菜单。";
+  target.currentVersionId = null;
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
   await page.goto("/articles/article-main/outlines/outline-current/write");
   const reader = page.getByLabel("正文内容");
-  if (testInfo.project.name === "mobile-chromium") await doubleTouch(reader);
-  else await reader.dblclick();
-  await expect(page.getByLabel("正文编辑器")).toBeVisible();
-  await page.getByRole("button", { name: "退出编辑" }).click();
-  await expect(page.getByLabel("正文内容")).toBeVisible();
+  await selectReaderText(reader, "应用内欣赏菜单");
+  const menu = page.getByRole("menu", { name: "正文选择菜单" });
+  await expect(menu).toBeVisible();
+  await expectInsideViewport(page, menu);
+  const appreciation = page.getByRole("menuitemcheckbox", { name: "欣赏" });
+  if (testInfo.project.name === "mobile-chromium") {
+    const bounds = await appreciation.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.height).toBeGreaterThanOrEqual(44);
+  }
+  await appreciation.click();
+  await expect(reader.locator("mark.excellent-fragment")).toHaveText("应用内欣赏菜单");
 });
 
-test("switching outlines shows the target default instead of the previous current body", async ({ page, request }, testInfo) => {
+test("body double-click and touch double-tap enter editing without losing the reading position", async ({ page, request }, testInfo) => {
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.content = Array.from({ length: 140 }, (_, index) => `第 ${index + 1} 段：潮声越过防波堤，林澈沿着水痕继续向前。`).join("\n\n");
+  target.currentVersionId = null;
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const reader = page.getByLabel("正文内容");
+  const readingRatio = await reader.evaluate((element) => {
+    const max = element.scrollHeight - element.clientHeight;
+    element.scrollTop = max * 0.62;
+    return element.scrollTop / max;
+  });
+  expect(readingRatio).toBeGreaterThan(0.5);
+  if (testInfo.project.name === "mobile-chromium") await doubleTouch(reader);
+  else await reader.dblclick();
+  const editor = page.getByLabel("正文编辑器");
+  await expect(editor).toBeVisible();
+  await expect.poll(async () => editor.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
+  const editingRatio = await editor.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight));
+  expect(Math.abs(editingRatio - readingRatio)).toBeLessThan(0.04);
+  expect(await editor.evaluate((element) => element.selectionStart)).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "退出编辑" }).click();
+  await expect(page.getByLabel("正文内容")).toBeVisible();
+  await expect.poll(async () => reader.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
+  const restoredRatio = await reader.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight));
+  expect(Math.abs(restoredRatio - editingRatio)).toBeLessThan(0.04);
+});
+
+test("switching outlines shows each target's current body independently of its default", async ({ page, request }, testInfo) => {
   const current = await request.get("/api/state");
   const state = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const currentOutline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
   currentOutline.content = "仅在当前大纲显示的正文";
-  currentOutline.contentOverride = true;
+  currentOutline.currentVersionId = null;
   const previousOutline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")!;
   previousOutline.versions = [{ id: "version-previous-default", name: "前序默认版本", content: "前序大纲的默认正文", source: "手动", createdAt: "2026-07-28T08:00:00.000Z", outlineSnapshot: { title: previousOutline.title, plan: previousOutline.plan } }];
-  previousOutline.sourceVersionId = "version-previous-default";
+  previousOutline.currentVersionId = "version-previous-default";
+  previousOutline.defaultVersionId = null;
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(state.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -960,7 +1217,8 @@ test("full content editor saves the current body without creating a version", as
   const payload = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  target.sourceVersionId = "version-manual";
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(payload.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -979,9 +1237,9 @@ test("full content editor saves the current body without creating a version", as
     const response = await request.get("/api/state");
     const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
     const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-    return outline.sourceVersionId === "version-manual"
+    return outline.currentVersionId === null
+      && outline.defaultVersionId === "version-manual"
       && outline.content === nextContent
-      && outline.contentOverride === true
       && outline.versions[0]?.content === "不可变版本正文"
       && outline.versions.length === 1;
   }).toBe(true);
@@ -1019,19 +1277,20 @@ test("full content title row exposes AI Review and reusable multi-select require
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("固定检查", { exact: true })).toBeVisible();
   await expect(dialog.getByLabel("Review 章节")).toBeVisible();
-  await expect(dialog.getByLabel("模型")).toHaveValue("Kimi Review kimi-k2p6");
+  await expect(dialog.getByLabel("模型")).toHaveValue("Kimi Review · kimi-k2p6");
   const additional = dialog.getByLabel("本次附加要求");
   await additional.fill("统一雨景中的感官描写");
   await dialog.getByRole("button", { name: "保存为预定义要求" }).click();
   await expect(dialog.getByRole("checkbox", { name: "统一雨景中的感官描写" })).toBeChecked();
 });
 
-test("each body in full content editing can preview and default a candidate", async ({ page, request }) => {
+test("each body in full content editing can preview and independently set current and default", async ({ page, request }) => {
   const current = await request.get("/api/state");
   const payload = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
-  target.sourceVersionId = "version-manual";
+  target.currentVersionId = "version-manual";
+  target.defaultVersionId = "version-manual";
   target.versions.unshift({
     id: "version-ai-candidate",
     name: "AI 候选稿",
@@ -1055,13 +1314,25 @@ test("each body in full content editing can preview and default a candidate", as
 
   const previewState = await request.get("/api/state");
   const previewPayload = await previewState.json() as { data: ReturnType<typeof fullStudioFixture> };
-  expect(previewPayload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.sourceVersionId).toBe("version-manual");
+  expect(previewPayload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.currentVersionId).toBe("version-manual");
 
   await editor.getByRole("button", { name: "将“AI 候选稿”设为默认正文" }).click();
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
-    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.sourceVersionId;
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    return { currentVersionId: outline.currentVersionId, defaultVersionId: outline.defaultVersionId };
+  }).toEqual({ currentVersionId: "version-manual", defaultVersionId: "version-ai-candidate" });
+  await page.reload();
+  await expect(page.locator(".continuous-document-editor.content").getByLabel("正文：当前码头")).toHaveValue("不可变版本正文");
+  const reloadedEditor = page.locator(".continuous-document-editor.content");
+  await reloadedEditor.getByRole("button", { name: "选择正文版本：当前码头" }).click();
+  await page.getByRole("menuitem").filter({ hasText: "AI 候选稿" }).click();
+  await reloadedEditor.getByRole("button", { name: "将“AI 候选稿”设为当前正文" }).click();
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.currentVersionId;
   }).toBe("version-ai-candidate");
   await page.reload();
   await expect(page.locator(".continuous-document-editor.content").getByLabel("正文：当前码头")).toHaveValue("潮声越过防波堤，林澈在暗门前停下脚步。");
@@ -1128,7 +1399,7 @@ test("AI tasks are ordered by submission time regardless of status", async ({ pa
   const completedBodyTask = page.locator(".task-card").filter({ hasText: "中间提交的成功任务" });
   await expect(completedBodyTask.getByRole("button", { name: "应用结果" })).toHaveCount(0);
   await completedBodyTask.getByRole("button", { name: "打开", exact: true }).click();
-  await expect(page.getByRole("button", { name: "打开当前正文" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开生成版本" })).toBeVisible();
   await expect(page.getByRole("button", { name: "应用结果" })).toHaveCount(0);
   await page.getByRole("button", { name: "返回任务列表" }).click();
   await page.getByRole("button", { name: "清空已完成 (1)" }).click();
@@ -1140,10 +1411,12 @@ test("AI tasks are ordered by submission time regardless of status", async ({ pa
 
 test("AI Chat creates a completed task linked to its conversation", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  test.setTimeout(60_000);
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   await page.getByLabel("AI Chat 消息").fill("检查任务中心中的聊天记录");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.locator(".message.assistant").last()).toContainText("我参考了", { timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 30_000 });
 
   await page.getByRole("button", { name: /^AI 任务/ }).click();
   const task = page.locator(".task-card").first();
@@ -1230,7 +1503,7 @@ test("AI Chat message action menu closes when clicking elsewhere", async ({ page
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 });
 
-test("AI Chat displays the selected model id as the assistant name", async ({ page }) => {
+test("AI Chat displays the configured model name and id consistently", async ({ page }) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
       status: 200,
@@ -1242,7 +1515,8 @@ test("AI Chat displays the selected model id as the assistant name", async ({ pa
   const model = page.getByLabel("聊天模型");
   await expect(model).toBeVisible();
   await model.selectOption("model-remote");
-  await expect(page.locator(".message.assistant .message-meta .ui-label").first()).toHaveText("gpt-4.1-mini");
+  await expect(model.locator("option:checked")).toHaveText("Remote Writer · gpt-4.1-mini");
+  await expect(page.locator(".message.assistant .message-meta .ui-label").first()).toHaveText("Remote Writer · gpt-4.1-mini");
 });
 
 test("mobile icon controls use glass surfaces and consistent touch sizing", async ({ page }, testInfo) => {
@@ -1397,7 +1671,9 @@ test("desktop full outline editor provides a scrollable viewport", async ({ page
       title: `滚动测试大纲 ${index + 1}`,
       plan: `滚动测试内容 ${index + 1}。`.repeat(3),
       content: "",
-      sourceVersionId: undefined,
+      currentVersionId: null,
+      defaultVersionId: null,
+      contentOutlineSnapshot: { title: `滚动测试大纲 ${index + 1}`, plan: `滚动测试内容 ${index + 1}。`.repeat(3) },
       versions: [],
       chat: {
         sessions: [{ id: `chat:${id}`, title: "主会话", messages: [], draft: "", includePrevious: true, includeCharacters: true, createdAt: now, updatedAt: now }],
@@ -1449,30 +1725,30 @@ test("mobile writing view previews a selected version and explicitly saves or di
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
   const reader = page.getByLabel("正文内容");
-  await expect(reader).toHaveText("（正文为空）");
+  await expect(reader).toHaveText("林澈看向顾屿，确认潮汐表上的时间。");
   const readerBounds = await reader.boundingBox();
   expect(readerBounds).not.toBeNull();
   expect(readerBounds!.height).toBeGreaterThan(450);
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
-  const headingName = page.locator(".editor-heading > span").first();
+  const headingName = page.locator(".body-title-toggle > span").first();
   await headingName.evaluate((element) => { element.textContent = "这是一个用于验证手机端按钮不会被压缩变形的非常长的正文名称"; });
-  const headingLayout = await page.locator(".editor-heading").evaluate((element) => {
-    const title = element.querySelector(":scope > span") as HTMLElement;
-    const actions = element.querySelector(":scope > div") as HTMLElement;
-    const buttons = Array.from(actions.querySelectorAll("button")) as HTMLElement[];
+  const headingLayout = await page.locator(".body-title-cluster").evaluate((element) => {
+    const title = element.querySelector(".body-title-toggle > span") as HTMLElement;
+    const buttons = Array.from(element.querySelectorAll(".body-status-button, .body-set-current-button")) as HTMLElement[];
+    const tools = element.parentElement?.querySelector(".editor-tools") as HTMLElement;
     return {
       titleTruncated: title.scrollWidth > title.clientWidth,
-      actionsShrink: getComputedStyle(actions).flexShrink,
+      toolsShrink: getComputedStyle(tools).flexShrink,
       buttonShrink: buttons.map((button) => getComputedStyle(button).flexShrink),
     };
   });
   expect(headingLayout.titleTruncated).toBe(true);
-  expect(headingLayout.actionsShrink).toBe("0");
+  expect(headingLayout.toolsShrink).toBe("0");
   expect(headingLayout.buttonShrink.every((value) => value === "0")).toBe(true);
 
   await page.getByRole("button", { name: "选择正文版本" }).click();
   await expect(page.getByText("正文版本", { exact: true })).toBeVisible();
-  await expect(page.locator(".version-list article.current em")).toHaveText("空正文");
+  await expect(page.locator(".version-list article.current em")).toContainText("当前");
   await expect(page.getByRole("button", { name: "保存当前正文为新版本" })).toBeVisible();
   const candidate = page.locator(".version-list article").filter({ hasText: "手动快照" });
   await candidate.locator(".version-preview-main").click();
@@ -1486,7 +1762,7 @@ test("mobile writing view previews a selected version and explicitly saves or di
   await expect(page.getByText("林澈与顾屿在七码头会合。", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "关闭此正文大纲" }).first().click();
 
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await doubleTouch(reader);
   await expect(page.getByLabel("正文编辑器")).toHaveValue("不可变版本正文");
   await page.getByLabel("正文编辑器").fill("准备放弃的正文");
   await page.getByRole("button", { name: "退出编辑" }).click();
@@ -1494,7 +1770,7 @@ test("mobile writing view previews a selected version and explicitly saves or di
   await page.getByRole("button", { name: "放弃修改" }).click();
   await expect(reader).toContainText("不可变版本正文");
 
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await doubleTouch(reader);
   await page.getByLabel("正文编辑器").fill("已明确保存的正文");
   await page.getByRole("button", { name: "退出编辑" }).click();
   await page.getByRole("button", { name: "保存修改" }).click();
@@ -1503,8 +1779,8 @@ test("mobile writing view previews a selected version and explicitly saves or di
   const payload = await state.json();
   const savedOutline = payload.data.articles[0].chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current");
   expect(savedOutline.content).toBe("已明确保存的正文");
-  expect(savedOutline.contentOverride).toBe(true);
-  expect(savedOutline.sourceVersionId).toBeUndefined();
+  expect(savedOutline.currentVersionId).toBeNull();
+  expect(savedOutline.defaultVersionId).toBeNull();
   expect(savedOutline.versions).toHaveLength(1);
   expect(savedOutline.versions[0].content).toBe("不可变版本正文");
 });
@@ -1512,10 +1788,10 @@ test("mobile writing view previews a selected version and explicitly saves or di
 test("interrupted writing is recovered as an unsaved-content candidate", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await doubleTouch(page.getByLabel("正文内容"));
   await page.getByLabel("正文编辑器").fill("浏览器意外中断前的正文");
   await page.reload();
-  await expect(page.getByLabel("正文内容")).toHaveText("（正文为空）");
+  await expect(page.getByLabel("正文内容")).toHaveText("林澈看向顾屿，确认潮汐表上的时间。");
   await page.getByRole("button", { name: "选择正文版本" }).click();
   const recovered = page.locator(".version-list article").filter({ hasText: "未保存内容" }).first();
   await expect(recovered).toBeVisible();

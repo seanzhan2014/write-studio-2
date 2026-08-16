@@ -1,6 +1,6 @@
 import { AiInputError, assertAiTargetAvailable, generateText } from "@/db/ai";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
-import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, normalizeContentGenerationMode } from "@/lib/generate-options";
+import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
   let body: Parameters<typeof generateText>[0];
@@ -15,6 +15,8 @@ export async function POST(request: Request) {
   if (body.target !== "content" && !body.instruction) return Response.json({ error: "结构生成指令不能为空" }, { status: 400 });
   if (body.target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return Response.json({ error: "正文生成模式无效" }, { status: 400 });
   if (body.target === "content") body.contentMode = normalizeContentGenerationMode(body.contentMode);
+  if (body.target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return Response.json({ error: "原文保留度无效" }, { status: 400 });
+  body.rewriteRetention = body.target === "content" && body.contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
   body.includeExcellentFragments = body.target === "content" && body.includeExcellentFragments === true;
   body.excellentFragmentIds = body.includeExcellentFragments && Array.isArray(body.excellentFragmentIds) ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200) : undefined;
   const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;

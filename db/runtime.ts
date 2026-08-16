@@ -38,13 +38,14 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS contents (
     id TEXT PRIMARY KEY NOT NULL, outline_id TEXT NOT NULL UNIQUE REFERENCES outlines(id) ON DELETE CASCADE,
     text TEXT NOT NULL DEFAULT '', content_name TEXT NOT NULL DEFAULT '', content_override INTEGER NOT NULL DEFAULT 0,
-    source_version_id TEXT, updated_at TEXT NOT NULL,
+    source_version_id TEXT, current_version_id TEXT, default_version_id TEXT, outline_snapshot_json TEXT,
+    manual_excellent INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1
   )`,
   `CREATE TABLE IF NOT EXISTS versions (
     id TEXT PRIMARY KEY NOT NULL, outline_id TEXT NOT NULL REFERENCES outlines(id) ON DELETE CASCADE,
     name TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, model_id TEXT, model_name TEXT, prompt TEXT,
-    task_id TEXT, outline_snapshot_json TEXT, created_at TEXT NOT NULL
+    task_id TEXT, outline_snapshot_json TEXT, manual_excellent INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS versions_outline_created_idx ON versions(outline_id, created_at DESC)",
   `CREATE TABLE IF NOT EXISTS excellent_fragments (
@@ -150,8 +151,10 @@ export async function ensureDatabase() {
       await ensureOutlineTitleGenerationColumn(db);
       await ensureContentOverrideColumn(db);
       await ensureContentNameColumn(db);
+      await ensureContentSelectionColumns(db);
       await ensureVersionOutlineSnapshotColumn(db);
       await ensureVersionModelNameColumn(db);
+      await ensureBodyExcellentColumns(db);
       await ensureAiTaskProgressColumns(db);
       await createSearchIndex(db);
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(new Date().toISOString()).run();
@@ -204,6 +207,36 @@ async function ensureVersionOutlineSnapshotColumn(db: SqliteDatabase) {
 async function ensureVersionModelNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("model_name")) await db.prepare("ALTER TABLE versions ADD COLUMN model_name TEXT").run();
+}
+
+async function ensureContentSelectionColumns(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('contents')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  const addedCurrent = !columns.includes("current_version_id");
+  const addedDefault = !columns.includes("default_version_id");
+  const addedSnapshot = !columns.includes("outline_snapshot_json");
+  if (addedCurrent) await db.prepare("ALTER TABLE contents ADD COLUMN current_version_id TEXT").run();
+  if (addedDefault) await db.prepare("ALTER TABLE contents ADD COLUMN default_version_id TEXT").run();
+  if (addedSnapshot) await db.prepare("ALTER TABLE contents ADD COLUMN outline_snapshot_json TEXT").run();
+  if (addedDefault) await db.prepare("UPDATE contents SET default_version_id=source_version_id WHERE source_version_id IS NOT NULL").run();
+  if (addedCurrent) {
+    await db.prepare(`UPDATE contents SET current_version_id=CASE
+      WHEN content_override=0 THEN source_version_id
+      ELSE (SELECT id FROM versions WHERE versions.outline_id=contents.outline_id AND versions.name=contents.content_name AND versions.text=contents.text ORDER BY versions.created_at DESC LIMIT 1)
+    END`).run();
+  }
+  if (addedSnapshot) {
+    await db.prepare(`UPDATE contents SET outline_snapshot_json=(
+      SELECT outline_snapshot_json FROM versions
+      WHERE versions.id=contents.source_version_id AND versions.outline_id=contents.outline_id
+    ) WHERE current_version_id IS NULL AND source_version_id IS NOT NULL`).run();
+  }
+}
+
+async function ensureBodyExcellentColumns(db: SqliteDatabase) {
+  const contentColumns = rows(await db.prepare("PRAGMA table_info('contents')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!contentColumns.includes("manual_excellent")) await db.prepare("ALTER TABLE contents ADD COLUMN manual_excellent INTEGER NOT NULL DEFAULT 0").run();
+  const versionColumns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!versionColumns.includes("manual_excellent")) await db.prepare("ALTER TABLE versions ADD COLUMN manual_excellent INTEGER NOT NULL DEFAULT 0").run();
 }
 
 async function ensureAiTaskProgressColumns(db: SqliteDatabase) {
@@ -387,21 +420,31 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
             prefix: String(row.prefix_context ?? ""), suffix: String(row.suffix_context ?? ""), sourceHash: String(row.source_hash ?? ""),
             createdAt: String(row.created_at), updatedAt: String(row.updated_at),
           })));
+        const outlineVersions = versions.filter((row) => row.outline_id === outlineId).map((row) => ({
+          id: String(row.id), name: String(row.name), content: String(row.text),
+          source: row.source === "ai-generate" ? "AI Generate" as const : row.source === "ai-chat" ? "AI Chat" as const : row.source === "ai-review" ? "AI Review" as const : row.source === "unsaved" ? "未保存内容" as const : "手动" as const,
+          createdAt: String(row.created_at), model: row.model_name ? String(row.model_name) : row.model_id ? String(row.model_id) : undefined, modelId: row.model_name && row.model_id ? String(row.model_id) : undefined,
+          prompt: row.prompt ? String(row.prompt) : undefined, taskId: row.task_id ? String(row.task_id) : undefined,
+          outlineSnapshot: row.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(row.outline_snapshot_json, undefined) : undefined,
+          manualExcellent: bool(row.manual_excellent),
+          excellentFragments: mapExcellentFragments(String(row.text), String(row.id)),
+        }));
+        const currentVersionId = content?.current_version_id && outlineVersions.some((version) => version.id === String(content.current_version_id))
+          ? String(content.current_version_id)
+          : null;
+        const defaultVersionId = content?.default_version_id && outlineVersions.some((version) => version.id === String(content.default_version_id))
+          ? String(content.default_version_id)
+          : null;
         return {
           id: outlineId, title: normalizeOutlineTitle(outlineRow.title), plan: String(outlineRow.summary),
           titleGenerationPending: bool(outlineRow.title_generation_pending),
-          content: String(content?.text ?? ""), contentName: String(content?.content_name ?? "").trim() || timestampContentName(String(outlineRow.updated_at)), contentOverride: bool(content?.content_override), archived: bool(outlineRow.archived),
+          content: String(content?.text ?? ""), contentName: String(content?.content_name ?? "").trim() || timestampContentName(String(outlineRow.updated_at)),
+          currentVersionId, defaultVersionId,
+          contentOutlineSnapshot: content?.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(content.outline_snapshot_json, undefined) : undefined,
+          manualExcellent: bool(content?.manual_excellent), archived: bool(outlineRow.archived),
           state: String(outlineRow.state) as "saved" | "running" | "failed", updatedAt: String(outlineRow.updated_at),
-          sourceVersionId: content?.source_version_id ? String(content.source_version_id) : undefined,
           excellentFragments: mapExcellentFragments(String(content?.text ?? "")),
-          versions: versions.filter((row) => row.outline_id === outlineId).map((row) => ({
-            id: String(row.id), name: String(row.name), content: String(row.text),
-            source: row.source === "ai-generate" ? "AI Generate" as const : row.source === "ai-chat" ? "AI Chat" as const : row.source === "ai-review" ? "AI Review" as const : row.source === "unsaved" ? "未保存内容" as const : "手动" as const,
-            createdAt: String(row.created_at), model: row.model_name ? String(row.model_name) : row.model_id ? String(row.model_id) : undefined, modelId: row.model_name && row.model_id ? String(row.model_id) : undefined,
-            prompt: row.prompt ? String(row.prompt) : undefined, taskId: row.task_id ? String(row.task_id) : undefined,
-            outlineSnapshot: row.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(row.outline_snapshot_json, undefined) : undefined,
-            excellentFragments: mapExcellentFragments(String(row.text), String(row.id)),
-          })),
+          versions: outlineVersions,
           chat: { sessions: sessionItems.length ? sessionItems : [fallbackSession], activeSessionId },
         };
       });
@@ -506,11 +549,16 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
       chapter.outlines.forEach((outline, outlineIndex) => {
         const referenceContent = resolvedOutlineContent(outline);
         const normalizedTitle = normalizeOutlineTitle(outline.title);
+        const defaultVersionId = Object.prototype.hasOwnProperty.call(outline, "defaultVersionId") ? outline.defaultVersionId : outline.sourceVersionId ?? null;
+        const currentVersionId = Object.prototype.hasOwnProperty.call(outline, "currentVersionId") ? outline.currentVersionId : outline.contentOverride === false ? outline.sourceVersionId ?? null : null;
+        const contentOutlineSnapshot = outline.contentOutlineSnapshot
+          ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
+          ?? { title: normalizedTitle, plan: outline.plan };
         statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,summary,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, outline.plan.slice(0, 10000), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
-        statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,updated_at,revision) VALUES(?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), outline.contentOverride ? 1 : 0, outline.sourceVersionId ?? null, outline.updatedAt, nextRevision]));
+        statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
-          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.createdAt]));
+          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
           uniqueExcellentFragments(version.content, version.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         });
         uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));

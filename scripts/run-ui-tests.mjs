@@ -52,6 +52,7 @@ const server = spawn(process.execPath, [vinextCli, "dev", "--hostname", "127.0.0
   env: {
     ...process.env,
     WRITER_STUDIO_DB_PATH: testDatabase,
+    WRITER_STUDIO_TEST_MODE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

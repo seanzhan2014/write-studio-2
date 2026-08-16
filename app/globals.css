@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 :root {
+  --asset-cache-generation: 2;
   --app-bg: #f7f7f5;
   --sidebar-bg: #f1f1ee;
   --surface: #ffffff;
@@ -1037,7 +1038,7 @@ button:disabled {
 }
 
 .section-heading > span:last-child,
-.editor-heading > div {
+.editor-heading > .editor-tools {
   align-items: center;
   color: var(--text-secondary);
   display: flex;
@@ -1076,8 +1077,16 @@ button:disabled {
 
 .editor-heading {
   gap: 8px;
-  height: 29px;
+  min-height: 29px;
   margin-bottom: 6px;
+}
+
+.editor-heading > .body-title-cluster {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 3px;
+  min-width: 0;
 }
 
 .editor-heading .body-title-toggle {
@@ -1086,7 +1095,7 @@ button:disabled {
   color: var(--text-primary);
   cursor: default;
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   font: inherit;
   gap: 7px;
   justify-content: flex-start;
@@ -1103,22 +1112,11 @@ button:disabled {
   white-space: nowrap;
 }
 
-.editor-heading .body-title-toggle em {
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  border-radius: 999px;
-  color: var(--accent);
-  flex: 0 0 auto;
-  font-size: var(--font-meta);
-  font-style: normal;
-  font-weight: var(--weight-label);
-  padding: 2px 6px;
-}
-
 .editor-heading .body-title-toggle:disabled {
   opacity: 1;
 }
 
-.editor-heading > div {
+.editor-heading > .editor-tools {
   flex: 0 0 auto;
 }
 
@@ -1138,6 +1136,66 @@ button:disabled {
 .editor-heading button:hover {
   background: var(--surface-hover);
   color: var(--text-primary);
+}
+
+.editor-heading .body-status-button {
+  border: 1px solid color-mix(in srgb, var(--text-primary) 12%, transparent);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  height: 24px;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0;
+  width: 24px;
+}
+
+.editor-heading .body-current-label,
+.editor-heading .body-set-current-button {
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 650;
+  height: 24px;
+  line-height: 1;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
+.editor-heading .body-current-label {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.editor-heading .body-status-button span {
+  align-items: center;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  justify-content: center;
+  line-height: 1;
+}
+
+.editor-heading .body-status-button.default-status.active {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
+
+.editor-heading .body-status-button.excellent-status span {
+  font-size: 15px;
+}
+
+.editor-heading .body-status-button.excellent-status.active {
+  background: color-mix(in srgb, #e6ad19 14%, var(--surface));
+  border-color: color-mix(in srgb, #d49b0b 38%, transparent);
+  color: #b47c00;
+}
+
+[data-theme="dark"] .editor-heading .body-status-button.excellent-status.active {
+  color: #f4c34e;
 }
 
 .content-editor {
@@ -2142,6 +2200,7 @@ button:disabled {
 }
 
 .continuous-version-trigger,
+.continuous-set-current,
 .continuous-set-default {
   align-items: center;
   backdrop-filter: blur(12px) saturate(1.08);
@@ -2164,11 +2223,14 @@ button:disabled {
 .continuous-version-trigger.previewing { color: var(--accent); }
 .continuous-version-trigger:hover,
 .continuous-version-trigger:focus-visible,
+.continuous-set-current:hover,
+.continuous-set-current:focus-visible,
 .continuous-set-default:hover,
 .continuous-set-default:focus-visible { background: var(--surface-hover); color: var(--text-primary); outline: none; }
 .continuous-version-trigger .icon { flex: 0 0 auto; height: 16px; width: 16px; }
 .continuous-version-trigger .icon:last-child { height: 13px; width: 13px; }
 .continuous-version-trigger > span:not(.icon) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.continuous-set-current,
 .continuous-set-default { color: var(--accent); padding: 0 9px; white-space: nowrap; }
 
 .continuous-version-option {
@@ -3617,6 +3679,35 @@ kbd {
 .generate-mode-options button.selected { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent); }
 .generate-mode-options button:disabled { cursor: not-allowed; opacity: .45; }
 .generate-mode-hint { color: var(--text-secondary); font-size: var(--font-meta); margin: 6px 1px 0; }
+
+.rewrite-retention-control {
+  background: var(--app-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  margin: 0 0 14px;
+  padding: 11px 14px 10px;
+}
+
+.rewrite-retention-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.rewrite-retention-heading > div { display: grid; gap: 2px; }
+.rewrite-retention-heading span { color: var(--text-primary); font-size: var(--font-label); font-weight: var(--weight-strong); }
+.rewrite-retention-heading small,
+.rewrite-retention-control > p,
+.rewrite-retention-warning { color: var(--text-secondary); font-size: var(--font-meta); }
+.rewrite-retention-heading strong { color: var(--accent); font-size: var(--font-label); white-space: nowrap; }
+.rewrite-retention-control .mantine-Slider-root { margin: 13px 9px 28px; }
+.rewrite-retention-control .mantine-Slider-track { background: var(--border-soft); }
+.rewrite-retention-control .mantine-Slider-bar { background: var(--accent); }
+.rewrite-retention-control .mantine-Slider-thumb { border-color: var(--accent); }
+.rewrite-retention-control .mantine-Slider-markLabel { color: var(--text-secondary); font-size: var(--font-meta); margin-top: 5px; }
+.rewrite-retention-control > p { line-height: 1.5; margin: 0; }
+.rewrite-retention-warning { color: #80632f; display: block; margin-top: 5px; }
 
 .generate-option-bar {
   align-items: center;
@@ -5215,8 +5306,13 @@ kbd {
   .mobile-plan-peek span { align-items: center; color: var(--accent); display: inline-flex; height: 32px; justify-content: center; width: 32px; }
   .mobile-plan-peek span .icon { font-size: 16px; transform: rotate(-90deg); }
   .editor-heading button { min-height: 38px; }
+  .editor-heading .body-status-button { height: 32px; min-height: 32px; width: 32px; }
+  .editor-heading:has(.finish-edit-button) { align-items: stretch; flex-wrap: wrap; }
+  .editor-heading:has(.finish-edit-button) > .body-title-cluster { flex-basis: 100%; }
+  .editor-heading:has(.finish-edit-button) > .editor-tools { gap: 2px; justify-content: flex-end; overflow-x: auto; width: 100%; }
   .content-editor,
   .content-reader { font-size: 16px; min-height: 0; padding: 8px 4px 60px; }
+  .content-selection-menu button { min-height: 44px; }
   .find-bar { align-items: stretch; flex-wrap: wrap; }
   .find-bar input { flex: 1; }
   .generate-wrap { padding: 0 10px 10px; }
@@ -5340,6 +5436,7 @@ kbd {
   .continuous-content-heading { gap: 8px; grid-template-columns: minmax(0, 1fr); padding-right: 0; }
   .continuous-version-controls { max-width: 100%; }
   .continuous-version-trigger { height: 36px; max-width: min(230px, calc(100vw - 126px)); }
+  .continuous-set-current,
   .continuous-set-default { height: 36px; }
   .continuous-text-editor.plan { font-size: 14px; line-height: 1.75; margin-top: 8px; }
   .continuous-text-editor.content { font-size: max(16px, var(--editor-font-size, 16px)); line-height: 1.85; margin-top: 11px; }
@@ -6366,6 +6463,15 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   .generate-mode-options button > span:not(.ui-title) {
     font-size: 12px;
   }
+
+  .rewrite-retention-control { padding: 12px 14px 11px; }
+  .rewrite-retention-heading { display: grid; gap: 6px; }
+  .rewrite-retention-heading strong { font-size: 13px; }
+  .rewrite-retention-heading small,
+  .rewrite-retention-control > p,
+  .rewrite-retention-warning { font-size: 11px; }
+  .rewrite-retention-control .mantine-Slider-root { margin-top: 16px; }
+  .rewrite-retention-control .mantine-Slider-thumb { height: 22px; width: 22px; }
 
   .generate-option-bar {
     align-items: end;

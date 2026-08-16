@@ -119,7 +119,15 @@ const globalConnections = globalThis as typeof globalThis & {
 
 export function databasePath() {
   const configured = process.env.WRITER_STUDIO_DB_PATH?.trim();
-  return path.resolve(process.cwd(), configured || path.join("data", "writer-studio.sqlite"));
+  const resolvedPath = path.resolve(process.cwd(), configured || path.join("data", "writer-studio.sqlite"));
+  if (process.env.WRITER_STUDIO_TEST_MODE === "1") {
+    const testDataDirectory = path.resolve(process.cwd(), ".test-data");
+    const relativePath = path.relative(testDataDirectory, resolvedPath);
+    if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+      throw new Error(`Test mode refuses to open a database outside .test-data: ${resolvedPath}`);
+    }
+  }
+  return resolvedPath;
 }
 
 export function getDatabase(): SqliteDatabase {

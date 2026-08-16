@@ -5,6 +5,21 @@ import { defineConfig } from "vite";
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 export default defineConfig({
+  environments: {
+    client: {
+      build: {
+        // Keep a stable cache namespace while ensuring browsers never reuse
+        // the broken pre-fix asset URLs served by Vinext on Windows.
+        rolldownOptions: {
+          output: {
+            entryFileNames: "assets/[name]-static-v2-[hash].js",
+            chunkFileNames: "assets/[name]-static-v2-[hash].js",
+            assetFileNames: "assets/[name]-static-v2-[hash][extname]",
+          },
+        },
+      },
+    },
+  },
   optimizeDeps: {
     exclude: ["@mantine/core", "@mantine/hooks"],
   },

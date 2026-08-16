@@ -147,19 +147,26 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(fractional.response.status, 400, fractional.text);
   });
 
-  await t.test("keeps search synchronized with default-version changes and deletes", async () => {
+  await t.test("keeps search synchronized with current-body changes and deletes", async () => {
     let revision = await resetFixture();
     const updated = await api("/api/outlines/outline-current/content", {
       method: "PUT", headers: { "If-Match": String(revision) }, body: { text: "唯一检索标记 海燕九号" },
     });
     assert.equal(updated.response.status, 200, updated.text);
     revision = updated.data.revision;
-    assert.equal(updated.data.data.sourceVersionId, undefined);
-    const hiddenDraft = await api("/api/articles/article-main/search?q=%E6%B5%B7%E7%87%95%E4%B9%9D%E5%8F%B7");
-    assert.equal(hiddenDraft.data.data.some((item) => item.entity_id === "outline-current"), false);
+    assert.equal(updated.data.data.currentVersionId, null);
+    const currentWorkingBody = await api("/api/articles/article-main/search?q=%E6%B5%B7%E7%87%95%E4%B9%9D%E5%8F%B7");
+    assert.equal(currentWorkingBody.data.data.some((item) => item.entity_id === "outline-current"), true);
     const selected = await api("/api/versions/version-manual/default", { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
     assert.equal(selected.response.status, 200, selected.text);
     revision = selected.data.revision;
+    assert.equal(selected.data.data.defaultVersionId, "version-manual");
+    assert.equal(selected.data.data.currentVersionId, null, "setting a default must not change current");
+    const stillCurrentWorkingBody = await api("/api/articles/article-main/search?q=%E6%B5%B7%E7%87%95%E4%B9%9D%E5%8F%B7");
+    assert.equal(stillCurrentWorkingBody.data.data.some((item) => item.entity_id === "outline-current"), true);
+    const applied = await api("/api/versions/version-manual/apply", { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
+    assert.equal(applied.response.status, 200, applied.text);
+    revision = applied.data.revision;
     const found = await api("/api/articles/article-main/search?q=%E4%B8%8D%E5%8F%AF%E5%8F%98%E7%89%88%E6%9C%AC%E6%AD%A3%E6%96%87");
     assert.ok(found.data.data.some((item) => item.entity_id === "outline-current"));
     const deleted = await api("/api/outlines/outline-current", { method: "DELETE", headers: { "If-Match": String(revision) } });
@@ -168,40 +175,40 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(absent.data.data.some((item) => item.entity_id === "outline-current"), false);
   });
 
-  await t.test("previews a selected default version without overwriting the draft", async () => {
+  await t.test("changes the default without changing the current body", async () => {
     let revision = await resetFixture();
     const selected = await api("/api/versions/version-manual/default", { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
     assert.equal(selected.response.status, 200, selected.text);
     revision = selected.data.revision;
     assert.equal(selected.data.data.content, "林澈看向顾屿，确认潮汐表上的时间。", "setting a default must not overwrite the draft");
-    assert.equal(selected.data.data.sourceVersionId, "version-manual");
+    assert.equal(selected.data.data.defaultVersionId, "version-manual");
+    assert.equal(selected.data.data.currentVersionId, null);
 
     let content = await api("/api/outlines/outline-current/content");
-    assert.equal(content.data.data.text, "不可变版本正文");
-    assert.equal(content.data.data.draftText, "林澈看向顾屿，确认潮汐表上的时间。");
+    assert.equal(content.data.data.text, "林澈看向顾屿，确认潮汐表上的时间。");
+    assert.equal(content.data.data.workingText, "林澈看向顾屿，确认潮汐表上的时间。");
     assert.equal(content.data.data.defaultVersionId, "version-manual");
 
     const edited = await api("/api/outlines/outline-current/content", { method: "PUT", headers: { "If-Match": String(revision) }, body: { text: "新草稿唯一标记" } });
     assert.equal(edited.response.status, 200, edited.text);
     revision = edited.data.revision;
-    assert.equal(edited.data.data.sourceVersionId, "version-manual", "editing the draft must retain the default version");
+    assert.equal(edited.data.data.defaultVersionId, "version-manual", "editing current must retain the default version");
+    assert.equal(edited.data.data.currentVersionId, null);
     content = await api("/api/outlines/outline-current/content");
-    assert.equal(content.data.data.text, "不可变版本正文");
-    assert.equal(content.data.data.draftText, "新草稿唯一标记");
-    const defaultSearch = await api("/api/articles/article-main/search?q=%E4%B8%8D%E5%8F%AF%E5%8F%98%E7%89%88%E6%9C%AC%E6%AD%A3%E6%96%87");
-    assert.ok(defaultSearch.data.data.some((item) => item.entity_id === "outline-current"));
-    const hiddenDraft = await api("/api/articles/article-main/search?q=%E6%96%B0%E8%8D%89%E7%A8%BF%E5%94%AF%E4%B8%80%E6%A0%87%E8%AE%B0");
-    assert.equal(hiddenDraft.data.data.some((item) => item.entity_id === "outline-current"), false);
+    assert.equal(content.data.data.text, "新草稿唯一标记");
+    assert.equal(content.data.data.workingText, "新草稿唯一标记");
+    const currentSearch = await api("/api/articles/article-main/search?q=%E6%96%B0%E8%8D%89%E7%A8%BF%E5%94%AF%E4%B8%80%E6%A0%87%E8%AE%B0");
+    assert.equal(currentSearch.data.data.some((item) => item.entity_id === "outline-current"), true);
 
     const cleared = await api("/api/outlines/outline-current/default-version", { method: "DELETE", headers: { "If-Match": String(revision) } });
     assert.equal(cleared.response.status, 200, cleared.text);
     content = await api("/api/outlines/outline-current/content");
-    assert.equal(content.data.data.text, "");
-    assert.equal(content.data.data.draftText, "新草稿唯一标记");
-    assert.equal(content.data.data.defaultVersionId, undefined);
+    assert.equal(content.data.data.text, "新草稿唯一标记");
+    assert.equal(content.data.data.workingText, "新草稿唯一标记");
+    assert.equal(content.data.data.defaultVersionId, null);
   });
 
-  await t.test("keeps versions immutable and clears only the source when deleting", async () => {
+  await t.test("keeps versions immutable and blocks deleting current versions", async () => {
     let revision = await resetFixture();
     const renamed = await api("/api/versions/version-manual", {
       method: "PATCH", headers: { "If-Match": String(revision) }, body: { name: "只改名称", content: "禁止修改的正文", source: "AI Generate" },
@@ -215,11 +222,17 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(applied.response.status, 200, applied.text);
     revision = applied.data.revision;
     const removed = await api("/api/versions/version-manual", { method: "DELETE", headers: { "If-Match": String(revision) } });
-    assert.equal(removed.response.status, 200, removed.text);
+    assert.equal(removed.response.status, 400, removed.text);
+    assert.match(removed.data.message, /当前正文不能删除/);
+    const switched = await api("/api/outlines/outline-current/content", { method: "PUT", headers: { "If-Match": String(revision) }, body: { text: "切回工作正文" } });
+    assert.equal(switched.response.status, 200, switched.text);
+    revision = switched.data.revision;
+    const deleted = await api("/api/versions/version-manual", { method: "DELETE", headers: { "If-Match": String(revision) } });
+    assert.equal(deleted.response.status, 200, deleted.text);
     const state = await api("/api/state");
     const outline = state.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
-    assert.equal(outline.content, "不可变版本正文");
-    assert.equal(outline.sourceVersionId, undefined);
+    assert.equal(outline.content, "切回工作正文");
+    assert.equal(outline.currentVersionId, null);
     assert.equal(outline.versions.length, 0);
   });
 
@@ -367,14 +380,14 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     });
     const created = await api("/api/ai/tasks", {
       method: "POST", headers: { "Idempotency-Key": "task-over-limit" },
-      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "新任务", model: "", includePrevious: false, includeCharacters: true, firstAppearanceCharacterIds: ["character-gu", "character-archived", "missing"] },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "新任务", model: "", contentMode: "rewrite", rewriteRetention: "high", includePrevious: false, includeCharacters: true, firstAppearanceCharacterIds: ["character-gu", "character-archived", "missing"] },
     });
     assert.equal(created.response.status, 200, created.text);
     const tasks = await api("/api/ai/tasks");
     assert.equal(tasks.data.data.length, 20);
     assert.ok(tasks.data.data.some((task) => task.id === "task-over-limit"));
     for (let index = 0; index < 17; index += 1) assert.ok(tasks.data.data.some((task) => task.id === `existing-task-${index}`), `active task ${index} must remain`);
-    assert.deepEqual(created.data.data.contextOptions, { includePrevious: false, includeCharacters: true, estimatedCharacters: 0, contentMode: "fresh", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头", firstAppearanceCharacterIds: ["character-gu"] });
+    assert.deepEqual(created.data.data.contextOptions, { includePrevious: false, includeCharacters: true, estimatedCharacters: 0, contentMode: "rewrite", rewriteRetention: "high", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头", firstAppearanceCharacterIds: ["character-gu"] });
 
     const cancelled = await api("/api/ai/tasks/task-over-limit/cancel", { method: "POST", body: {} });
     assert.equal(cancelled.response.status, 200, cancelled.text);
