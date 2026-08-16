@@ -9,7 +9,7 @@
     "dev": "node scripts/dev-server.mjs",
     "service": "node scripts/service-manager.mjs",
     "service:manager": "node scripts/service-manager.mjs",
-    "dev:test": "vinext dev --hostname 127.0.0.1 --port 3102",
+    "dev:test": "node scripts/dev-test-server.mjs",
     "build": "vinext build",
     "start": "node scripts/prod-server.mjs",
     "test": "npm run build && node scripts/run-tests.mjs && npm run test:ui",
@@ -31,6 +31,7 @@
     "vinext": "0.0.50"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
     "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",

@@ -4,7 +4,7 @@ import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
+import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -26,9 +26,10 @@ function findOutline(data: StudioData, outlineId: string) {
 }
 
 function activeExcellentFragments(outline: StudioData["articles"][number]["chapters"][number]["outlines"][number]) {
-  if (outline.contentOverride) return normalizeExcellentFragments(outline.content, outline.excellentFragments);
-  const version = outline.versions.find((item) => item.id === outline.sourceVersionId);
-  return version ? normalizeExcellentFragments(version.content, version.excellentFragments) : [];
+  const version = currentOutlineVersion(outline);
+  return version
+    ? normalizeExcellentFragments(version.content, version.excellentFragments)
+    : normalizeExcellentFragments(outline.content, outline.excellentFragments);
 }
 
 async function mutateState<T>(mutate: (data: StudioData) => Mutation<T>): Promise<T> {
@@ -145,6 +146,7 @@ export async function POST(_request: Request, context: RouteContext) {
             includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
             excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
             contentMode: initialTask.contextOptions?.contentMode,
+            rewriteRetention: initialTask.contextOptions?.rewriteRetention,
             firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
             includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
           }, upstreamController.signal);
@@ -167,7 +169,7 @@ export async function POST(_request: Request, context: RouteContext) {
         const found = findOutline(data, task.outlineId);
         if (task.target === "正文" && found) {
           const completedAt = new Date().toISOString();
-          const previousOutlineSnapshot = { title: found.outline.title, plan: found.outline.plan };
+          const previousOutlineSnapshot = resolvedOutlineSnapshot(found.outline);
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
           if (task.contextOptions?.includeOutlineTitle && generatedTitle && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
             found.outline.title = generatedTitle;
@@ -185,7 +187,7 @@ export async function POST(_request: Request, context: RouteContext) {
               ? cloneExcellentFragments(result.text, reanchorExcellentFragments(resolvedOutlineContent(found.outline), result.text, activeExcellentFragments(found.outline)))
               : [],
           };
-          const directContentBackup: Version | undefined = found.outline.contentOverride && found.outline.content.trim() && !currentOutlineVersion(found.outline)
+          const directContentBackup: Version | undefined = !found.outline.currentVersionId && found.outline.content.trim()
             ? {
                 id: `version-${crypto.randomUUID()}`,
                 name: `AI Generate 前 · ${localTimestampContentName(completedAt)}`,
@@ -194,14 +196,12 @@ export async function POST(_request: Request, context: RouteContext) {
                 createdAt: completedAt,
                 taskId: task.id,
                 outlineSnapshot: previousOutlineSnapshot,
+                manualExcellent: found.outline.manualExcellent === true,
                 excellentFragments: cloneExcellentFragments(found.outline.content, normalizeExcellentFragments(found.outline.content, found.outline.excellentFragments)),
               }
             : undefined;
           found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
-          found.outline.content = version.content;
-          found.outline.contentName = version.name;
-          found.outline.contentOverride = true;
-          found.outline.excellentFragments = cloneExcellentFragments(version.content, version.excellentFragments);
+          found.outline.currentVersionId = version.id;
           found.outline.state = "saved";
           found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;

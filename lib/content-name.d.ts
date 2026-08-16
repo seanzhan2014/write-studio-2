@@ -1,5 +1,7 @@
 export type NamedOutlineContent = {
   contentName?: string;
+  currentVersionId?: string | null;
+  defaultVersionId?: string | null;
   contentOverride?: boolean;
   sourceVersionId?: string;
   updatedAt: string;

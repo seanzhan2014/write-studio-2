@@ -58,6 +58,7 @@ const child = spawn(process.execPath, [
   env: {
     ...process.env,
     WRITER_STUDIO_DB_PATH: testDatabase,
+    WRITER_STUDIO_TEST_MODE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

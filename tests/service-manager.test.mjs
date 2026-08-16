@@ -97,6 +97,17 @@ test("service controller runs the production build with local SQLite", async () 
     assert.equal(response.status, 200);
     const status = await response.json();
     assert.equal(status.engine, "SQLite");
+
+    const homeResponse = await fetch(`http://127.0.0.1:${servicePort}/`);
+    assert.equal(homeResponse.status, 200);
+    const homeHtml = await homeResponse.text();
+    const assetPath = homeHtml.match(/\/assets\/[^"']+\.js/)?.[0];
+    assert.ok(assetPath, "production HTML should reference a JavaScript asset");
+
+    const assetResponse = await fetch(`http://127.0.0.1:${servicePort}${assetPath}`);
+    assert.equal(assetResponse.status, 200);
+    assert.match(assetResponse.headers.get("content-type") ?? "", /javascript/);
+    assert.doesNotMatch(await assetResponse.text(), /^<!DOCTYPE html>/i);
   } finally {
     await controller.stop();
     await removeDatabase();

@@ -3,7 +3,7 @@ import { AiInputError, reviewChapter, type AiReviewInput } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { aiReviewContentName, resolvedOutlineContentName } from "@/lib/content-name.mjs";
 import { reviewSourceDigest, type ReviewOutlineSource } from "@/lib/ai-review.mjs";
-import { resolvedOutlineContent } from "@/lib/outline-content";
+import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "@/lib/review-options";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 
@@ -12,9 +12,10 @@ function json(value: unknown, status = 200) {
 }
 
 function activeExcellentFragments(outline: StudioData["articles"][number]["chapters"][number]["outlines"][number]) {
-  if (outline.contentOverride) return normalizeExcellentFragments(outline.content, outline.excellentFragments);
-  const version = outline.versions.find((item) => item.id === outline.sourceVersionId);
-  return version ? normalizeExcellentFragments(version.content, version.excellentFragments) : [];
+  const version = currentOutlineVersion(outline);
+  return version
+    ? normalizeExcellentFragments(version.content, version.excellentFragments)
+    : normalizeExcellentFragments(outline.content, outline.excellentFragments);
 }
 
 function findChapterSource(data: StudioData, articleId: string, chapterId: string) {
@@ -62,7 +63,7 @@ export async function POST(request: Request) {
     if (!initialState.data) return json({ error: "没有可用文章" }, 400);
     const initial = findChapterSource(initialState.data, articleId, chapterId);
     if (!initial) return json({ error: "Review 章节不存在" }, 404);
-    if (!initial.outlines.length) return json({ error: "当前章节没有可供 Review 的默认正文" }, 400);
+    if (!initial.outlines.length) return json({ error: "当前章节没有可供 Review 的当前正文" }, 400);
     const contextSnapshot = JSON.stringify({ article: initial.inputArticle, chapterTitle: initial.chapter.title });
     const result = await reviewChapter({
       article: initial.inputArticle,
@@ -116,10 +117,7 @@ export async function POST(request: Request) {
           excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(outline), text, activeExcellentFragments(outline))),
         };
         outline.versions.unshift(version);
-        outline.contentName = name;
-        outline.contentOverride = false;
-        outline.excellentFragments = [];
-        outline.sourceVersionId = versionId;
+        outline.currentVersionId = versionId;
         outline.updatedAt = createdAt;
         outline.state = "saved";
         updated.push({ outlineId: outline.id, versionId, name, text });

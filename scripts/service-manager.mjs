@@ -5,7 +5,7 @@ import { ServiceController, DEFAULT_MANAGER_PORT, DEFAULT_SERVICE_PORT } from ".
 import { managerPage } from "./service-manager-ui.mjs";
 
 const workspace = process.cwd();
-const managerHost = process.env.WRITER_STUDIO_MANAGER_HOST ?? "127.0.0.1";
+const managerHost = process.env.WRITER_STUDIO_MANAGER_HOST ?? "0.0.0.0";
 const managerPort = Number(process.env.WRITER_STUDIO_MANAGER_PORT ?? DEFAULT_MANAGER_PORT);
 const serviceHost = process.env.WRITER_STUDIO_HOST ?? "0.0.0.0";
 const servicePort = Number(process.env.WRITER_STUDIO_PORT ?? DEFAULT_SERVICE_PORT);

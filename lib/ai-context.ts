@@ -13,6 +13,8 @@ type ContextOutline = {
   titleGenerationPending?: boolean;
   plan: string;
   content: string;
+  currentVersionId?: string | null;
+  defaultVersionId?: string | null;
   contentOverride?: boolean;
   excellentFragments?: Array<{ id: string; start: number; end: number; text: string }>;
   sourceVersionId?: string;
@@ -114,24 +116,19 @@ function matchedCharacterReference(searchable: string, character: ContextCharact
   return [character.name, ...character.aliases].find((name) => matchesCharacterReference(searchable, name));
 }
 
-function selectExcellentFragments(article: ContextArticle, currentChapter: ContextChapter, currentOutline: ContextOutline, options: AiContextOptions) {
+function selectExcellentFragments(currentOutline: ContextOutline, options: AiContextOptions) {
   if (options.includeExcellentFragments !== true) return [];
   const allowedIds = Array.isArray(options.excellentFragmentIds) ? new Set(options.excellentFragmentIds.map(String)) : null;
-  const visibleOutlines = article.chapters.filter((chapter) => !chapter.archived).flatMap((chapter) => chapter.outlines.filter((outline) => !outline.archived).map((outline) => ({ chapter, outline })));
-  const currentIndex = visibleOutlines.findIndex((item) => item.outline.id === currentOutline.id);
-  const candidates = visibleOutlines.flatMap(({ chapter, outline }, outlineIndex) => {
-    const sources = [
-      ...(outline.contentOverride ? [{ content: outline.content, versionId: undefined, fragments: outline.excellentFragments ?? [] }] : []),
-      ...outline.versions.map((version) => ({ content: version.content, versionId: version.id, fragments: version.excellentFragments ?? [] })),
-    ];
-    const priority = outline.id === currentOutline.id ? 0 : chapter.id === currentChapter.id ? 1 : outlineIndex < currentIndex ? 2 : 3;
-    return sources.flatMap((source) => source.fragments.flatMap((fragment) => {
-      if (allowedIds && !allowedIds.has(fragment.id)) return [];
-      const text = source.content.slice(fragment.start, fragment.end);
-      if (!text.trim() || text !== fragment.text) return [];
-      return [{ id: fragment.id, text, outlineId: outline.id, outlineTitle: outlineDisplayTitle(outline), versionId: source.versionId, priority, outlineIndex }];
-    }));
-  }).sort((left, right) => left.priority - right.priority || right.outlineIndex - left.outlineIndex);
+  const sources = [
+    ...(!currentOutline.currentVersionId ? [{ content: currentOutline.content, versionId: undefined, fragments: currentOutline.excellentFragments ?? [] }] : []),
+    ...currentOutline.versions.map((version) => ({ content: version.content, versionId: version.id, fragments: version.excellentFragments ?? [] })),
+  ];
+  const candidates = sources.flatMap((source) => source.fragments.flatMap((fragment) => {
+    if (allowedIds && !allowedIds.has(fragment.id)) return [];
+    const text = source.content.slice(fragment.start, fragment.end);
+    if (!text.trim() || text !== fragment.text) return [];
+    return [{ id: fragment.id, text, outlineId: currentOutline.id, outlineTitle: outlineDisplayTitle(currentOutline), versionId: source.versionId }];
+  }));
 
   const selected = [] as Array<{ id: string; text: string; outlineId: string; outlineTitle: string; versionId?: string }>;
   const seen = new Set<string>();
@@ -209,7 +206,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
   const characterIds = new Set(matchedCharacters.map((person) => person.id));
   const characterNames = new Map(matchedCharacters.map((person) => [person.id, person.name]));
   const activeSession = outline.chat.sessions.find((session) => session.id === (options.sessionId || outline.chat.activeSessionId)) ?? outline.chat.sessions[0];
-  const excellentFragments = kind === "content" ? selectExcellentFragments(article, chapter, outline, options) : [];
+  const excellentFragments = kind === "content" ? selectExcellentFragments(outline, options) : [];
 
   return {
     kind,

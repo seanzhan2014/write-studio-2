@@ -6,6 +6,17 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
     const body = await request.json() as { message?: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string };
     if (!body.message?.trim()) return Response.json({ error: "消息不能为空" }, { status: 400 });
     const stream = await streamChat({ outlineId, message: body.message.slice(0, 20000), model: body.model, includePrevious: body.includePrevious, includeCharacters: body.includeCharacters, sessionId: body.sessionId }, request.signal);
-    return new Response(stream, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no", ...(body.model ? {} : { "X-Writer-Studio-Stream-Terminator": "record-separator" }) } });
+    // Vinext's development response adapter can keep a locally produced
+    // ReadableStream open after all chunks were sent. Buffer only the tiny local
+    // PoC reply so the browser receives an immediate, definitively closed body;
+    // configured model responses remain genuinely streamed.
+    const localBody = body.model ? null : await new Response(stream).arrayBuffer();
+    const responseBody = localBody ?? stream;
+    return new Response(responseBody, { headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Accel-Buffering": "no",
+      ...(localBody ? { "Content-Length": String(localBody.byteLength), "X-Writer-Studio-Stream-Terminator": "record-separator" } : {}),
+    } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "AI Chat 失败" }, { status: error instanceof AiInputError ? 422 : 502 }); }
 }

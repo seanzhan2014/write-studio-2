@@ -52,6 +52,7 @@ const server = spawn(process.execPath, [vinextCli, "dev", "--hostname", "127.0.0
   env: {
     ...process.env,
     WRITER_STUDIO_DB_PATH: testDatabase,
+    WRITER_STUDIO_TEST_MODE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -71,6 +72,7 @@ try {
     stdio: "inherit",
   });
   [exitCode] = await once(runner, "exit");
+  if (Number(exitCode ?? 1) !== 0 && output.length) process.stderr.write(`\nUI test server output:\n${output.join("")}\n`);
 } finally {
   await stopServer(server);
   await removeTestDatabase();

@@ -1,15 +1,16 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, type ContentGenerationMode } from "@/lib/generate-options";
-import { timestampContentName } from "@/lib/content-name.mjs";
+import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
-import { resolvedOutlineContent } from "@/lib/outline-content";
+import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { mergeAiManagedConflict } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
+import { duplicateArticlesForImport, duplicateOutlineForImport } from "@/lib/data-transfer";
 
 type OutlinePlacement = "before" | "after";
 
@@ -47,6 +48,7 @@ export type Version = {
     title: string;
     plan: string;
   };
+  manualExcellent?: boolean;
   excellentFragments?: ExcellentFragment[];
 };
 
@@ -55,13 +57,22 @@ export type Outline = {
   title: string;
   titleGenerationPending: boolean;
   plan: string;
+  generateInstruction: string;
   content: string;
   contentName?: string;
+  currentVersionId: string | null;
+  defaultVersionId: string | null;
+  contentOutlineSnapshot?: {
+    title: string;
+    plan: string;
+  };
+  /** Legacy import-only fields. */
   contentOverride?: boolean;
   archived: boolean;
   state: "saved" | "running" | "failed";
   updatedAt: string;
   sourceVersionId?: string;
+  manualExcellent?: boolean;
   excellentFragments?: ExcellentFragment[];
   versions: Version[];
   chat: {
@@ -138,6 +149,7 @@ export type AiTask = {
     estimatedCharacters: number;
     targetWords?: number;
     contentMode?: ContentGenerationMode;
+    rewriteRetention?: RewriteRetentionLevel;
     outlinePlanSnapshot?: string;
     outlineTitleSnapshot?: string;
     modelId?: string;
@@ -204,7 +216,7 @@ function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"]
 }
 
 function outline(id: string, title: string, plan: string, content: string, state: Outline["state"] = "saved"): Outline {
-  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, content, contentName: timestampContentName(now), state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
+  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, generateInstruction: "", content, contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title, plan }, state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
 }
 
 const openingContent = "雨从凌晨开始落，到清晨也没有停下来的意思。\n\n林澈推开修理铺的百叶门时，海风正沿着旧街一路灌进来，带着盐、铁锈和昨夜没有散尽的雾。门后的铜铃只响了半声，像被谁在梦里按住。\n\n工作台上多了一封信。\n\n信封是最普通的牛皮纸，边缘却被海水泡得发白。她翻到背面，没有邮票，也没有寄件人的名字，只有一行熟悉得让她停住呼吸的字：给二〇三三年的林澈。\n\n那是她自己的笔迹。\n\n她没有立刻拆开。墙上的挂钟走到八点十七分，老旧的秒针轻轻颤了一下。远处，港口的雾笛在看不见的海面上响起，低沉得像某种迟到了很多年的回答。";
@@ -355,7 +367,7 @@ type StudioContextValue = {
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
-  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "content" | "contentName" | "contentOverride" | "archived" | "state" | "sourceVersionId">>) => void;
+  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
@@ -365,9 +377,14 @@ type StudioContextValue = {
   moveOutline: (sourceId: string, targetId: string, placement: OutlinePlacement) => void;
   moveOutlineToChapter: (outlineId: string, chapterId: string) => void;
   copyOutline: (outlineId: string) => string | null;
+  importOutline: (chapterId: string, outline: Outline, afterId?: string) => string | null;
+  importArticles: (articles: Article[], tasks?: AiTask[]) => string[];
+  importSettings: (settings: StudioSettings) => void;
   deleteOutline: (outlineId: string) => void;
-  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot" | "excellentFragments">) => string;
+  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot" | "manualExcellent" | "excellentFragments">) => string;
   toggleExcellentFragment: (outlineId: string, versionId: string | undefined, start: number, end: number) => "added" | "removed" | "none";
+  setBodyExcellent: (outlineId: string, versionId: string | undefined, excellent: boolean) => void;
+  setCurrentVersion: (outlineId: string, versionId: string) => void;
   setDefaultVersion: (outlineId: string, versionId?: string) => void;
   applyVersion: (outlineId: string, versionId: string) => void;
   applyVersionWithBackup: (outlineId: string, versionId: string) => string | null;
@@ -424,9 +441,14 @@ function firstOutline(article: Article) {
 }
 
 function activeExcellentFragments(outline: Outline) {
-  if (outline.contentOverride) return normalizeExcellentFragments(outline.content, outline.excellentFragments);
-  const version = outline.versions.find((item) => item.id === outline.sourceVersionId);
-  return version ? normalizeExcellentFragments(version.content, version.excellentFragments) : [];
+  const version = currentOutlineVersion(outline);
+  return version
+    ? normalizeExcellentFragments(version.content, version.excellentFragments)
+    : normalizeExcellentFragments(outline.content, outline.excellentFragments);
+}
+
+function activeManualExcellent(outline: Outline) {
+  return currentOutlineVersion(outline)?.manualExcellent === true || (!outline.currentVersionId && outline.manualExcellent === true);
 }
 
 function normalizeCharacter(source: unknown): Character {
@@ -446,11 +468,12 @@ function normalizeCharacter(source: unknown): Character {
 
 function normalizeAiTask(task: AiTask): AiTask {
   const phase = task.phase ?? (task.state === "waiting" ? "queued" : task.state === "success" ? "completed" : task.state === "failed" ? "failed" : task.state === "cancelled" ? "cancelled" : "generating");
+  const contentMode = task.target === "正文" ? normalizeContentGenerationMode(task.contextOptions?.contentMode) : undefined;
   return {
     ...task,
     contextOptions: task.contextOptions ? {
       ...task.contextOptions,
-      ...(task.target === "正文" ? { contentMode: normalizeContentGenerationMode(task.contextOptions.contentMode) } : {}),
+      ...(task.target === "正文" ? { contentMode, rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
       firstAppearanceCharacterIds: Array.isArray(task.contextOptions.firstAppearanceCharacterIds)
         ? [...new Set(task.contextOptions.firstAppearanceCharacterIds.map(String))].slice(0, 200)
         : undefined,
@@ -466,7 +489,7 @@ function normalizeAiTask(task: AiTask): AiTask {
 }
 
 const emptyChapter: Chapter = { id: "", title: "", archived: false, outlines: [] };
-const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", content: "", contentName: timestampContentName(now), archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
+const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", generateInstruction: "", content: "", contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
 const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
 
 function emptyStudioData(settings: StudioSettings): StudioData {
@@ -495,14 +518,33 @@ function normalizeStudioData(source: StudioData): StudioData {
         ...chapter,
         outlines: chapter.outlines.map((item) => {
           const normalizedTitle = normalizeOutlineTitle(item.title);
+          const versions = (item.versions ?? []).map((version) => ({ ...version, manualExcellent: version.manualExcellent === true, excellentFragments: normalizeExcellentFragments(version.content, version.excellentFragments) }));
+          const validVersionId = (value: unknown) => typeof value === "string" && versions.some((version) => version.id === value) ? value : null;
+          const legacyDefaultVersionId = validVersionId(item.sourceVersionId);
+          const defaultVersionId = Object.prototype.hasOwnProperty.call(item, "defaultVersionId")
+            ? validVersionId(item.defaultVersionId)
+            : legacyDefaultVersionId;
+          const currentVersionId = Object.prototype.hasOwnProperty.call(item, "currentVersionId")
+            ? validVersionId(item.currentVersionId)
+            : item.contentOverride === false
+              ? legacyDefaultVersionId
+              : null;
+          const legacySourceSnapshot = item.contentOverride === true && legacyDefaultVersionId
+            ? versions.find((version) => version.id === legacyDefaultVersionId)?.outlineSnapshot
+            : undefined;
+          const { contentOverride: _legacyContentOverride, sourceVersionId: _legacySourceVersionId, ...currentItem } = item;
           const normalizedItem = {
-            ...item,
+            ...currentItem,
             title: normalizedTitle,
+            generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
-            contentOverride: item.contentOverride === true,
+            currentVersionId,
+            defaultVersionId,
+            contentOutlineSnapshot: item.contentOutlineSnapshot ?? legacySourceSnapshot ?? { title: normalizedTitle, plan: item.plan },
+            manualExcellent: item.manualExcellent === true,
             titleGenerationPending: item.titleGenerationPending ?? !normalizedTitle,
             excellentFragments: normalizeExcellentFragments(item.content, item.excellentFragments),
-            versions: (item.versions ?? []).map((version) => ({ ...version, excellentFragments: normalizeExcellentFragments(version.content, version.excellentFragments) })),
+            versions,
           };
           const legacy = item.chat as typeof item.chat & { messages?: Message[]; draft?: string; includePrevious?: boolean; includeCharacters?: boolean };
           if (Array.isArray(legacy.sessions) && legacy.sessions.length) {
@@ -540,11 +582,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   const setData = useCallback((update: StudioData | ((current: StudioData) => StudioData)) => {
     const next = typeof update === "function" ? update(dataRef.current) : update;
+    // dataRef is the source for sequential mutations. Sync it here, rather than
+    // from a later React effect that could roll rapid streaming updates backward.
     dataRef.current = next;
     setDataState(next);
   }, []);
-
-  useEffect(() => { dataRef.current = data; }, [data]);
 
   useEffect(() => {
     let active = true;
@@ -579,7 +621,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             loaded = { ...loaded, articles: loaded.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => {
               if (outline.id !== draft.outlineId || outline.content === draft.text || outline.versions.some((version) => version.source === "未保存内容" && version.content === draft.text)) return outline;
               recovered = true;
-              const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(createdAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt, outlineSnapshot: { title: outline.title, plan: outline.plan }, excellentFragments: cloneExcellentFragments(draft.text, reanchorExcellentFragments(resolvedOutlineContent(outline), draft.text, activeExcellentFragments(outline))) };
+              const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(createdAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt, outlineSnapshot: { title: outline.title, plan: outline.plan }, manualExcellent: activeManualExcellent(outline), excellentFragments: cloneExcellentFragments(draft.text, reanchorExcellentFragments(resolvedOutlineContent(outline), draft.text, activeExcellentFragments(outline))) };
               return { ...outline, versions: [version, ...outline.versions] };
             }) })) })) };
             if (recovered) recoveredDraftKeys.push(key);
@@ -850,7 +892,6 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     updateOutline(outlineId, patch) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, updatedAt: article.id === current.currentArticleId ? new Date().toISOString() : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
-        const sourceVersionId = Object.prototype.hasOwnProperty.call(patch, "sourceVersionId") ? patch.sourceVersionId : item.sourceVersionId;
         const hasPendingPatch = Object.prototype.hasOwnProperty.call(patch, "titleGenerationPending");
         const planChanged = Object.prototype.hasOwnProperty.call(patch, "plan") && patch.plan !== item.plan;
         const hasTitlePatch = Object.prototype.hasOwnProperty.call(patch, "title");
@@ -861,7 +902,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             : planChanged
               ? true
               : item.titleGenerationPending;
-        return { ...item, ...patch, titleGenerationPending, updatedAt: new Date().toISOString(), sourceVersionId };
+        return { ...item, ...patch, titleGenerationPending, updatedAt: new Date().toISOString() };
       }) })) })) }));
     },
     saveOutlinePlan(outlineId, plan) {
@@ -885,7 +926,16 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         const sourceVersion = sourceVersionId ? item.versions.find((version) => version.id === sourceVersionId) : undefined;
         const sourceContent = sourceVersion?.content ?? resolvedOutlineContent(item);
         const sourceFragments = sourceVersion ? normalizeExcellentFragments(sourceVersion.content, sourceVersion.excellentFragments) : activeExcellentFragments(item);
-        return { ...item, content: text, contentName: item.contentName?.trim() || timestampContentName(updatedAt), contentOverride: true, excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(sourceContent, text, sourceFragments)), updatedAt };
+        return {
+          ...item,
+          content: text,
+          contentName: timestampContentName(updatedAt),
+          currentVersionId: null,
+          contentOutlineSnapshot: sourceVersion?.outlineSnapshot ?? resolvedOutlineSnapshot(item) ?? { title: item.title, plan: item.plan },
+          manualExcellent: sourceVersion?.manualExcellent ?? activeManualExcellent(item),
+          excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(sourceContent, text, sourceFragments)),
+          updatedAt,
+        };
       }) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
@@ -895,8 +945,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const updatedAt = new Date().toISOString();
       const versionId = makeId("version");
       const existing = dataRef.current.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
-      const version: Version = { id: versionId, name: timestampContentName(updatedAt), content: text, source: "手动", createdAt: updatedAt, outlineSnapshot: { title: existing?.title ?? "", plan: existing?.plan ?? "" }, excellentFragments: existing ? cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) : [] };
-      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, content: text, contentName: version.name, contentOverride: false, excellentFragments: [], sourceVersionId: versionId, updatedAt, versions: [version, ...item.versions] } : item) })) })) };
+      const version: Version = { id: versionId, name: timestampContentName(updatedAt), content: text, source: "AI Chat", createdAt: updatedAt, outlineSnapshot: existing ? resolvedOutlineSnapshot(existing) : { title: "", plan: "" }, manualExcellent: existing ? activeManualExcellent(existing) : false, excellentFragments: existing ? cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) : [] };
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, currentVersionId: versionId, updatedAt, versions: [version, ...item.versions] } : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
       return enqueueSave(snapshot);
@@ -907,7 +957,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
         return true;
       }
-      const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(savedAt).toLocaleString("zh-CN")}`, content: text, source: "未保存内容", createdAt: savedAt, outlineSnapshot: { title: existing.title, plan: existing.plan }, excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) };
+      const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(savedAt).toLocaleString("zh-CN")}`, content: text, source: "未保存内容", createdAt: savedAt, outlineSnapshot: { title: existing.title, plan: existing.plan }, manualExcellent: activeManualExcellent(existing), excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) };
       const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, versions: [version, ...item.versions] } : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
@@ -947,6 +997,53 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }) }));
       return copied ? id : null;
     },
+    importOutline(chapterId, source, afterId) {
+      let result: string | null = null;
+      setData((current) => {
+        const targetArticle = current.articles.find((article) => article.id === current.currentArticleId);
+        if (!targetArticle?.chapters.some((chapter) => chapter.id === chapterId)) return current;
+        const imported = duplicateOutlineForImport(source);
+        result = imported.id;
+        const updatedAt = new Date().toISOString();
+        return normalizeStudioData({
+          ...current,
+          currentOutlineId: imported.id,
+          articles: current.articles.map((article) => article.id !== current.currentArticleId ? article : {
+            ...article,
+            updatedAt,
+            lastOutlineId: imported.id,
+            chapters: article.chapters.map((chapter) => {
+              if (chapter.id !== chapterId) return chapter;
+              const outlines = [...chapter.outlines];
+              const index = afterId ? outlines.findIndex((outline) => outline.id === afterId) : -1;
+              outlines.splice(index >= 0 ? index + 1 : outlines.length, 0, imported);
+              return { ...chapter, outlines };
+            }),
+          }),
+        });
+      });
+      return result;
+    },
+    importArticles(sourceArticles, sourceTasks = []) {
+      let importedIds: string[] = [];
+      setData((current) => {
+        const imported = duplicateArticlesForImport(sourceArticles, sourceTasks, current.articles.map((article) => article.title));
+        importedIds = imported.articles.map((article) => article.id);
+        if (!imported.articles.length) return current;
+        const selected = imported.articles[0];
+        return normalizeStudioData({
+          ...current,
+          currentArticleId: selected.id,
+          currentOutlineId: selected.lastOutlineId || firstOutline(selected),
+          articles: [...imported.articles, ...current.articles],
+          tasks: [...imported.tasks, ...current.tasks],
+        });
+      });
+      return importedIds;
+    },
+    importSettings(settings) {
+      setData((current) => normalizeStudioData({ ...current, settings }));
+    },
     deleteOutline(outlineId) {
       setData((current) => {
         const articles = current.articles.map((article) => {
@@ -967,7 +1064,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         const excellentFragments = metadata?.excellentFragments
           ? cloneExcellentFragments(nextContent, metadata.excellentFragments)
           : cloneExcellentFragments(nextContent, reanchorExcellentFragments(resolvedOutlineContent(item), nextContent, activeExcellentFragments(item)));
-        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? { title: item.title, plan: item.plan }, ...metadata, excellentFragments }, ...item.versions] };
+        const inheritedOutlineSnapshot = resolvedOutlineSnapshot(item);
+        const manualExcellent = metadata?.manualExcellent ?? activeManualExcellent(item);
+        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, ...metadata, manualExcellent, excellentFragments }, ...item.versions] };
       }) })) })) }));
       return id;
     },
@@ -991,19 +1090,35 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }) })) })) }));
       return action;
     },
+    setBodyExcellent(outlineId, versionId, excellent) {
+      const updatedAt = new Date().toISOString();
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, updatedAt: article.id === current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        if (versionId) {
+          if (!item.versions.some((version) => version.id === versionId)) return item;
+          return { ...item, updatedAt, versions: item.versions.map((version) => version.id === versionId ? { ...version, manualExcellent: excellent } : version) };
+        }
+        return { ...item, manualExcellent: excellent, updatedAt };
+      }) })) })) }));
+    },
+    setCurrentVersion(outlineId, versionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId || !item.versions.some((version) => version.id === versionId)) return item;
+        return { ...item, currentVersionId: versionId, updatedAt: new Date().toISOString() };
+      }) })) })) }));
+    },
     setDefaultVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
         if (versionId && !item.versions.some((version) => version.id === versionId)) return item;
-        const selected = item.versions.find((version) => version.id === versionId);
-        return { ...item, contentName: selected?.name ?? item.contentName, contentOverride: selected ? false : item.contentOverride, excellentFragments: selected ? [] : item.excellentFragments, sourceVersionId: versionId, updatedAt: new Date().toISOString() };
+        return { ...item, defaultVersionId: versionId ?? null, updatedAt: new Date().toISOString() };
       }) })) })) }));
     },
     applyVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
         const selected = item.versions.find((version) => version.id === versionId);
-        return selected ? { ...item, content: selected.content, contentName: selected.name, contentOverride: false, excellentFragments: [], sourceVersionId: selected.id, updatedAt: new Date().toISOString() } : item;
+        return selected ? { ...item, currentVersionId: selected.id, updatedAt: new Date().toISOString() } : item;
       }) })) })) }));
     },
     applyVersionWithBackup(outlineId, versionId) {
@@ -1015,8 +1130,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         if (item.id !== outlineId) return item;
         const selected = item.versions.find((version) => version.id === versionId);
         if (!selected) return item;
-        const backup: Version = { id: backupId, name: `应用 AI 前 · ${new Date().toLocaleString("zh-CN")}`, content: resolvedOutlineContent(item), source: "手动", createdAt, outlineSnapshot: { title: item.title, plan: item.plan }, excellentFragments: cloneExcellentFragments(resolvedOutlineContent(item), activeExcellentFragments(item)) };
-        return { ...item, content: selected.content, contentName: selected.name, contentOverride: false, excellentFragments: [], sourceVersionId: selected.id, updatedAt: createdAt, versions: [backup, ...item.versions] };
+        const inheritedOutlineSnapshot = resolvedOutlineSnapshot(item);
+        const backup: Version = { id: backupId, name: `应用 AI 前 · ${new Date().toLocaleString("zh-CN")}`, content: resolvedOutlineContent(item), source: "手动", createdAt, outlineSnapshot: inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, manualExcellent: activeManualExcellent(item), excellentFragments: cloneExcellentFragments(resolvedOutlineContent(item), activeExcellentFragments(item)) };
+        return { ...item, currentVersionId: selected.id, updatedAt: createdAt, versions: [backup, ...item.versions] };
       }) })) })) }));
       return backupId;
     },
@@ -1024,7 +1140,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, versions: item.versions.map((version) => version.id === versionId ? { ...version, name } : version) } : item) })) })) }));
     },
     deleteVersion(outlineId, versionId) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, versions: item.versions.filter((version) => version.id !== versionId), sourceVersionId: item.sourceVersionId === versionId ? undefined : item.sourceVersionId } : item) })) })) }));
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId || item.currentVersionId === versionId || item.defaultVersionId === versionId) return item;
+        return { ...item, versions: item.versions.filter((version) => version.id !== versionId) };
+      }) })) })) }));
     },
     createChatSession(outlineId, title = "新对话", messages = []) {
       const id = makeId("chat");
@@ -1099,7 +1218,19 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           if (!removable) break;
           tasks.splice(removable.index, 1);
         }
-        return { ...current, tasks };
+        if (task.target !== "正文") return { ...current, tasks };
+        const updatedAt = new Date().toISOString();
+        const articles = current.articles.map((article) => ({
+          ...article,
+          updatedAt: article.id === task.articleId ? updatedAt : article.updatedAt,
+          chapters: article.chapters.map((chapter) => ({
+            ...chapter,
+            outlines: chapter.outlines.map((outline) => outline.id === task.outlineId
+              ? { ...outline, generateInstruction: task.prompt.slice(0, 20000), updatedAt }
+              : outline),
+          })),
+        }));
+        return { ...current, articles, tasks };
       });
       return id;
     },

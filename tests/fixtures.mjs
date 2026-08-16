@@ -7,7 +7,8 @@ export function fullStudioFixture() {
     createdAt: `2026-07-28T08:${String(index).padStart(2, "0")}:00.000Z`,
   }));
   const makeOutline = (id, title, plan, content = "") => ({
-    id, title, titleGenerationPending: false, plan, content, archived: false, state: "saved", updatedAt: now,
+    id, title, titleGenerationPending: false, plan, content, currentVersionId: null, defaultVersionId: null,
+    contentOutlineSnapshot: { title, plan }, archived: false, state: "saved", updatedAt: now,
     versions: [], chat: { sessions: [{ id: `chat:${id}`, title: "主会话", messages: [], draft: "", includePrevious: true, includeCharacters: true, lastReadMessageId: null, createdAt: now, updatedAt: now }], activeSessionId: `chat:${id}` },
   });
   const previous = makeOutline("outline-previous", "前序灯塔", "林澈在灯塔取得前序线索。", "灯塔正文");

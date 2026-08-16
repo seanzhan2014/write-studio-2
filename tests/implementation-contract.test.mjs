@@ -54,8 +54,8 @@ test("relationship snapshot insert matches the eight-column table", async () => 
 test("schema-extensible inserts name their columns explicitly", async () => {
   const runtime = await read("db/runtime.ts");
   const ai = await read("db/ai.ts");
-  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,summary,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
-  assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_models\(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at\)/);
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
@@ -136,27 +136,29 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /mode === "outline" \? studio\.updateOutline/);
   assert.match(app, /onContentBlur=\{mode === "content" \? \(\) => commitContent\(item\.id\)/);
   assert.match(app, /studio\.stageContentDraft\(outlineId, text\)/);
-  assert.match(app, /studio\.saveCurrentContent\(outlineId, next\)/);
-  assert.match(await read("app/studio-state.tsx"), /saveCurrentContent[\s\S]*contentOverride: true/);
+  assert.match(app, /studio\.saveCurrentContent\(outlineId, next, editSourceVersionIdsRef\.current\[outlineId\]\)/);
+  assert.match(await read("app/studio-state.tsx"), /saveCurrentContent[\s\S]*currentVersionId: null/);
   assert.match(app, /className="continuous-drag-handle"/);
   assert.match(styles, /\.continuous-text-editor[\s\S]*overflow: hidden/);
   assert.match(styles, /\.continuous-chapter[\s\S]*content-visibility: auto/);
   assert.doesNotMatch(app, /全文阅读/);
 });
 
-test("each body in full content editing can preview and default its own candidate", async () => {
+test("each body in full content editing can preview and independently set current and default", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const styles = await read("app/globals.css");
   assert.match(app, /aria-label=\{`选择正文版本：\$\{displayTitle\}`\}/);
   assert.match(app, /selectedVersionId=\{mode === "content" \? versionSelections\[item\.id\]/);
   assert.match(app, /function selectContentVersion\(item: Outline, versionId\?: string\)/);
+  assert.match(app, /studio\.setCurrentVersion\(item\.id, version\.id\)/);
   assert.match(app, /studio\.setDefaultVersion\(item\.id, version\.id\)/);
+  assert.match(app, /onSetCurrentVersion=\{mode === "content"/);
   assert.match(app, /onSetDefaultVersion=\{mode === "content"/);
   assert.match(styles, /\.continuous-version-trigger/);
   assert.match(styles, /\.continuous-version-option/);
 });
 
-test("full content editing exposes one-call chapter AI Review with named default bodies", async () => {
+test("full content editing exposes one-call chapter AI Review with named current bodies", async () => {
   const [app, state, schema, runtime, ai, route] = await Promise.all([
     read("app/WriterStudioApp.tsx"),
     read("app/studio-state.tsx"),
@@ -175,7 +177,7 @@ test("full content editing exposes one-call chapter AI Review with named default
   const reviewFunction = ai.match(/export async function reviewChapter[\s\S]*?\n}\n\nfunction localOutlineTitle/)?.[0] ?? "";
   assert.equal((reviewFunction.match(/await upstream\(/g) ?? []).length, 1);
   assert.match(route, /aiReviewContentName\(outline\)/);
-  assert.match(route, /outline\.sourceVersionId = versionId/);
+  assert.match(route, /outline\.currentVersionId = versionId/);
   assert.match(route, /source: "AI Review"/);
 });
 
@@ -278,8 +280,17 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /全新生成/);
   assert.match(app, /改写正文/);
   assert.match(app, /续写正文/);
+  assert.match(app, /thumbLabel="原文保留度"/);
+  assert.match(app, /控制改写幅度，不代表精确相似度/);
   assert.match(app, /contentMode: generationMode/);
+  assert.match(app, /rewriteRetention/);
   assert.match(app, /补充指令（可选）/);
+  assert.match(app, /latestGeneratePromptForOutline/);
+  assert.match(app, /task\.outlineId === outlineId && task\.target === "正文"/);
+  assert.match(app, /studio\.currentOutline\.generateInstruction \|\| latestGeneratePromptForOutline/);
+  assert.match(state, /generateInstruction: task\.prompt\.slice\(0, 20000\)/);
+  assert.match(runtime, /generate_instruction TEXT NOT NULL DEFAULT ''/);
+  assert.doesNotMatch(app, /if \(!taskId\)[^\n]+\n\s*setPrompt\(""\)/);
   assert.match(app, /GeneratePresetDialog/);
   assert.match(app, /aria-label="生成使用的大纲内容"/);
   assert.match(app, /studio\.saveOutlinePlan\(studio\.currentOutline\.id, outlinePlanDraft\)/);
@@ -287,8 +298,12 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(state, /generateTargetWords: number/);
   assert.match(state, /generatePresets: string\[\]/);
   assert.match(state, /contentMode\?: ContentGenerationMode/);
+  assert.match(state, /rewriteRetention\?: RewriteRetentionLevel/);
   assert.match(runtime, /context_options_json/);
-  assert.match(await read("db/ai.ts"), /appendContinuation/);
+  const ai = await read("db/ai.ts");
+  assert.match(ai, /appendContinuation/);
+  assert.match(ai, /<rewrite_retention level=/);
+  assert.match(ai, /REWRITE_RETENTION_INSTRUCTIONS/);
   for (const removedPreset of ["续写当前场景", "加强冲突", "补充细节", "调整语气", "收束本段"]) assert.doesNotMatch(app, new RegExp(`const quickPrompts[\\s\\S]*${removedPreset}`));
   assert.match(app, /本次生成上下文/);
   assert.doesNotMatch(app, /候选版本对比/);
@@ -296,13 +311,13 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /任务成功后会自动设为该大纲的当前正文/);
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
-  assert.doesNotMatch(executor, /found\.outline\.sourceVersionId = version\.id/);
-  assert.match(executor, /found\.outline\.contentOverride = true/);
-  assert.match(executor, /found\.outline\.content = version\.content/);
+  assert.doesNotMatch(executor, /found\.outline\.defaultVersionId = version\.id/);
+  assert.match(executor, /found\.outline\.currentVersionId = version\.id/);
+  assert.doesNotMatch(executor, /found\.outline\.content = version\.content/);
   assert.match(executor, /AI Generate 前/);
   assert.match(executor, /hasEarlierBodyTask/);
   assert.match(app, /selectedTask\.target !== "正文"/);
-  assert.match(app, /打开当前正文/);
+  assert.match(app, /打开生成版本/);
   assert.match(app, /size=\{compact \? "calc\(100dvh - 10px\)" : 920\}/);
   assert.match(runtime, /version\.model/);
   assert.match(runtime, /version\.prompt/);
@@ -377,7 +392,12 @@ test("dedicated naming is one call, has a preview, and blocks oversized chapters
   assert.match(app, /studio\.applyGeneratedNames/);
   assert.match(ai, /export async function generateNames/);
   assert.match(ai, /if \(characters > maximum\) throw new AiPromptTooLongError/);
-  assert.doesNotMatch(ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "", /for \(const .*upstream/);
+  const namingImplementation = ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "";
+  assert.doesNotMatch(namingImplementation, /for \(const .*upstream/);
+  assert.doesNotMatch(namingImplementation, /current_title|current_chapter|sibling_titles|reservedTitles|reserved_outline_titles/);
+  assert.match(route, /export const dynamic = "force-dynamic"/);
+  assert.match(route, /generateNames\(body, request\.signal\)/);
+  assert.doesNotMatch(app.match(/function NameGenerateDialog[\s\S]*?function NamingProfileEditor/)?.[0] ?? "", /reservedTitles/);
   assert.match(route, /status = error instanceof AiPromptTooLongError \? 413/);
 });
 
@@ -404,7 +424,8 @@ test("body versions retain the outline snapshot used at creation", async () => {
   assert.match(runtime, /model_name/);
   assert.match(executor, /modelId: model\?\.modelId/);
   assert.match(app, /此正文大纲/);
-  assert.match(app, /displayedVersion = previewVersion \?\? defaultVersion/);
+  assert.match(app, /displayedVersion = previewVersion \?\? currentVersion/);
+  assert.match(app, /displayedVersion\?\.outlineSnapshot \?\? studio\.currentOutline\.contentOutlineSnapshot/);
 });
 
 test("AI tasks expose durable phases, heartbeats, timeout and cross-device refresh", async () => {
@@ -474,21 +495,32 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.doesNotMatch(app, />只读</);
   assert.doesNotMatch(app, /readOnly=\{Boolean\(previewVersion\)\}/);
   assert.match(state, /commitContentEdit/);
-  assert.match(state, /sourceVersionId: versionId/);
+  assert.match(state, /currentVersionId: versionId/);
   assert.match(state, /versions: \[version, \.\.\.item\.versions\]/);
   assert.match(state, /preserveContentDraft/);
   assert.match(state, /source: "未保存内容"/);
-  assert.match(app, /className="set-default-body-button"/);
-  assert.match(app, /setDisplayedContentAsDefault/);
-  assert.match(app, /设为默认/);
+  assert.doesNotMatch(app, /className="set-default-body-button"|className="start-edit-button"|className=\{`appreciate-body-button/);
+  assert.match(app, /className=\{`body-title-toggle/);
+  assert.match(app, /toggleDisplayedContentDefault/);
+  assert.match(app, /className="content-word-count"/);
+  assert.match(app, /className="content-selection-menu" role="menu"/);
+  assert.match(app, /role="menuitemcheckbox"/);
+  assert.match(app, /document\.addEventListener\("selectionchange", onSelectionChange\)/);
+  assert.match(app, /else queueSelectionMenu\(\)/);
+  assert.match(app, /onDoubleClick=\{\(event\) => \{ event\.preventDefault\(\); beginEditing\(\); \}\}/);
+  assert.match(app, /isTouchDoubleTap\(event, lastReaderTouchRef\)/);
+  assert.match(app, /pendingContentScrollRef/);
+  assert.match(app, /useLayoutEffect\(\(\) => \{[\s\S]*snapshot\.ratio \* max[\s\S]*\}, \[editing\]\)/);
   assert.match(state, /setDefaultVersion/);
   assert.match(selector, /resolvedOutlineContent\(outline\)/);
-  assert.match(resolver, /defaultOutlineVersion\(outline\)\?\.content \?\? ""/);
+  assert.match(resolver, /currentOutlineVersion\(outline\)\?\.content \?\? outline\.content/);
   assert.match(app, /content: previewVersion\?\.content \?\? resolvedOutlineContent\(activeOutline\)/);
   assert.match(runtime, /const referenceContent = resolvedOutlineContent\(outline\)/);
-  assert.match(api, /defaultVersionId: found\.outline\.sourceVersionId/);
+  assert.match(api, /defaultVersionId: found\.outline\.defaultVersionId/);
   assert.match(styles, /\.content-editor-section \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
   assert.match(styles, /\.content-editor \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
+  assert.match(styles, /\.content-reader \{[\s\S]*touch-action: manipulation/);
+  assert.match(styles, /\.content-selection-menu \{/);
 });
 
 test("AI Chat is a session workspace with writing-safe actions and touch-sized controls", async () => {
@@ -541,4 +573,42 @@ test("shared UI controls use one type and action scale across native and compone
   assert.match(styles, /\.setting-row \.toggle span \{[\s\S]*height: 24px/);
   assert.match(app, /<Button variant="default" size="xs" loading=\{busy === model\.id\}[\s\S]{0,220}测试<\/Button>/);
   assert.match(app, /<Menu\.Target><Button variant="default" size="xs">更多<\/Button><\/Menu\.Target>/);
+});
+
+test("test servers cannot reuse or open the production database", async () => {
+  const packageJson = JSON.parse(await read("package.json"));
+  const testServer = await read("scripts/dev-test-server.mjs");
+  const sqlite = await read("db/sqlite.ts");
+  const playwright = await read("playwright.config.ts");
+  const apiRunner = await read("scripts/run-tests.mjs");
+  const uiRunner = await read("scripts/run-ui-tests.mjs");
+
+  assert.equal(packageJson.scripts["dev:test"], "node scripts/dev-test-server.mjs");
+  assert.match(testServer, /Refusing to start a test server outside \.test-data/);
+  assert.match(testServer, /WRITER_STUDIO_TEST_MODE = "1"/);
+  assert.match(sqlite, /Test mode refuses to open a database outside \.test-data/);
+  assert.match(playwright, /reuseExistingServer: false/);
+  assert.match(playwright, /WRITER_STUDIO_TEST_MODE: "1"/);
+  assert.match(apiRunner, /WRITER_STUDIO_TEST_MODE: "1"/);
+  assert.match(uiRunner, /WRITER_STUDIO_TEST_MODE: "1"/);
+});
+
+test("data management exposes scoped exports, safe imports and secret-free model portability", async () => {
+  const [app, transfer, helpers, state] = await Promise.all([
+    read("app/WriterStudioApp.tsx"),
+    read("app/data-transfer.tsx"),
+    read("lib/data-transfer.ts"),
+    read("app/studio-state.tsx"),
+  ]);
+  assert.match(app, /\["settings-database", "数据管理"\]/);
+  for (const label of ["导出大纲", "导入大纲", "导出这篇文章", "所有文章", "系统配置", "导出全部"]) assert.match(app, new RegExp(label));
+  assert.match(transfer, /envelope\.scope !== "outline"/);
+  assert.match(transfer, /envelope\.scope !== "system-config"/);
+  assert.match(transfer, /不(?:会)?覆盖现有数据/);
+  assert.match(transfer, /不包含 API Key/);
+  assert.match(helpers, /kind: TRANSFER_KIND/);
+  assert.match(helpers, /state: interrupted \? "cancelled"/);
+  assert.doesNotMatch(helpers, /\bsecret\s*:/);
+  assert.match(state, /duplicateOutlineForImport/);
+  assert.match(state, /duplicateArticlesForImport/);
 });
