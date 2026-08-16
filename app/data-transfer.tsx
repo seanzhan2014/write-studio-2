@@ -58,13 +58,17 @@ function pickJsonFile() {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json,application/json";
+    input.hidden = true;
+    document.body.appendChild(input);
     input.addEventListener("change", async () => {
       const file = input.files?.[0];
-      if (!file) { resolve(null); return; }
-      if (file.size > 100 * 1024 * 1024) { reject(new Error("导入文件不能超过 100 MB")); return; }
+      if (!file) { input.remove(); resolve(null); return; }
+      if (file.size > 100 * 1024 * 1024) { input.remove(); reject(new Error("导入文件不能超过 100 MB")); return; }
       try { resolve(parseTransferEnvelope(JSON.parse(await file.text()))); }
       catch (error) { reject(error); }
+      finally { input.remove(); }
     }, { once: true });
+    input.addEventListener("cancel", () => { input.remove(); resolve(null); }, { once: true });
     input.click();
   });
 }
