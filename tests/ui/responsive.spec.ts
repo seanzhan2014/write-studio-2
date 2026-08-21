@@ -1327,13 +1327,16 @@ test("full outline editor offers inline create, delete, and archive controls", a
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
-    return payload.data.articles[0].chapters[0].outlines.map((item) => item.id);
-  }).toEqual(expect.arrayContaining(["outline-current"]));
+    return payload.data.articles[0].chapters[0].outlines.length;
+  }).toBe(5);
   const idsAfterCreate = await editor.locator("[data-continuous-outline-id]").evaluateAll((elements) => elements.map((element) => element.getAttribute("data-continuous-outline-id")));
   const currentIndex = idsAfterCreate.indexOf("outline-current");
   expect(idsAfterCreate[currentIndex + 1]).toMatch(/^outline-/);
   expect(idsAfterCreate[currentIndex + 1]).not.toBe("outline-after");
-  await expect(editor.locator(`[data-continuous-outline-id="${idsAfterCreate[currentIndex + 1]}"] .continuous-outline-title-input`)).toBeFocused();
+  const created = editor.locator(`[data-continuous-outline-id="${idsAfterCreate[currentIndex + 1]}"]`);
+  await expect(created.locator(".continuous-outline-title-input")).toBeFocused();
+  await expect(created.locator(".continuous-outline-title-input")).toHaveValue("");
+  await expect(created.locator(".continuous-text-editor.plan")).toHaveValue("");
 
   const warning = page.waitForEvent("dialog");
   await remove.click();

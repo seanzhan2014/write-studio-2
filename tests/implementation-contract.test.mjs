@@ -79,6 +79,7 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(runtime, /database_version/);
   assert.match(sync, /lastCloudVersion/);
   assert.match(sync, /canAutomaticallyUpload\(policy\)/);
+  assert.match(sync, /OAI-Sites-Authorization/);
   assert.match(sync, /writeRecoverySnapshot\("sync-local-before-pull"/);
   assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
   assert.match(state, /\/api\/sync\/upload/);

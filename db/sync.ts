@@ -47,7 +47,7 @@ export class SyncError extends Error {
   }
 }
 
-type SyncConfig = { cloudUrl: string; token: string };
+type SyncConfig = { cloudUrl: string; token: string; sitesBypassToken: string };
 type StoredSyncMeta = {
   lastCloudVersion: number | null;
   lastUploadedLocalVersion: number | null;
@@ -86,12 +86,13 @@ function normalizeCloudUrl(value: string) {
 }
 
 async function localSyncConfig(): Promise<SyncConfig | null> {
-  const stored = await readSettings(["sync_cloud_url", "sync_cloud_token"]);
+  const stored = await readSettings(["sync_cloud_url", "sync_cloud_token", "sync_sites_bypass_token"]);
   const cloudUrl = process.env.WRITER_STUDIO_CLOUD_URL?.trim() || stored.get("sync_cloud_url")?.trim() || "";
   const token = process.env.WRITER_STUDIO_SYNC_TOKEN?.trim() || stored.get("sync_cloud_token")?.trim() || "";
+  const sitesBypassToken = process.env.WRITER_STUDIO_SITES_BYPASS_TOKEN?.trim() || stored.get("sync_sites_bypass_token")?.trim() || "";
   if (!cloudUrl || !token) return null;
   try {
-    return { cloudUrl: normalizeCloudUrl(cloudUrl), token };
+    return { cloudUrl: normalizeCloudUrl(cloudUrl), token, sitesBypassToken };
   } catch {
     return null;
   }
@@ -198,6 +199,7 @@ async function remoteRequest<T>(config: SyncConfig, pathname: string, init?: Req
       cache: "no-store",
       headers: {
         "Authorization": `Bearer ${config.token}`,
+        ...(config.sitesBypassToken ? { "OAI-Sites-Authorization": `Bearer ${config.sitesBypassToken}` } : {}),
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         ...init?.headers,
       },

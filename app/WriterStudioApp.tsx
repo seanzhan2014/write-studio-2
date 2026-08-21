@@ -3238,7 +3238,7 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
   return <article
     ref={setNodeRef}
     data-continuous-outline-id={item.id}
-    className={`continuous-outline-block ${isDragging ? "dragging" : ""} ${dropPlacement ? `drop-${dropPlacement}` : ""}`}
+    className={`continuous-outline-block ${mode === "outline" ? "has-outline-actions" : ""} ${isDragging ? "dragging" : ""} ${dropPlacement ? `drop-${dropPlacement}` : ""}`}
     style={{ transform: CSS.Transform.toString(transform), transition }}
     onFocusCapture={onActivate}
     onPointerDownCapture={onActivate}
