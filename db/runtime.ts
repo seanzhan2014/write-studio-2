@@ -7,6 +7,7 @@ import { normalizeExcellentFragments, type ExcellentFragment } from "@/lib/excel
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
+import { decryptAiSecret } from "@/lib/ai-secret";
 import { databaseEngine, getDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
@@ -106,10 +107,17 @@ const schemaStatements = [
   "CREATE INDEX IF NOT EXISTS ai_tasks_status_created_idx ON ai_tasks(status, created_at)",
   "CREATE INDEX IF NOT EXISTS ai_tasks_outline_created_idx ON ai_tasks(outline_id, created_at DESC)",
   "CREATE INDEX IF NOT EXISTS ai_tasks_article_created_idx ON ai_tasks(article_id, created_at DESC)",
+  `CREATE TABLE IF NOT EXISTS ai_providers (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, adapter_kind TEXT NOT NULL DEFAULT 'openai-compatible',
+    base_url TEXT NOT NULL, timeout_ms INTEGER NOT NULL DEFAULT 120000,
+    has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS ai_models (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL, provider_id TEXT REFERENCES ai_providers(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '', temperature REAL, max_output INTEGER, max_input_characters INTEGER NOT NULL DEFAULT 60000,
-    timeout_ms INTEGER NOT NULL, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
+    timeout_ms INTEGER NOT NULL, timeout_override_ms INTEGER, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS app_settings (
@@ -150,6 +158,7 @@ export async function ensureDatabase() {
       for (const statement of schemaStatements) await db.prepare(statement).run();
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
+      await ensureAiProviderShape(db);
       await ensureArticleNamingColumns(db);
       await ensureCharacterDescriptionShape(db);
       await ensureMultipleChatSessions(db);
@@ -166,7 +175,7 @@ export async function ensureDatabase() {
       const initializedAt = new Date().toISOString();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt).run();
-      await db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '2', ?)").bind(initializedAt).run();
+      await db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '3', ?)").bind(initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt).run();
     })().catch((error) => {
@@ -218,6 +227,59 @@ async function ensureVersionOutlineSnapshotColumn(db: SqliteDatabase) {
 async function ensureVersionModelNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("model_name")) await db.prepare("ALTER TABLE versions ADD COLUMN model_name TEXT").run();
+}
+
+function providerNameFromUrl(value: string) {
+  try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
+}
+
+async function ensureAiProviderShape(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("provider_id")) await db.prepare("ALTER TABLE ai_models ADD COLUMN provider_id TEXT REFERENCES ai_providers(id) ON DELETE RESTRICT").run();
+  if (!columns.includes("timeout_override_ms")) await db.prepare("ALTER TABLE ai_models ADD COLUMN timeout_override_ms INTEGER").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS ai_models_provider_idx ON ai_models(provider_id)").run();
+
+  const result = await db.prepare("SELECT id,name,base_url,timeout_ms,has_secret,secret,created_at,updated_at FROM ai_models WHERE provider_id IS NULL OR provider_id='' ORDER BY created_at,id").all<Record<string, unknown>>();
+  const legacy = result.results ?? [];
+  if (!legacy.length) return;
+
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const model of legacy) {
+    const baseUrl = String(model.base_url ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    const stored = String(model.secret ?? "");
+    let credential = "none";
+    if (stored) {
+      try { credential = `secret:${await decryptAiSecret(stored)}`; }
+      catch { credential = `unreadable:${String(model.id)}`; }
+    }
+    const key = `${baseUrl}\n${credential}`;
+    const group = groups.get(key) ?? [];
+    group.push(model);
+    groups.set(key, group);
+  }
+
+  const usedNames = new Set<string>();
+  for (const models of groups.values()) {
+    const first = models[0];
+    const providerId = crypto.randomUUID();
+    const baseUrl = String(first.base_url ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    const baseName = providerNameFromUrl(baseUrl);
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name)) { name = `${baseName} ${suffix}`; suffix += 1; }
+    usedNames.add(name);
+    const timeoutMs = Math.max(5000, Math.min(600000, Number(first.timeout_ms ?? 120000)));
+    const storedSecret = String(first.secret ?? "");
+    const createdAt = String(first.created_at ?? new Date().toISOString());
+    const updatedAt = String(first.updated_at ?? createdAt);
+    await db.prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(providerId, name, "openai-compatible", baseUrl, timeoutMs, storedSecret ? 1 : 0, storedSecret || null, createdAt, updatedAt).run();
+    for (const model of models) {
+      const modelTimeout = Math.max(5000, Math.min(600000, Number(model.timeout_ms ?? timeoutMs)));
+      await db.prepare("UPDATE ai_models SET provider_id=?,timeout_override_ms=?,secret=NULL,has_secret=0 WHERE id=?")
+        .bind(providerId, modelTimeout === timeoutMs ? null : modelTimeout, String(model.id)).run();
+    }
+  }
 }
 
 async function ensureOutlineGenerateInstructionColumn(db: SqliteDatabase) {

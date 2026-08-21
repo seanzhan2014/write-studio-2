@@ -2536,6 +2536,11 @@ kbd {
 .article-naming-settings p { color: var(--text-secondary); font-size: 12px; margin: 0; }
 .article-naming-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
+.article-naming-page .article-naming-settings { border-top: 0; margin-top: 0; padding-top: 0; }
+.article-naming-heading { align-items: center; display: flex; gap: 20px; justify-content: space-between; }
+.article-naming-heading > div { min-width: 0; }
+.article-naming-heading .mantine-Button-root { flex: 0 0 auto; }
+
 .naming-profile-editor {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2574,6 +2579,19 @@ kbd {
 .name-selection-row em { color: var(--text-secondary); font-size: 10px; font-style: normal; }
 .name-preview-row { align-items: center; border-top: 1px solid var(--border-soft); display: grid; gap: 10px; grid-template-columns: minmax(100px, .72fr) minmax(180px, 1.25fr) auto; padding-top: 10px; }
 .name-preview-old { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.all-names-summary { min-height: 26px; }
+.all-names-progress { background: var(--app-bg); border: 1px solid var(--border-soft); border-radius: 11px; display: grid; gap: 10px; padding: 13px 14px; }
+.all-names-progress > div { align-items: center; display: flex; gap: 14px; justify-content: space-between; }
+.all-names-progress > div > span:last-child { color: var(--text-secondary); font-size: 11px; }
+.all-names-progress progress { accent-color: var(--accent); height: 7px; width: 100%; }
+.all-names-preview { background: var(--app-bg); border: 1px solid var(--border-soft); border-radius: 12px; max-height: min(48dvh, 560px); overflow-y: auto; overscroll-behavior: contain; padding: 14px; }
+.all-names-chapter { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 11px; display: grid; gap: 12px; padding: 14px; }
+.all-names-chapter-heading { align-items: center; display: grid; gap: 10px; grid-template-columns: 30px minmax(0, 1fr); }
+.all-names-chapter-heading > span { align-items: center; background: var(--accent-soft); border-radius: 8px; color: var(--accent); display: flex; font-size: 11px; font-weight: var(--weight-strong); height: 30px; justify-content: center; }
+.all-names-chapter-heading > div { min-width: 0; }
+.all-names-chapter-heading .ui-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.all-names-outline-list { border-top: 1px solid var(--border-soft); display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 12px; }
 .name-preview-actions { flex-wrap: nowrap; }
 
 .form-foot {
@@ -5630,6 +5648,10 @@ kbd {
   .character-grid { grid-template-columns: 1fr; }
   .form-grid label.full { grid-column: auto; }
   .article-naming-grid { grid-template-columns: 1fr; }
+  .article-naming-heading { align-items: stretch; flex-direction: column; }
+  .article-naming-heading .mantine-Button-root { min-height: 46px; width: 100%; }
+  .all-names-outline-list { grid-template-columns: 1fr; }
+  .all-names-preview { max-height: none; }
   .name-preview-row { align-items: stretch; grid-template-columns: 1fr; }
   .name-preview-actions { justify-content: flex-end; }
   .name-preview-old { white-space: normal; }

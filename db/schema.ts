@@ -179,9 +179,24 @@ export const aiTasks = sqliteTable("ai_tasks", {
   index("ai_tasks_article_created_idx").on(table.articleId, table.createdAt),
 ]);
 
-export const aiModels = sqliteTable("ai_models", {
+export const aiProviders = sqliteTable("ai_providers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  adapterKind: text("adapter_kind").notNull().default("openai-compatible"),
+  baseUrl: text("base_url").notNull(),
+  timeoutMs: integer("timeout_ms").notNull().default(120000),
+  hasSecret: integer("has_secret", { mode: "boolean" }).notNull().default(false),
+  secret: text("secret"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const aiModels = sqliteTable("ai_models", {
+  id: text("id").primaryKey(),
+  providerId: text("provider_id").references(() => aiProviders.id, { onDelete: "restrict" }),
+  name: text("name").notNull(),
+  // Transitional shadow columns stay until every deployed database has
+  // completed the provider backfill. Runtime reads these values from providers.
   baseUrl: text("base_url").notNull(),
   modelId: text("model_id").notNull(),
   systemPrompt: text("system_prompt").notNull().default(""),
@@ -189,6 +204,7 @@ export const aiModels = sqliteTable("ai_models", {
   maxOutput: integer("max_output"),
   maxInputCharacters: integer("max_input_characters").notNull().default(60000),
   timeoutMs: integer("timeout_ms").notNull(),
+  timeoutOverrideMs: integer("timeout_override_ms"),
   hasSecret: integer("has_secret", { mode: "boolean" }).notNull().default(false),
   secret: text("secret"),
   createdAt: text("created_at").notNull(),

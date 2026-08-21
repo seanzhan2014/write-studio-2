@@ -7,16 +7,19 @@ import {
   createTransferEnvelope,
   parseTransferEnvelope,
   portableModels,
+  portableProviders,
   transferFilename,
   type ArticleTransferData,
   type ArticlesTransferData,
   type PortableAiModel,
+  type PortableAiProvider,
   type SystemConfigTransferData,
   type TransferEnvelope,
 } from "@/lib/data-transfer";
 import { useStudio, wordCount, type AiTask, type Article, type Outline, type StudioSettings } from "./studio-state";
 
-type StoredModel = Omit<PortableAiModel, "hadApiKey"> & { hasSecret: boolean; createdAt?: string; updatedAt?: string };
+type StoredProvider = Omit<PortableAiProvider, "hadApiKey"> & { hasSecret: boolean; modelCount: number; createdAt?: string; updatedAt?: string };
+type StoredModel = PortableAiModel & { hasSecret: boolean; providerName: string; baseUrl: string; timeoutMs: number; createdAt?: string; updatedAt?: string };
 
 type PendingImport = {
   title: string;
@@ -80,6 +83,13 @@ async function loadModels() {
   return payload.models;
 }
 
+async function loadProviders() {
+  const response = await fetch("/api/providers", { cache: "no-store" });
+  const payload = await response.json() as { providers?: StoredProvider[]; error?: string };
+  if (!response.ok || !payload.providers) throw new Error(payload.error || "读取 AI Provider 配置失败");
+  return payload.providers;
+}
+
 function articleMetrics(articles: Article[], tasks: AiTask[]) {
   const chapters = articles.reduce((total, article) => total + article.chapters.length, 0);
   const outlines = articles.reduce((total, article) => total + article.chapters.reduce((sum, chapter) => sum + chapter.outlines.length, 0), 0);
@@ -91,22 +101,43 @@ function normalizeUrl(value: string) {
   return value.trim().replace(/\/$/, "");
 }
 
-async function importModels(models: PortableAiModel[]) {
+async function importProviders(providers: PortableAiProvider[]) {
+  const existing = await loadProviders();
+  const idMap = new Map<string, string>();
+  for (const provider of providers) {
+    if (!provider.id || !provider.name?.trim() || !provider.baseUrl?.trim()) throw new Error("AI Provider 配置缺少必要信息");
+    const matched = existing.find((candidate) => candidate.id === provider.id)
+      ?? existing.find((candidate) => candidate.name === provider.name && normalizeUrl(candidate.baseUrl) === normalizeUrl(provider.baseUrl));
+    const response = await fetch(matched ? `/api/providers/${encodeURIComponent(matched.id)}` : "/api/providers", {
+      method: matched ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl, timeoutMs: provider.timeoutMs }),
+    });
+    const imported = await response.json() as StoredProvider & { error?: string };
+    if (!response.ok || !imported.id) throw new Error(imported.error || `导入 Provider「${provider.name}」失败`);
+    idMap.set(provider.id, imported.id);
+    if (!matched) existing.push(imported);
+  }
+  return idMap;
+}
+
+async function importModels(models: PortableAiModel[], providerMap: Map<string, string>) {
   const existing = await loadModels();
   const idMap = new Map<string, string>();
   const nameMap = new Map<string, string>();
   for (const model of models) {
-    if (!model.id || !model.name?.trim() || !model.baseUrl?.trim() || !model.modelId?.trim()) throw new Error("AI 模型配置缺少必要信息");
-    const matched = existing.find((candidate) => normalizeUrl(candidate.baseUrl) === normalizeUrl(model.baseUrl) && candidate.modelId === model.modelId);
+    const providerId = providerMap.get(model.providerId) ?? "";
+    if (!model.id || !providerId || !model.name?.trim() || !model.modelId?.trim()) throw new Error("AI 模型配置缺少必要信息");
+    const matched = existing.find((candidate) => candidate.providerId === providerId && candidate.modelId === model.modelId);
     const payload = {
+      providerId,
       name: model.name,
-      baseUrl: model.baseUrl,
       modelId: model.modelId,
       systemPrompt: model.systemPrompt,
       temperature: model.temperature,
       maxOutput: model.maxOutput,
       maxInputCharacters: model.maxInputCharacters,
-      timeoutMs: model.timeoutMs,
+      timeoutOverrideMs: model.timeoutOverrideMs,
     };
     const response = await fetch(matched ? `/api/models/${encodeURIComponent(matched.id)}` : "/api/models", {
       method: matched ? "PATCH" : "POST",
@@ -120,6 +151,11 @@ async function importModels(models: PortableAiModel[]) {
     if (!matched) existing.push(imported);
   }
   return { idMap, nameMap };
+}
+
+async function importAiConfiguration(providers: PortableAiProvider[], models: PortableAiModel[]) {
+  const providerMap = await importProviders(providers);
+  return importModels(models, providerMap);
 }
 
 function remapSettings(settings: StudioSettings, maps: { idMap: Map<string, string>; nameMap: Map<string, string> }) {
@@ -221,9 +257,9 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
 
   async function exportSystemConfig() {
     try {
-      const models = portableModels(await loadModels());
-      downloadJson(createTransferEnvelope("system-config", { settings: studio.data.settings, models }), transferFilename("system-config"));
-      setNotice(`已导出系统配置和 ${models.length} 个 AI 模型配置，不包含 API Key`);
+      const [providers, models] = await Promise.all([loadProviders().then(portableProviders), loadModels().then(portableModels)]);
+      downloadJson(createTransferEnvelope("system-config", { settings: studio.data.settings, providers, models }), transferFilename("system-config"));
+      setNotice(`已导出系统配置、${providers.length} 个 Provider 和 ${models.length} 个模型，不包含 API Key`);
     } catch (reason) { showError(reason); }
   }
 
@@ -233,18 +269,18 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
       if (!envelope) return;
       if (envelope.scope !== "system-config") throw new Error("请选择“系统配置”导出文件");
       const data = envelope.data as SystemConfigTransferData;
-      const keys = data.models.filter((model) => model.hadApiKey).length;
+      const keys = data.providers.filter((provider) => provider.hadApiKey).length;
       setError("");
       setPending({
         title: "导入系统配置",
-        summary: [`${data.models.length} 个 AI 模型配置`, `主题、编辑器、任务和生成设置`, keys ? `${keys} 个模型原来配置过 API Key` : "文件中没有 API Key"],
-        warning: "同接口地址和模型 ID 的现有模型会更新参数并保留已有密钥；新模型导入后需要重新输入 API Key。",
+        summary: [`${data.providers.length} 个 Provider · ${data.models.length} 个模型`, `主题、编辑器、任务和生成设置`, keys ? `${keys} 个 Provider 原来配置过 API Key` : "文件中没有 API Key"],
+        warning: "匹配的现有 Provider 会保留 API Key；新 Provider 导入后需要重新输入 API Key。",
         confirmLabel: "导入系统配置",
         apply: async () => {
-          const maps = await importModels(data.models);
+          const maps = await importAiConfiguration(data.providers, data.models);
           studio.importSettings(remapSettings(data.settings, maps));
           if (!await studio.saveNow()) throw new Error("配置已应用到当前页面，但保存未完成，请稍后重试");
-          return `已导入系统配置和 ${data.models.length} 个 AI 模型配置`;
+          return `已导入系统配置、${data.providers.length} 个 Provider 和 ${data.models.length} 个模型`;
         },
       });
     } catch (reason) { showError(reason); }
@@ -252,8 +288,8 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
 
   async function exportComplete() {
     try {
-      const models = portableModels(await loadModels());
-      downloadJson(createTransferEnvelope("complete", { studio: studio.data, models }), transferFilename("complete"));
+      const [providers, models] = await Promise.all([loadProviders().then(portableProviders), loadModels().then(portableModels)]);
+      downloadJson(createTransferEnvelope("complete", { studio: studio.data, providers, models }), transferFilename("complete"));
       setNotice("完整备份已导出，不包含 API Key");
     } catch (reason) { showError(reason); }
   }

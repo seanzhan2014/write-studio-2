@@ -60,6 +60,7 @@ type View =
   | "read"
   | "search"
   | "info-basic"
+  | "info-chapters"
   | "info-characters"
   | "info-relationships"
   | "settings-general"
@@ -404,6 +405,7 @@ function viewFromPath(pathname: string): View {
   if (pathname.includes("/chapters/")) return "chapter";
   if (pathname.endsWith("/edit") || pathname.endsWith("/read")) return "read";
   if (pathname.endsWith("/search")) return "search";
+  if (pathname.includes("/info/chapters")) return "info-chapters";
   if (pathname.includes("/info/characters")) return "info-characters";
   if (pathname.includes("/info/relationships")) return "info-relationships";
   if (pathname.includes("/info/")) return "info-basic";
@@ -428,6 +430,7 @@ function routeFor(view: View, articleId: string, outlineId: string, chapterId: s
     read: `${base}/edit`,
     search: `${base}/search`,
     "info-basic": `${base}/info/basic`,
+    "info-chapters": `${base}/info/chapters`,
     "info-characters": `${base}/info/characters`,
     "info-relationships": `${base}/info/relationships`,
     "settings-general": "/settings/general",
@@ -1933,6 +1936,210 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
         })}
       </Stack>}
       <Group justify="space-between"><div>{target.kind === "chapter" && preview && <Button variant="subtle" type="button" disabled={busy} onClick={clearPreview}>重新选择</Button>}</div><Group><Button variant="default" type="button" disabled={busy} onClick={onClose}>取消</Button>{preview ? <Button type="button" loading={applyingKey === "all"} disabled={busy} onClick={() => void applyAll()}>{target.kind === "chapter" ? "应用所有名称" : "应用名称"}</Button> : <Button type="button" leftSection={<Icon name="spark" />} loading={loadingKey === "batch"} disabled={missingSecret || !selectableKeys.length} onClick={() => void generateSelected()}>{target.kind === "chapter" ? "生成所选名称" : "生成名称"}</Button>}</Group></Group>
+    </Stack>
+  </ResponsiveModal>;
+}
+
+type ArticleNamesChapterPreview = NameGeneratePreview & {
+  chapterId: string;
+};
+
+function AllNamesGenerateDialog({ onClose, onApplied }: { onClose: () => void; onApplied: (message: string) => void }) {
+  const studio = useStudio();
+  const compact = useMediaQuery("(max-width: 767px)") ?? false;
+  const models = useConfiguredModels();
+  const requestController = useRef<AbortController | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [preview, setPreview] = useState<ArticleNamesChapterPreview[] | null>(null);
+  const [sourceSignatures, setSourceSignatures] = useState<Record<string, string>>({});
+  const [progress, setProgress] = useState({ completed: 0, total: 0, chapterTitle: "" });
+  const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState("");
+  const article = studio.currentArticle;
+  const settings = studio.data.settings;
+  const eligibleChapters = useMemo(() => article.chapters
+    .filter((chapter) => !chapter.archived)
+    .map((chapter) => ({ ...chapter, eligibleOutlines: chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()) }))
+    .filter((chapter) => chapter.eligibleOutlines.length > 0), [article.chapters]);
+  const eligibleOutlineCount = eligibleChapters.reduce((total, chapter) => total + chapter.eligibleOutlines.length, 0);
+  const skippedChapterCount = article.chapters.filter((chapter) => !chapter.archived).length - eligibleChapters.length;
+  const skippedOutlineCount = article.chapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !chapter.archived && !outline.archived && !outline.plan.trim()).length, 0);
+  const namingSelection = settings.namingModelMode === "inherit" ? "__inherit__" : settings.namingModel ? canonicalModelReference(models, settings.namingModel) : "__local__";
+  const inheritedReference = canonicalModelReference(models, settings.generateModel);
+  const fixedReference = canonicalModelReference(models, settings.namingModel);
+  const selectedModelReference = settings.namingModelMode === "inherit" ? inheritedReference : fixedReference;
+  const selectedRecord = configuredModelForReference(models, selectedModelReference);
+  const maximum = selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS;
+  const missingSecret = Boolean(selectedRecord && !selectedRecord.hasSecret);
+  const modelData = [
+    { value: "__inherit__", label: `继承 AI Generate（${modelDisplayLabel(models, inheritedReference)}）` },
+    { value: "__local__", label: "本地 PoC 引擎" },
+    ...(namingSelection !== "__inherit__" && namingSelection !== "__local__" && !configuredModelForReference(models, namingSelection) ? [{ value: namingSelection, label: namingSelection }] : []),
+    ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
+  ];
+
+  useEffect(() => () => requestController.current?.abort(), []);
+
+  function currentSourceSignature(chapterId: string) {
+    const chapter = article.chapters.find((item) => item.id === chapterId);
+    if (!chapter) return "";
+    return JSON.stringify({
+      articleId: article.id,
+      article: [article.title, article.summary, article.type, article.style, article.chapterNaming, article.outlineNaming],
+      chapter: [chapter.id, chapter.archived, chapter.outlines.map((outline) => [outline.id, outline.plan, outline.archived])],
+    });
+  }
+
+  function clearPreview() {
+    setPreview(null);
+    setSourceSignatures({});
+    setError("");
+  }
+
+  function selectNamingModel(value: string | null) {
+    if (!value || value === "__inherit__") studio.updateSettings({ namingModelMode: "inherit" });
+    else if (value === "__local__") studio.updateSettings({ namingModelMode: "fixed", namingModel: "" });
+    else studio.updateSettings({ namingModelMode: "fixed", namingModel: value });
+    clearPreview();
+    void studio.saveNow();
+  }
+
+  function closeDialog() {
+    requestController.current?.abort();
+    onClose();
+  }
+
+  async function generateAll() {
+    if (!eligibleChapters.length) { setError("没有可生成名称的章节；请先为至少一条大纲填写内容"); return; }
+    if (missingSecret) { setError("所选模型还没有载入 API 密钥"); return; }
+    if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    const signatures = Object.fromEntries(eligibleChapters.map((chapter) => [chapter.id, currentSourceSignature(chapter.id)]));
+    const results: ArticleNamesChapterPreview[] = [];
+    setLoading(true);
+    setPreview(null);
+    setSourceSignatures({});
+    setError("");
+    setProgress({ completed: 0, total: eligibleChapters.length, chapterTitle: eligibleChapters[0]?.title ?? "" });
+    try {
+      for (const [index, chapter] of eligibleChapters.entries()) {
+        setProgress({ completed: index, total: eligibleChapters.length, chapterTitle: chapter.title });
+        const response = await fetch("/api/ai/names", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            articleId: article.id,
+            chapterId: chapter.id,
+            target: "chapter",
+            includeChapter: true,
+            outlineIds: chapter.eligibleOutlines.map((outline) => outline.id),
+            chapterNaming: article.chapterNaming,
+            outlineNaming: article.outlineNaming,
+            model: selectedModelReference,
+            instruction: instruction.trim(),
+          }),
+        });
+        const payload = await response.json() as NameGeneratePreview & { error?: string };
+        if (!response.ok) throw new Error(`「${chapter.title}」：${payload.error || "名称生成失败"}`);
+        const expectedIds = chapter.eligibleOutlines.map((outline) => outline.id);
+        if (payload.chapterTitle === undefined || payload.outlineTitles.length !== expectedIds.length || payload.outlineTitles.some((item) => !expectedIds.includes(item.id))) {
+          throw new Error(`「${chapter.title}」：模型没有返回完整的章节名和大纲名`);
+        }
+        results.push({ chapterId: chapter.id, ...payload });
+        setProgress({ completed: index + 1, total: eligibleChapters.length, chapterTitle: chapter.title });
+      }
+      setPreview(results);
+      setSourceSignatures(signatures);
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "名称生成失败");
+    } finally {
+      if (requestController.current === controller) requestController.current = null;
+      setLoading(false);
+    }
+  }
+
+  function updateChapterCandidate(chapterId: string, value: string) {
+    setPreview((current) => current?.map((chapter) => chapter.chapterId === chapterId ? { ...chapter, chapterTitle: value } : chapter) ?? null);
+    setError("");
+  }
+
+  function updateOutlineCandidate(chapterId: string, outlineId: string, value: string) {
+    setPreview((current) => current?.map((chapter) => chapter.chapterId === chapterId ? { ...chapter, outlineTitles: chapter.outlineTitles.map((outline) => outline.id === outlineId ? { ...outline, title: value } : outline) } : chapter) ?? null);
+    setError("");
+  }
+
+  async function applyAll() {
+    if (!preview || loading || applying) return;
+    const changed = preview.find((chapter) => currentSourceSignature(chapter.chapterId) !== sourceSignatures[chapter.chapterId]);
+    if (changed) { setError("生成后文章资料或大纲内容已发生变化，请重新生成全部名称后再应用"); return; }
+    const validated: Array<{ chapterId: string; chapterTitle: string; outlineTitles: Array<{ id: string; title: string }> }> = [];
+    for (const result of preview) {
+      const chapter = article.chapters.find((item) => item.id === result.chapterId);
+      if (!chapter) { setError("有章节已不存在，请重新生成"); return; }
+      const chapterTitle = validateGeneratedName(result.chapterTitle ?? "", article.chapterNaming, 120);
+      if (!chapterTitle.valid) { setError(`「${chapter.title}」章节名：${chapterTitle.error}`); return; }
+      const outlineTitles: Array<{ id: string; title: string }> = [];
+      for (const item of result.outlineTitles) {
+        const outline = chapter.outlines.find((candidate) => candidate.id === item.id);
+        const title = validateGeneratedName(item.title, article.outlineNaming, 80);
+        if (!outline || !title.valid) { setError(`「${outline ? outlineDisplayTitle(outline) : item.id}」大纲名：${title.valid ? "大纲已不存在" : title.error}`); return; }
+        outlineTitles.push({ id: item.id, title: title.name });
+      }
+      const generatedIds = new Set(outlineTitles.map((item) => item.id));
+      const allOutlineTitles = [
+        ...outlineTitles.map((item) => item.title),
+        ...chapter.outlines.filter((outline) => !outline.archived && !generatedIds.has(outline.id)).map((outline) => normalizeOutlineTitle(outline.title)).filter(Boolean),
+      ];
+      if (new Set(allOutlineTitles).size !== allOutlineTitles.length) { setError(`「${chapter.title}」内的大纲名称不能重复`); return; }
+      validated.push({ chapterId: chapter.id, chapterTitle: chapterTitle.name, outlineTitles });
+    }
+    setApplying(true);
+    setError("");
+    for (const result of validated) studio.applyGeneratedNames(result.chapterId, result.chapterTitle, result.outlineTitles);
+    if (!await studio.saveNow()) { setError("名称已在本地应用，但保存失败；请先解决保存问题"); setApplying(false); return; }
+    setApplying(false);
+    onApplied(`已应用 ${validated.length} 个章节名和 ${validated.reduce((total, chapter) => total + chapter.outlineTitles.length, 0)} 个大纲名`);
+  }
+
+  const totalInputCharacters = preview?.reduce((total, chapter) => total + chapter.inputCharacters, 0) ?? 0;
+  return <ResponsiveModal
+    opened
+    onClose={closeDialog}
+    title="生成全部章节名和大纲名"
+    centered
+    size="xl"
+    fullScreen={compact}
+    closeButtonProps={{ "aria-label": "关闭全部名称生成" }}
+    classNames={{ content: "name-generate-dialog all-names-generate-dialog", body: "name-generate-dialog-body" }}
+    overlayProps={{ backgroundOpacity: 0.46, blur: 2 }}
+  >
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">将按章节逐批生成整篇文章的名称，每章调用一次模型；只发送文章资料、命名设置和该章大纲内容，不发送现有名称、正文、正文版本或聊天记录。</Text>
+      <Group gap="xs" className="all-names-summary"><Badge variant="light">{eligibleChapters.length} 个章节</Badge><Badge variant="light">{eligibleOutlineCount} 个大纲</Badge>{(skippedChapterCount > 0 || skippedOutlineCount > 0) && <Text size="xs" c="dimmed">跳过 {skippedChapterCount} 个无可用大纲的章节、{skippedOutlineCount} 条空大纲</Text>}</Group>
+      <Select label="名称生成模型" description={`单章最大输入字符数：${maximum.toLocaleString("zh-CN")}`} data={modelData} value={namingSelection} allowDeselect={false} onChange={selectNamingModel} />
+      {settings.namingModelMode === "inherit" && <Alert color="studio" variant="light">当前继承 AI Generate 默认模型。首次明确选择其他模型后，之后的名称生成会继续使用该模型。</Alert>}
+      <Textarea label="补充命名要求（可选）" maxLength={20000} autosize minRows={2} maxRows={6} value={instruction} onChange={(event) => { setInstruction(event.target.value); clearPreview(); }} placeholder="例如：各章保持统一意象，避免剧透" />
+      {error && <Alert color="red" role="alert">{error}</Alert>}
+      {loading && <div className="all-names-progress" role="status"><div><span className="ui-title">正在生成「{progress.chapterTitle}」</span><span>{progress.completed} / {progress.total} 章</span></div><progress max={Math.max(1, progress.total)} value={progress.completed} /></div>}
+      {preview && <Stack gap="md" className="all-names-preview">
+        <Group justify="space-between"><Text fw={700}>全部名称预览</Text><Text size="xs" c="dimmed">共输入 {totalInputCharacters.toLocaleString("zh-CN")} 字符</Text></Group>
+        {preview.map((result, chapterIndex) => {
+          const chapter = article.chapters.find((item) => item.id === result.chapterId);
+          return <section className="all-names-chapter" key={result.chapterId}>
+            <div className="all-names-chapter-heading"><span>{String(chapterIndex + 1).padStart(2, "0")}</span><div><Text size="xs" c="dimmed">原章节名</Text><Text size="sm" className="ui-title">{chapter?.title ?? "（已不存在）"}</Text></div></div>
+            <TextInput label="生成的章节名" aria-label={`生成的章节名：${chapter?.title ?? result.chapterId}`} value={result.chapterTitle ?? ""} maxLength={120} onChange={(event) => updateChapterCandidate(result.chapterId, event.target.value)} />
+            <div className="all-names-outline-list">{result.outlineTitles.map((item) => {
+              const outline = chapter?.outlines.find((candidate) => candidate.id === item.id);
+              return <TextInput key={item.id} label={outline ? outlineDisplayTitle(outline) : item.id} aria-label={`生成的大纲名：${outline ? outlineDisplayTitle(outline) : item.id}`} value={item.title} maxLength={80} onChange={(event) => updateOutlineCandidate(result.chapterId, item.id, event.target.value)} />;
+            })}</div>
+          </section>;
+        })}
+      </Stack>}
+      <Group justify="space-between"><div>{preview && <Button variant="subtle" type="button" disabled={loading || applying} onClick={clearPreview}>清除预览</Button>}</div><Group><Button variant="default" type="button" disabled={loading || applying} onClick={closeDialog}>取消</Button><Button type="button" leftSection={<Icon name="spark" />} loading={loading} disabled={applying || missingSecret || !eligibleChapters.length} onClick={() => void generateAll()}>{preview ? "重新生成全部名称" : "生成全部名称"}</Button>{preview && <Button type="button" loading={applying} disabled={loading} onClick={() => void applyAll()}>应用全部名称</Button>}</Group></Group>
     </Stack>
   </ResponsiveModal>;
 }
@@ -3805,9 +4012,10 @@ function ArticleInfoPage({ view, onGo }: { view: View; onGo: (view: View) => voi
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
       {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
-        ["info-basic", "基本信息"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
+        ["info-basic", "基本信息"], ["info-chapters", "章节"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
       ]} active={view} onGo={onGo} />
       {view === "info-basic" && <BasicInfo />}
+      {view === "info-chapters" && <ArticleChapterNames />}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
     </div></div>
@@ -3821,7 +4029,28 @@ function Tabs({ items, active, onGo }: { items: [View, string][]; active: View; 
 function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
-  return <div className="form-card"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label>文章类型<input value={article.type} maxLength={120} onChange={(event) => studio.updateArticle({ type: event.target.value })} /></label><label className="full">写作风格<textarea value={article.style} maxLength={5000} onChange={(event) => studio.updateArticle({ style: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><section className="article-naming-settings"><div><span>AI 命名</span><h2>章节与大纲名称</h2><p>独立于正文写作风格，名称生成与 AI Generate 顺带命名都会遵循这里的设置。</p></div><div className="article-naming-grid"><NamingProfileEditor title="章节命名" profile={article.chapterNaming} fallback={DEFAULT_CHAPTER_NAMING_PROFILE} onChange={(chapterNaming) => studio.updateArticle({ chapterNaming })} /><NamingProfileEditor title="大纲命名" profile={article.outlineNaming} fallback={DEFAULT_OUTLINE_NAMING_PROFILE} onChange={(outlineNaming) => studio.updateArticle({ outlineNaming })} /></div></section><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+  return <div className="form-card"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label>文章类型<input value={article.type} maxLength={120} onChange={(event) => studio.updateArticle({ type: event.target.value })} /></label><label className="full">写作风格<textarea value={article.style} maxLength={5000} onChange={(event) => studio.updateArticle({ style: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+}
+
+function ArticleChapterNames() {
+  const studio = useStudio();
+  const article = studio.currentArticle;
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const activeChapters = article.chapters.filter((chapter) => !chapter.archived);
+  const eligibleOutlineCount = activeChapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()).length, 0);
+  return <>
+    <div className="form-card article-naming-page">
+      <section className="article-naming-settings">
+        <div className="article-naming-heading"><div><span>AI 命名</span><h2>章节与大纲名称</h2><p>独立于正文写作风格，单独生成名称与 AI Generate 顺带命名都会遵循这里的设置。</p></div><Button type="button" leftSection={<Icon name="spark" />} disabled={!eligibleOutlineCount} onClick={() => { setNotice(""); setGenerateOpen(true); }}>生成全部章节名和大纲名</Button></div>
+        {notice && <Alert color="green" role="status">{notice}</Alert>}
+        {!eligibleOutlineCount && <Alert color="studio" variant="light">当前没有包含内容的未归档大纲。填写大纲内容后即可生成全部名称。</Alert>}
+        <div className="article-naming-grid"><NamingProfileEditor title="章节命名" profile={article.chapterNaming} fallback={DEFAULT_CHAPTER_NAMING_PROFILE} onChange={(chapterNaming) => studio.updateArticle({ chapterNaming })} /><NamingProfileEditor title="大纲命名" profile={article.outlineNaming} fallback={DEFAULT_OUTLINE_NAMING_PROFILE} onChange={(outlineNaming) => studio.updateArticle({ outlineNaming })} /></div>
+      </section>
+      <div className="form-foot"><span>{activeChapters.length} 个未归档章节 · {eligibleOutlineCount} 条可命名大纲</span><span className="save-state"><i /> 已自动保存</span></div>
+    </div>
+    {generateOpen && <AllNamesGenerateDialog onClose={() => setGenerateOpen(false)} onApplied={(message) => { setGenerateOpen(false); setNotice(message); }} />}
+  </>;
 }
 
 function NamingProfileEditor({ title, profile, fallback, onChange }: { title: string; profile: NamingProfile; fallback: NamingProfile; onChange: (profile: NamingProfile) => void }) {
@@ -3891,7 +4120,7 @@ function SettingsPage({ view, onGo }: { view: View; onGo: (view: View) => void }
   const items: [View, string][] = [
     ["settings-general", "常规"],
     ["settings-appearance", "外观与编辑器"],
-    ["settings-models", "AI 模型"],
+    ["settings-models", "AI 服务"],
     ["settings-tasks", "AI 任务"],
     ["settings-database", "数据管理"],
     ["settings-system", "系统与诊断"],
@@ -3924,92 +4153,112 @@ function AppearanceSettings() {
 function ModelSettings() {
   const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
-  type Model = { id: string; name: string; baseUrl: string; modelId: string; systemPrompt: string; temperature: number | null; maxOutput: number | null; maxInputCharacters: number; timeoutMs: number; hasSecret: boolean };
-  const timeoutMinutes = (timeoutMs: number) => Math.max(0.1, Math.min(10, Number((timeoutMs / 60_000).toFixed(2))));
+  type Provider = { id: string; name: string; adapterKind: "openai-compatible"; baseUrl: string; timeoutMs: number; hasSecret: boolean; modelCount: number };
+  type Model = ConfiguredModel & { providerId: string; providerName: string; systemPrompt: string; temperature: number | null; maxOutput: number | null; maxInputCharacters: number; timeoutOverrideMs: number | null };
   const parseModelIds = (value: string) => [...new Set(value.split(",").map((modelId) => modelId.trim()).filter(Boolean))];
-  const formatModelIds = (modelIds: string[]) => modelIds.join(", ");
+  const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
-  const [formOpen, setFormOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [providerFormOpen, setProviderFormOpen] = useState(false);
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [providerForm, setProviderForm] = useState({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" });
+  const [modelFormOpen, setModelFormOpen] = useState(false);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [modelForm, setModelForm] = useState({ providerId: "", name: "", modelId: "", systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
-  const parsedTimeoutMinutes = Number(form.timeoutMinutes);
-  const timeoutIsValid = Number.isFinite(parsedTimeoutMinutes) && parsedTimeoutMinutes >= 0.1 && parsedTimeoutMinutes <= 10;
-  const parsedMaxInputCharacters = Number(form.maxInputCharacters);
-  const maxInputIsValid = Number.isInteger(parsedMaxInputCharacters) && parsedMaxInputCharacters >= MIN_MAX_INPUT_CHARACTERS && parsedMaxInputCharacters <= MAX_MAX_INPUT_CHARACTERS;
-  const requestedModelIds = selectedModelIds.length ? selectedModelIds : parseModelIds(form.modelId);
-  const load = async () => { const response = await fetch("/api/models", { cache: "no-store" }); const payload = await response.json() as { models?: Model[] }; setModels(payload.models ?? []); };
-  useEffect(() => {
-    let active = true;
-    void fetch("/api/models", { cache: "no-store" })
-      .then((response) => response.json() as Promise<{ models?: Model[] }>)
-      .then((payload) => { if (active) setModels(payload.models ?? []); })
-      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : "模型加载失败"); });
-    return () => { active = false; };
+  const providerTimeoutMinutes = Number(providerForm.timeoutMinutes);
+  const providerTimeoutValid = Number.isFinite(providerTimeoutMinutes) && providerTimeoutMinutes >= 0.1 && providerTimeoutMinutes <= 10;
+  const maxInputCharacters = Number(modelForm.maxInputCharacters);
+  const maxInputValid = Number.isInteger(maxInputCharacters) && maxInputCharacters >= MIN_MAX_INPUT_CHARACTERS && maxInputCharacters <= MAX_MAX_INPUT_CHARACTERS;
+  const requestedModelIds = selectedModelIds.length ? selectedModelIds : parseModelIds(modelForm.modelId);
+
+  const load = useCallback(async () => {
+    const [providerResponse, modelResponse] = await Promise.all([fetch("/api/providers", { cache: "no-store" }), fetch("/api/models", { cache: "no-store" })]);
+    const providerPayload = await providerResponse.json() as { providers?: Provider[]; error?: string };
+    const modelPayload = await modelResponse.json() as { models?: Model[]; error?: string };
+    if (!providerResponse.ok || !providerPayload.providers) throw new Error(providerPayload.error || "Provider 加载失败");
+    if (!modelResponse.ok || !modelPayload.models) throw new Error(modelPayload.error || "模型加载失败");
+    setProviders(providerPayload.providers);
+    setModels(modelPayload.models);
   }, []);
-  function closeForm() {
-    setFormOpen(false); setEditingId(null); setDiscoveredModels([]); setSelectedModelIds([]);
-    setForm({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
-  }
-  function openCreate() {
-    setError(""); setEditingId(null); setDiscoveredModels([]); setSelectedModelIds([]);
-    setForm({ name: "", baseUrl: "https://api.openai.com/v1", modelId: "", secret: "", systemPrompt: "", timeoutMinutes: "2", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
-    setFormOpen(true);
-  }
-  function openEdit(model: Model) {
-    setError(""); setEditingId(model.id); setDiscoveredModels([]); setSelectedModelIds([]);
-    setForm({ name: model.name, baseUrl: model.baseUrl, modelId: model.modelId, secret: "", systemPrompt: model.systemPrompt, timeoutMinutes: String(timeoutMinutes(model.timeoutMs)), maxInputCharacters: String(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS) });
-    setFormOpen(true);
-  }
-  async function discover() {
-    setBusy("discover"); setError(""); setDiscoveredModels([]);
+  useEffect(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "AI 服务加载失败")); }, [load]);
+
+  function closeProviderForm() { setProviderFormOpen(false); setEditingProviderId(null); setProviderForm({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" }); }
+  function openCreateProvider() { setError(""); setEditingProviderId(null); setProviderForm({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" }); setProviderFormOpen(true); }
+  function openEditProvider(provider: Provider) { setError(""); setEditingProviderId(provider.id); setProviderForm({ name: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl, secret: "", timeoutMinutes: String(Math.max(0.1, Number((provider.timeoutMs / 60_000).toFixed(2)))) }); setProviderFormOpen(true); }
+  async function saveProvider() {
+    setBusy("save-provider"); setError("");
     try {
-      const response = await fetch("/api/models/discover", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseUrl: form.baseUrl, secret: form.secret, existingModelId: editingId }) });
+      const response = await fetch(editingProviderId ? `/api/providers/${editingProviderId}` : "/api/providers", {
+        method: editingProviderId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: providerForm.name, adapterKind: providerForm.adapterKind, baseUrl: providerForm.baseUrl, timeoutMs: Math.round(providerTimeoutMinutes * 60_000), ...(!editingProviderId ? { secret: providerForm.secret } : {}) }),
+      });
+      const provider = await response.json() as Provider & { error?: string };
+      if (!response.ok) throw new Error(provider.error || "Provider 保存失败");
+      if (editingProviderId && providerForm.secret.trim()) {
+        const secretResponse = await fetch(`/api/providers/${editingProviderId}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: providerForm.secret }) });
+        if (!secretResponse.ok) throw new Error("Provider 已保存，但 API Key 更新失败");
+      }
+      closeProviderForm(); await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Provider 保存失败"); }
+    finally { setBusy(""); }
+  }
+  async function testProviderConnection(provider: Provider) {
+    setBusy(`test-${provider.id}`); setError("");
+    try {
+      const response = await fetch(`/api/providers/${provider.id}/test`, { method: "POST" });
+      const payload = await response.json() as { latencyMs?: number; modelCount?: number; error?: string };
+      if (!response.ok) throw new Error(payload.error || "连接失败");
+      window.alert(`连接正常，耗时 ${payload.latencyMs}ms，发现 ${payload.modelCount ?? 0} 个模型`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Provider 连接失败"); }
+    finally { setBusy(""); }
+  }
+  async function removeProvider(provider: Provider) {
+    if (!window.confirm(`删除 Provider「${provider.name}」？`)) return;
+    const response = await fetch(`/api/providers/${provider.id}`, { method: "DELETE" });
+    if (!response.ok) { const payload = await response.json() as { error?: string }; setError(payload.error || "Provider 删除失败"); return; }
+    await load();
+  }
+  async function clearProviderKey(provider: Provider) {
+    if (!window.confirm(`移除 Provider「${provider.name}」的 API Key？其下所有模型将不可用。`)) return;
+    const response = await fetch(`/api/providers/${provider.id}/secret`, { method: "DELETE" });
+    if (!response.ok) { const payload = await response.json() as { error?: string }; setError(payload.error || "API Key 移除失败"); return; }
+    await load();
+  }
+
+  function closeModelForm() { setModelFormOpen(false); setEditingModelId(null); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: "", name: "", modelId: "", systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); }
+  function openCreateModel(providerId = providers[0]?.id ?? "", candidates: string[] = []) {
+    setError(""); setEditingModelId(null); setDiscoveredModels(candidates);
+    const saved = new Set(models.filter((model) => model.providerId === providerId).map((model) => model.modelId));
+    const initial = candidates.filter((modelId) => !saved.has(modelId)).slice(0, 1);
+    setSelectedModelIds(initial); setModelForm({ providerId, name: "", modelId: initial.join(", "), systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true);
+  }
+  function openEditModel(model: Model) { setError(""); setEditingModelId(model.id); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: model.providerId, name: model.name, modelId: model.modelId, systemPrompt: model.systemPrompt, maxInputCharacters: String(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true); }
+  async function fetchProviderModels(provider: Provider) {
+    setBusy(`discover-${provider.id}`); setError("");
+    try {
+      const response = await fetch(`/api/providers/${provider.id}/discover`, { method: "POST" });
       const payload = await response.json() as { models?: string[]; error?: string };
       if (!response.ok || !payload.models?.length) throw new Error(payload.error || "没有获取到模型");
-      setDiscoveredModels(payload.models);
-      const sameEndpoint = (value: string) => value.replace(/\/$/, "") === form.baseUrl.trim().replace(/\/$/, "");
-      const savedCandidates = editingId
-        ? models.filter((model) => sameEndpoint(model.baseUrl) && payload.models!.includes(model.modelId)).map((model) => model.modelId)
-        : [];
-      const manuallyEntered = parseModelIds(form.modelId).filter((modelId) => payload.models!.includes(modelId));
-      const initiallySelected = [...new Set([
-        ...manuallyEntered,
-        ...savedCandidates,
-        ...(!editingId && !manuallyEntered.length ? [payload.models[0]] : []),
-      ])];
-      setSelectedModelIds(initiallySelected);
-      setForm((current) => ({ ...current, modelId: formatModelIds(initiallySelected) || current.modelId }));
+      openCreateModel(provider.id, payload.models);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "获取模型列表失败"); }
     finally { setBusy(""); }
   }
-  async function save() {
-    setBusy("save"); setError("");
-    const previous = editingId ? models.find((model) => model.id === editingId) : null;
+  async function saveModel() {
+    setBusy("save-model"); setError("");
+    const previous = editingModelId ? models.find((model) => model.id === editingModelId) : null;
     try {
-      if (!editingId) {
-        const response = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, baseUrl: form.baseUrl, modelIds: requestedModelIds, secret: form.secret, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000), maxInputCharacters: parsedMaxInputCharacters }) });
-        const payload = await response.json() as { models?: Model[]; skippedModelIds?: string[]; error?: string };
-        if (!response.ok) throw new Error(payload.error || "创建失败");
-        if (!payload.models?.length) throw new Error("所选模型已经存在，无需重复保存");
+      if (!editingModelId) {
+        const response = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: requestedModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        const payload = await response.json() as { models?: Model[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "模型创建失败");
+        if (!payload.models?.length) throw new Error("所选模型已存在，无需重复保存");
       } else {
-        const primaryModelId = previous && requestedModelIds.includes(previous.modelId) ? previous.modelId : requestedModelIds[0] ?? previous?.modelId ?? "";
-        const response = await fetch(`/api/models/${editingId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, baseUrl: form.baseUrl, modelId: primaryModelId, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000), maxInputCharacters: parsedMaxInputCharacters }) });
+        const response = await fetch(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const model = await response.json() as Model & { error?: string };
-        if (!response.ok) throw new Error(model.error || "更新失败");
-        if (form.secret.trim()) {
-          const secretResponse = await fetch(`/api/models/${model.id}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: form.secret }) });
-          if (!secretResponse.ok) throw new Error("模型配置已保存，但密钥保存失败");
-        }
-        const additionalModelIds = requestedModelIds.filter((modelId) => modelId !== model.modelId);
-        if (additionalModelIds.length) {
-          const bulkResponse = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: form.name, appendModelIdToName: true, baseUrl: form.baseUrl, existingModelId: model.id, modelIds: additionalModelIds, secret: form.secret, systemPrompt: form.systemPrompt, timeoutMs: Math.round(parsedTimeoutMinutes * 60_000), maxInputCharacters: parsedMaxInputCharacters }) });
-          const bulkPayload = await bulkResponse.json() as { error?: string };
-          if (!bulkResponse.ok) throw new Error(bulkPayload.error || "新增候选模型失败");
-        }
+        if (!response.ok) throw new Error(model.error || "模型更新失败");
         if (previous && previous.name !== model.name) {
           if ([previous.id, previous.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: model.id });
           if ([previous.id, previous.name].includes(studio.data.settings.generateModel)) studio.updateSettings({ generateModel: model.id });
@@ -4017,17 +4266,11 @@ function ModelSettings() {
           if ([previous.id, previous.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: model.id });
         }
       }
-      closeForm(); await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : (editingId ? "更新失败" : "创建失败")); }
+      closeModelForm(); await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "模型保存失败"); }
     finally { setBusy(""); }
   }
-  async function test(id: string) {
-    setBusy(id); setError("");
-    try { const response = await fetch(`/api/models/${id}/test`, { method: "POST" }); const payload = await response.json() as { latencyMs?: number; error?: string }; if (!response.ok) throw new Error(payload.error || "连接失败"); window.alert(`连接正常，耗时 ${payload.latencyMs}ms`); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "连接失败"); }
-    finally { setBusy(""); }
-  }
-  async function remove(model: Model) {
+  async function removeModel(model: Model) {
     if (!window.confirm(`删除模型「${model.name}」？`)) return;
     await fetch(`/api/models/${model.id}`, { method: "DELETE" });
     if ([model.id, model.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
@@ -4036,99 +4279,45 @@ function ModelSettings() {
     if ([model.id, model.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
     await load();
   }
+
   const namingSelection = studio.data.settings.namingModelMode === "inherit" ? "__inherit__" : studio.data.settings.namingModel || "__local__";
   const inheritedNamingLabel = `继承 AI Generate（${modelDisplayLabel(models, studio.data.settings.generateModel)}）`;
-  function selectNamingModel(value: string) {
-    studio.updateSettings(value === "__inherit__"
-      ? { namingModelMode: "inherit", namingModel: "" }
-      : { namingModelMode: "fixed", namingModel: value === "__local__" ? "" : value });
-    void studio.saveNow();
-  }
+  function selectNamingModel(value: string) { studio.updateSettings(value === "__inherit__" ? { namingModelMode: "inherit", namingModel: "" } : { namingModelMode: "fixed", namingModel: value === "__local__" ? "" : value }); void studio.saveNow(); }
+
   return <>
     <Group className="settings-actionbar" justify="space-between" align="center">
-      <Text c="dimmed" size="sm">{models.length} 个模型</Text>
-      <Button size="sm" leftSection={<Icon name="plus" />} onClick={openCreate}>新建模型</Button>
+      <Text c="dimmed" size="sm">{providers.length} 个 Provider · {models.length} 个模型</Text>
+      <Group gap="xs"><Button variant="default" size="sm" leftSection={<Icon name="plus" />} onClick={openCreateProvider}>新建 Provider</Button><Button size="sm" leftSection={<Icon name="plus" />} disabled={!providers.length} onClick={() => openCreateModel()}>新建模型</Button></Group>
     </Group>
-    {!formOpen && error && <Alert className="settings-error" color="red" role="alert">{error}</Alert>}
-    <SettingSection title="名称生成">
-      <SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !models.some((model) => model.id === studio.data.settings.namingModel || model.name === studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{model.name}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></SettingRow>
-    </SettingSection>
-    <ResponsiveModal
-      opened={formOpen}
-      onClose={closeForm}
-      closeButtonProps={{ "aria-label": "关闭模型编辑" }}
-      title={editingId ? "编辑模型" : "新建模型"}
-      size="lg"
-      fullScreen={compact}
-      centered={!compact}
-      classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "model-form-modal" }}
-      overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}
-    >
-      <Stack className="model-editor-stack" gap="md">
-        {error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}
-        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-          <TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增候选会自动附加自己的模型 ID" : undefined} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <TextInput label="接口地址" value={form.baseUrl} onChange={(event) => { setForm({ ...form, baseUrl: event.target.value }); setDiscoveredModels([]); setSelectedModelIds([]); }} />
-          <PasswordInput label="API 密钥" autoComplete="new-password" value={form.secret} onChange={(event) => { setForm({ ...form, secret: event.target.value }); setDiscoveredModels([]); setSelectedModelIds([]); }} />
-          <NumberInput label="超时" aria-label="超时（分钟）" min={0.1} max={10} step={0.1} decimalScale={2} suffix=" 分钟" value={form.timeoutMinutes} error={!timeoutIsValid ? "请输入 0.1–10 分钟" : undefined} onChange={(value) => setForm({ ...form, timeoutMinutes: String(value) })} />
-          <NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={form.maxInputCharacters} error={!maxInputIsValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setForm({ ...form, maxInputCharacters: String(value) })} />
-        </SimpleGrid>
-        <div className="model-id-field">
-          <Group className="model-field-heading" justify="space-between" align="end">
-            <Text component="label" htmlFor="model-id-input" size="sm" fw={500}>模型 ID</Text>
-            {!compact && <Button variant="light" size="xs" aria-label="Fetch 模型列表" loading={busy === "discover"} disabled={!form.baseUrl.trim()} onClick={() => void discover()}>{discoveredModels.length ? "重新 Fetch" : "Fetch 模型"}</Button>}
-          </Group>
-          <TextInput id="model-id-input" aria-label="模型 ID" placeholder="多个模型 ID 使用逗号分隔" value={form.modelId} onChange={(event) => { const modelId = event.target.value; setForm({ ...form, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />
-          {compact && <Button className="mobile-model-fetch" variant="light" fullWidth leftSection={<Icon name="refresh" />} aria-label="Fetch 模型列表" loading={busy === "discover"} disabled={!form.baseUrl.trim()} onClick={() => void discover()}>{discoveredModels.length ? "重新 Fetch 模型列表" : "Fetch 模型列表"}</Button>}
-          {discoveredModels.length > 0 && <MultiSelect
-            className="discovered-model-select"
-            label={`已获取 ${discoveredModels.length} 个模型，可多选候选`}
-            description="只有这里勾选并保存的候选才会出现在 AI Chat、Generate 和 Review 中；其余 Fetch 结果不会保存。"
-            aria-label="选择获取到的大模型"
-            placeholder="选择一个或多个候选模型"
-            searchable
-            withCheckIcon
-            checkIconPosition="right"
-            data={discoveredModels}
-            value={selectedModelIds}
-            onChange={(values) => { setSelectedModelIds(values); setForm((current) => ({ ...current, modelId: formatModelIds(values) })); }}
-          />}
-        </div>
-        <Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={form.systemPrompt} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
-        <Group className="model-form-actions" justify="flex-end">
-          <Button variant="default" onClick={closeForm}>取消</Button>
-          <Button disabled={!requestedModelIds.length || (Boolean(editingId) && !form.name.trim()) || !timeoutIsValid || !maxInputIsValid} loading={busy === "save"} onClick={() => void save()}>{editingId ? requestedModelIds.length > 1 ? "保存候选配置" : "保存修改" : requestedModelIds.length > 1 ? `保存 ${requestedModelIds.length} 个候选` : "保存模型"}</Button>
-        </Group>
+    {!providerFormOpen && !modelFormOpen && error && <Alert className="settings-error" color="red" role="alert">{error}</Alert>}
+    <SettingSection title="Provider 设置">
+      <Stack gap="sm" className="provider-list">
+        {providers.map((provider) => <Card withBorder radius="md" className="model-card provider-card" key={provider.id}>
+          <div className="model-icon muted"><Icon name="spark" /></div>
+          <div className="model-card-main"><Group justify="space-between" align="start" wrap="nowrap"><div><h3>{provider.name}</h3><p>{provider.baseUrl} · OpenAI Compatible · {provider.modelCount} 个模型</p></div><Badge color={provider.hasSecret ? "green" : "yellow"} variant="light">{provider.hasSecret ? "密钥已配置" : "缺少密钥"}</Badge></Group></div>
+          <div className="model-card-actions provider-card-actions">
+            <Button variant="default" size="xs" onClick={() => openEditProvider(provider)}>编辑</Button>
+            <Button variant="default" size="xs" loading={busy === `test-${provider.id}`} onClick={() => void testProviderConnection(provider)}>测试连接</Button>
+            <Button variant="light" size="xs" loading={busy === `discover-${provider.id}`} onClick={() => void fetchProviderModels(provider)}>Fetch 模型</Button>
+            <Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={!provider.hasSecret} onClick={() => void clearProviderKey(provider)}>移除 API Key</Menu.Item><Menu.Divider /><Menu.Item color="red" disabled={provider.modelCount > 0} onClick={() => void removeProvider(provider)}>删除 Provider</Menu.Item></Menu.Dropdown></Menu>
+          </div>
+        </Card>)}
+        {!providers.length && <div className="empty-inline">请先新建 Provider，再添加模型</div>}
       </Stack>
+    </SettingSection>
+    <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !models.some((model) => model.id === studio.data.settings.namingModel || model.name === studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{model.name}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
+    <SettingSection title="大模型设置">
+      <Stack gap="sm" className="model-list">
+        {models.map((model) => <Card withBorder radius="md" className="model-card" key={model.id}><div className="model-icon"><Icon name="spark" /></div><div className="model-card-main"><Group justify="space-between" align="start" wrap="nowrap"><div><h3>{model.name}</h3><p>{model.providerName} · {model.modelId} · 输入上限 {model.maxInputCharacters.toLocaleString("zh-CN")}</p></div><Badge color={model.hasSecret ? "green" : "yellow"} variant="light">{model.hasSecret ? "可用" : "Provider 缺少密钥"}</Badge></Group><div className="model-card-meta"><div className="model-default-tags">{[model.id, model.name].includes(studio.data.settings.generateModel) && <em>默认 AI Generate</em>}{studio.data.settings.namingModelMode === "fixed" && [model.id, model.name].includes(studio.data.settings.namingModel) && <em>默认名称生成</em>}{[model.id, model.name].includes(studio.data.settings.chatModel) && <em>默认 AI Chat</em>}{[model.id, model.name].includes(studio.data.settings.reviewModel) && <em>默认 AI Review</em>}</div></div></div><div className="model-card-actions"><Button variant="default" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={studio.data.settings.generateModel === model.id} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel === model.id} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={studio.data.settings.chatModel === model.id} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item><Menu.Item disabled={studio.data.settings.reviewModel === model.id} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item><Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div></Card>)}
+        {!models.length && <div className="empty-inline">尚未配置模型</div>}
+      </Stack>
+    </SettingSection>
+    <ResponsiveModal opened={providerFormOpen} onClose={closeProviderForm} closeButtonProps={{ "aria-label": "关闭 Provider 编辑" }} title={editingProviderId ? "编辑 Provider" : "新建 Provider"} size="lg" fullScreen={compact} centered={!compact} classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "model-form-modal" }} overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}>
+      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><TextInput label="Provider 名称" value={providerForm.name} onChange={(event) => setProviderForm({ ...providerForm, name: event.target.value })} /><Select label="协议" value={providerForm.adapterKind} data={[{ value: "openai-compatible", label: "OpenAI Compatible" }]} disabled /><TextInput label="接口地址" value={providerForm.baseUrl} onChange={(event) => setProviderForm({ ...providerForm, baseUrl: event.target.value })} /><NumberInput label="请求超时" aria-label="Provider 超时（分钟）" min={0.1} max={10} step={0.1} decimalScale={2} suffix=" 分钟" value={providerForm.timeoutMinutes} error={!providerTimeoutValid ? "请输入 0.1–10 分钟" : undefined} onChange={(value) => setProviderForm({ ...providerForm, timeoutMinutes: String(value) })} /><PasswordInput label="API Key" description={editingProviderId ? "留空会保留现有 API Key" : undefined} autoComplete="new-password" value={providerForm.secret} onChange={(event) => setProviderForm({ ...providerForm, secret: event.target.value })} /></SimpleGrid><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeProviderForm}>取消</Button><Button disabled={!providerForm.name.trim() || !providerForm.baseUrl.trim() || !providerTimeoutValid} loading={busy === "save-provider"} onClick={() => void saveProvider()}>保存 Provider</Button></Group></Stack>
     </ResponsiveModal>
-    <Stack gap="sm" className="model-list">
-      {models.map((model) => <Card withBorder radius="md" className="model-card" key={model.id}>
-        <div className="model-icon"><Icon name="spark" /></div>
-        <div className="model-card-main">
-          <Group justify="space-between" align="start" wrap="nowrap">
-          <div><h3>{model.name}</h3><p>{model.baseUrl} · {model.modelId} · 输入上限 {(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")}</p></div>
-            <Badge color={model.hasSecret ? "green" : "yellow"} variant="light">{model.hasSecret ? "可用" : "缺少密钥"}</Badge>
-          </Group>
-          <div className="model-card-meta"><div className="model-default-tags">{[model.id, model.name].includes(studio.data.settings.generateModel) && <em>默认 AI Generate</em>}{studio.data.settings.namingModelMode === "fixed" && [model.id, model.name].includes(studio.data.settings.namingModel) && <em>默认名称生成</em>}{[model.id, model.name].includes(studio.data.settings.chatModel) && <em>默认 AI Chat</em>}{[model.id, model.name].includes(studio.data.settings.reviewModel) && <em>默认 AI Review</em>}</div></div>
-        </div>
-        <div className="model-card-actions">
-          <Button variant="default" size="xs" onClick={() => openEdit(model)}>编辑</Button>
-          <Button variant="default" size="xs" loading={busy === model.id} disabled={!model.hasSecret} onClick={() => void test(model.id)}>测试</Button>
-          <Menu position="bottom-end" withinPortal>
-            <Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target>
-            <Menu.Dropdown>
-              <Menu.Item disabled={studio.data.settings.generateModel === model.id} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item>
-              <Menu.Item disabled={studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel === model.id} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item>
-              <Menu.Item disabled={studio.data.settings.chatModel === model.id} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item>
-              <Menu.Item disabled={studio.data.settings.reviewModel === model.id} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item>
-              <Menu.Divider />
-              <Menu.Item color="red" onClick={() => void remove(model)}>删除模型</Menu.Item>
-            </Menu.Dropdown>
-          </Menu>
-        </div>
-      </Card>)}
-    </Stack>
-    {!models.length && <div className="empty-inline">尚未配置模型</div>}
+    <ResponsiveModal opened={modelFormOpen} onClose={closeModelForm} closeButtonProps={{ "aria-label": "关闭模型编辑" }} title={editingModelId ? "编辑模型" : "新建模型"} size="lg" fullScreen={compact} centered={!compact} classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "model-form-modal" }} overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}>
+      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><Select label="Provider" value={modelForm.providerId} data={providers.map((provider) => ({ value: provider.id, label: provider.name }))} onChange={(value) => setModelForm({ ...modelForm, providerId: value ?? "" })} /><TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增模型会自动附加自己的模型 ID" : undefined} value={modelForm.name} onChange={(event) => setModelForm({ ...modelForm, name: event.target.value })} /><NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={modelForm.maxInputCharacters} error={!maxInputValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setModelForm({ ...modelForm, maxInputCharacters: String(value) })} /></SimpleGrid><div className="model-id-field"><TextInput id="model-id-input" label="模型 ID" aria-label="模型 ID" placeholder={editingModelId ? "输入模型 ID" : "多个模型 ID 使用逗号分隔"} value={modelForm.modelId} onChange={(event) => { const modelId = event.target.value; setModelForm({ ...modelForm, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />{discoveredModels.length > 0 && <MultiSelect className="discovered-model-select" label={`Provider 返回 ${discoveredModels.length} 个模型`} description="勾选并保存的模型才会加入 Writer Studio。" aria-label="选择获取到的大模型" placeholder="选择一个或多个模型" searchable withCheckIcon checkIconPosition="right" data={discoveredModels} value={selectedModelIds} onChange={(values) => { setSelectedModelIds(values); setModelForm((current) => ({ ...current, modelId: values.join(", ") })); }} />}</div><Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={modelForm.systemPrompt} onChange={(event) => setModelForm({ ...modelForm, systemPrompt: event.target.value })} /><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeModelForm}>取消</Button><Button disabled={!modelForm.providerId || !requestedModelIds.length || (Boolean(editingModelId) && !modelForm.name.trim()) || !maxInputValid} loading={busy === "save-model"} onClick={() => void saveModel()}>{!editingModelId && requestedModelIds.length > 1 ? `保存 ${requestedModelIds.length} 个模型` : "保存模型"}</Button></Group></Stack>
+    </ResponsiveModal>
   </>;
 }
 

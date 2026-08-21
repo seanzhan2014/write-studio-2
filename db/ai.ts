@@ -5,9 +5,25 @@ import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normaliz
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "../lib/review-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS, normalizeMaxInputCharacters } from "../lib/model-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingProfileInstruction, normalizeNamingProfile, validateGeneratedName, type NamingProfile } from "../lib/naming-options";
+import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
+
+export type AiProviderRecord = {
+  id: string;
+  name: string;
+  adapterKind: "openai-compatible";
+  baseUrl: string;
+  timeoutMs: number;
+  hasSecret: boolean;
+  modelCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type AiModelRecord = {
   id: string;
+  providerId: string;
+  providerName: string;
+  adapterKind: "openai-compatible";
   name: string;
   baseUrl: string;
   modelId: string;
@@ -16,6 +32,8 @@ export type AiModelRecord = {
   maxOutput: number | null;
   maxInputCharacters: number;
   timeoutMs: number;
+  providerTimeoutMs: number;
+  timeoutOverrideMs: number | null;
   hasSecret: boolean;
   createdAt: string;
   updatedAt: string;
@@ -25,46 +43,11 @@ export type AiModelSyncRecord = Omit<AiModelRecord, "hasSecret"> & {
   secret?: string;
 };
 
-const ENCRYPT_PREFIX = "enc:v1:";
-
-async function secretKey() {
-  const material = `${process.env.AI_SECRET_KEY ?? ""}|writer-studio-local-ai-secret`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
-  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-}
-
-function toBase64(bytes: ArrayBuffer | Uint8Array) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let binary = "";
-  view.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary);
-}
-
-function fromBase64(value: string) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-async function encryptSecret(plain: string) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await secretKey(), new TextEncoder().encode(plain));
-  return `${ENCRYPT_PREFIX}${toBase64(iv)}.${toBase64(cipher)}`;
-}
-
-async function decryptSecret(stored: string) {
-  if (!stored.startsWith(ENCRYPT_PREFIX)) return stored;
-  const [ivPart, cipherPart] = stored.slice(ENCRYPT_PREFIX.length).split(".");
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(ivPart) }, await secretKey(), fromBase64(cipherPart));
-  return new TextDecoder().decode(plain);
-}
-
-async function readModelSecret(id: string) {
-  const row = await getDatabase().prepare("SELECT secret FROM ai_models WHERE id=?").bind(id).first<Record<string, unknown>>();
+async function readProviderSecret(id: string) {
+  const row = await getDatabase().prepare("SELECT secret FROM ai_providers WHERE id=?").bind(id).first<Record<string, unknown>>();
   const stored = String(row?.secret ?? "");
   if (!stored) return "";
-  try { return await decryptSecret(stored); } catch { return ""; }
+  try { return await decryptAiSecret(stored); } catch { return ""; }
 }
 
 function boundedNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
@@ -73,11 +56,24 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
 }
 
 function modelFromRow(row: Record<string, unknown>): AiModelRecord {
+  const providerTimeoutMs = boundedNumber(row.provider_timeout_ms, 120000, 5000, 600000);
+  const timeoutOverrideMs = row.timeout_override_ms == null ? null : boundedNumber(row.timeout_override_ms, providerTimeoutMs, 5000, 600000);
   return {
-    id: String(row.id), name: String(row.name), baseUrl: String(row.base_url), modelId: String(row.model_id),
+    id: String(row.id), providerId: String(row.provider_id), providerName: String(row.provider_name),
+    adapterKind: "openai-compatible", name: String(row.name), baseUrl: String(row.provider_base_url), modelId: String(row.model_id),
     systemPrompt: String(row.system_prompt), temperature: row.temperature == null ? null : Number(row.temperature),
-    maxOutput: row.max_output == null ? null : Number(row.max_output), maxInputCharacters: normalizeMaxInputCharacters(row.max_input_characters), timeoutMs: Number(row.timeout_ms),
-    hasSecret: Number(row.has_secret) === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    maxOutput: row.max_output == null ? null : Number(row.max_output), maxInputCharacters: normalizeMaxInputCharacters(row.max_input_characters),
+    timeoutMs: timeoutOverrideMs ?? providerTimeoutMs, providerTimeoutMs, timeoutOverrideMs,
+    hasSecret: Number(row.provider_has_secret) === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
+function providerFromRow(row: Record<string, unknown>): AiProviderRecord {
+  return {
+    id: String(row.id), name: String(row.name), adapterKind: "openai-compatible",
+    baseUrl: String(row.base_url), timeoutMs: boundedNumber(row.timeout_ms, 120000, 5000, 600000),
+    hasSecret: Number(row.has_secret) === 1, modelCount: Number(row.model_count ?? 0),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
 
@@ -90,15 +86,94 @@ export function validateModelUrl(value: string) {
 
 export async function listModels() {
   await ensureDatabase();
-  const result = await getDatabase().prepare("SELECT * FROM ai_models ORDER BY created_at").all<Record<string, unknown>>();
+  const result = await getDatabase().prepare(`SELECT m.*,p.name provider_name,p.adapter_kind provider_adapter_kind,
+    p.base_url provider_base_url,p.timeout_ms provider_timeout_ms,p.has_secret provider_has_secret
+    FROM ai_models m JOIN ai_providers p ON p.id=m.provider_id ORDER BY m.created_at`).all<Record<string, unknown>>();
   return (result.results ?? []).map(modelFromRow);
+}
+
+export async function listProviders() {
+  await ensureDatabase();
+  const result = await getDatabase().prepare(`SELECT p.*,COUNT(m.id) model_count FROM ai_providers p
+    LEFT JOIN ai_models m ON m.provider_id=p.id GROUP BY p.id ORDER BY p.created_at`).all<Record<string, unknown>>();
+  return (result.results ?? []).map(providerFromRow);
+}
+
+export async function findProvider(id?: string) {
+  const normalized = String(id ?? "").trim();
+  if (!normalized) return null;
+  return (await listProviders()).find((provider) => provider.id === normalized) ?? null;
+}
+
+function providerNameFromUrl(value: string) {
+  try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
+}
+
+function providerAdapterKind(value: unknown): "openai-compatible" {
+  const normalized = String(value ?? "openai-compatible").trim();
+  if (normalized !== "openai-compatible") throw new Error("暂不支持该 Provider 协议");
+  return normalized;
+}
+
+export async function createProvider(input: Partial<AiProviderRecord> & { secret?: unknown }) {
+  await ensureDatabase();
+  const now = new Date().toISOString();
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? "https://api.openai.com/v1"));
+  const secret = String(input.secret ?? "").trim();
+  const storedSecret = secret ? await encryptAiSecret(secret) : null;
+  const provider: AiProviderRecord = {
+    id: crypto.randomUUID(), name: String(input.name ?? providerNameFromUrl(baseUrl)).trim().slice(0, 80),
+    adapterKind: providerAdapterKind(input.adapterKind), baseUrl,
+    timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), hasSecret: Boolean(storedSecret), modelCount: 0,
+    createdAt: now, updatedAt: now,
+  };
+  if (!provider.name) throw new Error("Provider 名称不能为空");
+  await getDatabase().prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+    .bind(provider.id, provider.name, provider.adapterKind, provider.baseUrl, provider.timeoutMs, provider.hasSecret ? 1 : 0, storedSecret, now, now).run();
+  return provider;
+}
+
+export async function updateProvider(id: string, input: Partial<AiProviderRecord>) {
+  const existing = await findProvider(id);
+  if (!existing) throw new Error("Provider 不存在");
+  const updated: AiProviderRecord = {
+    ...existing, id, name: String(input.name ?? existing.name).trim().slice(0, 80),
+    adapterKind: providerAdapterKind(input.adapterKind ?? existing.adapterKind),
+    baseUrl: input.baseUrl ? validateModelUrl(input.baseUrl) : existing.baseUrl,
+    timeoutMs: boundedNumber(input.timeoutMs, existing.timeoutMs, 5000, 600000), updatedAt: new Date().toISOString(),
+  };
+  if (!updated.name) throw new Error("Provider 名称不能为空");
+  await getDatabase().prepare("UPDATE ai_providers SET name=?,adapter_kind=?,base_url=?,timeout_ms=?,updated_at=? WHERE id=?")
+    .bind(updated.name, updated.adapterKind, updated.baseUrl, updated.timeoutMs, updated.updatedAt, id).run();
+  return updated;
+}
+
+export async function deleteProvider(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  if (provider.modelCount) throw new Error(`该 Provider 仍关联 ${provider.modelCount} 个模型，请先删除或移动这些模型`);
+  await getDatabase().prepare("DELETE FROM ai_providers WHERE id=?").bind(id).run();
+}
+
+export async function setProviderSecret(id: string, secret: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  if (!secret.trim()) throw new Error("密钥不能为空");
+  const stored = await encryptAiSecret(secret.trim());
+  await getDatabase().prepare("UPDATE ai_providers SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
+}
+
+export async function clearProviderSecret(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  await getDatabase().prepare("UPDATE ai_providers SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
 }
 
 export async function exportModelsForSync(includeSecrets: boolean): Promise<AiModelSyncRecord[]> {
   const models = await listModels();
   return Promise.all(models.map(async ({ hasSecret: _hasSecret, ...model }) => ({
     ...model,
-    ...(includeSecrets ? { secret: await readModelSecret(model.id) } : {}),
+    ...(includeSecrets ? { secret: await readProviderSecret(model.providerId) } : {}),
   })));
 }
 
@@ -107,8 +182,9 @@ export async function replaceModelsFromSync(records: AiModelSyncRecord[], includ
   if (!Array.isArray(records) || records.length > 100) throw new Error("同步模型配置无效或数量超过 100 个");
   const ids = new Set<string>();
   const db = getDatabase();
-  const existingResult = await db.prepare("SELECT id,secret FROM ai_models").all<Record<string, unknown>>();
+  const existingResult = await db.prepare("SELECT id,secret FROM ai_providers").all<Record<string, unknown>>();
   const existingSecrets = new Map((existingResult.results ?? []).map((row) => [String(row.id), String(row.secret ?? "")]));
+  const providerIds = new Set<string>();
   const prepared = await Promise.all(records.map(async (record) => {
     const id = String(record.id ?? "").trim();
     if (!id || ids.has(id)) throw new Error("同步模型包含空 ID 或重复 ID");
@@ -116,13 +192,18 @@ export async function replaceModelsFromSync(records: AiModelSyncRecord[], includ
     const name = String(record.name ?? "").trim().slice(0, 80);
     const modelId = String(record.modelId ?? "").trim().slice(0, 300);
     if (!name || !modelId) throw new Error("同步模型名称和模型 ID 不能为空");
+    const providerId = String(record.providerId ?? "").trim() || crypto.randomUUID();
+    providerIds.add(providerId);
     const baseUrl = validateModelUrl(String(record.baseUrl ?? ""));
     const plainSecret = includeSecrets ? String(record.secret ?? "").trim() : "";
     const storedSecret = includeSecrets
-      ? plainSecret ? await encryptSecret(plainSecret) : ""
-      : existingSecrets.get(id) ?? "";
+      ? plainSecret ? await encryptAiSecret(plainSecret) : ""
+      : existingSecrets.get(providerId) ?? "";
     return {
       id,
+      providerId,
+      providerName: String(record.providerName ?? providerNameFromUrl(baseUrl)).trim().slice(0, 80),
+      adapterKind: providerAdapterKind(record.adapterKind),
       name,
       baseUrl,
       modelId,
@@ -130,16 +211,21 @@ export async function replaceModelsFromSync(records: AiModelSyncRecord[], includ
       temperature: record.temperature == null ? null : boundedNumber(record.temperature, 1, 0, 2),
       maxOutput: record.maxOutput == null ? null : boundedNumber(record.maxOutput, 4096, 1, 1000000),
       maxInputCharacters: normalizeMaxInputCharacters(record.maxInputCharacters),
-      timeoutMs: boundedNumber(record.timeoutMs, 120000, 5000, 600000),
+      providerTimeoutMs: boundedNumber(record.providerTimeoutMs ?? record.timeoutMs, 120000, 5000, 600000),
+      timeoutOverrideMs: record.timeoutOverrideMs == null ? null : boundedNumber(record.timeoutOverrideMs, 120000, 5000, 600000),
       storedSecret,
       createdAt: String(record.createdAt ?? new Date().toISOString()),
       updatedAt: String(record.updatedAt ?? new Date().toISOString()),
     };
   }));
+  const providers = [...providerIds].map((providerId) => prepared.find((model) => model.providerId === providerId)!);
   await db.batch([
     db.prepare("DELETE FROM ai_models"),
-    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.storedSecret ? 1 : 0, model.storedSecret || null, model.createdAt, model.updatedAt)),
+    db.prepare("DELETE FROM ai_providers"),
+    ...providers.map((provider) => db.prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(provider.providerId, provider.providerName, provider.adapterKind, provider.baseUrl, provider.providerTimeoutMs, provider.storedSecret ? 1 : 0, provider.storedSecret || null, provider.createdAt, provider.updatedAt)),
+    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutOverrideMs ?? model.providerTimeoutMs, model.timeoutOverrideMs, 0, null, model.createdAt, model.updatedAt)),
   ]);
   return { models: prepared.length, secretsReplaced: includeSecrets };
 }
@@ -149,6 +235,22 @@ export async function findModel(reference?: string) {
   const normalized = String(reference ?? "").trim();
   if (!normalized) return null;
   return models.find((model) => model.id === normalized || model.name === normalized) ?? null;
+}
+
+async function legacyProvider(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; timeoutMs?: unknown }, sourceModel?: AiModelRecord | null) {
+  const providerId = String(input.providerId ?? sourceModel?.providerId ?? "").trim();
+  if (providerId) {
+    const provider = await findProvider(providerId);
+    if (!provider) throw new Error("Provider 不存在");
+    return provider;
+  }
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? sourceModel?.baseUrl ?? "https://api.openai.com/v1"));
+  const secret = String(input.secret ?? "").trim();
+  for (const provider of (await listProviders()).filter((candidate) => candidate.baseUrl === baseUrl)) {
+    const existingSecret = await readProviderSecret(provider.id);
+    if (secret ? existingSecret === secret : !existingSecret) return provider;
+  }
+  return createProvider({ name: providerNameFromUrl(baseUrl), baseUrl, timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), secret });
 }
 
 function modelNameSuffix(value: string) {
@@ -161,6 +263,7 @@ export async function createModels(input: {
   name?: unknown;
   appendModelIdToName?: unknown;
   baseUrl?: unknown;
+  providerId?: unknown;
   existingModelId?: unknown;
   modelIds?: unknown;
   secret?: unknown;
@@ -179,11 +282,12 @@ export async function createModels(input: {
   const existingModelId = String(input.existingModelId ?? "").trim();
   const sourceModel = existingModelId ? await findModel(existingModelId) : null;
   if (existingModelId && (!sourceModel || sourceModel.id !== existingModelId)) throw new Error("用于复用配置的模型不存在");
-  const baseUrl = validateModelUrl(String(input.baseUrl ?? sourceModel?.baseUrl ?? "https://api.openai.com/v1"));
+  const provider = await legacyProvider(input, sourceModel);
+  const baseUrl = provider.baseUrl;
   const existing = await listModels();
-  const existingKeys = new Set(existing.map((model) => `${model.baseUrl}\n${model.modelId}`));
-  const skippedModelIds = requestedIds.filter((modelId) => existingKeys.has(`${baseUrl}\n${modelId}`));
-  const modelIds = requestedIds.filter((modelId) => !existingKeys.has(`${baseUrl}\n${modelId}`));
+  const existingKeys = new Set(existing.map((model) => `${model.providerId}\n${model.modelId}`));
+  const skippedModelIds = requestedIds.filter((modelId) => existingKeys.has(`${provider.id}\n${modelId}`));
+  const modelIds = requestedIds.filter((modelId) => !existingKeys.has(`${provider.id}\n${modelId}`));
   if (!modelIds.length) return { models: [] as AiModelRecord[], skippedModelIds };
 
   const now = new Date().toISOString();
@@ -193,11 +297,12 @@ export async function createModels(input: {
   const temperature = input.temperature == null ? null : boundedNumber(input.temperature, 1, 0, 2);
   const maxOutput = input.maxOutput == null ? null : boundedNumber(input.maxOutput, 4096, 1, 1000000);
   const maxInputCharacters = normalizeMaxInputCharacters(input.maxInputCharacters ?? sourceModel?.maxInputCharacters);
-  const timeoutMs = boundedNumber(input.timeoutMs, 120000, 5000, 600000);
-  const secret = String(input.secret ?? "").trim() || (sourceModel ? await readModelSecret(sourceModel.id) : "");
-  const storedSecret = secret ? await encryptSecret(secret) : null;
+  const timeoutOverrideMs = input.timeoutMs == null ? sourceModel?.timeoutOverrideMs ?? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const models: AiModelRecord[] = modelIds.map((modelId) => ({
     id: crypto.randomUUID(),
+    providerId: provider.id,
+    providerName: provider.name,
+    adapterKind: provider.adapterKind,
     name: (modelIds.length === 1 && prefix && !appendModelIdToName ? prefix : prefix ? `${prefix} · ${modelNameSuffix(modelId)}` : modelNameSuffix(modelId)).slice(0, 80),
     baseUrl,
     modelId,
@@ -205,51 +310,68 @@ export async function createModels(input: {
     temperature,
     maxOutput,
     maxInputCharacters,
-    timeoutMs,
-    hasSecret: Boolean(storedSecret),
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs,
+    providerTimeoutMs: provider.timeoutMs,
+    timeoutOverrideMs,
+    hasSecret: provider.hasSecret,
     createdAt: now,
     updatedAt: now,
   }));
-  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.hasSecret ? 1 : 0, storedSecret, now, now)));
+  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now)));
   return { models, skippedModelIds };
 }
 
-export async function createModel(input: Partial<AiModelRecord>) {
+export async function createModel(input: Partial<AiModelRecord> & { secret?: unknown }) {
   const now = new Date().toISOString();
+  const provider = await legacyProvider(input);
+  const timeoutOverrideMs = input.timeoutOverrideMs !== undefined
+    ? input.timeoutOverrideMs == null ? null : boundedNumber(input.timeoutOverrideMs, provider.timeoutMs, 5000, 600000)
+    : input.timeoutMs == null ? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const model: AiModelRecord = {
-    id: crypto.randomUUID(), name: String(input.name ?? "未命名模型").trim().slice(0, 80),
-    baseUrl: validateModelUrl(String(input.baseUrl ?? "https://api.openai.com/v1")),
+    id: crypto.randomUUID(), providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind,
+    name: String(input.name ?? "未命名模型").trim().slice(0, 80), baseUrl: provider.baseUrl,
     modelId: String(input.modelId ?? "").trim(), systemPrompt: String(input.systemPrompt ?? ""),
     temperature: input.temperature == null ? null : boundedNumber(input.temperature, 1, 0, 2),
     maxOutput: input.maxOutput == null ? null : boundedNumber(input.maxOutput, 4096, 1, 1000000),
     maxInputCharacters: normalizeMaxInputCharacters(input.maxInputCharacters),
-    timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), hasSecret: false,
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs, providerTimeoutMs: provider.timeoutMs, timeoutOverrideMs, hasSecret: provider.hasSecret,
     createdAt: now, updatedAt: now,
   };
   if (!model.name || !model.modelId) throw new Error("模型名称和模型 ID 不能为空");
   await ensureDatabase();
-  await getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, 0, now, now).run();
+  await getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now).run();
   return model;
 }
 
 export async function updateModel(id: string, input: Partial<AiModelRecord>) {
   const existing = await findModel(id);
   if (!existing || existing.id !== id) throw new Error("模型不存在");
-  const updated = {
+  const provider = input.providerId && input.providerId !== existing.providerId
+    ? await findProvider(input.providerId)
+    : input.baseUrl && validateModelUrl(input.baseUrl) !== existing.baseUrl
+      ? await legacyProvider({ baseUrl: input.baseUrl })
+      : await findProvider(existing.providerId);
+  if (!provider) throw new Error("Provider 不存在");
+  const timeoutOverrideMs = input.timeoutOverrideMs !== undefined
+    ? input.timeoutOverrideMs == null ? null : boundedNumber(input.timeoutOverrideMs, provider.timeoutMs, 5000, 600000)
+    : input.timeoutMs !== undefined ? boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000) : existing.timeoutOverrideMs;
+  const updated: AiModelRecord = {
     ...existing, ...input, id,
+    providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl,
     name: String(input.name ?? existing.name).trim().slice(0, 80),
     modelId: String(input.modelId ?? existing.modelId).trim(),
     systemPrompt: String(input.systemPrompt ?? existing.systemPrompt).slice(0, 20000),
     temperature: input.temperature == null ? existing.temperature : boundedNumber(input.temperature, existing.temperature ?? 1, 0, 2),
     maxOutput: input.maxOutput == null ? existing.maxOutput : boundedNumber(input.maxOutput, existing.maxOutput ?? 4096, 1, 1000000),
     maxInputCharacters: input.maxInputCharacters == null ? existing.maxInputCharacters : normalizeMaxInputCharacters(input.maxInputCharacters, existing.maxInputCharacters),
-    baseUrl: input.baseUrl ? validateModelUrl(input.baseUrl) : existing.baseUrl,
-    timeoutMs: boundedNumber(input.timeoutMs, existing.timeoutMs, 5000, 600000),
-    updatedAt: new Date().toISOString(), hasSecret: existing.hasSecret,
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs, providerTimeoutMs: provider.timeoutMs, timeoutOverrideMs,
+    updatedAt: new Date().toISOString(), hasSecret: provider.hasSecret,
   };
   if (!updated.name || !updated.modelId) throw new Error("模型名称和模型 ID 不能为空");
-  await getDatabase().prepare("UPDATE ai_models SET name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,has_secret=?,updated_at=? WHERE id=?").bind(updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.hasSecret ? 1 : 0, updated.updatedAt, id).run();
+  await getDatabase().prepare("UPDATE ai_models SET provider_id=?,name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,timeout_override_ms=?,has_secret=0,secret=NULL,updated_at=? WHERE id=?")
+    .bind(updated.providerId, updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.timeoutOverrideMs, updated.updatedAt, id).run();
   return updated;
 }
 
@@ -261,22 +383,16 @@ export async function deleteModel(id: string) {
 export async function setModelSecret(id: string, secret: string) {
   const model = await findModel(id);
   if (!model || model.id !== id) throw new Error("模型不存在");
-  if (!secret.trim()) throw new Error("密钥不能为空");
-  const stored = await encryptSecret(secret.trim());
-  await getDatabase().prepare("UPDATE ai_models SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
+  await setProviderSecret(model.providerId, secret);
 }
 
 export async function clearModelSecret(id: string) {
-  await ensureDatabase();
-  await getDatabase().prepare("UPDATE ai_models SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
+  const model = await findModel(id);
+  if (!model || model.id !== id) throw new Error("模型不存在");
+  await clearProviderSecret(model.providerId);
 }
 
-export async function discoverModelIds(input: { baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
-  const existingId = String(input.existingModelId ?? "").trim();
-  const existing = existingId ? await findModel(existingId) : null;
-  if (existingId && (!existing || existing.id !== existingId)) throw new Error("模型不存在");
-  const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
-  const secret = String(input.secret ?? "").trim() || (existing ? await readModelSecret(existing.id) : "");
+async function discoverConnection(baseUrl: string, secret: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), 15000);
   try {
@@ -304,6 +420,29 @@ export async function discoverModelIds(input: { baseUrl?: unknown; secret?: unkn
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function discoverProviderModelIds(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  return discoverConnection(provider.baseUrl, await readProviderSecret(provider.id));
+}
+
+export async function testProvider(id: string) {
+  const started = Date.now();
+  const models = await discoverProviderModelIds(id);
+  return { ok: true, latencyMs: Date.now() - started, modelCount: models.length };
+}
+
+export async function discoverModelIds(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
+  const providerId = String(input.providerId ?? "").trim();
+  if (providerId) return discoverProviderModelIds(providerId);
+  const existingId = String(input.existingModelId ?? "").trim();
+  const existing = existingId ? await findModel(existingId) : null;
+  if (existingId && (!existing || existing.id !== existingId)) throw new Error("模型不存在");
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
+  const secret = String(input.secret ?? "").trim() || (existing ? await readProviderSecret(existing.providerId) : "");
+  return discoverConnection(baseUrl, secret);
 }
 
 function endpoint(model: AiModelRecord) {
@@ -407,8 +546,8 @@ function completionResult(payload: ChatCompletionPayload, handle: Awaited<Return
 }
 
 async function upstream(model: AiModelRecord, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, stream = false, extraBody: Record<string, unknown> = {}) {
-  const secret = await readModelSecret(model.id);
-  if (!secret) throw new Error("该模型尚未设置 API 密钥，或保存的密钥无法解密；请重新保存密钥");
+  const secret = await readProviderSecret(model.providerId);
+  if (!secret) throw new Error(`Provider「${model.providerName}」尚未设置 API 密钥，或保存的密钥无法解密；请重新保存密钥`);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), model.timeoutMs);
   const cancel = () => controller.abort("cancelled");

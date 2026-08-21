@@ -6,7 +6,7 @@ import { canAutomaticallyUpload, evaluateSyncPolicy } from "@/lib/sync-policy.mj
 import { ensureDatabase, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 
-export const SYNC_SCHEMA_VERSION = 2;
+export const SYNC_SCHEMA_VERSION = 3;
 const syncFormat = "writer-studio-sync-v1";
 const remoteTimeoutMs = 30_000;
 
