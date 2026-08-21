@@ -23,7 +23,7 @@ export async function PUT(request: Request) {
     if (!body.data || body.data.version !== 1 || !Array.isArray(body.data.articles)) return json({ error: "invalid_state" }, 400);
     const result = await writeStudioState(body.data, expectedRevision);
     if (result.conflict) return json({ error: "revision_conflict", ...result.current }, 409);
-    return json({ revision: result.revision });
+    return json({ revision: result.revision, databaseVersion: result.databaseVersion });
   } catch (error) {
     return json({ error: "save_failed", message: error instanceof Error ? error.message : "保存失败" }, 500);
   }

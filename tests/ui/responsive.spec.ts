@@ -1307,6 +1307,89 @@ test("full outline editor shows every plan in one auto-growing document", async 
   expect(dimensions.overflowY).toBe("hidden");
 });
 
+test("full outline editor offers inline create, delete, and archive controls", async ({ page, request }) => {
+  await page.goto("/articles/article-main/outlines/edit-all");
+  const editor = page.locator(".continuous-document-editor.outline");
+  const current = editor.locator('[data-continuous-outline-id="outline-current"]');
+  const drag = current.getByRole("button", { name: "拖动排序：当前码头" });
+  const add = current.getByRole("button", { name: "在“当前码头”下方新建大纲" });
+  const remove = current.getByRole("button", { name: "删除大纲：当前码头" });
+  const archive = current.getByRole("button", { name: "归档大纲：当前码头" });
+  await expect(add).toHaveText("+");
+  await expect(remove).toHaveText("-");
+  await expect(archive).toHaveText("=");
+  const [dragBox, addBox, removeBox, archiveBox] = await Promise.all([drag.boundingBox(), add.boundingBox(), remove.boundingBox(), archive.boundingBox()]);
+  expect(addBox!.y).toBeGreaterThan(dragBox!.y);
+  expect(removeBox!.y).toBeGreaterThan(addBox!.y);
+  expect(archiveBox!.y).toBeGreaterThan(removeBox!.y);
+
+  await add.click();
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    return payload.data.articles[0].chapters[0].outlines.map((item) => item.id);
+  }).toEqual(expect.arrayContaining(["outline-current"]));
+  const idsAfterCreate = await editor.locator("[data-continuous-outline-id]").evaluateAll((elements) => elements.map((element) => element.getAttribute("data-continuous-outline-id")));
+  const currentIndex = idsAfterCreate.indexOf("outline-current");
+  expect(idsAfterCreate[currentIndex + 1]).toMatch(/^outline-/);
+  expect(idsAfterCreate[currentIndex + 1]).not.toBe("outline-after");
+  await expect(editor.locator(`[data-continuous-outline-id="${idsAfterCreate[currentIndex + 1]}"] .continuous-outline-title-input`)).toBeFocused();
+
+  const warning = page.waitForEvent("dialog");
+  await remove.click();
+  const dialog = await warning;
+  expect(dialog.message()).toContain("已有正文");
+  await dialog.dismiss();
+  await expect(current).toBeVisible();
+
+  await archive.click();
+  await expect(current).toHaveCount(0);
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    return payload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.archived;
+  }).toBe(true);
+});
+
+test("full outline editor keeps the active outline anchored when leaving and returning", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop sidebar navigation");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  fixture.articles[0].chapters[0].outlines[0].plan = "灯塔线索继续展开。\n".repeat(45);
+  fixture.articles[0].chapters[0].outlines[1].plan = "码头调查继续展开。\n".repeat(45);
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "全大纲编辑", exact: true }).click();
+  const editor = page.locator(".continuous-document-editor.outline");
+  const target = editor.locator('[data-continuous-outline-id="outline-after"]');
+  const targetPlan = editor.getByLabel("大纲内容：绝密后续大纲");
+  await targetPlan.scrollIntoViewIfNeeded();
+  await targetPlan.focus();
+  const before = await target.evaluate((element) => {
+    const viewport = element.closest(".page-scroll")!;
+    return element.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  });
+
+  await page.getByRole("button", { name: "全文编辑", exact: true }).click();
+  await expect(page.locator(".continuous-document-editor.content")).toBeVisible();
+  await page.getByRole("button", { name: "全大纲编辑", exact: true }).click();
+  await expect(editor).toBeVisible();
+  await expect.poll(() => target.evaluate((element) => {
+    const viewport = element.closest(".page-scroll")!;
+    return element.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  })).toBeCloseTo(before, 0);
+
+  const state = await request.get("/api/state");
+  const statePayload = await state.json() as { data: ReturnType<typeof fullStudioFixture> };
+  expect(statePayload.data.currentOutlineId).toBe("outline-after");
+});
+
 test("full content editor saves the current body without creating a version", async ({ page, request }) => {
   const current = await request.get("/api/state");
   const payload = await current.json() as { revision: number };
@@ -1784,6 +1867,11 @@ test("dedicated naming menus preview one response before applying", async ({ pag
     });
   });
   await page.goto("/");
+  await page.getByRole("button", { name: "文章资料", exact: true }).click();
+  const outlineNaming = page.getByRole("group", { name: "大纲命名" });
+  await outlineNaming.getByLabel("格式").selectOption("seven");
+  await expect(outlineNaming.getByLabel("格式")).toHaveValue("seven");
+  await page.locator('[data-outline-id="outline-current"] .outline-title').click();
   await page.locator('[data-outline-id="outline-current"] .row-more').click();
   await page.getByRole("button", { name: "重新生成大纲名字" }).click();
   await expect(page.getByText("只发送文章资料、命名设置和当前大纲内容，不发送现有章节名、大纲名、正文、正文版本或聊天记录。")).toBeVisible();
@@ -1792,6 +1880,7 @@ test("dedicated naming menus preview one response before applying", async ({ pag
   await expect(page.getByLabel("生成的大纲名：当前码头")).toHaveValue("七码头潮汐密钥");
   expect(calls).toBe(1);
   expect(requestBody).toMatchObject({ target: "outline", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current" });
+  expect(requestBody).toMatchObject({ outlineNaming: { format: "seven" } });
   expect(requestBody).not.toHaveProperty("content");
   expect(requestBody).not.toHaveProperty("reservedTitles");
   await page.getByRole("button", { name: "应用名称" }).click();
@@ -1806,15 +1895,21 @@ test("dedicated naming menus preview one response before applying", async ({ pag
   await page.getByRole("button", { name: "取消全选" }).click();
   await expect(page.getByLabel("选择章节名")).not.toBeChecked();
   await page.getByLabel("选择章节名").check();
+  await page.getByLabel("选择大纲名：七码头潮汐密钥").check();
   await page.getByRole("button", { name: "生成所选名称" }).click();
   await expect(page.getByLabel("生成的章节名")).toHaveValue("潮汐密钥");
   expect(calls).toBe(2);
-  expect(requestBody).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: [] });
+  expect(requestBody).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: ["outline-current"], outlineNaming: { format: "seven" } });
   expect(requestBody).not.toHaveProperty("reservedTitles");
-  await page.getByRole("button", { name: "重新生成" }).click();
-  await expect(page.getByLabel("生成的章节名")).toHaveValue("雾港密钥");
+  const outlinePreview = page.locator(".name-preview-row").filter({ has: page.getByLabel("生成的大纲名：七码头潮汐密钥") });
+  await outlinePreview.getByRole("button", { name: "重新生成" }).click();
   expect(calls).toBe(3);
-  await page.getByRole("button", { name: "应用", exact: true }).click();
+  expect(requestBody).toMatchObject({ target: "outline", outlineId: "outline-current", outlineNaming: { format: "seven" } });
+  const chapterPreview = page.locator(".name-preview-row").filter({ has: page.getByLabel("生成的章节名") });
+  await chapterPreview.getByRole("button", { name: "重新生成" }).click();
+  await expect(page.getByLabel("生成的章节名")).toHaveValue("雾港密钥");
+  expect(calls).toBe(4);
+  await chapterPreview.getByRole("button", { name: "应用", exact: true }).click();
   await expect(page.getByRole("button", { name: "已应用", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "应用所有名称" })).toBeVisible();
 });

@@ -163,8 +163,12 @@ export async function ensureDatabase() {
       await ensureBodyExcellentColumns(db);
       await ensureAiTaskProgressColumns(db);
       await createSearchIndex(db);
-      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(new Date().toISOString()).run();
-      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(new Date().toISOString()).run();
+      const initializedAt = new Date().toISOString();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt).run();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt).run();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '1', ?)").bind(initializedAt).run();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt).run();
+      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt).run();
     })().catch((error) => {
       initialized = null;
       throw error;
@@ -341,7 +345,7 @@ async function ensureMultipleChatSessions(db: SqliteDatabase) {
   ]);
 }
 
-export async function readStudioState(): Promise<{ data: StudioData | null; revision: number }> {
+export async function readStudioState(): Promise<{ data: StudioData | null; revision: number; databaseVersion: number }> {
   await ensureDatabase();
   const db = getDatabase();
   const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
@@ -361,9 +365,10 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const articleRows = rows(articleResult);
   const settingsMap = new Map(rows(settingResult).map((row) => [String((row as Record<string, unknown>).key), (row as Record<string, unknown>).value_json]));
   const revision = Number(settingsMap.get("state_revision") ?? 0);
+  const databaseVersion = Number(settingsMap.get("database_version") ?? revision);
   if (!articleRows.length) {
     const ui = safeJson<Partial<StudioData>>(settingsMap.get("studio_ui"), {});
-    return { revision, data: { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings: normalizeStudioSettings(ui.settings) } };
+    return { revision, databaseVersion, data: { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings: normalizeStudioSettings(ui.settings) } };
   }
 
   const chapters = rows(chapterResult) as Record<string, unknown>[];
@@ -487,6 +492,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const currentOutlineId = selectedArticle.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
   return {
     revision,
+    databaseVersion,
     data: {
       version: 1,
       currentArticleId,
@@ -545,9 +551,11 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   if (current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
+  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
 
   const now = new Date().toISOString();
   const nextRevision = expectedRevision + 1;
+  const nextDatabaseVersion = currentDatabaseVersion + 1;
   const statements: SqliteStatement[] = [
     db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, crypto.randomUUID(), now),
     db.prepare("DELETE FROM articles"),
@@ -595,6 +603,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   }
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
+  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)", [String(nextDatabaseVersion), now]));
   try {
     await db.batch(statements);
   } catch (error) {
@@ -602,14 +611,14 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     if (actual !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
     throw error;
   }
-  return { conflict: false as const, revision: nextRevision };
+  return { conflict: false as const, revision: nextRevision, databaseVersion: nextDatabaseVersion };
 }
 
 export async function databaseStatus() {
   const state = await readStudioState();
   const db = getDatabase();
   const searchMode = await db.prepare("SELECT value_json FROM app_settings WHERE key='search_mode'").first<string>("value_json");
-  return { connected: true, engine: databaseEngine(), revision: state.revision, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
+  return { connected: true, engine: databaseEngine(), revision: state.revision, databaseVersion: state.databaseVersion, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
 }
 
 export async function claimChatRequest(requestId: string, requestHash: string) {
@@ -645,12 +654,14 @@ export async function clearBusinessData() {
   await ensureDatabase();
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
   const now = new Date().toISOString();
   await db.batch([
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'last_outline:%'"),
     db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)").bind(String(current + 1), now),
+    db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)").bind(String(currentDatabaseVersion + 1), now),
   ]);
-  return { revision: current + 1 };
+  return { revision: current + 1, databaseVersion: currentDatabaseVersion + 1 };
 }

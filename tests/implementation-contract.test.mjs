@@ -71,6 +71,22 @@ test("business data uses server SQLite with revision conflicts and interrupted-d
   assert.match(runtime, /CREATE VIRTUAL TABLE IF NOT EXISTS search_documents USING fts5/);
 });
 
+test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
+  const sync = await read("db/sync.ts");
+  const runtime = await read("db/runtime.ts");
+  const state = await read("app/studio-state.tsx");
+  const app = await read("app/WriterStudioApp.tsx");
+  assert.match(runtime, /database_version/);
+  assert.match(sync, /lastCloudVersion/);
+  assert.match(sync, /canAutomaticallyUpload\(policy\)/);
+  assert.match(sync, /writeRecoverySnapshot\("sync-local-before-pull"/);
+  assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
+  assert.match(state, /\/api\/sync\/upload/);
+  assert.match(app, /从云端取回/);
+  assert.match(app, /复制到云端/);
+  assert.match(app, /云端版本 = 同步基线/);
+});
+
 test("explicit mobile outline and AI context decisions are retained", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
@@ -365,7 +381,9 @@ test("AI Generate only bundles outline naming when the user opts in", async () =
   assert.match(ai, /includeOutlineTitle = input\.target === "content" && input\.includeOutlineTitle === true/);
   assert.doesNotMatch(ai, /source\.currentOutline\.titleGenerationPending/);
   assert.match(ai, /<outline_title>大纲标题<\/outline_title>[\s\S]*<generated_text>/);
-  assert.match(ai, /const result = normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle, outlineNaming\)/);
+  assert.match(ai, /normalizeGenerateResult\(input\.target, completion\.content, includeOutlineTitle, outlineNaming\)/);
+  assert.match(ai, /finishReason === "length"/);
+  assert.match(ai, /generated_text 标签未闭合/);
   assert.match(naming, /NAMING_STYLE_OPTIONS/);
   assert.match(naming, /采用简化词牌风格/);
   assert.match(naming, /词牌名.*绝对不要出现在结果中/);
@@ -391,7 +409,11 @@ test("dedicated naming is one call, has a preview, and blocks oversized chapters
   assert.match(app, /regenerateItem/);
   assert.match(app, /function NameGenerateDialog/);
   assert.match(app, /studio\.applyGeneratedNames/);
+  assert.match(app, /chapterNaming: article\.chapterNaming/);
+  assert.match(app, /outlineNaming: article\.outlineNaming/);
   assert.match(ai, /export async function generateNames/);
+  assert.match(ai, /input\.chapterNaming \?\? article\.chapterNaming/);
+  assert.match(ai, /input\.outlineNaming \?\? article\.outlineNaming/);
   assert.match(ai, /if \(characters > maximum\) throw new AiPromptTooLongError/);
   const namingImplementation = ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "";
   assert.doesNotMatch(namingImplementation, /for \(const .*upstream/);
@@ -437,7 +459,7 @@ test("AI tasks expose durable phases, heartbeats, timeout and cross-device refre
   assert.match(runtime, /ensureAiTaskProgressColumns/);
   assert.match(runtime, /last_progress_at/);
   assert.match(schema, /receivedCharacters: integer\("received_characters"\)/);
-  assert.match(ai, /return \{ response, controller, cleanup \}/);
+  assert.match(ai, /return \{ response, controller, cleanup, model, requestStartedAt, responseHeadersAt/);
   assert.match(ai, /consumeUpstream/);
   assert.doesNotMatch(ai, /finally \{ clearTimeout\(timeout\); \}/);
   assert.match(state, /refreshFromServer/);

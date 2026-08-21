@@ -1,5 +1,5 @@
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
-import { AiInputError, findModel, generateText } from "@/db/ai";
+import { AiInputError, AiUpstreamCompletionError, findModel, generateText } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
@@ -153,7 +153,7 @@ export async function POST(_request: Request, context: RouteContext) {
           break;
         } catch (error) {
           lastError = error;
-          if (error instanceof AiInputError) break;
+          if (error instanceof AiInputError || (error instanceof AiUpstreamCompletionError && !error.retryable)) break;
         }
       }
 
@@ -226,7 +226,9 @@ export async function POST(_request: Request, context: RouteContext) {
         const completedAt = task.target === "正文" && found ? found.outline.updatedAt : new Date().toISOString();
         Object.assign(task, {
           state: "success", phase: "completed", completedAt, lastProgressAt: completedAt,
-          receivedCharacters: result.text.length, resultText: result.text, runnerId: undefined, leaseUntil: undefined, error: undefined,
+          receivedCharacters: result.text.length, resultText: result.text,
+          inputTokens: result.inputTokens, outputTokens: result.outputTokens,
+          runnerId: undefined, leaseUntil: undefined, error: undefined,
         } satisfies Partial<AiTask>);
         return { changed: true, value: true };
       });

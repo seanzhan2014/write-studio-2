@@ -264,6 +264,94 @@ function readableNetworkError(error: unknown, action: string) {
   return error instanceof Error ? error : new Error(`${action}失败`);
 }
 
+type CompletionErrorPayload = {
+  code?: string | number;
+  message?: string;
+  metadata?: { error_type?: string; provider_code?: string | number };
+};
+
+type ChatCompletionPayload = {
+  id?: string;
+  model?: string;
+  provider?: string;
+  error?: CompletionErrorPayload;
+  choices?: Array<{
+    finish_reason?: string | null;
+    native_finish_reason?: string | null;
+    message?: { content?: string | Array<{ text?: string }> };
+    error?: CompletionErrorPayload;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+};
+
+type CompletionDiagnostics = {
+  requestId?: string;
+  provider?: string;
+  finishReason?: string;
+  nativeFinishReason?: string;
+  errorType?: string;
+  errorCode?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  outputCharacters: number;
+  responseHeadersMs: number;
+  totalMs: number;
+};
+
+export class AiUpstreamCompletionError extends Error {
+  constructor(message: string, readonly retryable: boolean, readonly diagnostics: CompletionDiagnostics) {
+    super(message);
+    this.name = "AiUpstreamCompletionError";
+  }
+}
+
+function completionText(value: string | Array<{ text?: string }> | undefined) {
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? value.map((item) => item?.text ?? "").join("") : "";
+}
+
+function completionResult(payload: ChatCompletionPayload, handle: Awaited<ReturnType<typeof upstream>>, action: string) {
+  const choice = payload.choices?.[0];
+  const content = completionText(choice?.message?.content);
+  const upstreamError = choice?.error ?? payload.error;
+  const finishReason = String(choice?.finish_reason ?? "").trim() || undefined;
+  const nativeFinishReason = String(choice?.native_finish_reason ?? "").trim() || undefined;
+  const errorType = String(upstreamError?.metadata?.error_type ?? "").trim() || undefined;
+  const errorCode = upstreamError?.code == null ? undefined : String(upstreamError.code);
+  const diagnostics: CompletionDiagnostics = {
+    requestId: String(payload.id ?? "").trim() || undefined,
+    provider: String(payload.provider ?? "").trim() || undefined,
+    finishReason,
+    nativeFinishReason,
+    errorType,
+    errorCode,
+    promptTokens: Number.isFinite(payload.usage?.prompt_tokens) ? Number(payload.usage?.prompt_tokens) : undefined,
+    completionTokens: Number.isFinite(payload.usage?.completion_tokens) ? Number(payload.usage?.completion_tokens) : undefined,
+    outputCharacters: content.length,
+    responseHeadersMs: handle.responseHeadersAt - handle.requestStartedAt,
+    totalMs: Date.now() - handle.requestStartedAt,
+  };
+  const event = { event: "ai_upstream_completion", action, model: handle.model.modelId, ...diagnostics };
+
+  if (finishReason === "length") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    throw new AiUpstreamCompletionError(`${action}达到模型输出长度上限，已丢弃 ${content.length.toLocaleString("zh-CN")} 字不完整结果；请提高模型输出上限或降低目标字数`, false, diagnostics);
+  }
+  const nonRetryableError = ["content_policy_violation", "refusal", "invalid_request"].includes(errorType ?? "")
+    || finishReason === "content_filter";
+  if (upstreamError || finishReason === "error" || finishReason === "content_filter") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    const reason = errorType || errorCode || finishReason || "unknown";
+    throw new AiUpstreamCompletionError(`${action}被上游中断（${reason}），已丢弃 ${content.length.toLocaleString("zh-CN")} 字不完整结果`, !nonRetryableError, diagnostics);
+  }
+  if (finishReason && finishReason !== "stop") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    throw new AiUpstreamCompletionError(`${action}以异常原因结束（finish_reason=${finishReason}），未保存返回内容`, false, diagnostics);
+  }
+  console.info(JSON.stringify({ ...event, accepted: true }));
+  return { content, diagnostics };
+}
+
 async function upstream(model: AiModelRecord, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, stream = false, extraBody: Record<string, unknown> = {}) {
   const secret = await readModelSecret(model.id);
   if (!secret) throw new Error("该模型尚未设置 API 密钥，或保存的密钥无法解密；请重新保存密钥");
@@ -276,6 +364,7 @@ async function upstream(model: AiModelRecord, messages: Array<{ role: string; co
     signal?.removeEventListener("abort", cancel);
   };
   try {
+    const requestStartedAt = Date.now();
     const response = await fetch(endpoint(model), {
       method: "POST", signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
@@ -286,7 +375,7 @@ async function upstream(model: AiModelRecord, messages: Array<{ role: string; co
       const detail = unsafeDetail.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret).join("[REDACTED]");
       throw new Error(`模型返回 ${response.status}：${detail || response.statusText}`);
     }
-    return { response, controller, cleanup };
+    return { response, controller, cleanup, model, requestStartedAt, responseHeadersAt: Date.now() };
   } catch (error) {
     cleanup();
     if (controller.signal.aborted) throw new Error(controller.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消");
@@ -310,7 +399,7 @@ export async function testModel(id: string) {
   if (!model || model.id !== id) throw new Error("模型不存在");
   const started = Date.now();
   const handle = await upstream(model, [{ role: "user", content: "只回复 OK" }], undefined, false);
-  await consumeUpstream(handle, (response) => response.json());
+  completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "模型连接测试");
   return { ok: true, latencyMs: Date.now() - started };
 }
 
@@ -321,7 +410,18 @@ function trimCurrent(text: string, maximum = 30000) {
 type PromptRole = "system" | "user" | "assistant";
 type PromptMessage = { role: PromptRole; content: string };
 type GenerateTarget = "content" | "outline" | "chapter-title";
-export type GenerateResult = { text: string; outlineTitle?: string; outlineTitleError?: string };
+export type GenerateResult = {
+  text: string;
+  outlineTitle?: string;
+  outlineTitleError?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  finishReason?: string;
+  upstreamRequestId?: string;
+  upstreamProvider?: string;
+  upstreamResponseHeadersMs?: number;
+  upstreamTotalMs?: number;
+};
 
 const CHAT_SYSTEM_PROMPT = `你是 Writer Studio 的写作讨论助手。
 
@@ -621,12 +721,23 @@ function normalizeGenerateResult(target: GenerateTarget, value: string, includeO
   const plain = stripOuterCodeFence(value);
   if (!includeOutlineTitle) return { text: normalizeGeneratedText(target, plain) };
   const titleMatch = plain.match(/<outline_title>\s*([\s\S]*?)\s*<\/outline_title>/i);
+  const openedGeneratedText = /<generated_text>/i.test(plain);
+  if (openedGeneratedText && !/<\/generated_text>\s*$/i.test(plain)) {
+    throw new Error("模型返回的正文在结束前中断（generated_text 标签未闭合），未保存不完整结果");
+  }
   const textMatch = plain.match(/<generated_text>\s*([\s\S]*?)(?:\s*<\/generated_text>\s*$|$)/i);
   const withoutTitle = plain.replace(/<outline_title>\s*[\s\S]*?\s*<\/outline_title>/i, "").trim();
   const text = normalizeGeneratedText(target, textMatch?.[1] ?? withoutTitle);
   if (!titleMatch) return { text, outlineTitleError: "模型没有返回大纲名" };
   const validated = validateGeneratedName(titleMatch[1], outlineNaming, 80);
   return validated.valid ? { text, outlineTitle: validated.name } : { text, outlineTitleError: validated.error };
+}
+
+function generateMaxTokens(model: AiModelRecord, target: GenerateTarget, targetWords?: number) {
+  if (model.maxOutput != null) return model.maxOutput;
+  if (target !== "content") return undefined;
+  if (targetWords === undefined) return 65_536;
+  return Math.min(65_536, Math.max(4_096, Math.ceil(targetWords * 2)));
 }
 
 export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean }, signal?: AbortSignal) {
@@ -645,9 +756,19 @@ export async function generateText(input: { outlineId: string; instruction?: str
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, targetWords ?? DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
   const prompt = generatePrompt(source, instruction, input.target, system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters);
-  const handle = await upstream(model, prompt.messages, signal, false);
-  const payload = await consumeUpstream(handle, (response) => response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const result = normalizeGenerateResult(input.target, String(payload.choices?.[0]?.message?.content ?? ""), includeOutlineTitle, outlineNaming);
+  const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target, targetWords) });
+  const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
+  const completion = completionResult(payload, handle, "模型生成");
+  const result = {
+    ...normalizeGenerateResult(input.target, completion.content, includeOutlineTitle, outlineNaming),
+    inputTokens: completion.diagnostics.promptTokens,
+    outputTokens: completion.diagnostics.completionTokens,
+    finishReason: completion.diagnostics.finishReason,
+    upstreamRequestId: completion.diagnostics.requestId,
+    upstreamProvider: completion.diagnostics.provider,
+    upstreamResponseHeadersMs: completion.diagnostics.responseHeadersMs,
+    upstreamTotalMs: completion.diagnostics.totalMs,
+  };
   return input.target === "content" && contentMode === "continue"
     ? { ...result, text: appendContinuation(source.currentOutline.content, result.text) }
     : result;
@@ -693,7 +814,7 @@ function parseChapterNamesResponse(value: string) {
   return { chapterTitle, outlineTitles };
 }
 
-export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; model?: string; instruction?: string }, signal?: AbortSignal): Promise<NameGenerationResult> {
+export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string }, signal?: AbortSignal): Promise<NameGenerationResult> {
   const state = await readStudioState();
   const article = state.data?.articles.find((item) => item.id === input.articleId);
   const chapter = article?.chapters.find((item) => item.id === input.chapterId);
@@ -703,8 +824,10 @@ export async function generateNames(input: { articleId: string; chapterId: strin
   if (input.model && !model) throw new AiInputError("所选名称生成模型不存在，请重新选择");
   const maximum = model?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS;
   const system = composeSystemPrompt(NAME_GENERATION_SYSTEM_PROMPT, model?.systemPrompt);
-  const chapterNaming = normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE);
-  const outlineNaming = normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
+  // Use the profiles visible to the caller for this request. They can be newer
+  // than the durable article snapshot while an autosave is still settling.
+  const chapterNaming = normalizeNamingProfile(input.chapterNaming ?? article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE);
+  const outlineNaming = normalizeNamingProfile(input.outlineNaming ?? article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
 
   if (input.target === "outline") {
     const outline = chapter.outlines.find((item) => item.id === input.outlineId && !item.archived);
@@ -717,9 +840,13 @@ export async function generateNames(input: { articleId: string; chapterId: strin
     const messages: PromptMessage[] = [{ role: "system", content: system }, { role: "user", content: [context, constraints, output, request].filter(Boolean).join("\n\n") }];
     const characters = renderedInputCharacters(messages);
     if (characters > maximum) throw new AiPromptTooLongError(`当前大纲命名输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型设定的 ${maximum.toLocaleString("zh-CN")} 字符上限`, characters, maximum);
-    const raw = model
-      ? String(((await consumeUpstream(await upstream(model, messages, signal, false), (response) => response.json())) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? "")
-      : `<outline_title>${localNameForProfile("", outline.plan, instruction, outlineNaming)}</outline_title>`;
+    let raw: string;
+    if (model) {
+      const handle = await upstream(model, messages, signal, false);
+      raw = completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "大纲命名").content;
+    } else {
+      raw = `<outline_title>${localNameForProfile("", outline.plan, instruction, outlineNaming)}</outline_title>`;
+    }
     const validated = validateGeneratedName(parseOutlineNameResponse(raw), outlineNaming, 80);
     if (!validated.valid) throw new AiInputError(validated.error);
     return { outlineTitles: [{ id: outline.id, title: validated.name }], inputCharacters: characters, maxInputCharacters: maximum };
@@ -745,9 +872,13 @@ export async function generateNames(input: { articleId: string; chapterId: strin
   const messages: PromptMessage[] = [{ role: "system", content: system }, { role: "user", content: [context, constraints, output, request].filter(Boolean).join("\n\n") }];
   const characters = renderedInputCharacters(messages);
   if (characters > maximum) throw new AiPromptTooLongError(`${includeChapter ? "生成章节名需要参考整章大纲，" : "所选大纲的名称生成"}输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型设定的 ${maximum.toLocaleString("zh-CN")} 字符上限。请拆分章节、取消章节名、减少所选大纲，或切换输入上限更高的模型。`, characters, maximum);
-  const raw = model
-    ? String(((await consumeUpstream(await upstream(model, messages, signal, false), (response) => response.json())) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? "")
-      : `${includeChapter ? `<chapter_title>${localNameForProfile("", eligibleOutlines.map((item) => item.plan).join("\n"), instruction, chapterNaming)}</chapter_title>` : ""}\n${outputAliases.length ? `<outline_titles>\n${outputAliases.map(({ key, outline }, index) => `<outline_title key="${key}">${localNameForProfile("", outline.plan, instruction, outlineNaming, index + 1)}</outline_title>`).join("\n")}\n</outline_titles>` : ""}`;
+  let raw: string;
+  if (model) {
+    const handle = await upstream(model, messages, signal, false);
+    raw = completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "章节命名").content;
+  } else {
+    raw = `${includeChapter ? `<chapter_title>${localNameForProfile("", eligibleOutlines.map((item) => item.plan).join("\n"), instruction, chapterNaming)}</chapter_title>` : ""}\n${outputAliases.length ? `<outline_titles>\n${outputAliases.map(({ key, outline }, index) => `<outline_title key="${key}">${localNameForProfile("", outline.plan, instruction, outlineNaming, index + 1)}</outline_title>`).join("\n")}\n</outline_titles>` : ""}`;
+  }
   const parsed = parseChapterNamesResponse(raw);
   const validatedChapter = includeChapter ? validateGeneratedName(parsed.chapterTitle, chapterNaming, 120) : undefined;
   if (validatedChapter && !validatedChapter.valid) throw new AiInputError(validatedChapter.error);
@@ -880,13 +1011,9 @@ export async function reviewChapter(input: AiReviewInput, signal?: AbortSignal):
     max_tokens: model.maxOutput ?? 65_536,
     context_length_exceeded_behavior: "error",
   });
-  const payload = await consumeUpstream(handle, (response) => response.json()) as {
-    choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-  };
-  const choice = payload.choices?.[0];
-  if (choice?.finish_reason === "length") throw new Error("AI Review 输出达到长度上限，未修改任何正文");
-  const parsed = parseReviewResponse(String(choice?.message?.content ?? ""));
+  const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
+  const completion = completionResult(payload, handle, "AI Review");
+  const parsed = parseReviewResponse(completion.content);
   if (parsed.chapterId !== input.chapter.id || parsed.sourceDigest !== sourceDigest) throw new Error("AI Review 返回的章节或正文摘要不匹配");
   const revised = applyReviewEdits(input.outlines, parsed.edits);
   return {
@@ -894,7 +1021,7 @@ export async function reviewChapter(input: AiReviewInput, signal?: AbortSignal):
     revised: input.outlines.map((outline) => ({ ...outline, revisedText: revised.get(outline.id) ?? outline.text })),
     editCount: parsed.edits.length,
     model,
-    usage: { promptTokens: payload.usage?.prompt_tokens, completionTokens: payload.usage?.completion_tokens },
+    usage: { promptTokens: completion.diagnostics.promptTokens, completionTokens: completion.diagnostics.completionTokens },
   };
 }
 
@@ -970,9 +1097,18 @@ function plainTextStream(text: string, signal?: AbortSignal) {
 function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal | undefined, upstreamController: AbortController, cleanup: () => void) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let downstreamCancelled = false;
+  let cleanedUp = false;
+  const cleanupOnce = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    cleanup();
+  };
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const reader = body.getReader();
+      const activeReader = body.getReader();
+      reader = activeReader;
       let buffer = "";
       let finished = false;
       let failed = false;
@@ -1018,7 +1154,7 @@ function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal |
       };
       try {
         while (!signal?.aborted && !finished) {
-          const { done, value } = await reader.read();
+          const { done, value } = await activeReader.read();
           if (done) {
             buffer += decoder.decode();
             drainEvents(true);
@@ -1027,20 +1163,31 @@ function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal |
           buffer += decoder.decode(value, { stream: true });
           drainEvents();
         }
-        if (finished) await reader.cancel().catch(() => undefined);
+        if (finished) await activeReader.cancel().catch(() => undefined);
       } catch (error) {
         failed = true;
-        if (upstreamController.signal.aborted) controller.error(new Error(upstreamController.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消"));
-        else controller.error(readableNetworkError(error, "读取模型响应"));
+        if (!downstreamCancelled && !signal?.aborted) {
+          if (upstreamController.signal.aborted) controller.error(new Error(upstreamController.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消"));
+          else controller.error(readableNetworkError(error, "读取模型响应"));
+        }
       } finally {
-        reader.releaseLock();
-        cleanup();
-        if (!failed && !signal?.aborted) {
+        if (reader === activeReader) reader = undefined;
+        activeReader.releaseLock();
+        cleanupOnce();
+        if (!failed && !signal?.aborted && !downstreamCancelled) {
           try { controller.enqueue(encoder.encode("\u001e")); } catch { /* The downstream may have cancelled. */ }
         }
         try { controller.close(); } catch { /* The stream may already be errored. */ }
       }
     },
-    cancel() { cleanup(); void body.cancel(); },
+    cancel(reason) {
+      downstreamCancelled = true;
+      if (!upstreamController.signal.aborted) upstreamController.abort("cancelled");
+      cleanupOnce();
+      // The response body is locked while start() owns its reader. Cancelling the
+      // body directly here throws ERR_INVALID_STATE and can terminate Node. Cancel
+      // the active reader instead and let start() release its lock in finally.
+      return reader?.cancel(reason).catch(() => undefined);
+    },
   });
 }

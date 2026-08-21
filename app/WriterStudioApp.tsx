@@ -466,6 +466,7 @@ function WriterStudioInner() {
   const [mobileLayout, setMobileLayout] = useState(false);
   const [taskLeaseTick, setTaskLeaseTick] = useState(0);
   const taskDispatches = useRef<Set<string>>(new Set());
+  const continuousDocumentPositions = useRef<Record<string, ContinuousDocumentPosition>>({});
 
   useEffect(() => {
     setColorScheme(studio.data.settings.theme === "system" ? "auto" : studio.data.settings.theme);
@@ -668,8 +669,8 @@ function WriterStudioInner() {
           /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />
         )}
         {view === "chapter" && (studio.currentChapter.id ? <ChapterReader onOutline={openOutline} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
-        {view === "outline-edit" && <ContinuousDocumentEditor key={`outline-edit:${activeArticle.id}`} mode="outline" onNotice={setToast} />}
-        {view === "read" && <ContinuousDocumentEditor key={`content-edit:${activeArticle.id}`} mode="content" onNotice={setToast} />}
+        {view === "outline-edit" && <ContinuousDocumentEditor key={`outline-edit:${activeArticle.id}`} mode="outline" positionMemory={continuousDocumentPositions} onNotice={setToast} />}
+        {view === "read" && <ContinuousDocumentEditor key={`content-edit:${activeArticle.id}`} mode="content" positionMemory={continuousDocumentPositions} onNotice={setToast} />}
         {view === "search" && <SearchPage onOutline={openOutline} onCharacter={() => go("info-characters")} />}
         {view.startsWith("info-") && <ArticleInfoPage view={view} onGo={go} />}
         {view.startsWith("settings-") && <SettingsPage view={view} onGo={go} />}
@@ -735,6 +736,8 @@ function PersistenceNotices() {
 
 type OutlineDropPlacement = "before" | "after";
 type OutlineDropIndicator = { targetId: string; placement: OutlineDropPlacement } | null;
+type ContinuousDocumentPosition = { outlineId: string; offsetTop: number };
+type ContinuousDocumentPositionMemory = { current: Record<string, ContinuousDocumentPosition> };
 
 function outlineDropPlacement(event: DragEndEvent | DragOverEvent, orderedIds: string[]): OutlineDropPlacement {
   if (event.over) {
@@ -1723,7 +1726,15 @@ function NameGenerateDialog({ target, onClose, onApplied }: { target: NameGenera
     const response = await fetch("/api/ai/names", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ articleId: article.id, chapterId: chapter?.id, model: selectedModelReference, instruction: instruction.trim(), ...body }),
+      body: JSON.stringify({
+        articleId: article.id,
+        chapterId: chapter?.id,
+        chapterNaming: article.chapterNaming,
+        outlineNaming: article.outlineNaming,
+        model: selectedModelReference,
+        instruction: instruction.trim(),
+        ...body,
+      }),
     });
     const payload = await response.json() as NameGeneratePreview & { error?: string };
     if (!response.ok) {
@@ -3193,7 +3204,7 @@ function ContinuousEmptyChapter({ chapterId }: { chapterId: string }) {
   return <div ref={setNodeRef} className={`continuous-empty-chapter ${isOver ? "chapter-drop-active" : ""}`} aria-label="将大纲移动到此章节" />;
 }
 
-function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, dropPlacement, contentStyle, onTitle, onText, onContentFocus, onContentBlur, onSelectVersion, onSetCurrentVersion, onSetDefaultVersion, onMoveUp, onMoveDown, onMoveChapter, onOpenChat }: {
+function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, dropPlacement, contentStyle, onActivate, onAdd, onDelete, onArchive, onTitle, onText, onContentFocus, onContentBlur, onSelectVersion, onSetCurrentVersion, onSetDefaultVersion, onMoveUp, onMoveDown, onMoveChapter, onOpenChat }: {
   item: Outline;
   number: number;
   mode: "outline" | "content";
@@ -3201,6 +3212,10 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
   selectedVersionId?: string;
   dropPlacement?: OutlineDropPlacement;
   contentStyle?: CSSProperties;
+  onActivate: () => void;
+  onAdd?: () => void;
+  onDelete?: () => void;
+  onArchive?: () => void;
   onTitle: (value: string) => void;
   onText: (value: string) => void;
   onContentFocus?: () => void;
@@ -3225,10 +3240,23 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
     data-continuous-outline-id={item.id}
     className={`continuous-outline-block ${isDragging ? "dragging" : ""} ${dropPlacement ? `drop-${dropPlacement}` : ""}`}
     style={{ transform: CSS.Transform.toString(transform), transition }}
+    onFocusCapture={onActivate}
+    onPointerDownCapture={onActivate}
   >
     <div className="continuous-outline-gutter">
       <span>{String(number).padStart(2, "0")}</span>
       <button ref={setActivatorNodeRef} className="continuous-drag-handle" type="button" {...attributes} {...listeners} aria-label={`拖动排序：${displayTitle}`} title="拖动调整顺序"><i aria-hidden="true" /></button>
+      {mode === "outline" && <div className="continuous-outline-inline-actions">
+        <button type="button" aria-label={`在“${displayTitle}”下方新建大纲`} title="在下方新建空白大纲" onClick={onAdd}>+</button>
+        <button className="delete" type="button" aria-label={`删除大纲：${displayTitle}`} title="删除大纲" onClick={() => {
+          const hasBody = Boolean(item.content.trim() || resolvedOutlineContent(item).trim() || item.versions.some((version) => version.content.trim()));
+          const message = hasBody
+            ? `「${displayTitle}」已有正文。删除后正文、正文版本和 AI Chat 都会一并删除，且无法撤销。确认删除？`
+            : `删除大纲「${displayTitle}」？此操作无法撤销。`;
+          if (window.confirm(message)) onDelete?.();
+        }}>-</button>
+        <button type="button" aria-label={`${item.archived ? "恢复" : "归档"}大纲：${displayTitle}`} title={item.archived ? "恢复大纲" : "归档大纲"} onClick={onArchive}>=</button>
+      </div>}
     </div>
     <Menu position="bottom-end" shadow="md" width={150}>
       <Menu.Target><IconButton name="more" label={`${displayTitle}排序操作`} className="continuous-outline-more" /></Menu.Target>
@@ -3370,7 +3398,7 @@ function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSa
   </ResponsiveModal>;
 }
 
-function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "content"; onNotice: (message: string) => void }) {
+function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "outline" | "content"; positionMemory: ContinuousDocumentPositionMemory; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const reviewModels = useConfiguredModels();
   const groups = useMemo(() => studio.currentArticle.chapters
@@ -3390,6 +3418,11 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
   const defaultContentsRef = useRef<Record<string, string>>(initialContents());
   const editSourceVersionIdsRef = useRef<Record<string, string>>({});
   const studioRef = useRef(studio);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const activeOutlineIdRef = useRef(studio.currentOutline.id);
+  const positionKey = `${studio.currentArticle.id}:${mode}`;
+  const initialOutlineIdRef = useRef(studio.currentOutline.id);
+  const initialPositionRef = useRef(positionMemory.current[positionKey]);
   const orderedIds = outlines.map((item) => item.id);
   const draggingOutline = outlines.find((item) => item.id === draggingId);
   const sensors = useSensors(
@@ -3400,6 +3433,45 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
 
   useEffect(() => { contentDraftsRef.current = contentDrafts; }, [contentDrafts]);
   useEffect(() => { studioRef.current = studio; }, [studio]);
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const remembered = initialPositionRef.current;
+    const outlineId = remembered?.outlineId === initialOutlineIdRef.current ? remembered.outlineId : initialOutlineIdRef.current;
+    const defaultOffset = Math.min(160, Math.max(32, container.clientHeight * .18));
+    const offsetTop = remembered?.outlineId === outlineId ? remembered.offsetTop : defaultOffset;
+    const restore = () => {
+      const target = Array.from(container.querySelectorAll<HTMLElement>("[data-continuous-outline-id]"))
+        .find((element) => element.dataset.continuousOutlineId === outlineId);
+      if (!target) return;
+      const currentOffset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      container.scrollTop = Math.max(0, container.scrollTop + currentOffset - offsetTop);
+    };
+    restore();
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      restore();
+      secondFrame = window.requestAnimationFrame(restore);
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [positionKey]);
+
+  useLayoutEffect(() => () => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const outlineId = activeOutlineIdRef.current;
+    const target = Array.from(container.querySelectorAll<HTMLElement>("[data-continuous-outline-id]"))
+      .find((element) => element.dataset.continuousOutlineId === outlineId);
+    if (!target) return;
+    positionMemory.current[positionKey] = {
+      outlineId,
+      offsetTop: target.getBoundingClientRect().top - container.getBoundingClientRect().top,
+    };
+  }, [positionKey, positionMemory]);
 
   useEffect(() => {
     if (mode !== "content") return;
@@ -3530,6 +3602,43 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
     setChatOutlineId(item.id);
   }
 
+  function activateOutline(outlineId: string) {
+    if (activeOutlineIdRef.current === outlineId) return;
+    activeOutlineIdRef.current = outlineId;
+    studio.setCurrentOutline(outlineId);
+  }
+
+  function selectAdjacentOutline(outlineId: string) {
+    const index = orderedIds.indexOf(outlineId);
+    const adjacentId = orderedIds[index + 1] ?? orderedIds[index - 1];
+    activeOutlineIdRef.current = adjacentId ?? "";
+    if (adjacentId) studio.setCurrentOutline(adjacentId);
+  }
+
+  function createOutlineBelow(item: Outline, chapterId: string) {
+    const id = studio.createOutline(chapterId, item.id);
+    activeOutlineIdRef.current = id;
+    onNotice(`已在「${outlineDisplayTitle(item)}」下方新建大纲`);
+    window.requestAnimationFrame(() => {
+      const target = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-continuous-outline-id]") ?? [])
+        .find((element) => element.dataset.continuousOutlineId === id);
+      target?.scrollIntoView({ block: "nearest" });
+      target?.querySelector<HTMLInputElement>(".continuous-outline-title-input")?.focus({ preventScroll: true });
+    });
+  }
+
+  function deleteOutlineFromDocument(item: Outline) {
+    selectAdjacentOutline(item.id);
+    studio.deleteOutline(item.id);
+    onNotice(`已删除「${outlineDisplayTitle(item)}」`);
+  }
+
+  function toggleOutlineArchive(item: Outline) {
+    if (!item.archived && !studio.data.settings.showArchived) selectAdjacentOutline(item.id);
+    studio.updateOutline(item.id, { archived: !item.archived });
+    onNotice(item.archived ? `已恢复「${outlineDisplayTitle(item)}」` : `已归档「${outlineDisplayTitle(item)}」`);
+  }
+
   async function runReview(input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string }) {
     for (const outlineId of [...dirtyContentIds]) {
       if (!await commitContent(outlineId)) throw new Error("正文尚未保存，不能开始 AI Review");
@@ -3612,7 +3721,7 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
   const contentWords = outlines.reduce((total, item) => total + wordCount(contentDrafts[item.id] ?? ""), 0);
   const status = mode === "content" && dirtyContentIds.size ? `${dirtyContentIds.size} 条编辑中` : saveStatusLabel(studio.saveStatus);
 
-  return <div className="page-scroll"><div className={`continuous-document-editor ${mode}`}>
+  return <div ref={scrollRef} className="page-scroll"><div className={`continuous-document-editor ${mode}`}>
     <PageHeader eyebrow={mode === "outline" ? "全大纲编辑" : "全文编辑"} title={studio.currentArticle.title} description={`${groups.length} 章 · ${outlines.length} 条大纲${mode === "content" ? ` · ${contentWords.toLocaleString("zh-CN")} 字` : ""} · ${status}`} actions={mode === "content" ? <><Button variant="default" type="button" onClick={() => void saveAllContentAsVersions()}>另存为</Button><Button type="button" loading={studio.saveStatus === "saving"} onClick={() => void saveAllContent()}>保存</Button><IconButton name="review" label="AI Review" variant="glass" size="large" className="full-content-review-button" onClick={() => setReviewOpen(true)} /></> : undefined} />
     <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={{ acceleration: 10, threshold: { x: 0.12, y: 0.12 } }} onDragStart={(event) => setDraggingId(String(event.active.id))} onDragOver={handleDragOver} onDragCancel={clearDragState} onDragEnd={finishDrag}>
       <div className="continuous-document-body">
@@ -3628,6 +3737,10 @@ function ContinuousDocumentEditor({ mode, onNotice }: { mode: "outline" | "conte
               selectedVersionId={mode === "content" ? versionSelections[item.id] : undefined}
               dropPlacement={dropIndicator?.targetId === item.id ? dropIndicator.placement : undefined}
               contentStyle={contentStyle}
+              onActivate={() => activateOutline(item.id)}
+              onAdd={mode === "outline" ? () => createOutlineBelow(item, group.id) : undefined}
+              onDelete={mode === "outline" ? () => deleteOutlineFromDocument(item) : undefined}
+              onArchive={mode === "outline" ? () => toggleOutlineArchive(item) : undefined}
               onTitle={(value) => studio.updateOutline(item.id, { title: value.slice(0, 80) })}
               onText={(value) => mode === "outline" ? studio.updateOutline(item.id, { plan: value.slice(0, 10000) }) : changeContent(item.id, value, versionSelections[item.id])}
               onContentBlur={mode === "content" ? () => commitContent(item.id) : undefined}
@@ -4024,10 +4137,54 @@ function TaskSettings() { const studio = useStudio(); return <SettingSection tit
 function DatabaseSettings() {
   const studio = useStudio();
   const transfer = useDataTransfer();
-  const [status, setStatus] = useState<{ connected?: boolean; engine?: string; revision?: number; articles?: number; searchMode?: string } | null>(null);
+  type SyncStatus = { state?: "cloud" | "not_configured" | "unpaired" | "synced" | "pending" | "uploading" | "diverged" | "schema_mismatch" | "offline" | "error"; message?: string; localDatabaseVersion?: number; remoteDatabaseVersion?: number; lastCloudVersion?: number | null; lastSyncAt?: string | null; cloudHost?: string | null };
+  const [status, setStatus] = useState<{ connected?: boolean; engine?: string; revision?: number; databaseVersion?: number; articles?: number; searchMode?: string } | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncBusy, setSyncBusy] = useState<"pull" | "push" | "">("");
+  const [syncNotice, setSyncNotice] = useState("");
   const [checking, setChecking] = useState(false);
   useEffect(() => { void fetch("/api/database/status", { cache: "no-store" }).then((response) => response.json()).then(setStatus); }, [studio.saveStatus]);
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/sync/status", { cache: "no-store" });
+      setSyncStatus(await response.json() as SyncStatus);
+    } catch (reason) {
+      setSyncStatus({ state: "offline", message: reason instanceof Error ? reason.message : "同步状态读取失败" });
+    }
+  }, []);
+  useEffect(() => {
+    void loadSyncStatus();
+    const refresh = () => { void loadSyncStatus(); };
+    const timer = window.setInterval(refresh, 15_000);
+    window.addEventListener("writer-studio-sync-status", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("writer-studio-sync-status", refresh); };
+  }, [loadSyncStatus]);
   async function check() { setChecking(true); const response = await fetch("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; setChecking(false); window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); }
+  async function replaceDatabase(direction: "pull" | "push") {
+    const phrase = direction === "pull" ? "从云端取回" : "复制到云端";
+    const target = direction === "pull" ? "本地" : "云端";
+    const typed = window.prompt(`此操作会用${direction === "pull" ? "云端" : "本地"}创作数据库覆盖${target}，覆盖前会自动备份。输入“${phrase}”确认：`, "");
+    if (typed !== phrase) return;
+    setSyncBusy(direction); setSyncNotice("");
+    try {
+      if (!await studio.saveNow()) throw new Error("本地内容尚未保存，已取消覆盖");
+      const response = await fetch(`/api/sync/${direction}`, { method: "POST" });
+      const payload = await response.json() as { message?: string; backupPath?: string; code?: string };
+      if (!response.ok) throw new Error(payload.message || `覆盖失败（${response.status}）`);
+      if (direction === "pull") {
+        window.location.reload();
+        return;
+      }
+      setSyncNotice(`${payload.message ?? "云端覆盖完成"}；覆盖前快照已保存。`);
+      await loadSyncStatus();
+    } catch (reason) {
+      setSyncNotice(reason instanceof Error ? reason.message : "数据库覆盖失败");
+    } finally {
+      setSyncBusy("");
+    }
+  }
+  const syncBlocked = syncStatus?.state === "cloud" || syncStatus?.state === "not_configured" || syncStatus?.state === "schema_mismatch";
+  const syncHealthy = syncStatus?.state === "synced";
   return <>
     <SettingSection title="完整备份">
       <div className="transfer-hero"><div><span className="ui-title">导出全部 Writer Studio 数据</span><p>包含所有文章、正文、版本、聊天、任务、系统设置和 AI 模型参数，不包含 API Key。</p></div><Button leftSection={<Icon name="saveAs" />} onClick={() => void transfer.exportComplete()}>导出全部</Button></div>
@@ -4038,7 +4195,21 @@ function DatabaseSettings() {
         <article className="transfer-card"><div><span className="ui-title">系统配置</span><p>界面、编辑器、任务和生成设置，以及 AI 模型参数；API Key 需要在新环境重新输入。</p></div><Group gap="xs"><Button variant="default" size="xs" onClick={() => void transfer.exportSystemConfig()}>导出</Button><Button variant="light" size="xs" onClick={() => void transfer.importSystemConfig()}>导入</Button></Group></article>
       </div>
     </SettingSection>
-    <SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "SQLite"}</span><p>修订号 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert(status?.engine?.toLocaleLowerCase().includes("d1") ? "当前 Site 使用云端 D1 数据库。" : "当前使用本机 SQLite 数据库，默认文件位于 data/writer-studio.sqlite。")}>数据位置</button></div></SettingSection>
+    <SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "SQLite"}</span><p>数据库版本 {status?.databaseVersion ?? "—"} · 保存修订 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert(status?.engine?.toLocaleLowerCase().includes("d1") ? "当前 Site 使用云端 D1 数据库。" : "当前使用本机 SQLite 数据库，默认文件位于 data/writer-studio.sqlite。")}>数据位置</button></div></SettingSection>
+    <SettingSection title="云端同步">
+      <div className="sync-card">
+        <div className="sync-card-heading"><div><span className="ui-title">本地写入后自动后台上传</span><p>{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
+        <div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
+        <p className="sync-rule">只有“云端版本 = 同步基线”时才允许后台上传；版本不同会立即停止，必须手动选择覆盖方向。结构版本不同不能覆盖，需要先升级应用。</p>
+        {syncNotice && <div className={syncNotice.includes("完成") || syncNotice.includes("已用") ? "sync-notice success" : "sync-notice error"} role="status">{syncNotice}</div>}
+        <Group gap="sm" className="sync-actions">
+          <Button color="red" variant="light" disabled={Boolean(syncBlocked) || Boolean(syncBusy)} loading={syncBusy === "pull"} onClick={() => void replaceDatabase("pull")}>从云端取回</Button>
+          <Button color="red" variant="light" disabled={Boolean(syncBlocked) || Boolean(syncBusy)} loading={syncBusy === "push"} onClick={() => void replaceDatabase("push")}>复制到云端</Button>
+          <Button variant="default" disabled={Boolean(syncBusy)} onClick={() => void loadSyncStatus()}>刷新状态</Button>
+        </Group>
+        <p className="sync-footnote">覆盖前的本地或云端创作快照会保存在本机 data/recovery；AI 密钥和同步密钥不会被复制。</p>
+      </div>
+    </SettingSection>
     <SettingSection title="维护"><SettingRow title="数据完整性检查"><button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>{checking ? "正在检查…" : "开始检查"}</button></SettingRow></SettingSection>
     <SettingSection title="危险操作"><SettingRow title="清除全部业务数据"><button className="danger-button" type="button" onClick={() => { const confirmText = window.prompt("输入 CLEAR 确认清除全部文章、正文、版本、人物、聊天和 AI 任务"); if (confirmText === "CLEAR") void studio.clearBusinessData(); }}>清除全部业务数据</button></SettingRow></SettingSection>
   </>;

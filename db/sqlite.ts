@@ -231,3 +231,7 @@ export function getDatabase(): SqliteDatabase {
 export function databaseEngine() {
   return cloudDatabase() ? "Cloudflare D1" : "SQLite";
 }
+
+export function isCloudDatabase() {
+  return Boolean(cloudDatabase());
+}

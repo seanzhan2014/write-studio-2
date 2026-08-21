@@ -425,6 +425,13 @@ const deviceUiStorageKey = "writer-studio:device-ui-v1";
 const draftPrefix = "writer-studio:draft:";
 const saveRequestTimeoutMs = 45_000;
 
+async function triggerBackgroundCloudUpload() {
+  try {
+    await fetch("/api/sync/upload", { method: "POST", keepalive: true });
+  } catch { /* Local saves remain authoritative while the cloud is unavailable. */ }
+  window.dispatchEvent(new Event("writer-studio-sync-status"));
+}
+
 function makeId(prefix: string) {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   return `${prefix}-${id}`;
@@ -891,6 +898,18 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     const timer = window.setTimeout(() => { void enqueueSave(data); }, 800);
     return () => window.clearTimeout(timer);
   }, [data, hydrated, conflict, enqueueSave]);
+
+  useEffect(() => {
+    if (!hydrated || saveStatus !== "saved") return;
+    void triggerBackgroundCloudUpload();
+  }, [hydrated, saveStatus]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const uploadWhenOnline = () => { void triggerBackgroundCloudUpload(); };
+    window.addEventListener("online", uploadWhenOnline);
+    return () => window.removeEventListener("online", uploadWhenOnline);
+  }, [hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
