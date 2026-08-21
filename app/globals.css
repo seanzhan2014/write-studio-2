@@ -3140,6 +3140,29 @@ kbd {
 .sync-notice.error { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); color: var(--danger); }
 .sync-actions { flex-wrap: wrap; }
 
+.sync-auto-row {
+  align-items: center;
+  background: var(--app-bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 11px 12px;
+}
+
+.sync-auto-row p,
+.sync-overwrite-options p {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 3px 0 0;
+}
+
+.sync-toggle-busy { color: var(--text-secondary); font-size: 11px; min-width: 42px; }
+.sync-overwrite-options { display: grid; gap: 9px; }
+.sync-overwrite-options .mantine-Checkbox-label { font-size: 12px; }
+
 .drawer-scrim,
 .task-scrim,
 .modal-scrim {

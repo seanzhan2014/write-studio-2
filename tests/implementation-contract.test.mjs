@@ -73,6 +73,7 @@ test("business data uses server SQLite with revision conflicts and interrupted-d
 
 test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
   const sync = await read("db/sync.ts");
+  const ai = await read("db/ai.ts");
   const runtime = await read("db/runtime.ts");
   const state = await read("app/studio-state.tsx");
   const app = await read("app/WriterStudioApp.tsx");
@@ -82,9 +83,17 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(sync, /OAI-Sites-Authorization/);
   assert.match(sync, /writeRecoverySnapshot\("sync-local-before-pull"/);
   assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
+  assert.match(sync, /sync_auto_upload/);
+  assert.match(sync, /modelScope/);
+  assert.match(ai, /exportModelsForSync/);
+  assert.match(ai, /replaceModelsFromSync/);
+  assert.match(ai, /plainSecret[\s\S]*encryptSecret/);
   assert.match(state, /\/api\/sync\/upload/);
   assert.match(app, /从云端取回/);
   assert.match(app, /复制到云端/);
+  assert.match(app, /同时覆盖大模型配置/);
+  assert.match(app, /同时覆盖 API Key \/ Secret/);
+  assert.match(app, /本地保存后自动异步复制到云端/);
   assert.match(app, /云端版本 = 同步基线/);
 });
 

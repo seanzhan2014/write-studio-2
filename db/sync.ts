@@ -1,11 +1,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { StudioData } from "@/app/studio-state";
+import { exportModelsForSync, replaceModelsFromSync, type AiModelSyncRecord } from "@/db/ai";
 import { canAutomaticallyUpload, evaluateSyncPolicy } from "@/lib/sync-policy.mjs";
 import { ensureDatabase, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 
-export const SYNC_SCHEMA_VERSION = 1;
+export const SYNC_SCHEMA_VERSION = 2;
 const syncFormat = "writer-studio-sync-v1";
 const remoteTimeoutMs = 30_000;
 
@@ -16,7 +17,11 @@ export type SyncSnapshot = {
   databaseVersion: number;
   createdAt: string;
   data: StudioData;
+  modelScope: "none" | "config" | "all";
+  models?: AiModelSyncRecord[];
 };
+
+export type SyncOverwriteOptions = { includeModels: boolean; includeSecrets: boolean };
 
 export type RemoteDatabaseMeta = {
   schemaVersion: number;
@@ -79,6 +84,17 @@ async function writeSettings(values: Record<string, string>) {
   await db.batch(entries.map(([key, value]) => db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)").bind(key, value, now)));
 }
 
+export async function isAutoUploadEnabled() {
+  const values = await readSettings(["sync_auto_upload"]);
+  return values.get("sync_auto_upload") !== "0";
+}
+
+export async function setAutoUploadEnabled(enabled: boolean) {
+  if (isCloudDatabase()) throw new SyncError("local_only", "自动上传开关只属于本地 Writer Studio", 400);
+  await writeSettings({ sync_auto_upload: enabled ? "1" : "0" });
+  return getLocalSyncStatus();
+}
+
 function normalizeCloudUrl(value: string) {
   const url = new URL(value);
   if (!(["http:", "https:"].includes(url.protocol))) throw new Error("云端地址必须使用 HTTP 或 HTTPS");
@@ -124,9 +140,16 @@ export async function currentDatabaseMeta(): Promise<RemoteDatabaseMeta> {
   return { schemaVersion, databaseId, databaseVersion };
 }
 
-export async function createCurrentSnapshot(): Promise<SyncSnapshot> {
+function normalizedOverwriteOptions(value?: Partial<SyncOverwriteOptions>): SyncOverwriteOptions {
+  const includeModels = value?.includeModels === true;
+  return { includeModels, includeSecrets: includeModels && value?.includeSecrets === true };
+}
+
+export async function createCurrentSnapshot(options?: Partial<SyncOverwriteOptions>): Promise<SyncSnapshot> {
+  const normalized = normalizedOverwriteOptions(options);
   const [state, meta] = await Promise.all([readStudioState(), currentDatabaseMeta()]);
   if (!state.data) throw new SyncError("database_unavailable", "数据库内容不可用", 503);
+  const modelScope = normalized.includeModels ? normalized.includeSecrets ? "all" : "config" : "none";
   return {
     format: syncFormat,
     schemaVersion: meta.schemaVersion,
@@ -134,6 +157,8 @@ export async function createCurrentSnapshot(): Promise<SyncSnapshot> {
     databaseVersion: state.databaseVersion,
     createdAt: new Date().toISOString(),
     data: state.data,
+    modelScope,
+    ...(normalized.includeModels ? { models: await exportModelsForSync(normalized.includeSecrets) } : {}),
   };
 }
 
@@ -143,7 +168,9 @@ export function validateSyncSnapshot(value: unknown): asserts value is SyncSnaps
     !snapshot || snapshot.format !== syncFormat ||
     !Number.isSafeInteger(snapshot.schemaVersion) || !Number.isSafeInteger(snapshot.databaseVersion) ||
     typeof snapshot.databaseId !== "string" || !snapshot.databaseId ||
-    !snapshot.data || snapshot.data.version !== 1 || !Array.isArray(snapshot.data.articles)
+    !snapshot.data || snapshot.data.version !== 1 || !Array.isArray(snapshot.data.articles) ||
+    !([undefined, "none", "config", "all"] as unknown[]).includes(snapshot.modelScope) ||
+    (snapshot.modelScope !== undefined && snapshot.modelScope !== "none" && !Array.isArray(snapshot.models))
   ) {
     throw new SyncError("invalid_snapshot", "同步快照格式无效", 400);
   }
@@ -165,6 +192,8 @@ export async function replaceCurrentDatabase(snapshotValue: unknown, expectedDat
   if (result.conflict) {
     throw new SyncError("version_mismatch", "写入期间数据库版本发生变化，请重试", 409, { actual: result.current.databaseVersion });
   }
+  const modelScope = snapshot.modelScope ?? "none";
+  if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all");
   return { ...await currentDatabaseMeta(), databaseVersion: result.databaseVersion };
 }
 
@@ -220,8 +249,10 @@ async function remoteMeta(config: SyncConfig) {
   return remoteRequest<RemoteDatabaseMeta>(config, "/api/sync/remote/meta");
 }
 
-async function remoteSnapshot(config: SyncConfig) {
-  const snapshot = await remoteRequest<SyncSnapshot>(config, "/api/sync/remote/snapshot");
+async function remoteSnapshot(config: SyncConfig, options?: Partial<SyncOverwriteOptions>) {
+  const normalized = normalizedOverwriteOptions(options);
+  const query = new URLSearchParams({ models: normalized.includeModels ? "1" : "0", secrets: normalized.includeSecrets ? "1" : "0" });
+  const snapshot = await remoteRequest<SyncSnapshot>(config, `/api/sync/remote/snapshot?${query}`);
   validateSyncSnapshot(snapshot);
   return snapshot;
 }
@@ -248,8 +279,8 @@ function statusMessage(state: LocalSyncState) {
 
 export async function getLocalSyncStatus() {
   const local = await currentDatabaseMeta();
-  if (isCloudDatabase()) return { state: "cloud" as const, message: statusMessage("cloud"), localDatabaseVersion: local.databaseVersion, schemaVersion: local.schemaVersion };
-  const [config, stored] = await Promise.all([localSyncConfig(), storedSyncMeta()]);
+  if (isCloudDatabase()) return { state: "cloud" as const, message: statusMessage("cloud"), autoUploadEnabled: false, localDatabaseVersion: local.databaseVersion, schemaVersion: local.schemaVersion };
+  const [config, stored, autoUploadEnabled] = await Promise.all([localSyncConfig(), storedSyncMeta(), isAutoUploadEnabled()]);
   const base = {
     localDatabaseVersion: local.databaseVersion,
     schemaVersion: local.schemaVersion,
@@ -257,6 +288,7 @@ export async function getLocalSyncStatus() {
     lastUploadedLocalVersion: stored.lastUploadedLocalVersion,
     lastSyncAt: stored.lastSyncAt || null,
     cloudHost: config ? new URL(config.cloudUrl).host : null,
+    autoUploadEnabled,
   };
   if (!config) return { ...base, state: "not_configured" as const, message: statusMessage("not_configured") };
   try {
@@ -294,7 +326,8 @@ async function recordSyncFailure(state: LocalSyncState, error: string) {
 
 async function performBackgroundUpload() {
   if (isCloudDatabase()) return { state: "cloud" as const, uploaded: false, message: statusMessage("cloud") };
-  const [config, stored, local] = await Promise.all([localSyncConfig(), storedSyncMeta(), currentDatabaseMeta()]);
+  const [config, stored, local, autoUploadEnabled] = await Promise.all([localSyncConfig(), storedSyncMeta(), currentDatabaseMeta(), isAutoUploadEnabled()]);
+  if (!autoUploadEnabled) return { state: "disabled" as const, uploaded: false, message: "自动后台上传已关闭" };
   if (!config) return { state: "not_configured" as const, uploaded: false, message: statusMessage("not_configured") };
   if (stored.lastCloudVersion === null) return { state: "unpaired" as const, uploaded: false, message: statusMessage("unpaired") };
   try {
@@ -346,7 +379,7 @@ function writeRecoverySnapshot(label: string, snapshot: SyncSnapshot) {
   mkdirSync(recoveryDirectory, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = path.join(recoveryDirectory, `${label}-${timestamp}.json`);
-  writeFileSync(backupPath, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+  writeFileSync(backupPath, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
   return backupPath;
 }
 
@@ -355,11 +388,12 @@ function requireLocalConfig(config: SyncConfig | null): asserts config is SyncCo
   if (!config) throw new SyncError("not_configured", "尚未配置云端地址或同步密钥", 503);
 }
 
-export async function pullCloudOverLocal() {
+export async function pullCloudOverLocal(options?: Partial<SyncOverwriteOptions>) {
+  const normalized = normalizedOverwriteOptions(options);
   const config = await localSyncConfig();
   requireLocalConfig(config);
-  const cloud = await remoteSnapshot(config);
-  const local = await createCurrentSnapshot();
+  const cloud = await remoteSnapshot(config, normalized);
+  const local = await createCurrentSnapshot({ includeModels: normalized.includeModels, includeSecrets: normalized.includeModels });
   if (cloud.schemaVersion !== local.schemaVersion || cloud.schemaVersion !== SYNC_SCHEMA_VERSION) {
     throw new SyncError("schema_mismatch", "两端数据库结构版本不同，不能覆盖", 409, { local: local.schemaVersion, remote: cloud.schemaVersion });
   }
@@ -367,15 +401,17 @@ export async function pullCloudOverLocal() {
   const current = await readStudioState();
   const saved = await writeStudioState(cloud.data, current.revision);
   if (saved.conflict) throw new SyncError("local_changed", "本地数据库在覆盖前发生变化，请重试", 409);
+  if (normalized.includeModels) await replaceModelsFromSync(cloud.models ?? [], normalized.includeSecrets);
   await recordSyncSuccess({ schemaVersion: cloud.schemaVersion, databaseId: cloud.databaseId, databaseVersion: cloud.databaseVersion }, saved.databaseVersion);
   return { state: "synced" as const, message: "已用云端数据库覆盖本地", backupPath, localDatabaseVersion: saved.databaseVersion, remoteDatabaseVersion: cloud.databaseVersion };
 }
 
-export async function pushLocalOverCloud() {
+export async function pushLocalOverCloud(options?: Partial<SyncOverwriteOptions>) {
+  const normalized = normalizedOverwriteOptions(options);
   const config = await localSyncConfig();
   requireLocalConfig(config);
-  const cloudBefore = await remoteSnapshot(config);
-  const local = await createCurrentSnapshot();
+  const cloudBefore = await remoteSnapshot(config, { includeModels: normalized.includeModels, includeSecrets: normalized.includeModels });
+  const local = await createCurrentSnapshot(normalized);
   if (cloudBefore.schemaVersion !== local.schemaVersion || local.schemaVersion !== SYNC_SCHEMA_VERSION) {
     throw new SyncError("schema_mismatch", "两端数据库结构版本不同，不能覆盖", 409, { local: local.schemaVersion, remote: cloudBefore.schemaVersion });
   }

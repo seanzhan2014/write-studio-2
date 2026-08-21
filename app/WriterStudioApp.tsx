@@ -3908,7 +3908,7 @@ function SettingRow({ title, children }: { title: string; children: React.ReactN
   return <div className="setting-row"><div><span className="ui-label">{title}</span></div>{children}</div>;
 }
 
-function Toggle({ checked = true, onChange }: { checked?: boolean; onChange?: (checked: boolean) => void }) { return <button type="button" className={`toggle ${checked ? "on" : ""}`} aria-label={checked ? "已开启" : "已关闭"} aria-pressed={checked} onClick={() => onChange?.(!checked)}><span /></button>; }
+function Toggle({ checked = true, disabled = false, onChange }: { checked?: boolean; disabled?: boolean; onChange?: (checked: boolean) => void }) { return <button type="button" disabled={disabled} className={`toggle ${checked ? "on" : ""}`} aria-label={checked ? "已开启" : "已关闭"} aria-pressed={checked} onClick={() => onChange?.(!checked)}><span /></button>; }
 
 function GeneralSettings() {
   const studio = useStudio();
@@ -4137,11 +4137,14 @@ function TaskSettings() { const studio = useStudio(); return <SettingSection tit
 function DatabaseSettings() {
   const studio = useStudio();
   const transfer = useDataTransfer();
-  type SyncStatus = { state?: "cloud" | "not_configured" | "unpaired" | "synced" | "pending" | "uploading" | "diverged" | "schema_mismatch" | "offline" | "error"; message?: string; localDatabaseVersion?: number; remoteDatabaseVersion?: number; lastCloudVersion?: number | null; lastSyncAt?: string | null; cloudHost?: string | null };
+  type SyncStatus = { state?: "cloud" | "not_configured" | "unpaired" | "synced" | "pending" | "uploading" | "diverged" | "schema_mismatch" | "offline" | "error"; message?: string; autoUploadEnabled?: boolean; localDatabaseVersion?: number; remoteDatabaseVersion?: number; lastCloudVersion?: number | null; lastSyncAt?: string | null; cloudHost?: string | null };
   const [status, setStatus] = useState<{ connected?: boolean; engine?: string; revision?: number; databaseVersion?: number; articles?: number; searchMode?: string } | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncBusy, setSyncBusy] = useState<"pull" | "push" | "">("");
+  const [syncToggleBusy, setSyncToggleBusy] = useState(false);
   const [syncNotice, setSyncNotice] = useState("");
+  const [overwriteModels, setOverwriteModels] = useState(false);
+  const [overwriteSecrets, setOverwriteSecrets] = useState(false);
   const [checking, setChecking] = useState(false);
   useEffect(() => { void fetch("/api/database/status", { cache: "no-store" }).then((response) => response.json()).then(setStatus); }, [studio.saveStatus]);
   const loadSyncStatus = useCallback(async () => {
@@ -4160,15 +4163,31 @@ function DatabaseSettings() {
     return () => { window.clearInterval(timer); window.removeEventListener("writer-studio-sync-status", refresh); };
   }, [loadSyncStatus]);
   async function check() { setChecking(true); const response = await fetch("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; setChecking(false); window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); }
+  async function setAutoUpload(enabled: boolean) {
+    setSyncToggleBusy(true); setSyncNotice("");
+    try {
+      const response = await fetch("/api/sync/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoUploadEnabled: enabled }) });
+      const payload = await response.json() as SyncStatus & { message?: string };
+      if (!response.ok) throw new Error(payload.message || "自动上传设置保存失败");
+      setSyncStatus(payload);
+      if (enabled) void fetch("/api/sync/upload", { method: "POST" }).finally(() => void loadSyncStatus());
+    } catch (reason) {
+      setSyncNotice(reason instanceof Error ? reason.message : "自动上传设置保存失败");
+    } finally {
+      setSyncToggleBusy(false);
+    }
+  }
   async function replaceDatabase(direction: "pull" | "push") {
     const phrase = direction === "pull" ? "从云端取回" : "复制到云端";
     const target = direction === "pull" ? "本地" : "云端";
-    const typed = window.prompt(`此操作会用${direction === "pull" ? "云端" : "本地"}创作数据库覆盖${target}，覆盖前会自动备份。输入“${phrase}”确认：`, "");
+    const scope = ["创作数据库", overwriteModels ? "大模型配置" : "", overwriteSecrets ? "API Key/Secret" : ""].filter(Boolean).join("、");
+    const sensitiveNotice = overwriteModels ? "覆盖前备份将包含目标端现有 API Key，请妥善保管 data/recovery。" : "";
+    const typed = window.prompt(`此操作会用${direction === "pull" ? "云端" : "本地"}的${scope}覆盖${target}。${sensitiveNotice}输入“${phrase}”确认：`, "");
     if (typed !== phrase) return;
     setSyncBusy(direction); setSyncNotice("");
     try {
       if (!await studio.saveNow()) throw new Error("本地内容尚未保存，已取消覆盖");
-      const response = await fetch(`/api/sync/${direction}`, { method: "POST" });
+      const response = await fetch(`/api/sync/${direction}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ includeModels: overwriteModels, includeSecrets: overwriteSecrets }) });
       const payload = await response.json() as { message?: string; backupPath?: string; code?: string };
       if (!response.ok) throw new Error(payload.message || `覆盖失败（${response.status}）`);
       if (direction === "pull") {
@@ -4198,16 +4217,18 @@ function DatabaseSettings() {
     <SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "SQLite"}</span><p>数据库版本 {status?.databaseVersion ?? "—"} · 保存修订 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert(status?.engine?.toLocaleLowerCase().includes("d1") ? "当前 Site 使用云端 D1 数据库。" : "当前使用本机 SQLite 数据库，默认文件位于 data/writer-studio.sqlite。")}>数据位置</button></div></SettingSection>
     <SettingSection title="云端同步">
       <div className="sync-card">
-        <div className="sync-card-heading"><div><span className="ui-title">本地写入后自动后台上传</span><p>{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
+        <div className="sync-card-heading"><div><span className="ui-title">本地与云端数据库</span><p>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动后台上传已关闭 · " : ""}{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动上传关闭" : syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
+        <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span><p>关闭后只保存本地数据库，仍可随时手动选择覆盖方向。</p></div><Toggle checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
         <div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
         <p className="sync-rule">只有“云端版本 = 同步基线”时才允许后台上传；版本不同会立即停止，必须手动选择覆盖方向。结构版本不同不能覆盖，需要先升级应用。</p>
+        <div className="sync-overwrite-options"><span className="ui-label">手动覆盖范围</span><Checkbox checked={overwriteModels} onChange={(event) => { const checked = event.currentTarget.checked; setOverwriteModels(checked); if (!checked) setOverwriteSecrets(false); }} label="同时覆盖大模型配置" /><Checkbox checked={overwriteSecrets} disabled={!overwriteModels} onChange={(event) => setOverwriteSecrets(event.currentTarget.checked)} label="同时覆盖 API Key / Secret（敏感信息）" /><p>未选择 API Key 时，会保留目标端相同模型 ID 的密钥；目标端多余模型会随模型配置覆盖而删除。</p></div>
         {syncNotice && <div className={syncNotice.includes("完成") || syncNotice.includes("已用") ? "sync-notice success" : "sync-notice error"} role="status">{syncNotice}</div>}
         <Group gap="sm" className="sync-actions">
           <Button color="red" variant="light" disabled={Boolean(syncBlocked) || Boolean(syncBusy)} loading={syncBusy === "pull"} onClick={() => void replaceDatabase("pull")}>从云端取回</Button>
           <Button color="red" variant="light" disabled={Boolean(syncBlocked) || Boolean(syncBusy)} loading={syncBusy === "push"} onClick={() => void replaceDatabase("push")}>复制到云端</Button>
           <Button variant="default" disabled={Boolean(syncBusy)} onClick={() => void loadSyncStatus()}>刷新状态</Button>
         </Group>
-        <p className="sync-footnote">覆盖前的本地或云端创作快照会保存在本机 data/recovery；AI 密钥和同步密钥不会被复制。</p>
+        <p className="sync-footnote">覆盖前快照保存在本机 data/recovery。选择模型覆盖时，备份会包含目标端现有 API Key；同步密钥始终不会被复制。</p>
       </div>
     </SettingSection>
     <SettingSection title="维护"><SettingRow title="数据完整性检查"><button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>{checking ? "正在检查…" : "开始检查"}</button></SettingRow></SettingSection>

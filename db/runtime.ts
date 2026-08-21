@@ -166,7 +166,7 @@ export async function ensureDatabase() {
       const initializedAt = new Date().toISOString();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt).run();
-      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '1', ?)").bind(initializedAt).run();
+      await db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '2', ?)").bind(initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt).run();
       await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt).run();
     })().catch((error) => {

@@ -21,6 +21,10 @@ export type AiModelRecord = {
   updatedAt: string;
 };
 
+export type AiModelSyncRecord = Omit<AiModelRecord, "hasSecret"> & {
+  secret?: string;
+};
+
 const ENCRYPT_PREFIX = "enc:v1:";
 
 async function secretKey() {
@@ -88,6 +92,56 @@ export async function listModels() {
   await ensureDatabase();
   const result = await getDatabase().prepare("SELECT * FROM ai_models ORDER BY created_at").all<Record<string, unknown>>();
   return (result.results ?? []).map(modelFromRow);
+}
+
+export async function exportModelsForSync(includeSecrets: boolean): Promise<AiModelSyncRecord[]> {
+  const models = await listModels();
+  return Promise.all(models.map(async ({ hasSecret: _hasSecret, ...model }) => ({
+    ...model,
+    ...(includeSecrets ? { secret: await readModelSecret(model.id) } : {}),
+  })));
+}
+
+export async function replaceModelsFromSync(records: AiModelSyncRecord[], includeSecrets: boolean) {
+  await ensureDatabase();
+  if (!Array.isArray(records) || records.length > 100) throw new Error("同步模型配置无效或数量超过 100 个");
+  const ids = new Set<string>();
+  const db = getDatabase();
+  const existingResult = await db.prepare("SELECT id,secret FROM ai_models").all<Record<string, unknown>>();
+  const existingSecrets = new Map((existingResult.results ?? []).map((row) => [String(row.id), String(row.secret ?? "")]));
+  const prepared = await Promise.all(records.map(async (record) => {
+    const id = String(record.id ?? "").trim();
+    if (!id || ids.has(id)) throw new Error("同步模型包含空 ID 或重复 ID");
+    ids.add(id);
+    const name = String(record.name ?? "").trim().slice(0, 80);
+    const modelId = String(record.modelId ?? "").trim().slice(0, 300);
+    if (!name || !modelId) throw new Error("同步模型名称和模型 ID 不能为空");
+    const baseUrl = validateModelUrl(String(record.baseUrl ?? ""));
+    const plainSecret = includeSecrets ? String(record.secret ?? "").trim() : "";
+    const storedSecret = includeSecrets
+      ? plainSecret ? await encryptSecret(plainSecret) : ""
+      : existingSecrets.get(id) ?? "";
+    return {
+      id,
+      name,
+      baseUrl,
+      modelId,
+      systemPrompt: String(record.systemPrompt ?? "").slice(0, 20000),
+      temperature: record.temperature == null ? null : boundedNumber(record.temperature, 1, 0, 2),
+      maxOutput: record.maxOutput == null ? null : boundedNumber(record.maxOutput, 4096, 1, 1000000),
+      maxInputCharacters: normalizeMaxInputCharacters(record.maxInputCharacters),
+      timeoutMs: boundedNumber(record.timeoutMs, 120000, 5000, 600000),
+      storedSecret,
+      createdAt: String(record.createdAt ?? new Date().toISOString()),
+      updatedAt: String(record.updatedAt ?? new Date().toISOString()),
+    };
+  }));
+  await db.batch([
+    db.prepare("DELETE FROM ai_models"),
+    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.storedSecret ? 1 : 0, model.storedSecret || null, model.createdAt, model.updatedAt)),
+  ]);
+  return { models: prepared.length, secretsReplaced: includeSecrets };
 }
 
 export async function findModel(reference?: string) {
