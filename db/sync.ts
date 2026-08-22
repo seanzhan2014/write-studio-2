@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { StudioData } from "@/app/studio-state";
 import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai";
-import { canAutomaticallyUpload, evaluateSyncPolicy } from "@/lib/sync-policy.mjs";
+import { canAutomaticallyUpload, evaluateSyncPolicy, shouldDisableAutomaticUpload } from "@/lib/sync-policy.mjs";
 import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 import { isStudioChanges, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
@@ -329,7 +329,7 @@ function statusMessage(state: LocalSyncState) {
   if (state === "not_configured") return "尚未配置云端连接";
   if (state === "unpaired") return "尚未建立同步基线，请先手动选择一次覆盖方向";
   if (state === "pending") return "本地有修改，等待后台上传";
-  if (state === "diverged") return "云端版本与同步基线不一致，后台上传已停止";
+  if (state === "diverged") return "检测到云端版本冲突，已自动关闭后台上传；请手动选择覆盖方向";
   if (state === "schema_mismatch") return "两端数据库结构版本不同，必须先升级应用";
   if (state === "offline") return "暂时无法连接云端";
   if (state === "uploading") return "正在后台上传";
@@ -382,7 +382,9 @@ async function recordSyncSuccess(remote: RemoteDatabaseMeta, localDatabaseVersio
 }
 
 async function recordSyncFailure(state: LocalSyncState, error: string) {
-  await writeSettings({ sync_status: state, sync_last_error: error });
+  const values: Record<string, string> = { sync_status: state, sync_last_error: error };
+  if (shouldDisableAutomaticUpload(state)) values.sync_auto_upload = "0";
+  await writeSettings(values);
 }
 
 async function performBackgroundUpload() {

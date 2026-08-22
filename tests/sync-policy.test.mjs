@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canAutomaticallyUpload, evaluateSyncPolicy } from "../lib/sync-policy.mjs";
+import { canAutomaticallyUpload, evaluateSyncPolicy, shouldDisableAutomaticUpload } from "../lib/sync-policy.mjs";
 
 const baseline = {
   localSchemaVersion: 1,
@@ -36,4 +36,10 @@ test("unpaired and schema-mismatched databases require a manual decision", () =>
 
 test("matching versions are synced only after the current local version was uploaded", () => {
   assert.equal(evaluateSyncPolicy({ ...baseline, lastUploadedLocalVersion: 12 }), "synced");
+});
+
+test("a version conflict disables automatic uploads until the user intervenes", () => {
+  assert.equal(shouldDisableAutomaticUpload("diverged"), true);
+  assert.equal(shouldDisableAutomaticUpload("offline"), false);
+  assert.equal(shouldDisableAutomaticUpload("schema_mismatch"), false);
 });

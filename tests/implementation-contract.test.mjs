@@ -121,6 +121,7 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(sync, /writeRecoverySnapshot\("sync-local-before-pull"/);
   assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
   assert.match(sync, /sync_auto_upload/);
+  assert.match(sync, /shouldDisableAutomaticUpload\(state\)[\s\S]*sync_auto_upload = "0"/);
   assert.match(sync, /modelScope/);
   assert.match(ai, /exportModelsForSync/);
   assert.match(ai, /replaceModelsFromSync/);
