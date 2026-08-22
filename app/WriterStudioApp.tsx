@@ -817,6 +817,7 @@ type OutlineDropPlacement = "before" | "after";
 type OutlineDropIndicator = { targetId: string; placement: OutlineDropPlacement } | null;
 type ContinuousDocumentPosition = { outlineId: string; offsetTop: number };
 type ContinuousDocumentPositionMemory = { current: Record<string, ContinuousDocumentPosition> };
+const CONTINUOUS_POSITION_SETTLE_MS = 1200;
 
 function outlineDropPlacement(event: DragEndEvent | DragOverEvent, orderedIds: string[]): OutlineDropPlacement {
   if (event.over) {
@@ -3603,35 +3604,79 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
     const outlineId = remembered?.outlineId === initialOutlineIdRef.current ? remembered.outlineId : initialOutlineIdRef.current;
     const defaultOffset = Math.min(160, Math.max(32, container.clientHeight * .18));
     const offsetTop = remembered?.outlineId === outlineId ? remembered.offsetTop : defaultOffset;
+    let stopped = false;
+    let restoreFrame = 0;
+    let settlingFrames = 8;
     const restore = () => {
+      if (stopped) return;
       const target = Array.from(container.querySelectorAll<HTMLElement>("[data-continuous-outline-id]"))
         .find((element) => element.dataset.continuousOutlineId === outlineId);
       if (!target) return;
       const currentOffset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
       container.scrollTop = Math.max(0, container.scrollTop + currentOffset - offsetTop);
     };
-    restore();
-    let secondFrame = 0;
-    const firstFrame = window.requestAnimationFrame(() => {
+    const scheduleRestore = () => {
+      if (stopped || restoreFrame) return;
+      restoreFrame = window.requestAnimationFrame(() => {
+        restoreFrame = 0;
+        restore();
+      });
+    };
+    const settle = () => {
+      restoreFrame = 0;
+      if (stopped) return;
       restore();
-      secondFrame = window.requestAnimationFrame(restore);
-    });
+      settlingFrames -= 1;
+      if (settlingFrames > 0) restoreFrame = window.requestAnimationFrame(settle);
+    };
+    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleRestore);
+    const documentBody = container.querySelector<HTMLElement>(".continuous-document-body");
+    if (documentBody) resizeObserver?.observe(documentBody);
+    const stopRestoring = () => {
+      stopped = true;
+      resizeObserver?.disconnect();
+      if (restoreFrame) window.cancelAnimationFrame(restoreFrame);
+      restoreFrame = 0;
+    };
+    const userEvents: (keyof HTMLElementEventMap)[] = ["pointerdown", "wheel", "touchstart", "keydown"];
+    for (const eventName of userEvents) container.addEventListener(eventName, stopRestoring, { passive: true });
+    restore();
+    restoreFrame = window.requestAnimationFrame(settle);
+    const settleTimer = window.setTimeout(stopRestoring, CONTINUOUS_POSITION_SETTLE_MS);
+    void document.fonts?.ready.then(scheduleRestore);
     return () => {
-      window.cancelAnimationFrame(firstFrame);
-      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(settleTimer);
+      for (const eventName of userEvents) container.removeEventListener(eventName, stopRestoring);
+      stopRestoring();
     };
   }, [positionKey]);
 
-  useLayoutEffect(() => () => {
+  useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const outlineId = activeOutlineIdRef.current;
-    const target = Array.from(container.querySelectorAll<HTMLElement>("[data-continuous-outline-id]"))
-      .find((element) => element.dataset.continuousOutlineId === outlineId);
-    if (!target) return;
-    positionMemory.current[positionKey] = {
-      outlineId,
-      offsetTop: target.getBoundingClientRect().top - container.getBoundingClientRect().top,
+    let rememberFrame = 0;
+    const remember = () => {
+      const outlineId = activeOutlineIdRef.current;
+      const target = Array.from(container.querySelectorAll<HTMLElement>("[data-continuous-outline-id]"))
+        .find((element) => element.dataset.continuousOutlineId === outlineId);
+      if (!target) return;
+      positionMemory.current[positionKey] = {
+        outlineId,
+        offsetTop: target.getBoundingClientRect().top - container.getBoundingClientRect().top,
+      };
+    };
+    const rememberAfterScroll = () => {
+      if (rememberFrame) window.cancelAnimationFrame(rememberFrame);
+      rememberFrame = window.requestAnimationFrame(() => {
+        rememberFrame = 0;
+        remember();
+      });
+    };
+    container.addEventListener("scroll", rememberAfterScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", rememberAfterScroll);
+      if (rememberFrame) window.cancelAnimationFrame(rememberFrame);
+      remember();
     };
   }, [positionKey, positionMemory]);
 

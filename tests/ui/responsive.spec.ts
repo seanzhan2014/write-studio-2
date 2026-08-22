@@ -1461,6 +1461,9 @@ test("full outline editor keeps the active outline anchored when leaving and ret
   await expect(page.locator(".continuous-document-editor.content")).toBeVisible();
   await page.getByRole("button", { name: "全大纲编辑", exact: true }).click();
   await expect(editor).toBeVisible();
+  await editor.locator('[data-continuous-outline-id="outline-current"]').evaluate((element) => {
+    window.setTimeout(() => { (element as HTMLElement).style.paddingBottom = "420px"; }, 120);
+  });
   await expect.poll(() => target.evaluate((element) => {
     const viewport = element.closest(".page-scroll")!;
     return element.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
