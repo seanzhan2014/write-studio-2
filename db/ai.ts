@@ -4,10 +4,26 @@ import { applyReviewEdits, createReviewBlocks, parseReviewResponse, reviewSource
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeOptionalGenerateTargetWords, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "../lib/generate-options";
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "../lib/review-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS, normalizeMaxInputCharacters } from "../lib/model-options";
-import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingProfileInstruction, normalizeNamingProfile, validateGeneratedName, type NamingProfile } from "../lib/naming-options";
+import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingProfileInstruction, normalizeGeneratedName, normalizeNamingProfile, validateGeneratedName, type NamingProfile } from "../lib/naming-options";
+import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
+
+export type AiProviderRecord = {
+  id: string;
+  name: string;
+  adapterKind: "openai-compatible";
+  baseUrl: string;
+  timeoutMs: number;
+  hasSecret: boolean;
+  modelCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type AiModelRecord = {
   id: string;
+  providerId: string;
+  providerName: string;
+  adapterKind: "openai-compatible";
   name: string;
   baseUrl: string;
   modelId: string;
@@ -16,51 +32,26 @@ export type AiModelRecord = {
   maxOutput: number | null;
   maxInputCharacters: number;
   timeoutMs: number;
+  providerTimeoutMs: number;
+  timeoutOverrideMs: number | null;
   hasSecret: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
-const ENCRYPT_PREFIX = "enc:v1:";
+export type AiModelSyncRecord = Omit<AiModelRecord, "hasSecret"> & {
+  secret?: string;
+};
 
-async function secretKey() {
-  const material = `${process.env.AI_SECRET_KEY ?? ""}|writer-studio-local-ai-secret`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
-  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-}
+export type AiProviderSyncRecord = Omit<AiProviderRecord, "hasSecret" | "modelCount"> & {
+  secret?: string;
+};
 
-function toBase64(bytes: ArrayBuffer | Uint8Array) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let binary = "";
-  view.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary);
-}
-
-function fromBase64(value: string) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-async function encryptSecret(plain: string) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await secretKey(), new TextEncoder().encode(plain));
-  return `${ENCRYPT_PREFIX}${toBase64(iv)}.${toBase64(cipher)}`;
-}
-
-async function decryptSecret(stored: string) {
-  if (!stored.startsWith(ENCRYPT_PREFIX)) return stored;
-  const [ivPart, cipherPart] = stored.slice(ENCRYPT_PREFIX.length).split(".");
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(ivPart) }, await secretKey(), fromBase64(cipherPart));
-  return new TextDecoder().decode(plain);
-}
-
-async function readModelSecret(id: string) {
-  const row = await getDatabase().prepare("SELECT secret FROM ai_models WHERE id=?").bind(id).first<Record<string, unknown>>();
+async function readProviderSecret(id: string) {
+  const row = await getDatabase().prepare("SELECT secret FROM ai_providers WHERE id=?").bind(id).first<Record<string, unknown>>();
   const stored = String(row?.secret ?? "");
   if (!stored) return "";
-  try { return await decryptSecret(stored); } catch { return ""; }
+  try { return await decryptAiSecret(stored); } catch { return ""; }
 }
 
 function boundedNumber(value: unknown, fallback: number, minimum: number, maximum: number) {
@@ -69,11 +60,24 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
 }
 
 function modelFromRow(row: Record<string, unknown>): AiModelRecord {
+  const providerTimeoutMs = boundedNumber(row.provider_timeout_ms, 120000, 5000, 600000);
+  const timeoutOverrideMs = row.timeout_override_ms == null ? null : boundedNumber(row.timeout_override_ms, providerTimeoutMs, 5000, 600000);
   return {
-    id: String(row.id), name: String(row.name), baseUrl: String(row.base_url), modelId: String(row.model_id),
+    id: String(row.id), providerId: String(row.provider_id), providerName: String(row.provider_name),
+    adapterKind: "openai-compatible", name: String(row.name), baseUrl: String(row.provider_base_url), modelId: String(row.model_id),
     systemPrompt: String(row.system_prompt), temperature: row.temperature == null ? null : Number(row.temperature),
-    maxOutput: row.max_output == null ? null : Number(row.max_output), maxInputCharacters: normalizeMaxInputCharacters(row.max_input_characters), timeoutMs: Number(row.timeout_ms),
-    hasSecret: Number(row.has_secret) === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    maxOutput: row.max_output == null ? null : Number(row.max_output), maxInputCharacters: normalizeMaxInputCharacters(row.max_input_characters),
+    timeoutMs: timeoutOverrideMs ?? providerTimeoutMs, providerTimeoutMs, timeoutOverrideMs,
+    hasSecret: Number(row.provider_has_secret) === 1, createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
+function providerFromRow(row: Record<string, unknown>): AiProviderRecord {
+  return {
+    id: String(row.id), name: String(row.name), adapterKind: "openai-compatible",
+    baseUrl: String(row.base_url), timeoutMs: boundedNumber(row.timeout_ms, 120000, 5000, 600000),
+    hasSecret: Number(row.has_secret) === 1, modelCount: Number(row.model_count ?? 0),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
 
@@ -86,8 +90,172 @@ export function validateModelUrl(value: string) {
 
 export async function listModels() {
   await ensureDatabase();
-  const result = await getDatabase().prepare("SELECT * FROM ai_models ORDER BY created_at").all<Record<string, unknown>>();
+  const result = await getDatabase().prepare(`SELECT m.*,p.name provider_name,p.adapter_kind provider_adapter_kind,
+    p.base_url provider_base_url,p.timeout_ms provider_timeout_ms,p.has_secret provider_has_secret
+    FROM ai_models m JOIN ai_providers p ON p.id=m.provider_id ORDER BY m.created_at`).all<Record<string, unknown>>();
   return (result.results ?? []).map(modelFromRow);
+}
+
+export async function listProviders() {
+  await ensureDatabase();
+  const result = await getDatabase().prepare(`SELECT p.*,COUNT(m.id) model_count FROM ai_providers p
+    LEFT JOIN ai_models m ON m.provider_id=p.id GROUP BY p.id ORDER BY p.created_at`).all<Record<string, unknown>>();
+  return (result.results ?? []).map(providerFromRow);
+}
+
+export async function findProvider(id?: string) {
+  const normalized = String(id ?? "").trim();
+  if (!normalized) return null;
+  return (await listProviders()).find((provider) => provider.id === normalized) ?? null;
+}
+
+function providerNameFromUrl(value: string) {
+  try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
+}
+
+function providerAdapterKind(value: unknown): "openai-compatible" {
+  const normalized = String(value ?? "openai-compatible").trim();
+  if (normalized !== "openai-compatible") throw new Error("暂不支持该 Provider 协议");
+  return normalized;
+}
+
+export async function createProvider(input: Partial<AiProviderRecord> & { secret?: unknown }) {
+  await ensureDatabase();
+  const now = new Date().toISOString();
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? "https://api.openai.com/v1"));
+  const secret = String(input.secret ?? "").trim();
+  const storedSecret = secret ? await encryptAiSecret(secret) : null;
+  const requestedId = String(input.id ?? "").trim();
+  if (requestedId.length > 200) throw new Error("Provider ID 过长");
+  const provider: AiProviderRecord = {
+    id: requestedId || crypto.randomUUID(), name: String(input.name ?? providerNameFromUrl(baseUrl)).trim().slice(0, 80),
+    adapterKind: providerAdapterKind(input.adapterKind), baseUrl,
+    timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), hasSecret: Boolean(storedSecret), modelCount: 0,
+    createdAt: now, updatedAt: now,
+  };
+  if (!provider.name) throw new Error("Provider 名称不能为空");
+  await getDatabase().prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+    .bind(provider.id, provider.name, provider.adapterKind, provider.baseUrl, provider.timeoutMs, provider.hasSecret ? 1 : 0, storedSecret, now, now).run();
+  return provider;
+}
+
+export async function updateProvider(id: string, input: Partial<AiProviderRecord>) {
+  const existing = await findProvider(id);
+  if (!existing) throw new Error("Provider 不存在");
+  const updated: AiProviderRecord = {
+    ...existing, id, name: String(input.name ?? existing.name).trim().slice(0, 80),
+    adapterKind: providerAdapterKind(input.adapterKind ?? existing.adapterKind),
+    baseUrl: input.baseUrl ? validateModelUrl(input.baseUrl) : existing.baseUrl,
+    timeoutMs: boundedNumber(input.timeoutMs, existing.timeoutMs, 5000, 600000), updatedAt: new Date().toISOString(),
+  };
+  if (!updated.name) throw new Error("Provider 名称不能为空");
+  await getDatabase().prepare("UPDATE ai_providers SET name=?,adapter_kind=?,base_url=?,timeout_ms=?,updated_at=? WHERE id=?")
+    .bind(updated.name, updated.adapterKind, updated.baseUrl, updated.timeoutMs, updated.updatedAt, id).run();
+  return updated;
+}
+
+export async function deleteProvider(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  if (provider.modelCount) throw new Error(`该 Provider 仍关联 ${provider.modelCount} 个模型，请先删除或移动这些模型`);
+  await getDatabase().prepare("DELETE FROM ai_providers WHERE id=?").bind(id).run();
+}
+
+export async function setProviderSecret(id: string, secret: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  if (!secret.trim()) throw new Error("密钥不能为空");
+  const stored = await encryptAiSecret(secret.trim());
+  await getDatabase().prepare("UPDATE ai_providers SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
+}
+
+export async function clearProviderSecret(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  await getDatabase().prepare("UPDATE ai_providers SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
+}
+
+export async function exportModelsForSync(includeSecrets: boolean): Promise<AiModelSyncRecord[]> {
+  const models = await listModels();
+  return Promise.all(models.map(async ({ hasSecret: _hasSecret, ...model }) => ({
+    ...model,
+    ...(includeSecrets ? { secret: await readProviderSecret(model.providerId) } : {}),
+  })));
+}
+
+export async function exportProvidersForSync(includeSecrets: boolean): Promise<AiProviderSyncRecord[]> {
+  const providers = await listProviders();
+  return Promise.all(providers.map(async ({ hasSecret: _hasSecret, modelCount: _modelCount, ...provider }) => ({
+    ...provider,
+    ...(includeSecrets ? { secret: await readProviderSecret(provider.id) } : {}),
+  })));
+}
+
+export async function replaceModelsFromSync(records: AiModelSyncRecord[], includeSecrets: boolean, providerRecords?: AiProviderSyncRecord[]) {
+  await ensureDatabase();
+  if (!Array.isArray(records) || records.length > 100) throw new Error("同步模型配置无效或数量超过 100 个");
+  const ids = new Set<string>();
+  const db = getDatabase();
+  const existingResult = await db.prepare("SELECT id,secret FROM ai_providers").all<Record<string, unknown>>();
+  const existingSecrets = new Map((existingResult.results ?? []).map((row) => [String(row.id), String(row.secret ?? "")]));
+  const providerIds = new Set<string>();
+  const prepared = await Promise.all(records.map(async (record) => {
+    const id = String(record.id ?? "").trim();
+    if (!id || ids.has(id)) throw new Error("同步模型包含空 ID 或重复 ID");
+    ids.add(id);
+    const name = String(record.name ?? "").trim().slice(0, 80);
+    const modelId = String(record.modelId ?? "").trim().slice(0, 300);
+    if (!name || !modelId) throw new Error("同步模型名称和模型 ID 不能为空");
+    const providerId = String(record.providerId ?? "").trim() || crypto.randomUUID();
+    providerIds.add(providerId);
+    const baseUrl = validateModelUrl(String(record.baseUrl ?? ""));
+    const plainSecret = includeSecrets ? String(record.secret ?? "").trim() : "";
+    const storedSecret = includeSecrets
+      ? plainSecret ? await encryptAiSecret(plainSecret) : ""
+      : existingSecrets.get(providerId) ?? "";
+    return {
+      id,
+      providerId,
+      providerName: String(record.providerName ?? providerNameFromUrl(baseUrl)).trim().slice(0, 80),
+      adapterKind: providerAdapterKind(record.adapterKind),
+      name,
+      baseUrl,
+      modelId,
+      systemPrompt: String(record.systemPrompt ?? "").slice(0, 20000),
+      temperature: record.temperature == null ? null : boundedNumber(record.temperature, 1, 0, 2),
+      maxOutput: record.maxOutput == null ? null : boundedNumber(record.maxOutput, 4096, 1, 1000000),
+      maxInputCharacters: normalizeMaxInputCharacters(record.maxInputCharacters),
+      providerTimeoutMs: boundedNumber(record.providerTimeoutMs ?? record.timeoutMs, 120000, 5000, 600000),
+      timeoutOverrideMs: record.timeoutOverrideMs == null ? null : boundedNumber(record.timeoutOverrideMs, 120000, 5000, 600000),
+      storedSecret,
+      createdAt: String(record.createdAt ?? new Date().toISOString()),
+      updatedAt: String(record.updatedAt ?? new Date().toISOString()),
+    };
+  }));
+  const providers = providerRecords
+    ? await Promise.all(providerRecords.map(async (provider) => {
+      const providerId = String(provider.id ?? "").trim();
+      if (!providerId) throw new Error("同步 Provider 包含空 ID");
+      const plainSecret = includeSecrets ? String(provider.secret ?? "").trim() : "";
+      return {
+        providerId, providerName: String(provider.name ?? "").trim().slice(0, 80), adapterKind: providerAdapterKind(provider.adapterKind),
+        baseUrl: validateModelUrl(String(provider.baseUrl ?? "")), providerTimeoutMs: boundedNumber(provider.timeoutMs, 120000, 5000, 600000),
+        storedSecret: includeSecrets ? plainSecret ? await encryptAiSecret(plainSecret) : "" : existingSecrets.get(providerId) ?? "",
+        createdAt: String(provider.createdAt ?? new Date().toISOString()), updatedAt: String(provider.updatedAt ?? new Date().toISOString()),
+      };
+    }))
+    : [...providerIds].map((providerId) => prepared.find((model) => model.providerId === providerId)!);
+  const syncedProviderIds = new Set(providers.map((provider) => provider.providerId));
+  if (prepared.some((model) => !syncedProviderIds.has(model.providerId))) throw new Error("同步模型引用了不存在的 Provider");
+  await db.batch([
+    db.prepare("DELETE FROM ai_models"),
+    db.prepare("DELETE FROM ai_providers"),
+    ...providers.map((provider) => db.prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(provider.providerId, provider.providerName, provider.adapterKind, provider.baseUrl, provider.providerTimeoutMs, provider.storedSecret ? 1 : 0, provider.storedSecret || null, provider.createdAt, provider.updatedAt)),
+    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutOverrideMs ?? model.providerTimeoutMs, model.timeoutOverrideMs, 0, null, model.createdAt, model.updatedAt)),
+  ]);
+  return { models: prepared.length, secretsReplaced: includeSecrets };
 }
 
 export async function findModel(reference?: string) {
@@ -95,6 +263,22 @@ export async function findModel(reference?: string) {
   const normalized = String(reference ?? "").trim();
   if (!normalized) return null;
   return models.find((model) => model.id === normalized || model.name === normalized) ?? null;
+}
+
+async function legacyProvider(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; timeoutMs?: unknown }, sourceModel?: AiModelRecord | null) {
+  const providerId = String(input.providerId ?? sourceModel?.providerId ?? "").trim();
+  if (providerId) {
+    const provider = await findProvider(providerId);
+    if (!provider) throw new Error("Provider 不存在");
+    return provider;
+  }
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? sourceModel?.baseUrl ?? "https://api.openai.com/v1"));
+  const secret = String(input.secret ?? "").trim();
+  for (const provider of (await listProviders()).filter((candidate) => candidate.baseUrl === baseUrl)) {
+    const existingSecret = await readProviderSecret(provider.id);
+    if (secret ? existingSecret === secret : !existingSecret) return provider;
+  }
+  return createProvider({ name: providerNameFromUrl(baseUrl), baseUrl, timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), secret });
 }
 
 function modelNameSuffix(value: string) {
@@ -107,6 +291,7 @@ export async function createModels(input: {
   name?: unknown;
   appendModelIdToName?: unknown;
   baseUrl?: unknown;
+  providerId?: unknown;
   existingModelId?: unknown;
   modelIds?: unknown;
   secret?: unknown;
@@ -125,11 +310,12 @@ export async function createModels(input: {
   const existingModelId = String(input.existingModelId ?? "").trim();
   const sourceModel = existingModelId ? await findModel(existingModelId) : null;
   if (existingModelId && (!sourceModel || sourceModel.id !== existingModelId)) throw new Error("用于复用配置的模型不存在");
-  const baseUrl = validateModelUrl(String(input.baseUrl ?? sourceModel?.baseUrl ?? "https://api.openai.com/v1"));
+  const provider = await legacyProvider(input, sourceModel);
+  const baseUrl = provider.baseUrl;
   const existing = await listModels();
-  const existingKeys = new Set(existing.map((model) => `${model.baseUrl}\n${model.modelId}`));
-  const skippedModelIds = requestedIds.filter((modelId) => existingKeys.has(`${baseUrl}\n${modelId}`));
-  const modelIds = requestedIds.filter((modelId) => !existingKeys.has(`${baseUrl}\n${modelId}`));
+  const existingKeys = new Set(existing.map((model) => `${model.providerId}\n${model.modelId}`));
+  const skippedModelIds = requestedIds.filter((modelId) => existingKeys.has(`${provider.id}\n${modelId}`));
+  const modelIds = requestedIds.filter((modelId) => !existingKeys.has(`${provider.id}\n${modelId}`));
   if (!modelIds.length) return { models: [] as AiModelRecord[], skippedModelIds };
 
   const now = new Date().toISOString();
@@ -139,11 +325,12 @@ export async function createModels(input: {
   const temperature = input.temperature == null ? null : boundedNumber(input.temperature, 1, 0, 2);
   const maxOutput = input.maxOutput == null ? null : boundedNumber(input.maxOutput, 4096, 1, 1000000);
   const maxInputCharacters = normalizeMaxInputCharacters(input.maxInputCharacters ?? sourceModel?.maxInputCharacters);
-  const timeoutMs = boundedNumber(input.timeoutMs, 120000, 5000, 600000);
-  const secret = String(input.secret ?? "").trim() || (sourceModel ? await readModelSecret(sourceModel.id) : "");
-  const storedSecret = secret ? await encryptSecret(secret) : null;
+  const timeoutOverrideMs = input.timeoutMs == null ? sourceModel?.timeoutOverrideMs ?? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const models: AiModelRecord[] = modelIds.map((modelId) => ({
     id: crypto.randomUUID(),
+    providerId: provider.id,
+    providerName: provider.name,
+    adapterKind: provider.adapterKind,
     name: (modelIds.length === 1 && prefix && !appendModelIdToName ? prefix : prefix ? `${prefix} · ${modelNameSuffix(modelId)}` : modelNameSuffix(modelId)).slice(0, 80),
     baseUrl,
     modelId,
@@ -151,51 +338,68 @@ export async function createModels(input: {
     temperature,
     maxOutput,
     maxInputCharacters,
-    timeoutMs,
-    hasSecret: Boolean(storedSecret),
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs,
+    providerTimeoutMs: provider.timeoutMs,
+    timeoutOverrideMs,
+    hasSecret: provider.hasSecret,
     createdAt: now,
     updatedAt: now,
   }));
-  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.hasSecret ? 1 : 0, storedSecret, now, now)));
+  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now)));
   return { models, skippedModelIds };
 }
 
-export async function createModel(input: Partial<AiModelRecord>) {
+export async function createModel(input: Partial<AiModelRecord> & { secret?: unknown }) {
   const now = new Date().toISOString();
+  const provider = await legacyProvider(input);
+  const timeoutOverrideMs = input.timeoutOverrideMs !== undefined
+    ? input.timeoutOverrideMs == null ? null : boundedNumber(input.timeoutOverrideMs, provider.timeoutMs, 5000, 600000)
+    : input.timeoutMs == null ? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const model: AiModelRecord = {
-    id: crypto.randomUUID(), name: String(input.name ?? "未命名模型").trim().slice(0, 80),
-    baseUrl: validateModelUrl(String(input.baseUrl ?? "https://api.openai.com/v1")),
+    id: crypto.randomUUID(), providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind,
+    name: String(input.name ?? "未命名模型").trim().slice(0, 80), baseUrl: provider.baseUrl,
     modelId: String(input.modelId ?? "").trim(), systemPrompt: String(input.systemPrompt ?? ""),
     temperature: input.temperature == null ? null : boundedNumber(input.temperature, 1, 0, 2),
     maxOutput: input.maxOutput == null ? null : boundedNumber(input.maxOutput, 4096, 1, 1000000),
     maxInputCharacters: normalizeMaxInputCharacters(input.maxInputCharacters),
-    timeoutMs: boundedNumber(input.timeoutMs, 120000, 5000, 600000), hasSecret: false,
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs, providerTimeoutMs: provider.timeoutMs, timeoutOverrideMs, hasSecret: provider.hasSecret,
     createdAt: now, updatedAt: now,
   };
   if (!model.name || !model.modelId) throw new Error("模型名称和模型 ID 不能为空");
   await ensureDatabase();
-  await getDatabase().prepare("INSERT INTO ai_models(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(model.id, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, 0, now, now).run();
+  await getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now).run();
   return model;
 }
 
 export async function updateModel(id: string, input: Partial<AiModelRecord>) {
   const existing = await findModel(id);
   if (!existing || existing.id !== id) throw new Error("模型不存在");
-  const updated = {
+  const provider = input.providerId && input.providerId !== existing.providerId
+    ? await findProvider(input.providerId)
+    : input.baseUrl && validateModelUrl(input.baseUrl) !== existing.baseUrl
+      ? await legacyProvider({ baseUrl: input.baseUrl })
+      : await findProvider(existing.providerId);
+  if (!provider) throw new Error("Provider 不存在");
+  const timeoutOverrideMs = input.timeoutOverrideMs !== undefined
+    ? input.timeoutOverrideMs == null ? null : boundedNumber(input.timeoutOverrideMs, provider.timeoutMs, 5000, 600000)
+    : input.timeoutMs !== undefined ? boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000) : existing.timeoutOverrideMs;
+  const updated: AiModelRecord = {
     ...existing, ...input, id,
+    providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl,
     name: String(input.name ?? existing.name).trim().slice(0, 80),
     modelId: String(input.modelId ?? existing.modelId).trim(),
     systemPrompt: String(input.systemPrompt ?? existing.systemPrompt).slice(0, 20000),
     temperature: input.temperature == null ? existing.temperature : boundedNumber(input.temperature, existing.temperature ?? 1, 0, 2),
     maxOutput: input.maxOutput == null ? existing.maxOutput : boundedNumber(input.maxOutput, existing.maxOutput ?? 4096, 1, 1000000),
     maxInputCharacters: input.maxInputCharacters == null ? existing.maxInputCharacters : normalizeMaxInputCharacters(input.maxInputCharacters, existing.maxInputCharacters),
-    baseUrl: input.baseUrl ? validateModelUrl(input.baseUrl) : existing.baseUrl,
-    timeoutMs: boundedNumber(input.timeoutMs, existing.timeoutMs, 5000, 600000),
-    updatedAt: new Date().toISOString(), hasSecret: existing.hasSecret,
+    timeoutMs: timeoutOverrideMs ?? provider.timeoutMs, providerTimeoutMs: provider.timeoutMs, timeoutOverrideMs,
+    updatedAt: new Date().toISOString(), hasSecret: provider.hasSecret,
   };
   if (!updated.name || !updated.modelId) throw new Error("模型名称和模型 ID 不能为空");
-  await getDatabase().prepare("UPDATE ai_models SET name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,has_secret=?,updated_at=? WHERE id=?").bind(updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.hasSecret ? 1 : 0, updated.updatedAt, id).run();
+  await getDatabase().prepare("UPDATE ai_models SET provider_id=?,name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,timeout_override_ms=?,has_secret=0,secret=NULL,updated_at=? WHERE id=?")
+    .bind(updated.providerId, updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.timeoutOverrideMs, updated.updatedAt, id).run();
   return updated;
 }
 
@@ -207,22 +411,16 @@ export async function deleteModel(id: string) {
 export async function setModelSecret(id: string, secret: string) {
   const model = await findModel(id);
   if (!model || model.id !== id) throw new Error("模型不存在");
-  if (!secret.trim()) throw new Error("密钥不能为空");
-  const stored = await encryptSecret(secret.trim());
-  await getDatabase().prepare("UPDATE ai_models SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
+  await setProviderSecret(model.providerId, secret);
 }
 
 export async function clearModelSecret(id: string) {
-  await ensureDatabase();
-  await getDatabase().prepare("UPDATE ai_models SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
+  const model = await findModel(id);
+  if (!model || model.id !== id) throw new Error("模型不存在");
+  await clearProviderSecret(model.providerId);
 }
 
-export async function discoverModelIds(input: { baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
-  const existingId = String(input.existingModelId ?? "").trim();
-  const existing = existingId ? await findModel(existingId) : null;
-  if (existingId && (!existing || existing.id !== existingId)) throw new Error("模型不存在");
-  const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
-  const secret = String(input.secret ?? "").trim() || (existing ? await readModelSecret(existing.id) : "");
+async function discoverConnection(baseUrl: string, secret: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), 15000);
   try {
@@ -252,6 +450,29 @@ export async function discoverModelIds(input: { baseUrl?: unknown; secret?: unkn
   }
 }
 
+export async function discoverProviderModelIds(id: string) {
+  const provider = await findProvider(id);
+  if (!provider) throw new Error("Provider 不存在");
+  return discoverConnection(provider.baseUrl, await readProviderSecret(provider.id));
+}
+
+export async function testProvider(id: string) {
+  const started = Date.now();
+  const models = await discoverProviderModelIds(id);
+  return { ok: true, latencyMs: Date.now() - started, modelCount: models.length };
+}
+
+export async function discoverModelIds(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
+  const providerId = String(input.providerId ?? "").trim();
+  if (providerId) return discoverProviderModelIds(providerId);
+  const existingId = String(input.existingModelId ?? "").trim();
+  const existing = existingId ? await findModel(existingId) : null;
+  if (existingId && (!existing || existing.id !== existingId)) throw new Error("模型不存在");
+  const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
+  const secret = String(input.secret ?? "").trim() || (existing ? await readProviderSecret(existing.providerId) : "");
+  return discoverConnection(baseUrl, secret);
+}
+
 function endpoint(model: AiModelRecord) {
   return `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
 }
@@ -264,9 +485,97 @@ function readableNetworkError(error: unknown, action: string) {
   return error instanceof Error ? error : new Error(`${action}失败`);
 }
 
+type CompletionErrorPayload = {
+  code?: string | number;
+  message?: string;
+  metadata?: { error_type?: string; provider_code?: string | number };
+};
+
+type ChatCompletionPayload = {
+  id?: string;
+  model?: string;
+  provider?: string;
+  error?: CompletionErrorPayload;
+  choices?: Array<{
+    finish_reason?: string | null;
+    native_finish_reason?: string | null;
+    message?: { content?: string | Array<{ text?: string }> };
+    error?: CompletionErrorPayload;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+};
+
+type CompletionDiagnostics = {
+  requestId?: string;
+  provider?: string;
+  finishReason?: string;
+  nativeFinishReason?: string;
+  errorType?: string;
+  errorCode?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  outputCharacters: number;
+  responseHeadersMs: number;
+  totalMs: number;
+};
+
+export class AiUpstreamCompletionError extends Error {
+  constructor(message: string, readonly retryable: boolean, readonly diagnostics: CompletionDiagnostics) {
+    super(message);
+    this.name = "AiUpstreamCompletionError";
+  }
+}
+
+function completionText(value: string | Array<{ text?: string }> | undefined) {
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? value.map((item) => item?.text ?? "").join("") : "";
+}
+
+function completionResult(payload: ChatCompletionPayload, handle: Awaited<ReturnType<typeof upstream>>, action: string) {
+  const choice = payload.choices?.[0];
+  const content = completionText(choice?.message?.content);
+  const upstreamError = choice?.error ?? payload.error;
+  const finishReason = String(choice?.finish_reason ?? "").trim() || undefined;
+  const nativeFinishReason = String(choice?.native_finish_reason ?? "").trim() || undefined;
+  const errorType = String(upstreamError?.metadata?.error_type ?? "").trim() || undefined;
+  const errorCode = upstreamError?.code == null ? undefined : String(upstreamError.code);
+  const diagnostics: CompletionDiagnostics = {
+    requestId: String(payload.id ?? "").trim() || undefined,
+    provider: String(payload.provider ?? "").trim() || undefined,
+    finishReason,
+    nativeFinishReason,
+    errorType,
+    errorCode,
+    promptTokens: Number.isFinite(payload.usage?.prompt_tokens) ? Number(payload.usage?.prompt_tokens) : undefined,
+    completionTokens: Number.isFinite(payload.usage?.completion_tokens) ? Number(payload.usage?.completion_tokens) : undefined,
+    outputCharacters: content.length,
+    responseHeadersMs: handle.responseHeadersAt - handle.requestStartedAt,
+    totalMs: Date.now() - handle.requestStartedAt,
+  };
+  const event = { event: "ai_upstream_completion", action, model: handle.model.modelId, ...diagnostics };
+
+  if (finishReason === "length") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    throw new AiUpstreamCompletionError(`${action}达到模型输出长度上限，已丢弃 ${content.length.toLocaleString("zh-CN")} 字不完整结果；请提高模型输出上限或降低目标字数`, false, diagnostics);
+  }
+  const nonRetryableError = ["content_policy_violation", "refusal", "invalid_request"].includes(errorType ?? "")
+    || finishReason === "content_filter";
+  if (upstreamError || finishReason === "error" || finishReason === "content_filter") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    const reason = errorType || errorCode || finishReason || "unknown";
+    throw new AiUpstreamCompletionError(`${action}被上游中断（${reason}），已丢弃 ${content.length.toLocaleString("zh-CN")} 字不完整结果`, !nonRetryableError, diagnostics);
+  }
+  if (finishReason && finishReason !== "stop") {
+    console.warn(JSON.stringify({ ...event, accepted: false }));
+    throw new AiUpstreamCompletionError(`${action}以异常原因结束（finish_reason=${finishReason}），未保存返回内容`, false, diagnostics);
+  }
+  console.info(JSON.stringify({ ...event, accepted: true }));
+  return { content, diagnostics };
+}
+
 async function upstream(model: AiModelRecord, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, stream = false, extraBody: Record<string, unknown> = {}) {
-  const secret = await readModelSecret(model.id);
-  if (!secret) throw new Error("该模型尚未设置 API 密钥，或保存的密钥无法解密；请重新保存密钥");
+  const secret = await readProviderSecret(model.providerId);
+  if (!secret) throw new Error(`Provider「${model.providerName}」尚未设置 API 密钥，或保存的密钥无法解密；请重新保存密钥`);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), model.timeoutMs);
   const cancel = () => controller.abort("cancelled");
@@ -276,6 +585,7 @@ async function upstream(model: AiModelRecord, messages: Array<{ role: string; co
     signal?.removeEventListener("abort", cancel);
   };
   try {
+    const requestStartedAt = Date.now();
     const response = await fetch(endpoint(model), {
       method: "POST", signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
@@ -286,7 +596,7 @@ async function upstream(model: AiModelRecord, messages: Array<{ role: string; co
       const detail = unsafeDetail.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret).join("[REDACTED]");
       throw new Error(`模型返回 ${response.status}：${detail || response.statusText}`);
     }
-    return { response, controller, cleanup };
+    return { response, controller, cleanup, model, requestStartedAt, responseHeadersAt: Date.now() };
   } catch (error) {
     cleanup();
     if (controller.signal.aborted) throw new Error(controller.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消");
@@ -310,7 +620,7 @@ export async function testModel(id: string) {
   if (!model || model.id !== id) throw new Error("模型不存在");
   const started = Date.now();
   const handle = await upstream(model, [{ role: "user", content: "只回复 OK" }], undefined, false);
-  await consumeUpstream(handle, (response) => response.json());
+  completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "模型连接测试");
   return { ok: true, latencyMs: Date.now() - started };
 }
 
@@ -321,7 +631,18 @@ function trimCurrent(text: string, maximum = 30000) {
 type PromptRole = "system" | "user" | "assistant";
 type PromptMessage = { role: PromptRole; content: string };
 type GenerateTarget = "content" | "outline" | "chapter-title";
-export type GenerateResult = { text: string; outlineTitle?: string; outlineTitleError?: string };
+export type GenerateResult = {
+  text: string;
+  outlineTitle?: string;
+  outlineTitleError?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  finishReason?: string;
+  upstreamRequestId?: string;
+  upstreamProvider?: string;
+  upstreamResponseHeadersMs?: number;
+  upstreamTotalMs?: number;
+};
 
 const CHAT_SYSTEM_PROMPT = `你是 Writer Studio 的写作讨论助手。
 
@@ -621,12 +942,23 @@ function normalizeGenerateResult(target: GenerateTarget, value: string, includeO
   const plain = stripOuterCodeFence(value);
   if (!includeOutlineTitle) return { text: normalizeGeneratedText(target, plain) };
   const titleMatch = plain.match(/<outline_title>\s*([\s\S]*?)\s*<\/outline_title>/i);
+  const openedGeneratedText = /<generated_text>/i.test(plain);
+  if (openedGeneratedText && !/<\/generated_text>\s*$/i.test(plain)) {
+    throw new Error("模型返回的正文在结束前中断（generated_text 标签未闭合），未保存不完整结果");
+  }
   const textMatch = plain.match(/<generated_text>\s*([\s\S]*?)(?:\s*<\/generated_text>\s*$|$)/i);
   const withoutTitle = plain.replace(/<outline_title>\s*[\s\S]*?\s*<\/outline_title>/i, "").trim();
   const text = normalizeGeneratedText(target, textMatch?.[1] ?? withoutTitle);
   if (!titleMatch) return { text, outlineTitleError: "模型没有返回大纲名" };
   const validated = validateGeneratedName(titleMatch[1], outlineNaming, 80);
   return validated.valid ? { text, outlineTitle: validated.name } : { text, outlineTitleError: validated.error };
+}
+
+function generateMaxTokens(model: AiModelRecord, target: GenerateTarget, targetWords?: number) {
+  if (model.maxOutput != null) return model.maxOutput;
+  if (target !== "content") return undefined;
+  if (targetWords === undefined) return 65_536;
+  return Math.min(65_536, Math.max(4_096, Math.ceil(targetWords * 2)));
 }
 
 export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean }, signal?: AbortSignal) {
@@ -645,9 +977,19 @@ export async function generateText(input: { outlineId: string; instruction?: str
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, targetWords ?? DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
   const prompt = generatePrompt(source, instruction, input.target, system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters);
-  const handle = await upstream(model, prompt.messages, signal, false);
-  const payload = await consumeUpstream(handle, (response) => response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const result = normalizeGenerateResult(input.target, String(payload.choices?.[0]?.message?.content ?? ""), includeOutlineTitle, outlineNaming);
+  const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target, targetWords) });
+  const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
+  const completion = completionResult(payload, handle, "模型生成");
+  const result = {
+    ...normalizeGenerateResult(input.target, completion.content, includeOutlineTitle, outlineNaming),
+    inputTokens: completion.diagnostics.promptTokens,
+    outputTokens: completion.diagnostics.completionTokens,
+    finishReason: completion.diagnostics.finishReason,
+    upstreamRequestId: completion.diagnostics.requestId,
+    upstreamProvider: completion.diagnostics.provider,
+    upstreamResponseHeadersMs: completion.diagnostics.responseHeadersMs,
+    upstreamTotalMs: completion.diagnostics.totalMs,
+  };
   return input.target === "content" && contentMode === "continue"
     ? { ...result, text: appendContinuation(source.currentOutline.content, result.text) }
     : result;
@@ -659,6 +1001,15 @@ export type NameGenerationResult = {
   outlineTitles: Array<{ id: string; title: string }>;
   inputCharacters: number;
   maxInputCharacters: number;
+};
+
+export type ArticleNameGenerationResult = {
+  chapterTitles: Array<{ id: string; title: string }>;
+  outlineTitles: Array<{ id: string; chapterId: string; title: string }>;
+  inputCharacters: number;
+  maxInputCharacters: number;
+  inputTokens?: number;
+  outputTokens?: number;
 };
 
 const NAME_GENERATION_SYSTEM_PROMPT = `你是 Writer Studio 的中文小说结构命名编辑。
@@ -693,7 +1044,13 @@ function parseChapterNamesResponse(value: string) {
   return { chapterTitle, outlineTitles };
 }
 
-export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; model?: string; instruction?: string }, signal?: AbortSignal): Promise<NameGenerationResult> {
+function generatedNameForPreview(value: string, profile: NamingProfile, maximum: number, missingMessage: string) {
+  const name = normalizeGeneratedName(value, maximum, profile);
+  if (!name) throw new AiInputError(missingMessage);
+  return name;
+}
+
+export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string }, signal?: AbortSignal): Promise<NameGenerationResult> {
   const state = await readStudioState();
   const article = state.data?.articles.find((item) => item.id === input.articleId);
   const chapter = article?.chapters.find((item) => item.id === input.chapterId);
@@ -703,8 +1060,10 @@ export async function generateNames(input: { articleId: string; chapterId: strin
   if (input.model && !model) throw new AiInputError("所选名称生成模型不存在，请重新选择");
   const maximum = model?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS;
   const system = composeSystemPrompt(NAME_GENERATION_SYSTEM_PROMPT, model?.systemPrompt);
-  const chapterNaming = normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE);
-  const outlineNaming = normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
+  // Use the profiles visible to the caller for this request. They can be newer
+  // than the durable article snapshot while an autosave is still settling.
+  const chapterNaming = normalizeNamingProfile(input.chapterNaming ?? article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE);
+  const outlineNaming = normalizeNamingProfile(input.outlineNaming ?? article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
 
   if (input.target === "outline") {
     const outline = chapter.outlines.find((item) => item.id === input.outlineId && !item.archived);
@@ -717,12 +1076,15 @@ export async function generateNames(input: { articleId: string; chapterId: strin
     const messages: PromptMessage[] = [{ role: "system", content: system }, { role: "user", content: [context, constraints, output, request].filter(Boolean).join("\n\n") }];
     const characters = renderedInputCharacters(messages);
     if (characters > maximum) throw new AiPromptTooLongError(`当前大纲命名输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型设定的 ${maximum.toLocaleString("zh-CN")} 字符上限`, characters, maximum);
-    const raw = model
-      ? String(((await consumeUpstream(await upstream(model, messages, signal, false), (response) => response.json())) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? "")
-      : `<outline_title>${localNameForProfile("", outline.plan, instruction, outlineNaming)}</outline_title>`;
-    const validated = validateGeneratedName(parseOutlineNameResponse(raw), outlineNaming, 80);
-    if (!validated.valid) throw new AiInputError(validated.error);
-    return { outlineTitles: [{ id: outline.id, title: validated.name }], inputCharacters: characters, maxInputCharacters: maximum };
+    let raw: string;
+    if (model) {
+      const handle = await upstream(model, messages, signal, false);
+      raw = completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "大纲命名").content;
+    } else {
+      raw = `<outline_title>${localNameForProfile("", outline.plan, instruction, outlineNaming)}</outline_title>`;
+    }
+    const title = generatedNameForPreview(parseOutlineNameResponse(raw), outlineNaming, 80, "模型没有返回大纲名称");
+    return { outlineTitles: [{ id: outline.id, title }], inputCharacters: characters, maxInputCharacters: maximum };
   }
 
   const eligibleOutlines = chapter.outlines.filter((item) => !item.archived && item.plan.trim());
@@ -745,24 +1107,102 @@ export async function generateNames(input: { articleId: string; chapterId: strin
   const messages: PromptMessage[] = [{ role: "system", content: system }, { role: "user", content: [context, constraints, output, request].filter(Boolean).join("\n\n") }];
   const characters = renderedInputCharacters(messages);
   if (characters > maximum) throw new AiPromptTooLongError(`${includeChapter ? "生成章节名需要参考整章大纲，" : "所选大纲的名称生成"}输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型设定的 ${maximum.toLocaleString("zh-CN")} 字符上限。请拆分章节、取消章节名、减少所选大纲，或切换输入上限更高的模型。`, characters, maximum);
-  const raw = model
-    ? String(((await consumeUpstream(await upstream(model, messages, signal, false), (response) => response.json())) as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content ?? "")
-      : `${includeChapter ? `<chapter_title>${localNameForProfile("", eligibleOutlines.map((item) => item.plan).join("\n"), instruction, chapterNaming)}</chapter_title>` : ""}\n${outputAliases.length ? `<outline_titles>\n${outputAliases.map(({ key, outline }, index) => `<outline_title key="${key}">${localNameForProfile("", outline.plan, instruction, outlineNaming, index + 1)}</outline_title>`).join("\n")}\n</outline_titles>` : ""}`;
+  let raw: string;
+  if (model) {
+    const handle = await upstream(model, messages, signal, false);
+    raw = completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "章节命名").content;
+  } else {
+    raw = `${includeChapter ? `<chapter_title>${localNameForProfile("", eligibleOutlines.map((item) => item.plan).join("\n"), instruction, chapterNaming)}</chapter_title>` : ""}\n${outputAliases.length ? `<outline_titles>\n${outputAliases.map(({ key, outline }, index) => `<outline_title key="${key}">${localNameForProfile("", outline.plan, instruction, outlineNaming, index + 1)}</outline_title>`).join("\n")}\n</outline_titles>` : ""}`;
+  }
   const parsed = parseChapterNamesResponse(raw);
-  const validatedChapter = includeChapter ? validateGeneratedName(parsed.chapterTitle, chapterNaming, 120) : undefined;
-  if (validatedChapter && !validatedChapter.valid) throw new AiInputError(validatedChapter.error);
+  const chapterTitle = includeChapter ? generatedNameForPreview(parsed.chapterTitle, chapterNaming, 120, "模型没有返回章节名称") : undefined;
   if (!includeChapter && parsed.chapterTitle) throw new AiInputError("模型返回了未请求的章节名");
   const generated = outputAliases.map(({ key, outline }) => {
     const candidate = parsed.outlineTitles.get(key);
     if (candidate == null) throw new AiInputError(`模型遗漏了大纲 ${key} 的名称`);
-    const validated = validateGeneratedName(candidate, outlineNaming, 80);
-    if (!validated.valid) throw new AiInputError(`${key}：${validated.error}`);
-    return { id: outline.id, title: validated.name };
+    const title = generatedNameForPreview(candidate, outlineNaming, 80, `模型遗漏了大纲 ${key} 的名称`);
+    return { id: outline.id, title };
   });
   if (parsed.outlineTitles.size !== outputAliases.length) throw new AiInputError("模型返回了未请求的大纲名称");
   const unique = new Set(generated.map((item) => item.title));
   if (unique.size !== generated.length) throw new AiInputError("模型返回了重复的大纲名称");
-  return { chapterTitle: validatedChapter?.valid ? validatedChapter.name : undefined, outlineTitles: generated, inputCharacters: characters, maxInputCharacters: maximum };
+  return { chapterTitle, outlineTitles: generated, inputCharacters: characters, maxInputCharacters: maximum };
+}
+
+function parseArticleNamesResponse(value: string) {
+  const plain = stripOuterCodeFence(value);
+  const chapterTitles = new Map<string, string>();
+  const outlineTitles = new Map<string, string>();
+  for (const match of plain.matchAll(/<chapter_title\s+key="([^"]+)">\s*([\s\S]*?)\s*<\/chapter_title>/gi)) {
+    if (chapterTitles.has(match[1])) throw new AiInputError("模型返回了重复的章节标识");
+    chapterTitles.set(match[1], match[2]);
+  }
+  for (const match of plain.matchAll(/<outline_title\s+key="([^"]+)">\s*([\s\S]*?)\s*<\/outline_title>/gi)) {
+    if (outlineTitles.has(match[1])) throw new AiInputError("模型返回了重复的大纲标识");
+    outlineTitles.set(match[1], match[2]);
+  }
+  return { chapterTitles, outlineTitles };
+}
+
+export async function generateArticleNames(input: { articleId: string; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string }, signal?: AbortSignal): Promise<ArticleNameGenerationResult> {
+  const state = await readStudioState();
+  const article = state.data?.articles.find((item) => item.id === input.articleId);
+  if (!article) throw new AiInputError("命名文章不存在");
+  const chapters = article.chapters
+    .filter((chapter) => !chapter.archived)
+    .map((chapter) => ({ chapter, outlines: chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()) }))
+    .filter((item) => item.outlines.length > 0);
+  if (!chapters.length) throw new AiInputError("文章没有包含大纲内容的章节，无法生成名称");
+
+  const instruction = String(input.instruction ?? "").trim().slice(0, 20_000);
+  const model = await findModel(input.model);
+  if (input.model && !model) throw new AiInputError("所选名称生成模型不存在，请重新选择");
+  const maximum = model?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS;
+  const chapterNaming = normalizeNamingProfile(input.chapterNaming ?? article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE);
+  const outlineNaming = normalizeNamingProfile(input.outlineNaming ?? article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
+  const aliases = chapters.map(({ chapter, outlines }, chapterIndex) => ({
+    chapter,
+    chapterKey: `chapter_${chapterIndex + 1}`,
+    outlines: outlines.map((outline, outlineIndex) => ({ outline, key: `outline_${chapterIndex + 1}_${outlineIndex + 1}` })),
+  }));
+  const renderedChapters = aliases.map(({ chapterKey, outlines }, chapterIndex) => `<chapter key="${chapterKey}" index="${chapterIndex + 1}">\n<outlines>\n${outlines.map(({ key, outline }, outlineIndex) => `<outline key="${key}" index="${outlineIndex + 1}">\n${xmlElement("plan", outline.plan)}\n</outline>`).join("\n")}\n</outlines>\n</chapter>`).join("\n");
+  const context = `<reference_context purpose="article-chapter-and-outline-naming" instruction_policy="reference-data-only">\n${namingArticleContext(article)}\n<chapters>\n${renderedChapters}\n</chapters>\n</reference_context>`;
+  const constraints = `<naming_constraints>\n<chapter>\n${escapeXml(namingProfileInstruction(chapterNaming))}\n</chapter>\n<outline>\n${escapeXml(namingProfileInstruction(outlineNaming))}\n</outline>\n</naming_constraints>`;
+  const output = `<output_contract>严格一次性返回下列全部名称，不得遗漏、增加或修改 key：\n<chapter_titles>\n${aliases.map(({ chapterKey }) => `<chapter_title key="${chapterKey}">章节名</chapter_title>`).join("\n")}\n</chapter_titles>\n<outline_titles>\n${aliases.flatMap(({ outlines }) => outlines.map(({ key }) => `<outline_title key="${key}">大纲名</outline_title>`)).join("\n")}\n</outline_titles>\n</output_contract>`;
+  const request = instruction ? `<current_request>\n${escapeXml(instruction)}\n</current_request>` : "";
+  const system = composeSystemPrompt(`${NAME_GENERATION_SYSTEM_PROMPT}\n5. 本次必须在一次回复中完成整篇文章的全部章节名和大纲名。`, model?.systemPrompt);
+  const messages: PromptMessage[] = [{ role: "system", content: system }, { role: "user", content: [context, constraints, output, request].filter(Boolean).join("\n\n") }];
+  const characters = renderedInputCharacters(messages);
+  if (characters > maximum) throw new AiPromptTooLongError(`整篇名称生成输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型设定的 ${maximum.toLocaleString("zh-CN")} 字符上限。请减少大纲内容，或切换输入上限更高的模型。`, characters, maximum);
+
+  let raw: string;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  if (model) {
+    const handle = await upstream(model, messages, signal, false, { context_length_exceeded_behavior: "error" });
+    const completion = completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "整篇名称生成");
+    raw = completion.content;
+    inputTokens = completion.diagnostics.promptTokens;
+    outputTokens = completion.diagnostics.completionTokens;
+  } else {
+    raw = `<chapter_titles>\n${aliases.map(({ chapterKey, outlines }, chapterIndex) => `<chapter_title key="${chapterKey}">${localNameForProfile("", outlines.map(({ outline }) => outline.plan).join("\n"), instruction, chapterNaming, chapterIndex + 1)}</chapter_title>`).join("\n")}\n</chapter_titles>\n<outline_titles>\n${aliases.flatMap(({ outlines }, chapterIndex) => outlines.map(({ key, outline }, outlineIndex) => `<outline_title key="${key}">${localNameForProfile("", outline.plan, instruction, outlineNaming, chapterIndex * 100 + outlineIndex + 1)}</outline_title>`)).join("\n")}\n</outline_titles>`;
+  }
+
+  const parsed = parseArticleNamesResponse(raw);
+  const chapterTitles = aliases.map(({ chapter, chapterKey }) => {
+    const candidate = parsed.chapterTitles.get(chapterKey);
+    if (candidate == null) throw new AiInputError(`模型遗漏了章节 ${chapterKey} 的名称`);
+    return { id: chapter.id, title: generatedNameForPreview(candidate, chapterNaming, 120, `模型遗漏了章节 ${chapterKey} 的名称`) };
+  });
+  const outlineTitles = aliases.flatMap(({ chapter, outlines }) => outlines.map(({ outline, key }) => {
+    const candidate = parsed.outlineTitles.get(key);
+    if (candidate == null) throw new AiInputError(`模型遗漏了大纲 ${key} 的名称`);
+    return { id: outline.id, chapterId: chapter.id, title: generatedNameForPreview(candidate, outlineNaming, 80, `模型遗漏了大纲 ${key} 的名称`) };
+  }));
+  if (parsed.chapterTitles.size !== chapterTitles.length || parsed.outlineTitles.size !== outlineTitles.length) throw new AiInputError("模型返回了未请求的章节名或大纲名");
+  if (new Set(chapterTitles.map((item) => item.title)).size !== chapterTitles.length) throw new AiInputError("模型返回了重复的章节名称");
+  if (new Set(outlineTitles.map((item) => item.title)).size !== outlineTitles.length) throw new AiInputError("模型返回了重复的大纲名称");
+  return { chapterTitles, outlineTitles, inputCharacters: characters, maxInputCharacters: maximum, inputTokens, outputTokens };
 }
 
 export type AiReviewInput = {
@@ -880,13 +1320,9 @@ export async function reviewChapter(input: AiReviewInput, signal?: AbortSignal):
     max_tokens: model.maxOutput ?? 65_536,
     context_length_exceeded_behavior: "error",
   });
-  const payload = await consumeUpstream(handle, (response) => response.json()) as {
-    choices?: Array<{ finish_reason?: string; message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-  };
-  const choice = payload.choices?.[0];
-  if (choice?.finish_reason === "length") throw new Error("AI Review 输出达到长度上限，未修改任何正文");
-  const parsed = parseReviewResponse(String(choice?.message?.content ?? ""));
+  const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
+  const completion = completionResult(payload, handle, "AI Review");
+  const parsed = parseReviewResponse(completion.content);
   if (parsed.chapterId !== input.chapter.id || parsed.sourceDigest !== sourceDigest) throw new Error("AI Review 返回的章节或正文摘要不匹配");
   const revised = applyReviewEdits(input.outlines, parsed.edits);
   return {
@@ -894,7 +1330,7 @@ export async function reviewChapter(input: AiReviewInput, signal?: AbortSignal):
     revised: input.outlines.map((outline) => ({ ...outline, revisedText: revised.get(outline.id) ?? outline.text })),
     editCount: parsed.edits.length,
     model,
-    usage: { promptTokens: payload.usage?.prompt_tokens, completionTokens: payload.usage?.completion_tokens },
+    usage: { promptTokens: completion.diagnostics.promptTokens, completionTokens: completion.diagnostics.completionTokens },
   };
 }
 
@@ -970,9 +1406,18 @@ function plainTextStream(text: string, signal?: AbortSignal) {
 function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal | undefined, upstreamController: AbortController, cleanup: () => void) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let downstreamCancelled = false;
+  let cleanedUp = false;
+  const cleanupOnce = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    cleanup();
+  };
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const reader = body.getReader();
+      const activeReader = body.getReader();
+      reader = activeReader;
       let buffer = "";
       let finished = false;
       let failed = false;
@@ -1018,7 +1463,7 @@ function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal |
       };
       try {
         while (!signal?.aborted && !finished) {
-          const { done, value } = await reader.read();
+          const { done, value } = await activeReader.read();
           if (done) {
             buffer += decoder.decode();
             drainEvents(true);
@@ -1027,20 +1472,31 @@ function sseToTextStream(body: ReadableStream<Uint8Array>, signal: AbortSignal |
           buffer += decoder.decode(value, { stream: true });
           drainEvents();
         }
-        if (finished) await reader.cancel().catch(() => undefined);
+        if (finished) await activeReader.cancel().catch(() => undefined);
       } catch (error) {
         failed = true;
-        if (upstreamController.signal.aborted) controller.error(new Error(upstreamController.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消"));
-        else controller.error(readableNetworkError(error, "读取模型响应"));
+        if (!downstreamCancelled && !signal?.aborted) {
+          if (upstreamController.signal.aborted) controller.error(new Error(upstreamController.signal.reason === "timeout" ? "模型请求超时" : "模型请求已取消"));
+          else controller.error(readableNetworkError(error, "读取模型响应"));
+        }
       } finally {
-        reader.releaseLock();
-        cleanup();
-        if (!failed && !signal?.aborted) {
+        if (reader === activeReader) reader = undefined;
+        activeReader.releaseLock();
+        cleanupOnce();
+        if (!failed && !signal?.aborted && !downstreamCancelled) {
           try { controller.enqueue(encoder.encode("\u001e")); } catch { /* The downstream may have cancelled. */ }
         }
         try { controller.close(); } catch { /* The stream may already be errored. */ }
       }
     },
-    cancel() { cleanup(); void body.cancel(); },
+    cancel(reason) {
+      downstreamCancelled = true;
+      if (!upstreamController.signal.aborted) upstreamController.abort("cancelled");
+      cleanupOnce();
+      // The response body is locked while start() owns its reader. Cancelling the
+      // body directly here throws ERR_INVALID_STATE and can terminate Node. Cancel
+      // the active reader instead and let start() release its lock in finally.
+      return reader?.cancel(reason).catch(() => undefined);
+    },
   });
 }

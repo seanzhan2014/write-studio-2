@@ -1,28 +1,36 @@
 import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
 
 export const TRANSFER_KIND = "writer-studio-transfer" as const;
-export const TRANSFER_VERSION = 1 as const;
+export const TRANSFER_VERSION = 2 as const;
 
 export type TransferScope = "outline" | "article" | "articles" | "system-config" | "complete";
 
-export type PortableAiModel = {
+export type PortableAiProvider = {
   id: string;
   name: string;
+  adapterKind: "openai-compatible";
   baseUrl: string;
+  timeoutMs: number;
+  hadApiKey: boolean;
+};
+
+export type PortableAiModel = {
+  id: string;
+  providerId: string;
+  name: string;
   modelId: string;
   systemPrompt: string;
   temperature: number | null;
   maxOutput: number | null;
   maxInputCharacters: number;
-  timeoutMs: number;
-  hadApiKey: boolean;
+  timeoutOverrideMs: number | null;
 };
 
 export type OutlineTransferData = { outline: Outline };
 export type ArticleTransferData = { article: Article; tasks: AiTask[] };
 export type ArticlesTransferData = { articles: Article[]; tasks: AiTask[] };
-export type SystemConfigTransferData = { settings: StudioSettings; models: PortableAiModel[] };
-export type CompleteTransferData = { studio: StudioData; models: PortableAiModel[] };
+export type SystemConfigTransferData = { settings: StudioSettings; providers: PortableAiProvider[]; models: PortableAiModel[] };
+export type CompleteTransferData = { studio: StudioData; providers: PortableAiProvider[]; models: PortableAiModel[] };
 
 export type TransferDataByScope = {
   outline: OutlineTransferData;
@@ -80,7 +88,7 @@ export function createTransferEnvelope<S extends TransferScope>(scope: S, data: 
 export function parseTransferEnvelope(value: unknown): TransferEnvelope {
   const envelope = requireRecord(value, "导入文件");
   if (envelope.kind !== TRANSFER_KIND) throw new Error("这不是 Writer Studio 导出文件");
-  if (envelope.formatVersion !== TRANSFER_VERSION) throw new Error("导出文件版本暂不支持");
+  if (![1, TRANSFER_VERSION].includes(Number(envelope.formatVersion))) throw new Error("导出文件版本暂不支持");
   if (!["outline", "article", "articles", "system-config", "complete"].includes(String(envelope.scope))) throw new Error("导出文件类型不支持");
   const data = requireRecord(envelope.data, "导出数据");
   if (envelope.scope === "outline") requireOutline(data.outline);
@@ -95,13 +103,46 @@ export function parseTransferEnvelope(value: unknown): TransferEnvelope {
   if (envelope.scope === "system-config") {
     requireSettings(data.settings);
     requireArray(data.models, "AI 模型配置");
+    if (envelope.formatVersion === TRANSFER_VERSION) requireArray(data.providers, "AI Provider 配置");
   }
   if (envelope.scope === "complete") {
     const studio = requireRecord(data.studio, "完整数据");
     requireArray(studio.articles, "文章列表").forEach((article, index) => requireArticle(article, `第 ${index + 1} 篇文章`));
     requireArray(data.models, "AI 模型配置");
+    if (envelope.formatVersion === TRANSFER_VERSION) requireArray(data.providers, "AI Provider 配置");
   }
-  return envelope as TransferEnvelope;
+  if (envelope.formatVersion === 1 && (envelope.scope === "system-config" || envelope.scope === "complete")) {
+    const legacyModels = data.models as Array<Record<string, unknown>>;
+    const providers: PortableAiProvider[] = [];
+    const providerByUrl = new Map<string, PortableAiProvider>();
+    const models = legacyModels.map((model) => {
+      const baseUrl = String(model.baseUrl ?? "").trim().replace(/\/$/, "");
+      let provider = providerByUrl.get(baseUrl);
+      if (!provider) {
+        let name = "AI Provider";
+        try { name = new URL(baseUrl).host || name; } catch { /* validated during import */ }
+        provider = {
+          id: `provider-${String(model.id ?? makeId("legacy"))}`,
+          name,
+          adapterKind: "openai-compatible",
+          baseUrl,
+          timeoutMs: Number(model.timeoutMs ?? 120000),
+          hadApiKey: Boolean(model.hadApiKey),
+        };
+        providers.push(provider);
+        providerByUrl.set(baseUrl, provider);
+      } else if (model.hadApiKey) provider.hadApiKey = true;
+      const timeoutMs = Number(model.timeoutMs ?? provider.timeoutMs);
+      return {
+        id: String(model.id ?? ""), providerId: provider.id, name: String(model.name ?? ""), modelId: String(model.modelId ?? ""),
+        systemPrompt: String(model.systemPrompt ?? ""), temperature: model.temperature == null ? null : Number(model.temperature),
+        maxOutput: model.maxOutput == null ? null : Number(model.maxOutput), maxInputCharacters: Number(model.maxInputCharacters),
+        timeoutOverrideMs: timeoutMs === provider.timeoutMs ? null : timeoutMs,
+      } satisfies PortableAiModel;
+    });
+    return { ...envelope, formatVersion: TRANSFER_VERSION, data: { ...data, providers, models } } as unknown as TransferEnvelope;
+  }
+  return envelope as unknown as TransferEnvelope;
 }
 
 function makeId(prefix: string) {
@@ -273,18 +314,24 @@ export function duplicateArticlesForImport(articles: Article[], tasks: AiTask[],
   return { articles: importedArticles, tasks: importedTasks };
 }
 
-export function portableModels(models: Array<Omit<PortableAiModel, "hadApiKey"> & { hadApiKey?: boolean; hasSecret?: boolean }>): PortableAiModel[] {
+export function portableProviders(providers: Array<Omit<PortableAiProvider, "hadApiKey"> & { hadApiKey?: boolean; hasSecret?: boolean }>): PortableAiProvider[] {
+  return providers.map((provider) => ({
+    id: String(provider.id), name: String(provider.name), adapterKind: "openai-compatible",
+    baseUrl: String(provider.baseUrl), timeoutMs: Number(provider.timeoutMs), hadApiKey: Boolean(provider.hadApiKey ?? provider.hasSecret),
+  }));
+}
+
+export function portableModels(models: Array<PortableAiModel & { timeoutMs?: number }>): PortableAiModel[] {
   return models.map((model) => ({
     id: String(model.id),
+    providerId: String(model.providerId),
     name: String(model.name),
-    baseUrl: String(model.baseUrl),
     modelId: String(model.modelId),
     systemPrompt: String(model.systemPrompt ?? ""),
     temperature: model.temperature == null ? null : Number(model.temperature),
     maxOutput: model.maxOutput == null ? null : Number(model.maxOutput),
     maxInputCharacters: Number(model.maxInputCharacters),
-    timeoutMs: Number(model.timeoutMs),
-    hadApiKey: Boolean(model.hadApiKey ?? model.hasSecret),
+    timeoutOverrideMs: model.timeoutOverrideMs == null ? null : Number(model.timeoutOverrideMs),
   }));
 }
 

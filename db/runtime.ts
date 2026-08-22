@@ -3,10 +3,12 @@ import { timestampContentName } from "@/lib/content-name.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "@/lib/generate-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
+import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { normalizeExcellentFragments, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
+import { decryptAiSecret } from "@/lib/ai-secret";
 import { databaseEngine, getDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
@@ -21,7 +23,8 @@ const schemaStatements = [
   "CREATE INDEX IF NOT EXISTS articles_last_opened_idx ON articles(last_opened_at)",
   `CREATE TABLE IF NOT EXISTS chapters (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-    title TEXT NOT NULL, position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL, name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT,
+    position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
     UNIQUE(article_id, position)
   )`,
@@ -29,6 +32,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS outlines (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, title TEXT NOT NULL,
+    name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT,
     summary TEXT NOT NULL DEFAULT '', generate_instruction TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'saved', title_generation_pending INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -106,10 +110,17 @@ const schemaStatements = [
   "CREATE INDEX IF NOT EXISTS ai_tasks_status_created_idx ON ai_tasks(status, created_at)",
   "CREATE INDEX IF NOT EXISTS ai_tasks_outline_created_idx ON ai_tasks(outline_id, created_at DESC)",
   "CREATE INDEX IF NOT EXISTS ai_tasks_article_created_idx ON ai_tasks(article_id, created_at DESC)",
+  `CREATE TABLE IF NOT EXISTS ai_providers (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, adapter_kind TEXT NOT NULL DEFAULT 'openai-compatible',
+    base_url TEXT NOT NULL, timeout_ms INTEGER NOT NULL DEFAULT 120000,
+    has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS ai_models (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
+    id TEXT PRIMARY KEY NOT NULL, provider_id TEXT REFERENCES ai_providers(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
     system_prompt TEXT NOT NULL DEFAULT '', temperature REAL, max_output INTEGER, max_input_characters INTEGER NOT NULL DEFAULT 60000,
-    timeout_ms INTEGER NOT NULL, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
+    timeout_ms INTEGER NOT NULL, timeout_override_ms INTEGER, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS app_settings (
@@ -117,7 +128,25 @@ const schemaStatements = [
   )`,
 ];
 
+// Bump this whenever ensureDatabase gains a schema-shape requirement. A
+// persisted marker lets new Worker isolates skip dozens of idempotent DDL and
+// PRAGMA calls after the database has already been brought up to date.
+const RUNTIME_SCHEMA_VERSION = "1";
+const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
+
 let initialized: Promise<void> | null = null;
+
+async function hasCurrentRuntimeSchema(db: SqliteDatabase) {
+  try {
+    const version = await db.prepare("SELECT value_json FROM app_settings WHERE key=?")
+      .bind(RUNTIME_SCHEMA_VERSION_KEY)
+      .first<string>("value_json");
+    return version === RUNTIME_SCHEMA_VERSION;
+  } catch {
+    // Fresh and legacy databases may not have app_settings yet.
+    return false;
+  }
+}
 
 async function createSearchIndex(db: SqliteDatabase) {
   try {
@@ -147,13 +176,17 @@ export async function ensureDatabase() {
   if (!initialized) {
     initialized = (async () => {
       const db = getDatabase();
-      for (const statement of schemaStatements) await db.prepare(statement).run();
+      if (await hasCurrentRuntimeSchema(db)) return;
+
+      await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
+      await ensureAiProviderShape(db);
       await ensureArticleNamingColumns(db);
       await ensureCharacterDescriptionShape(db);
       await ensureMultipleChatSessions(db);
       await ensureOutlineTitleGenerationColumn(db);
+      await ensureNameVersionColumns(db);
       await ensureOutlineGenerateInstructionColumn(db);
       await ensureContentOverrideColumn(db);
       await ensureContentNameColumn(db);
@@ -163,8 +196,15 @@ export async function ensureDatabase() {
       await ensureBodyExcellentColumns(db);
       await ensureAiTaskProgressColumns(db);
       await createSearchIndex(db);
-      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(new Date().toISOString()).run();
-      await db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(new Date().toISOString()).run();
+      const initializedAt = new Date().toISOString();
+      await db.batch([
+        db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
+        db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '4', ?)").bind(initializedAt),
+        db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
+        db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
+      ]);
     })().catch((error) => {
       initialized = null;
       throw error;
@@ -214,6 +254,67 @@ async function ensureVersionOutlineSnapshotColumn(db: SqliteDatabase) {
 async function ensureVersionModelNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("model_name")) await db.prepare("ALTER TABLE versions ADD COLUMN model_name TEXT").run();
+}
+
+async function ensureNameVersionColumns(db: SqliteDatabase) {
+  for (const table of ["chapters", "outlines"]) {
+    const columns = rows(await db.prepare(`PRAGMA table_info('${table}')`).all<Record<string, unknown>>()).map((row) => String(row.name));
+    if (!columns.includes("name_versions_json")) await db.prepare(`ALTER TABLE ${table} ADD COLUMN name_versions_json TEXT NOT NULL DEFAULT '[]'`).run();
+    if (!columns.includes("default_name_version_id")) await db.prepare(`ALTER TABLE ${table} ADD COLUMN default_name_version_id TEXT`).run();
+  }
+}
+
+function providerNameFromUrl(value: string) {
+  try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
+}
+
+async function ensureAiProviderShape(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("provider_id")) await db.prepare("ALTER TABLE ai_models ADD COLUMN provider_id TEXT REFERENCES ai_providers(id) ON DELETE RESTRICT").run();
+  if (!columns.includes("timeout_override_ms")) await db.prepare("ALTER TABLE ai_models ADD COLUMN timeout_override_ms INTEGER").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS ai_models_provider_idx ON ai_models(provider_id)").run();
+
+  const result = await db.prepare("SELECT id,name,base_url,timeout_ms,has_secret,secret,created_at,updated_at FROM ai_models WHERE provider_id IS NULL OR provider_id='' ORDER BY created_at,id").all<Record<string, unknown>>();
+  const legacy = result.results ?? [];
+  if (!legacy.length) return;
+
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const model of legacy) {
+    const baseUrl = String(model.base_url ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    const stored = String(model.secret ?? "");
+    let credential = "none";
+    if (stored) {
+      try { credential = `secret:${await decryptAiSecret(stored)}`; }
+      catch { credential = `unreadable:${String(model.id)}`; }
+    }
+    const key = `${baseUrl}\n${credential}`;
+    const group = groups.get(key) ?? [];
+    group.push(model);
+    groups.set(key, group);
+  }
+
+  const usedNames = new Set<string>();
+  for (const models of groups.values()) {
+    const first = models[0];
+    const providerId = crypto.randomUUID();
+    const baseUrl = String(first.base_url ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    const baseName = providerNameFromUrl(baseUrl);
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name)) { name = `${baseName} ${suffix}`; suffix += 1; }
+    usedNames.add(name);
+    const timeoutMs = Math.max(5000, Math.min(600000, Number(first.timeout_ms ?? 120000)));
+    const storedSecret = String(first.secret ?? "");
+    const createdAt = String(first.created_at ?? new Date().toISOString());
+    const updatedAt = String(first.updated_at ?? createdAt);
+    await db.prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(providerId, name, "openai-compatible", baseUrl, timeoutMs, storedSecret ? 1 : 0, storedSecret || null, createdAt, updatedAt).run();
+    for (const model of models) {
+      const modelTimeout = Math.max(5000, Math.min(600000, Number(model.timeout_ms ?? timeoutMs)));
+      await db.prepare("UPDATE ai_models SET provider_id=?,timeout_override_ms=?,secret=NULL,has_secret=0 WHERE id=?")
+        .bind(providerId, modelTimeout === timeoutMs ? null : modelTimeout, String(model.id)).run();
+    }
+  }
 }
 
 async function ensureOutlineGenerateInstructionColumn(db: SqliteDatabase) {
@@ -341,7 +442,13 @@ async function ensureMultipleChatSessions(db: SqliteDatabase) {
   ]);
 }
 
-export async function readStudioState(): Promise<{ data: StudioData | null; revision: number }> {
+export async function readStudioRevision() {
+  await ensureDatabase();
+  const value = await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json");
+  return Number(value ?? 0);
+}
+
+export async function readStudioState(): Promise<{ data: StudioData | null; revision: number; databaseVersion: number }> {
   await ensureDatabase();
   const db = getDatabase();
   const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
@@ -361,9 +468,10 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const articleRows = rows(articleResult);
   const settingsMap = new Map(rows(settingResult).map((row) => [String((row as Record<string, unknown>).key), (row as Record<string, unknown>).value_json]));
   const revision = Number(settingsMap.get("state_revision") ?? 0);
+  const databaseVersion = Number(settingsMap.get("database_version") ?? revision);
   if (!articleRows.length) {
     const ui = safeJson<Partial<StudioData>>(settingsMap.get("studio_ui"), {});
-    return { revision, data: { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings: normalizeStudioSettings(ui.settings) } };
+    return { revision, databaseVersion, data: { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings: normalizeStudioSettings(ui.settings) } };
   }
 
   const chapters = rows(chapterResult) as Record<string, unknown>[];
@@ -377,7 +485,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const messages = rows(messageResult) as Record<string, unknown>[];
   const tasks = (rows(taskResult) as Record<string, unknown>[]).map((row) => ({
     id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
-    target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "chat" ? "AI Chat" : "章节标题",
+    target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
     prompt: String(row.instruction), model: String(row.model_id),
     state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : row.status,
     createdAt: String(row.created_at), resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
@@ -451,8 +559,17 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         const defaultVersionId = content?.default_version_id && outlineVersions.some((version) => version.id === String(content.default_version_id))
           ? String(content.default_version_id)
           : null;
+        const outlineTitle = normalizeOutlineTitle(outlineRow.title);
+        const outlineNameState = normalizeNameVersionState(
+          outlineId,
+          outlineTitle,
+          safeJson<NameVersion[]>(outlineRow.name_versions_json, []),
+          outlineRow.default_name_version_id,
+          String(outlineRow.updated_at),
+          80,
+        );
         return {
-          id: outlineId, title: normalizeOutlineTitle(outlineRow.title), plan: String(outlineRow.summary), generateInstruction: String(outlineRow.generate_instruction ?? ""),
+          id: outlineId, title: outlineTitle, ...outlineNameState, plan: String(outlineRow.summary), generateInstruction: String(outlineRow.generate_instruction ?? ""),
           titleGenerationPending: bool(outlineRow.title_generation_pending),
           content: String(content?.text ?? ""), contentName: String(content?.content_name ?? "").trim() || timestampContentName(String(outlineRow.updated_at)),
           currentVersionId, defaultVersionId,
@@ -464,7 +581,15 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           chat: { sessions: sessionItems.length ? sessionItems : [fallbackSession], activeSessionId },
         };
       });
-      return { id: chapterId, title: String(chapterRow.title), archived: bool(chapterRow.archived), outlines: chapterOutlines };
+      const chapterNameState = normalizeNameVersionState(
+        chapterId,
+        String(chapterRow.title),
+        safeJson<NameVersion[]>(chapterRow.name_versions_json, []),
+        chapterRow.default_name_version_id,
+        String(chapterRow.updated_at),
+        120,
+      );
+      return { id: chapterId, title: String(chapterRow.title), ...chapterNameState, archived: bool(chapterRow.archived), outlines: chapterOutlines };
     });
     return {
       id: articleId, title: String(articleRow.title), summary: String(articleRow.summary), type: String(articleRow.article_type),
@@ -487,6 +612,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const currentOutlineId = selectedArticle.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
   return {
     revision,
+    databaseVersion,
     data: {
       version: 1,
       currentArticleId,
@@ -545,9 +671,11 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   if (current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
+  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
 
   const now = new Date().toISOString();
   const nextRevision = expectedRevision + 1;
+  const nextDatabaseVersion = currentDatabaseVersion + 1;
   const statements: SqliteStatement[] = [
     db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, crypto.randomUUID(), now),
     db.prepare("DELETE FROM articles"),
@@ -557,17 +685,19 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   for (const article of data.articles) {
     statements.push(insert(db, "INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
     article.chapters.forEach((chapter, chapterIndex) => {
-      statements.push(insert(db, "INSERT INTO chapters VALUES(?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
+      const chapterNameState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+      statements.push(insert(db, "INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,position,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, JSON.stringify(chapterNameState.nameVersions), chapterNameState.defaultNameVersionId, (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, null, "chapter", chapter.id, chapter.title, ""]));
       chapter.outlines.forEach((outline, outlineIndex) => {
         const referenceContent = resolvedOutlineContent(outline);
         const normalizedTitle = normalizeOutlineTitle(outline.title);
+        const outlineNameState = normalizeNameVersionState(outline.id, normalizedTitle, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
         const defaultVersionId = Object.prototype.hasOwnProperty.call(outline, "defaultVersionId") ? outline.defaultVersionId : outline.sourceVersionId ?? null;
         const currentVersionId = Object.prototype.hasOwnProperty.call(outline, "currentVersionId") ? outline.currentVersionId : outline.contentOverride === false ? outline.sourceVersionId ?? null : null;
         const contentOutlineSnapshot = outline.contentOutlineSnapshot
           ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
           ?? { title: normalizedTitle, plan: outline.plan };
-        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
+        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, JSON.stringify(outlineNameState.nameVersions), outlineNameState.defaultNameVersionId, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
@@ -591,10 +721,11 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     });
   }
   for (const task of data.tasks.slice(0, 20)) {
-    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
+    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
   }
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
+  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)", [String(nextDatabaseVersion), now]));
   try {
     await db.batch(statements);
   } catch (error) {
@@ -602,14 +733,14 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     if (actual !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
     throw error;
   }
-  return { conflict: false as const, revision: nextRevision };
+  return { conflict: false as const, revision: nextRevision, databaseVersion: nextDatabaseVersion };
 }
 
 export async function databaseStatus() {
   const state = await readStudioState();
   const db = getDatabase();
   const searchMode = await db.prepare("SELECT value_json FROM app_settings WHERE key='search_mode'").first<string>("value_json");
-  return { connected: true, engine: databaseEngine(), revision: state.revision, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
+  return { connected: true, engine: databaseEngine(), revision: state.revision, databaseVersion: state.databaseVersion, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
 }
 
 export async function claimChatRequest(requestId: string, requestHash: string) {
@@ -645,12 +776,14 @@ export async function clearBusinessData() {
   await ensureDatabase();
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
   const now = new Date().toISOString();
   await db.batch([
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'last_outline:%'"),
     db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)").bind(String(current + 1), now),
+    db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)").bind(String(currentDatabaseVersion + 1), now),
   ]);
-  return { revision: current + 1 };
+  return { revision: current + 1, databaseVersion: currentDatabaseVersion + 1 };
 }

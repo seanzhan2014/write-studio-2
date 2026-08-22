@@ -67,7 +67,7 @@ Writer Studio 是一款面向长篇文章和故事创作者的结构化写作软
 - 人物和人物关系；
 - 文章搜索；
 - 正文查找和替换；
-- AI 模型设置；
+- AI Provider 与模型设置；
 - 外观、编辑器、任务和数据库设置。
 
 AI 相关的用户可见功能名称只有：
@@ -158,6 +158,7 @@ AI 相关的用户可见功能名称只有：
 ├── 文章选择器
 ├── 当前文章
 │   ├── 搜索
+│   ├── 全章节编辑
 │   ├── 全大纲编辑
 │   ├── 全文编辑
 │   ├── 文章资料
@@ -468,7 +469,23 @@ AI 相关的用户可见功能名称只有：
 
 若大纲设置了默认正文版本，章节汇总阅读使用该版本；否则该大纲的正文按空内容处理。
 
-### 7.5 全大纲编辑
+### 7.5 全章节编辑
+
+点击左侧栏或手机文章菜单中的“全章节编辑”后，进入当前文章统一的名称管理页。页面只展示章节名和大纲名，不展示大纲内容、正文、正文版本或聊天：
+
+- 按章节和大纲顺序展示全部未归档名称；启用“显示已归档内容”后同时展示归档项；
+- 章节名和大纲名各自保留名称版本历史，并明确标记当前默认名称；
+- 用户可以新增或删除名称版本，并选择任一历史名称作为默认名称；删除默认名称时自动切换到可用候选，大纲可删除最后一个名称，章节至少保留一个名称；选择默认大纲名时继续校验同一章节内不得重名；
+- 手机端名称版本左滑露出删除按钮，右滑收回，避免删除操作长期占用窄屏空间；
+- AI 生成结果只追加为候选名称版本，不直接覆盖当前默认名称；用户选择候选后才更新默认名称；
+- 页面顶部统一提供名称生成模型、补充命名要求和“生成全部章节名和大纲名”；
+- 每个章节提供“生成章节名”，每条大纲提供“生成大纲名”；章节名生成参考该章节全部可用大纲，但只返回章节名；
+- “生成全部”只创建一个可持久化、可取消和可重试的后台 AI 任务；任务一次发送整篇文章资料与全部可用大纲，并要求模型在一次回复中返回全部章节名和大纲名；不得按章节循环调用模型；
+- 后台任务运行时用户可以离开全章节编辑页；任务完成后一次性将全部结果追加为候选版本，任务面板显示排队、生成、保存、成功或失败状态；
+- 文章资料中的章节页只保留命名规则设置，不再提供“生成全部章节名和大纲名”；
+- 章节三点菜单、章节阅读页和大纲三点菜单不再提供独立的 AI 名称生成入口。
+
+### 7.6 全大纲编辑
 
 点击左侧栏或手机文章菜单中的“全大纲编辑”后，进入一张连续的扁平文档：
 
@@ -478,11 +495,12 @@ AI 相关的用户可见功能名称只有：
 - 文本区域随内容自动增高，不得出现输入框内部滚动条；
 - 标题和大纲内容沿用自动保存与修订冲突处理；
 - 每条大纲提供独立拖动手柄和三点排序菜单，支持同章节、跨章节及空章节移动；
+- 每条大纲在拖动手柄下方依次提供 `+`、`-`、`=` 操作：在当前大纲下方新建空白大纲、确认后删除大纲、归档大纲；删除包含正文或正文版本的大纲时必须明确警告正文会一并删除；
 - 手机端只允许从拖动手柄发起排序，正文区域继续保留选择文字和系统长按能力。
 
 页面可以使用 `content-visibility` 等浏览器布局优化，但不得通过虚拟列表卸载大纲输入区，否则会破坏浏览器查找、连续阅读和焦点编辑。
 
-### 7.6 全文编辑
+### 7.7 全文编辑
 
 点击左侧栏或手机文章菜单中的“全文编辑”后，以与全大纲编辑相同的连续文档形式展示正文：
 
@@ -733,9 +751,10 @@ AI Generate
 结构生成只从大纲视图进入：
 
 - 大纲三点菜单中的 `AI Generate` 生成大纲内容；
-- 章节三点菜单和章节阅读页中的 `AI Generate 章节标题` 生成章节标题；
 - 结构结果必须先进入可编辑预览，用户确认后才能应用；
 - 结构生成不得创建、复制或覆盖正文及正文版本。
+
+章节名和大纲名的独立 AI 生成不属于结构内容生成，只能从“全章节编辑”进入；章节菜单、章节阅读页和大纲菜单不提供名称生成入口。
 
 ### 10.2 提交规则
 
@@ -1002,11 +1021,12 @@ AI Chat 任务详情中的“打开对应内容”必须进入对应大纲的 Ch
 
 ### 13.1 页面结构
 
-点击左侧栏“文章资料”后，主区域显示三个分区：
+点击左侧栏“文章资料”后，主区域显示四个分区：
 
 1. 基本信息；
-2. 人物；
-3. 人物关系。
+2. 章节命名规则；
+3. 人物；
+4. 人物关系。
 
 ### 13.2 基本信息
 
@@ -1122,35 +1142,40 @@ AI Chat 任务详情中的“打开对应内容”必须进入对应大纲的 Ch
 
 自动保存始终开启，不提供关闭选项。
 
-### 15.3 AI 模型
+### 15.3 AI Provider 与模型
 
-支持新建、编辑、删除、获取模型和测试兼容 OpenAI 请求格式的模型配置。每张模型卡必须提供明确可见的“编辑”和“测试”按钮。
+AI 服务设置先管理 Provider，再管理 Provider 下的模型。Provider 是一个独立的连接或账号实例；同一服务地址使用不同 API Key 时必须建立不同 Provider。
 
-字段：
+页面不再把 Provider 和模型渲染为两个彼此分离的列表。名称生成默认模型位于顶部；其后每个 Provider 作为一级可折叠分组，关联模型只显示在该 Provider 的展开区域。Provider 分组头持续提供连接级操作，组内模型行提供模型级操作。新增模型和手动录入只能从目标 Provider 分组发起，页面不得提供脱离 Provider 语境的全局“新建模型”入口。
+
+Provider 字段与操作：
 
 - 显示名称；
-- 服务地址；
-- 模型 ID；
-- API 密钥；
+- 协议适配器，当前支持 `openai-compatible`；
+- 服务地址，只允许 `http` 或 `https`，且不得包含用户名或密码；
+- API Key；
+- 请求超时，界面以分钟输入和展示，服务端使用毫秒；
+- 测试连接、Fetch 模型、编辑和删除。
+
+模型字段与操作：
+
+- 所属 Provider；
+- 显示名称；
+- 上游模型 ID；
 - 附加提示词，数据库字段仍使用 `system_prompt`；
 - Temperature；
 - 最大输出；
-- 超时时间；界面统一以分钟输入和展示，保存及请求执行时换算为毫秒。
+- 最大输入字符数。
 
-编辑规则：
+API Key、服务地址、连接测试和模型发现只能属于 Provider，模型表单不得重复配置这些字段。修改 Provider 地址或 API Key 后，其下所有模型立即使用新配置。仍有关联模型时不得删除 Provider。
 
-- 附加提示词只能影响语言风格和偏好，不得替换 Writer Studio 针对 AI Chat、正文、大纲内容和章节标题的固定产品规则；
-- 编辑表单使用当前配置预填；
-- 编辑时 API 密钥留空表示保留当前进程内的密钥，输入新值表示替换；
-- 修改显示名称后，全局默认 AI Chat / AI Generate 模型引用必须保持有效；
-- 服务地址只允许 `http` 或 `https`，且不得包含用户名或密码。
-- 模型卡的信息、默认用途标记和操作区必须分层排列；操作按钮不得挤压模型名称、地址或状态。
+“Fetch 模型”从 Provider 卡片发起，由服务端使用该 Provider 的地址和密钥请求 `<base_url>/models`。成功后打开可搜索的模型多选表单；获取结果去重并排序，默认选中第一个尚未保存的模型，同时继续允许手动输入模型 ID。
 
-手机端新建或编辑模型时使用全屏编辑页。服务地址和 API 密钥之后的模型 ID 区必须提供整行、至少 44px 高的主操作按钮“Fetch 模型列表”，不能只把 Fetch 收在字段标题旁的小按钮中。获取中的加载状态、脱敏错误以及获取成功后的可搜索模型选择器都必须显示在当前编辑页内；获取成功后默认选中返回的第一项，同时继续允许手动输入模型 ID。取消和保存操作固定在可用视口底部及安全区上方，页面滚动或软键盘出现时仍可访问。
+手机端 Provider 和模型表单都使用全屏编辑页。取消和保存操作固定在可用视口底部及安全区上方，页面滚动或软键盘出现时仍可访问。
 
-“获取模型”按钮位于模型 ID 字段旁边，调用服务端模型发现接口，由服务端请求兼容服务的 `<base_url>/models`。成功后把去重并排序的模型 ID 放入下拉选择；仍允许手动输入模型 ID。获取过程拥有独立的加载、成功和错误状态，按钮具备独立的无障碍名称。
+附加提示词只能影响语言风格和偏好，不得替换 Writer Studio 针对 AI Chat、正文、大纲内容和章节标题的固定产品规则。修改模型显示名称后，全局默认 AI Chat / AI Generate 模型引用必须保持有效。
 
-API 密钥不写入浏览器存储或诊断日志；它使用 `AI_SECRET_KEY` 派生的 AES-GCM 密钥加密后写入 SQLite。生产环境必须设置稳定的随机密钥，更换后需要重新录入模型密钥。
+API Key 不写入浏览器存储或诊断日志；它使用 `AI_SECRET_KEY` 派生的 AES-GCM 密钥加密后写入 `ai_providers`。生产环境必须设置稳定的随机密钥，更换后需要重新录入 Provider 密钥。
 
 用途选择：
 
@@ -1179,6 +1204,7 @@ PoC 不提供数据库位置切换，避免不同设备或进程误指向不一�
 - 应用版本；
 - 服务状态；
 - 最近错误；
+- 由 3003 服务管理器托管时，经确认后重启服务端，并自动等待服务恢复；
 - 复制脱敏诊断信息；
 - 清除非业务缓存。
 
@@ -1444,6 +1470,7 @@ relationships
 chat_sessions
 chat_messages
 ai_tasks
+ai_providers
 ai_models
 app_settings
 ```
@@ -1629,25 +1656,39 @@ app_settings
 - `article_id, created_at DESC`；
 - `idempotency_key` 唯一。
 
-### 20.12 ai_models
+### 20.12 ai_providers
 
 | 字段 | 类型 | 规则 |
 |---|---|---|
 | id | TEXT | 主键 |
 | name | TEXT | 非空 |
+| adapter_kind | TEXT | 非空，当前为 `openai-compatible` |
 | base_url | TEXT | 非空 |
+| timeout_ms | INTEGER | 非空 |
+| has_secret | INTEGER | 0/1 |
+| secret | TEXT | 可空，AES-GCM 加密密文 |
+| created_at | TEXT | 非空 |
+| updated_at | TEXT | 非空 |
+
+### 20.13 ai_models
+
+| 字段 | 类型 | 规则 |
+|---|---|---|
+| id | TEXT | 主键 |
+| provider_id | TEXT | 外键关联 `ai_providers.id` |
+| name | TEXT | 非空 |
 | model_id | TEXT | 非空 |
 | system_prompt | TEXT | 非空，默认空字符串 |
 | temperature | REAL | 可空 |
 | max_output | INTEGER | 可空 |
-| timeout_ms | INTEGER | 非空 |
-| has_secret | INTEGER | 0/1，仅作为当前响应中的能力提示，不代表持久保存密钥 |
+| max_input_characters | INTEGER | 非空 |
+| timeout_override_ms | INTEGER | 可空，兼容旧模型的超时覆盖 |
 | created_at | TEXT | 非空 |
 | updated_at | TEXT | 非空 |
 
-API 密钥不得写入该表。密钥只存在于服务端当前进程的内存映射中；服务重启后 `has_secret` 必须回到未配置状态，直到用户重新输入。
+迁移阶段可以保留旧 `base_url`、`timeout_ms`、`has_secret` 和 `secret` 影子列，但运行时不得从这些列读取连接或密钥。回填完成后旧模型密钥必须清空。
 
-### 20.13 app_settings
+### 20.14 app_settings
 
 | 字段 | 类型 | 规则 |
 |---|---|---|
@@ -1720,6 +1761,7 @@ CREATE VIRTUAL TABLE search_documents USING fts5(
 ```text
 /                                      # 手机端默认解析为大纲视图
 /articles/:articleId/outlines
+/articles/:articleId/chapters/edit-all
 /articles/:articleId/outlines/edit-all
 /articles/:articleId/outlines/:outlineId/write
 /articles/:articleId/outlines/:outlineId/chat
@@ -1734,7 +1776,7 @@ CREATE VIRTUAL TABLE search_documents USING fts5(
 /settings/:section
 ```
 
-`/articles/:articleId/outlines` 是手机端结构首页；`/articles/:articleId/outlines/edit-all` 是连续的全大纲编辑页；`/articles/:articleId/edit` 是连续的全文编辑页。电脑端访问大纲首页路由时可以打开当前大纲写作区，以避免产生空白工作区。根路径在手机宽度下进入大纲首页，在电脑宽度下进入最近使用的大纲工作区。
+`/articles/:articleId/outlines` 是手机端结构首页；`/articles/:articleId/chapters/edit-all` 是全章节编辑与名称版本页；`/articles/:articleId/outlines/edit-all` 是连续的全大纲编辑页；`/articles/:articleId/edit` 是连续的全文编辑页。电脑端访问大纲首页路由时可以打开当前大纲写作区，以避免产生空白工作区。根路径在手机宽度下进入大纲首页，在电脑宽度下进入最近使用的大纲工作区。
 
 版本抽屉使用查询参数：
 
@@ -1915,21 +1957,26 @@ POST   /api/ai/generate-stream
 
 GET    /api/settings
 PUT    /api/settings
+GET    /api/providers
+POST   /api/providers
+PATCH  /api/providers/:providerId
+DELETE /api/providers/:providerId
+POST   /api/providers/:providerId/discover
+POST   /api/providers/:providerId/test
+PUT    /api/providers/:providerId/secret
+DELETE /api/providers/:providerId/secret
 GET    /api/models
 POST   /api/models
-POST   /api/models/discover
 PATCH  /api/models/:modelId
 DELETE /api/models/:modelId
 POST   /api/models/:modelId/test
-PUT    /api/models/:modelId/secret
-DELETE /api/models/:modelId/secret
 
 GET    /api/database/status
 POST   /api/database/integrity-check
 DELETE /api/database/business-data
 ```
 
-`/api/models/discover` 接受新表单的 `baseUrl + secret`，或编辑已有模型时的 `existingModelId`，由服务端请求 `<base_url>/models`；不得让浏览器直接携带密钥请求第三方域名。`/api/ai/generate` 用于需要预览后应用的短结构生成；`/api/ai/generate-stream` 用于可取消的正文任务。
+`/api/providers/:providerId/discover` 由服务端读取 Provider 地址和密钥并请求 `<base_url>/models`；不得让浏览器直接携带密钥请求第三方域名。`/api/ai/generate` 用于需要预览后应用的短结构生成；`/api/ai/generate-stream` 用于可取消的正文任务。
 
 `GET /api/outlines/:outlineId/content` 的 `text` 返回按默认版本规则解析后的正文；没有有效默认版本时返回空字符串。`draftText` 返回当前可编辑草稿，`defaultVersionId` 返回默认版本 ID；为兼容已有调用方同时保留同值别名 `sourceVersionId`。设置和清空默认版本都只修改引用，不复制或覆盖草稿。
 
@@ -2047,6 +2094,9 @@ PoC 的 `PUT /api/state` 也必须作为单个原子操作执行；任一外键�
 - [ ] 多窗口同时编辑时修订冲突不会静默覆盖；
 - [ ] 应用意外关闭后可以识别更新的临时缓冲并显示差异；
 - [ ] 章节只读拼接顺序正确；全大纲编辑和全文编辑按相同章节、大纲顺序连续展示；
+- [ ] 全章节编辑只展示章节名和大纲名，并支持手动名称、AI 候选、名称历史和默认名称选择；
+- [ ] 全章节编辑可以分别生成单个章节名、单个大纲名和全部章节名与大纲名，生成结果只追加候选；“生成全部”创建一个后台任务且成功执行时只调用一次模型；
+- [ ] 文章资料、章节菜单、章节阅读页和大纲菜单中不再出现独立的 AI 名称生成入口；
 - [ ] 全大纲编辑的标题和大纲内容可以直接修改、自动增高且没有输入框内部滚动；
 - [ ] 全文编辑的正文可以直接修改、自动增高，并在失焦时保存当前正文且不新增版本；
 - [ ] 全文编辑中的每条正文都能独立选择候选版本，选择后立即预览且不会静默改变默认版本；
@@ -2161,13 +2211,15 @@ PoC 的 `PUT /api/state` 也必须作为单个原子操作执行；任一外键�
 - [ ] relationships 快照写入严格匹配 8 个字段，错误绑定数量在自动化测试中失败；
 - [ ] 所有原子操作可以完整回滚。
 
-### 26.11 AI 模型与局域网
+### 26.11 AI Provider、模型与局域网
 
-- [ ] 模型卡有可见的编辑和测试按钮；
-- [ ] “Fetch 模型”通过服务端 `/models` 获取、去重和排序，仍允许手动输入模型 ID；
-- [ ] 手机端模型全屏编辑页显示整行、至少 44px 高的“Fetch 模型列表”按钮；加载、结果选择器和错误均位于编辑页内；
+- [ ] 名称生成默认模型显示在顶部，模型按所属 Provider 归入一级可折叠分组，不再存在独立的大模型总列表；
+- [ ] 新增模型只能从目标 Provider 分组发起，折叠分组后仍能识别 Provider 状态和连接级操作；
+- [ ] API Key、服务地址、连接测试和 Fetch 模型只存在于 Provider；
+- [ ] “Fetch 模型”通过服务端 `/models` 获取、去重和排序，并打开仍允许手动输入模型 ID 的多选模型表单；
 - [ ] 手机端滚动表单或弹出软键盘后，取消和保存操作仍固定在安全区上方并可点击；
-- [ ] 编辑时密钥留空不会删除当前进程内已有密钥；
+- [ ] 编辑 Provider 时密钥留空不会删除已有密钥；
+- [ ] 有关联模型时 Provider 不能删除；
 - [ ] 修改或删除模型时默认 Chat/Generate 引用保持有效或安全清空；
 - [ ] 上游 401/403、超时、本机无出站网络和无效模型 ID 显示可区分的脱敏错误；
 - [ ] 服务监听 `0.0.0.0:3002` 后，同一可信局域网内的手机可以访问；

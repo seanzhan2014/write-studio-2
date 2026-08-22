@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { canAutomaticallyUpload, evaluateSyncPolicy } from "../lib/sync-policy.mjs";
+
+const baseline = {
+  localSchemaVersion: 1,
+  remoteSchemaVersion: 1,
+  localDatabaseVersion: 12,
+  lastUploadedLocalVersion: 11,
+  lastCloudVersion: 7,
+  lastRemoteDatabaseId: "cloud-a",
+  remoteDatabaseId: "cloud-a",
+  remoteDatabaseVersion: 7,
+};
+
+test("background upload is allowed only when the cloud still matches the baseline", () => {
+  const pending = evaluateSyncPolicy(baseline);
+  assert.equal(pending, "pending");
+  assert.equal(canAutomaticallyUpload(pending), true);
+
+  const diverged = evaluateSyncPolicy({ ...baseline, remoteDatabaseVersion: 8 });
+  assert.equal(diverged, "diverged");
+  assert.equal(canAutomaticallyUpload(diverged), false);
+
+  const replacedCloud = evaluateSyncPolicy({ ...baseline, remoteDatabaseId: "cloud-b" });
+  assert.equal(replacedCloud, "diverged");
+  assert.equal(canAutomaticallyUpload(replacedCloud), false);
+});
+
+test("unpaired and schema-mismatched databases require a manual decision", () => {
+  assert.equal(evaluateSyncPolicy({ ...baseline, lastCloudVersion: null }), "unpaired");
+  assert.equal(evaluateSyncPolicy({ ...baseline, remoteSchemaVersion: 2 }), "schema_mismatch");
+  assert.equal(canAutomaticallyUpload("unpaired"), false);
+  assert.equal(canAutomaticallyUpload("schema_mismatch"), false);
+});
+
+test("matching versions are synced only after the current local version was uploaded", () => {
+  assert.equal(evaluateSyncPolicy({ ...baseline, lastUploadedLocalVersion: 12 }), "synced");
+});

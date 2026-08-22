@@ -6,7 +6,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("database schema contains every specification entity", async () => {
   const schema = await read("db/schema.ts");
-  for (const entity of ["articles", "chapters", "outlines", "contents", "versions", "characters", "relationships", "chatSessions", "chatMessages", "aiTasks", "aiModels", "appSettings"]) {
+  for (const entity of ["articles", "chapters", "outlines", "contents", "versions", "characters", "relationships", "chatSessions", "chatMessages", "aiTasks", "aiProviders", "aiModels", "appSettings"]) {
     assert.match(schema, new RegExp(`export const ${entity}\\b`), entity);
   }
 });
@@ -54,9 +54,10 @@ test("relationship snapshot insert matches the eight-column table", async () => 
 test("schema-extensible inserts name their columns explicitly", async () => {
   const runtime = await read("db/runtime.ts");
   const ai = await read("db/ai.ts");
-  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
-  assert.match(ai, /INSERT INTO ai_models\(id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,has_secret,created_at,updated_at\)/);
+  assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
+  assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at\)/);
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
 
@@ -69,6 +70,54 @@ test("business data uses server SQLite with revision conflicts and interrupted-d
   assert.match(runtime, /state_revision/);
   assert.match(runtime, /conflict:\s*true/);
   assert.match(runtime, /CREATE VIRTUAL TABLE IF NOT EXISTS search_documents USING fts5/);
+});
+
+test("database initialization persists a schema marker and batches cold-start DDL", async () => {
+  const runtime = await read("db/runtime.ts");
+  const migration = await read("drizzle/0014_runtime_schema_fast_path.sql");
+  assert.match(runtime, /RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version"/);
+  assert.match(runtime, /if \(await hasCurrentRuntimeSchema\(db\)\) return/);
+  assert.match(runtime, /db\.batch\(schemaStatements\.map\(\(statement\) => db\.prepare\(statement\)\)\)/);
+  assert.match(runtime, /INSERT OR REPLACE INTO app_settings\(key, value_json, updated_at\) VALUES\(\?, \?, \?\)/);
+  assert.match(migration, /runtime_schema_version/);
+  assert.match(migration, /ON CONFLICT\(`key`\) DO UPDATE/);
+});
+
+test("unchanged state refreshes use revision etags instead of reloading the full library", async () => {
+  const route = await read("app/api/state/route.ts");
+  const state = await read("app/studio-state.tsx");
+  const runtime = await read("db/runtime.ts");
+  assert.match(runtime, /export async function readStudioRevision\(\)/);
+  assert.match(route, /if \(matchesEtag\(request, etag\)\) return new Response\(null, \{ status: 304/);
+  assert.match(route, /writer-studio-state-\$\{revision\}/);
+  assert.match(state, /"If-None-Match": `"writer-studio-state-\$\{revisionRef\.current\}"`/);
+  assert.match(state, /if \(response\.status === 304\) return true/);
+});
+
+test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
+  const sync = await read("db/sync.ts");
+  const ai = await read("db/ai.ts");
+  const runtime = await read("db/runtime.ts");
+  const state = await read("app/studio-state.tsx");
+  const app = await read("app/WriterStudioApp.tsx");
+  assert.match(runtime, /database_version/);
+  assert.match(sync, /lastCloudVersion/);
+  assert.match(sync, /canAutomaticallyUpload\(policy\)/);
+  assert.match(sync, /OAI-Sites-Authorization/);
+  assert.match(sync, /writeRecoverySnapshot\("sync-local-before-pull"/);
+  assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
+  assert.match(sync, /sync_auto_upload/);
+  assert.match(sync, /modelScope/);
+  assert.match(ai, /exportModelsForSync/);
+  assert.match(ai, /replaceModelsFromSync/);
+  assert.match(ai, /plainSecret[\s\S]*encryptAiSecret/);
+  assert.match(state, /\/api\/sync\/upload/);
+  assert.match(app, /从云端取回/);
+  assert.match(app, /复制到云端/);
+  assert.match(app, /同时覆盖大模型配置/);
+  assert.match(app, /同时覆盖 API Key \/ Secret/);
+  assert.match(app, /本地保存后自动异步复制到云端/);
+  assert.match(app, /云端版本 = 同步基线/);
 });
 
 test("explicit mobile outline and AI context decisions are retained", async () => {
@@ -106,7 +155,7 @@ test("desktop and mobile outline sorting share touch-safe cross-chapter behavior
   assert.doesNotMatch(app, /className="mobile-primary-nav"|label="打开文章导航"/);
   assert.match(app, /label="AI 任务"[^>]+className="mobile-header-action"/);
   assert.match(app, /label="设置"[^>]+className="mobile-header-action"/);
-  assert.match(app, /aria-label="文章功能"[\s\S]*全大纲编辑[\s\S]*全文编辑[\s\S]*搜索[\s\S]*文章资料/);
+  assert.match(app, /aria-label="文章功能"[\s\S]*全章节编辑[\s\S]*全大纲编辑[\s\S]*全文编辑[\s\S]*搜索[\s\S]*文章资料/);
   assert.match(app, /aria-label=\{`切换文章，当前 \$\{articleTitle\}`\}/);
   assert.match(app, /addEventListener\("touchmove", touchMove, \{ passive: false \}\)/);
   assert.match(app, /<DndContext[\s\S]*sensors=\{sensors\}/);
@@ -137,6 +186,9 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /onContentBlur=\{mode === "content" \? \(\) => commitContent\(item\.id\)/);
   assert.match(app, /studio\.stageContentDraft\(outlineId, text\)/);
   assert.match(app, /studio\.saveCurrentContent\(outlineId, next, editSourceVersionIdsRef\.current\[outlineId\]\)/);
+  assert.match(app, /async function copyAllOutlines\(\)/);
+  assert.match(app, /copyTextToClipboard\(text\)/);
+  assert.match(app, />复制<\/Button>/);
   assert.match(await read("app/studio-state.tsx"), /saveCurrentContent[\s\S]*currentVersionId: null/);
   assert.match(app, /className="continuous-drag-handle"/);
   assert.match(styles, /\.continuous-text-editor[\s\S]*overflow: hidden/);
@@ -215,7 +267,8 @@ test("shared component framework owns responsive overlays and form controls", as
   for (const primitive of ["MobileActionSheet", "ScrollableDrawer", "ResponsiveModal"]) assert.match(overlays, new RegExp(`export function ${primitive}`));
   assert.doesNotMatch(app, /<(?:Modal|Drawer)\b/);
   assert.doesNotMatch(app, /className="(?:modal-layer|outline-sheet-layer|desktop-action-layer)"/);
-  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{formOpen\}/);
+  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{providerFormOpen\}/);
+  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{modelFormOpen\}/);
   assert.match(app, /function VersionDrawer[\s\S]*<ScrollableDrawer/);
   assert.match(app, /function TaskPanel[\s\S]*<ScrollableDrawer/);
   assert.match(app, /function ChapterActionSheet[\s\S]*<MobileActionSheet/);
@@ -241,13 +294,18 @@ test("passive explanatory copy is removed from the interface", async () => {
   }
 });
 
-test("model settings support editing and server-side model discovery", async () => {
+test("provider settings own credentials and server-side model discovery", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const ai = await read("db/ai.ts");
   const styles = await read("app/globals.css");
-  assert.match(app, /openEdit\(model\)/);
+  assert.match(app, /openEditProvider\(provider\)/);
+  assert.match(app, /openEditModel\(model\)/);
+  assert.match(app, /<SettingSection title="Providers">/);
+  assert.match(app, /models\.filter\(\(model\) => model\.providerId === provider\.id\)/);
+  assert.match(app, /className="provider-model-row"/);
+  assert.match(app, /aria-label=\{`添加模型到 \$\{provider\.name\}`\}/);
+  assert.doesNotMatch(app, /<SettingSection title="Provider 设置">|<SettingSection title="大模型设置">/);
   assert.match(app, /Fetch 模型/);
-  assert.match(app, /compact && <Button className="mobile-model-fetch"/);
   assert.match(app, /选择获取到的大模型/);
   assert.match(app, /<MultiSelect[\s\S]*?className="discovered-model-select"/);
   assert.match(app, /withCheckIcon/);
@@ -255,16 +313,19 @@ test("model settings support editing and server-side model discovery", async () 
   assert.match(app, /\/api\/models\/bulk/);
   assert.match(app, /model-form-error/);
   assert.match(app, /method: "PATCH"/);
-  assert.match(app, /aria-label="超时（分钟）"/);
-  assert.match(app, /timeoutMs: Math\.round\(parsedTimeoutMinutes \* 60_000\)/);
+  assert.match(app, /aria-label="Provider 超时（分钟）"/);
+  assert.match(app, /timeoutMs: Math\.round\(providerTimeoutMinutes \* 60_000\)/);
   assert.doesNotMatch(app, /超时（毫秒）/);
-  assert.match(app, /className="model-card-actions"/);
+  assert.match(app, /className="model-card-actions provider-model-actions"/);
   assert.match(styles, /\.model-card-actions \{[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(styles, /\.provider-model-actions\.model-card-actions \{[\s\S]*grid-column: auto/);
+  assert.match(styles, /\.provider-model-header,[\s\S]*\.provider-model-row[\s\S]*grid-template-columns:/);
   assert.match(styles, /\.model-form \{[\s\S]*padding: 18px 20px 20px/);
-  assert.match(styles, /\.mobile-model-fetch\.mantine-Button-root[\s\S]*min-height: 48px/);
   assert.match(styles, /\.model-form-modal \.model-form-actions[\s\S]*position: sticky/);
   assert.match(ai, /\/models/);
   assert.match(ai, /Authorization: `Bearer \$\{secret\}`/);
+  assert.match(ai, /readProviderSecret\(model\.providerId\)/);
+  assert.doesNotMatch(app.match(/function ModelSettings[\s\S]*?function TaskSettings/)?.[0] ?? "", /\/api\/models\/discover|\/api\/models\/[^`]+\/secret/);
   assert.match(ai, /本机 3002 服务无法访问模型 API/);
   assert.match(ai, /if \(!normalized\) return null/);
 });
@@ -365,7 +426,9 @@ test("AI Generate only bundles outline naming when the user opts in", async () =
   assert.match(ai, /includeOutlineTitle = input\.target === "content" && input\.includeOutlineTitle === true/);
   assert.doesNotMatch(ai, /source\.currentOutline\.titleGenerationPending/);
   assert.match(ai, /<outline_title>大纲标题<\/outline_title>[\s\S]*<generated_text>/);
-  assert.match(ai, /const result = normalizeGenerateResult\(input\.target,[\s\S]*includeOutlineTitle, outlineNaming\)/);
+  assert.match(ai, /normalizeGenerateResult\(input\.target, completion\.content, includeOutlineTitle, outlineNaming\)/);
+  assert.match(ai, /finishReason === "length"/);
+  assert.match(ai, /generated_text 标签未闭合/);
   assert.match(naming, /NAMING_STYLE_OPTIONS/);
   assert.match(naming, /采用简化词牌风格/);
   assert.match(naming, /词牌名.*绝对不要出现在结果中/);
@@ -378,28 +441,61 @@ test("AI Generate only bundles outline naming when the user opts in", async () =
   assert.match(migration, /max_input_characters/);
 });
 
-test("dedicated naming is one call, has a preview, and blocks oversized chapters before upstream", async () => {
-  const [app, ai, route] = await Promise.all([
+test("dedicated naming is centralized and all-name generation is one durable background task and one model call", async () => {
+  const [app, state, ai, route, executor, runtime, versions, migration] = await Promise.all([
     read("app/WriterStudioApp.tsx"),
+    read("app/studio-state.tsx"),
     read("db/ai.ts"),
     read("app/api/ai/names/route.ts"),
+    read("app/api/ai/tasks/[taskId]/execute/route.ts"),
+    read("db/runtime.ts"),
+    read("lib/name-versions.ts"),
+    read("drizzle/0013_remarkable_the_anarchist.sql"),
   ]);
-  assert.match(app, /重新生成大纲名字/);
-  assert.match(app, /AI生成名称/);
-  assert.match(app, /取消全选/);
-  assert.match(app, /应用所有名称/);
-  assert.match(app, /regenerateItem/);
-  assert.match(app, /function NameGenerateDialog/);
-  assert.match(app, /studio\.applyGeneratedNames/);
+  assert.match(app, /function FullChapterEditor/);
+  assert.match(app, /生成全部章节名和大纲名/);
+  assert.match(app, /生成章节名/);
+  assert.match(app, /生成大纲名/);
+  assert.match(app, /studio\.addGeneratedNameCandidates/);
+  assert.match(app, /studio\.setDefaultNameVersion/);
+  assert.match(app, /target: "全部名称"/);
+  assert.match(app, /生成全部会创建一个后台任务/);
+  assert.doesNotMatch(app.match(/async function generateAll\(\)[\s\S]*?async function selectDefault/)?.[0] ?? "", /for \(const|requestNames\(/);
+  const outlineActions = app.match(/function OutlineActionSheet[\s\S]*?function DesktopOutlineMenu/)?.[0] ?? "";
+  const desktopOutlineActions = app.match(/function DesktopOutlineMenu[\s\S]*?function ChapterActionSheet/)?.[0] ?? "";
+  const chapterActions = app.match(/function ChapterActionSheet[\s\S]*?type NameGeneratePreview/)?.[0] ?? "";
+  assert.doesNotMatch(outlineActions, /重新生成大纲名字/);
+  assert.doesNotMatch(desktopOutlineActions, /重新生成大纲名字/);
+  assert.doesNotMatch(chapterActions, /AI生成名称/);
+  assert.match(state, /addGeneratedNameCandidates/);
+  assert.match(state, /addManualNameVersion/);
+  assert.match(state, /setDefaultNameVersion/);
+  assert.match(versions, /normalizeNameVersionState/);
+  assert.match(versions, /appendNameVersion/);
+  assert.match(migration, /name_versions_json/);
+  assert.match(migration, /default_name_version_id/);
+  assert.match(app, /chapterNaming: article\.chapterNaming/);
+  assert.match(app, /outlineNaming: article\.outlineNaming/);
   assert.match(ai, /export async function generateNames/);
+  assert.match(ai, /export async function generateArticleNames/);
+  assert.match(ai, /purpose="article-chapter-and-outline-naming"/);
+  assert.match(ai, /function generatedNameForPreview/);
+  assert.match(ai, /const name = normalizeGeneratedName/);
+  assert.match(ai, /if \(!name\) throw new AiInputError/);
+  assert.match(ai, /input\.chapterNaming \?\? article\.chapterNaming/);
+  assert.match(ai, /input\.outlineNaming \?\? article\.outlineNaming/);
   assert.match(ai, /if \(characters > maximum\) throw new AiPromptTooLongError/);
   const namingImplementation = ai.match(/export async function generateNames[\s\S]*?export type AiReviewInput/)?.[0] ?? "";
   assert.doesNotMatch(namingImplementation, /for \(const .*upstream/);
   assert.doesNotMatch(namingImplementation, /current_title|current_chapter|sibling_titles|reservedTitles|reserved_outline_titles/);
   assert.match(route, /export const dynamic = "force-dynamic"/);
   assert.match(route, /generateNames\(body, request\.signal\)/);
-  assert.doesNotMatch(app.match(/function NameGenerateDialog[\s\S]*?function NamingProfileEditor/)?.[0] ?? "", /reservedTitles/);
   assert.match(route, /status = error instanceof AiPromptTooLongError \? 413/);
+  assert.match(executor, /initialTask\.target === "全部名称"/);
+  assert.match(executor, /generateArticleNames\(/);
+  assert.match(executor, /appendNameVersion\(/);
+  assert.match(runtime, /row\.target === "all-names" \? "全部名称"/);
+  assert.match(runtime, /task\.target === "全部名称" \? "all-names"/);
 });
 
 test("AI task panel orders every status by submission time", async () => {
@@ -437,7 +533,7 @@ test("AI tasks expose durable phases, heartbeats, timeout and cross-device refre
   assert.match(runtime, /ensureAiTaskProgressColumns/);
   assert.match(runtime, /last_progress_at/);
   assert.match(schema, /receivedCharacters: integer\("received_characters"\)/);
-  assert.match(ai, /return \{ response, controller, cleanup \}/);
+  assert.match(ai, /return \{ response, controller, cleanup, model, requestStartedAt, responseHeadersAt/);
   assert.match(ai, /consumeUpstream/);
   assert.doesNotMatch(ai, /finally \{ clearTimeout\(timeout\); \}/);
   assert.match(state, /refreshFromServer/);
@@ -461,7 +557,7 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
     read("app/api/[...segments]/route.ts"),
     read("app/globals.css"),
   ]);
-  assert.match(state, /target: "正文" \| "大纲" \| "章节标题" \| "AI Chat"/);
+  assert.match(state, /target: "正文" \| "大纲" \| "章节标题" \| "全部名称" \| "AI Chat"/);
   assert.match(state, /clearCompletedTasks: \(\) => void/);
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
   assert.match(app, /target: "AI Chat"[\s\S]*state: "running"/);
@@ -577,7 +673,7 @@ test("shared UI controls use one type and action scale across native and compone
   assert.match(styles, /\.info-page \.page-header \{[\s\S]*flex-direction: row/);
   assert.match(styles, /\.mantine-Modal-root \.mantine-Button-root,[\s\S]*min-height: 44px/);
   assert.match(styles, /\.setting-row \.toggle span \{[\s\S]*height: 24px/);
-  assert.match(app, /<Button variant="default" size="xs" loading=\{busy === model\.id\}[\s\S]{0,220}测试<\/Button>/);
+  assert.match(app, /<Button variant="default" size="xs" loading=\{busy === `test-\$\{provider\.id\}`\}[\s\S]{0,220}测试连接<\/Button>/);
   assert.match(app, /<Menu\.Target><Button variant="default" size="xs">更多<\/Button><\/Menu\.Target>/);
 });
 

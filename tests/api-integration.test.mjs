@@ -51,6 +51,13 @@ async function fakeModelServer() {
     }
     if (body.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
+      if (prompt.includes("CHAT_STALL_BODY")) {
+        response.flushHeaders();
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "已开始" } }] })}\n\n`);
+        await new Promise((resolve) => setTimeout(resolve, 6000));
+        if (!response.destroyed) response.end("data: [DONE]\n\n");
+        return;
+      }
       if (prompt.includes("CRLF_KEEPALIVE")) {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "跨块" } }] })}\r`);
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -67,8 +74,33 @@ async function fakeModelServer() {
       return;
     }
     response.writeHead(200, { "Content-Type": "application/json" });
+    if (prompt.includes("PARTIAL_LENGTH")) {
+      response.end(JSON.stringify({
+        id: "gen-partial-length", provider: "Fake Provider",
+        choices: [{ finish_reason: "length", message: { content: "只返回了一小段未完成内容" } }],
+        usage: { prompt_tokens: 321, completion_tokens: 12 },
+      }));
+      return;
+    }
+    if (prompt.includes("PARTIAL_ERROR")) {
+      response.end(JSON.stringify({
+        id: "gen-partial-error", provider: "Fake Provider",
+        choices: [{
+          finish_reason: "error", message: { content: "上游中断前的部分内容" },
+          error: { code: 502, message: "Provider disconnected", metadata: { error_type: "provider_unavailable" } },
+        }],
+      }));
+      return;
+    }
+    if (prompt.includes("UNCLOSED_GENERATED_TEXT")) {
+      response.end(JSON.stringify({
+        id: "gen-unclosed", provider: "Fake Provider",
+        choices: [{ finish_reason: "stop", message: { content: "<outline_title>七码头潮汐密钥</outline_title>\n<generated_text>正文在这里突然中断" } }],
+      }));
+      return;
+    }
     if (prompt.includes('purpose="outline-naming"')) {
-      response.end(JSON.stringify({ choices: [{ message: { content: "<outline_title>七码头潮汐密钥</outline_title>" } }] }));
+      response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "<outline_title>七码头潮汐密钥</outline_title>" } }] }));
       return;
     }
     if (prompt.includes('purpose="chapter-and-outline-naming"')) {
@@ -79,7 +111,15 @@ async function fakeModelServer() {
         outputContract.includes("<chapter_title>") ? "<chapter_title>潮汐密钥</chapter_title>" : "",
         keys.length ? `<outline_titles>\n${keys.map((key, index) => `<outline_title key="${key}">${names[index] ?? `潮汐线索${index + 1}`}</outline_title>`).join("\n")}\n</outline_titles>` : "",
       ].filter(Boolean).join("\n");
-      response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+      response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content } }] }));
+      return;
+    }
+    if (prompt.includes('purpose="article-chapter-and-outline-naming"')) {
+      const outputContract = prompt.match(/<output_contract>([\s\S]*?)<\/output_contract>/)?.[1] ?? "";
+      const chapterKeys = [...outputContract.matchAll(/<chapter_title key="([^"]+)"/g)].map((match) => match[1]);
+      const outlineKeys = [...outputContract.matchAll(/<outline_title key="([^"]+)"/g)].map((match) => match[1]);
+      const content = `<chapter_titles>\n${chapterKeys.map((key, index) => `<chapter_title key="${key}">潮汐整章${index + 1}</chapter_title>`).join("\n")}\n</chapter_titles>\n<outline_titles>\n${outlineKeys.map((key, index) => `<outline_title key="${key}">潮汐全篇线索${index + 1}</outline_title>`).join("\n")}\n</outline_titles>`;
+      response.end(JSON.stringify({ id: "all-names-success", choices: [{ finish_reason: "stop", message: { content } }], usage: { prompt_tokens: 456, completion_tokens: 78 } }));
       return;
     }
     const primaryContent = prompt.includes("EMPTY_RESPONSE") ? "" : prompt.includes("TITLE_NORMALIZATION") ? "```text\n“# 潮汐回声”\n不应保留的解释\n```" : "```text\n模型生成正文\n```";
@@ -87,7 +127,11 @@ async function fakeModelServer() {
     const content = primaryContent && systemPrompt.includes("<outline_title>")
       ? `<outline_title>${outlineTitle}</outline_title>\n<generated_text>\n${primaryContent}\n</generated_text>`
       : primaryContent;
-    response.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    response.end(JSON.stringify({
+      id: "gen-success", provider: "Fake Provider",
+      choices: [{ finish_reason: "stop", message: { content } }],
+      usage: { prompt_tokens: 123, completion_tokens: 45 },
+    }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -136,6 +180,16 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(chat.activeSessionId, "chat:outline-current");
     assert.equal(loaded.data.data.settings.generateTargetWords, 5000);
     assert.deepEqual(loaded.data.data.settings.generatePresets, []);
+  });
+
+  await t.test("revalidates unchanged state without returning the full snapshot", async () => {
+    const loaded = await api("/api/state");
+    const etag = loaded.response.headers.get("etag");
+    assert.equal(etag, `"writer-studio-state-${loaded.data.revision}"`);
+    const unchanged = await api("/api/state", { headers: { "If-None-Match": etag } });
+    assert.equal(unchanged.response.status, 304, unchanged.text);
+    assert.equal(unchanged.text, "");
+    assert.equal(unchanged.response.headers.get("etag"), etag);
   });
 
   await t.test("persists interrupted editor drafts as unsaved-content candidates", async () => {
@@ -201,37 +255,45 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
 
   let modelId = "";
   let candidateModelIds = [];
-  await t.test("validates model URLs and never returns the secret", async () => {
+  await t.test("providers own connection settings and never return the secret", async () => {
     for (const baseUrl of ["file:///tmp/model", "ftp://example.com", "https://user:pass@example.com/v1"]) {
-      const invalid = await api("/api/models", { method: "POST", body: { name: "非法", baseUrl, modelId: "bad" } });
+      const invalid = await api("/api/providers", { method: "POST", body: { name: "非法", baseUrl } });
       assert.equal(invalid.response.status, 400, baseUrl);
     }
-    const created = await api("/api/models", { method: "POST", body: { name: "捕获模型", baseUrl: modelServer.url, modelId: "fake-model", timeoutMs: 1, systemPrompt: "使用简洁克制的文风。" } });
+    const secret = "test-secret-must-never-leak";
+    const createdProvider = await api("/api/providers", { method: "POST", body: { name: "Fake Provider", baseUrl: modelServer.url, timeoutMs: 1, secret } });
+    assert.equal(createdProvider.response.status, 201, createdProvider.text);
+    assert.equal(createdProvider.data.timeoutMs, 5000);
+    assert.equal(createdProvider.data.hasSecret, true);
+    assert.ok(!createdProvider.text.includes(secret));
+    const providerId = createdProvider.data.id;
+    const listedProviders = await api("/api/providers");
+    assert.equal(listedProviders.data.providers[0].modelCount, 0);
+    assert.ok(!listedProviders.text.includes(secret));
+    const testedProvider = await api(`/api/providers/${providerId}/test`, { method: "POST" });
+    assert.equal(testedProvider.response.status, 200, testedProvider.text);
+    assert.equal(testedProvider.data.modelCount, 2);
+    assert.equal(modelServer.received.at(-1).authorization, `Bearer ${secret}`);
+    const discovered = await api(`/api/providers/${providerId}/discover`, { method: "POST" });
+    assert.equal(discovered.response.status, 200, discovered.text);
+    assert.deepEqual(discovered.data.models, ["writer-fast", "writer-large"]);
+
+    const created = await api("/api/models", { method: "POST", body: { providerId, name: "捕获模型", modelId: "fake-model", systemPrompt: "使用简洁克制的文风。" } });
     assert.equal(created.response.status, 201, created.text);
     modelId = created.data.id;
     assert.equal(created.data.timeoutMs, 5000);
     assert.equal(created.data.maxInputCharacters, 60000);
-    const secret = "test-secret-must-never-leak";
-    const saved = await api(`/api/models/${modelId}/secret`, { method: "PUT", body: { secret } });
-    assert.equal(saved.response.status, 200);
+    assert.equal(created.data.providerId, providerId);
     const listed = await api("/api/models");
     assert.equal(listed.data.models[0].hasSecret, true);
+    assert.equal(listed.data.models[0].providerName, "Fake Provider");
     assert.ok(!listed.text.includes(secret));
     const tested = await api(`/api/models/${modelId}/test`, { method: "POST" });
     assert.equal(tested.response.status, 200, tested.text);
     assert.equal(modelServer.received.at(-1).authorization, `Bearer ${secret}`);
-    const discovered = await api("/api/models/discover", { method: "POST", body: { existingModelId: modelId } });
-    assert.equal(discovered.response.status, 200, discovered.text);
-    assert.deepEqual(discovered.data.models, ["writer-fast", "writer-large"]);
-    assert.equal(modelServer.received.at(-1).authorization, `Bearer ${secret}`);
     assert.ok(!discovered.text.includes(secret));
-    const discoveredBeforeSave = await api("/api/models/discover", { method: "POST", body: { baseUrl: modelServer.url, secret } });
-    assert.equal(discoveredBeforeSave.response.status, 200, discoveredBeforeSave.text);
-    const invalidDiscovery = await api("/api/models/discover", { method: "POST", body: { baseUrl: "file:///tmp/models", secret } });
-    assert.equal(invalidDiscovery.response.status, 400);
-    assert.ok(!invalidDiscovery.text.includes(secret));
 
-    const bulk = await api("/api/models/bulk", { method: "POST", body: { name: "候选", baseUrl: modelServer.url, modelIds: ["writer-fast", "writer-large", "writer-fast"], secret, timeoutMs: 120000 } });
+    const bulk = await api("/api/models/bulk", { method: "POST", body: { providerId, name: "候选", modelIds: ["writer-fast", "writer-large", "writer-fast"] } });
     assert.equal(bulk.response.status, 201, bulk.text);
     assert.deepEqual(bulk.data.models.map((model) => model.modelId), ["writer-fast", "writer-large"]);
     assert.deepEqual(bulk.data.models.map((model) => model.name), ["候选 · writer-fast", "候选 · writer-large"]);
@@ -247,7 +309,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(testedSharedSecret.response.status, 200, testedSharedSecret.text);
     assert.equal(modelServer.received.at(-1).authorization, `Bearer ${secret}`);
 
-    const duplicateBulk = await api("/api/models/bulk", { method: "POST", body: { baseUrl: modelServer.url, modelIds: ["writer-fast", "writer-large"], secret } });
+    const duplicateBulk = await api("/api/models/bulk", { method: "POST", body: { providerId, modelIds: ["writer-fast", "writer-large"] } });
     assert.equal(duplicateBulk.response.status, 200, duplicateBulk.text);
     assert.deepEqual(duplicateBulk.data.models, []);
     assert.deepEqual(duplicateBulk.data.skippedModelIds, ["writer-fast", "writer-large"]);
@@ -393,6 +455,30 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.match(outlinePrompt, /林澈与顾屿在七码头会合/);
     assert.doesNotMatch(outlinePrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔正文|不可变版本正文|alternate-session-secret/);
 
+    const refreshedOutlineNames = await api("/api/ai/names", { method: "POST", body: {
+      articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "outline", model: "捕获模型",
+      outlineNaming: { format: "seven", lineCount: 1 },
+    } });
+    assert.equal(refreshedOutlineNames.response.status, 200, refreshedOutlineNames.text);
+    const refreshedOutlinePrompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(refreshedOutlinePrompt, /每句必须恰好由 7 个汉字组成/);
+    assert.doesNotMatch(refreshedOutlinePrompt, /标题长度必须为 4–12 个字符/);
+
+    const invalidFormatOutlineNames = await api("/api/ai/names", { method: "POST", body: {
+      articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "outline", model: "捕获模型",
+      outlineNaming: { format: "five", lineCount: 1 },
+    } });
+    assert.equal(invalidFormatOutlineNames.response.status, 200, invalidFormatOutlineNames.text);
+    assert.deepEqual(invalidFormatOutlineNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐密钥" }], "格式不合格的大纲名仍应进入预览");
+
+    const invalidFormatChapterNames = await api("/api/ai/names", { method: "POST", body: {
+      articleId: "article-main", chapterId: "chapter-main", target: "chapter", includeChapter: true, outlineIds: ["outline-current"], model: "捕获模型",
+      chapterNaming: { format: "seven", lineCount: 1 }, outlineNaming: { format: "five", lineCount: 1 },
+    } });
+    assert.equal(invalidFormatChapterNames.response.status, 200, invalidFormatChapterNames.text);
+    assert.equal(invalidFormatChapterNames.data.chapterTitle, "潮汐密钥", "格式不合格的章节名仍应进入预览");
+    assert.deepEqual(invalidFormatChapterNames.data.outlineTitles, [{ id: "outline-current", title: "七码头潮汐" }], "章节名不合格不应丢弃同批大纲名");
+
     const beforeChapter = modelServer.received.length;
     const chapterNames = await api("/api/ai/names", { method: "POST", body: { articleId: "article-main", chapterId: "chapter-main", target: "chapter", model: "捕获模型" } });
     assert.equal(chapterNames.response.status, 200, chapterNames.text);
@@ -412,6 +498,45 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const selectedPrompt = modelServer.received.at(-1).body.messages.at(-1).content;
     assert.match(selectedPrompt, /林澈与顾屿在七码头会合/);
     assert.doesNotMatch(selectedPrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔取得前序线索/);
+  });
+
+  await t.test("background all-name task generates the whole article in one model request and stores candidates", async () => {
+    const taskId = "background-all-names-task";
+    const receivedBefore = modelServer.received.length;
+    const created = await api("/api/ai/tasks", {
+      method: "POST",
+      headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "all-names", instruction: "", model: "捕获模型" },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    assert.equal(created.data.data.target, "全部名称");
+    assert.equal(created.data.data.phase, "queued");
+
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 200, executed.text);
+    assert.equal(modelServer.received.length, receivedBefore + 1, "整篇章节名和大纲名必须只调用一次模型");
+    const prompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(prompt, /purpose="article-chapter-and-outline-naming"/);
+    assert.match(prompt, /灯塔取得前序线索/);
+    assert.match(prompt, /七码头会合/);
+    assert.doesNotMatch(prompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔正文|不可变版本正文|alternate-session-secret/);
+
+    const loaded = await api("/api/state");
+    revision = loaded.data.revision;
+    const task = loaded.data.data.tasks.find((item) => item.id === taskId);
+    const chapter = loaded.data.data.articles[0].chapters.find((item) => item.id === "chapter-main");
+    assert.equal(task.state, "success");
+    assert.equal(task.phase, "completed");
+    assert.equal(task.target, "全部名称");
+    assert.equal(task.contextOptions.nameChapterCount, 1);
+    assert.equal(task.contextOptions.nameOutlineCount, 3);
+    assert.equal(task.contextOptions.generatedNameCount, 4);
+    assert.match(task.resultText, /一次生成 1 个章节名和 3 个大纲名/);
+    assert.equal(chapter.title, "第一章", "后台结果不能自动替换默认章节名");
+    assert.equal(chapter.nameVersions.find((item) => item.source === "ai")?.title, "潮汐整章1");
+    for (const [index, outline] of chapter.outlines.filter((item) => !item.archived).entries()) {
+      assert.equal(outline.nameVersions.find((item) => item.source === "ai")?.title, `潮汐全篇线索${index + 1}`);
+    }
   });
 
   await t.test("rejects oversized chapter naming before calling the model", async () => {
@@ -568,6 +693,29 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(modelServer.received.length, receivedBefore + 1);
   });
 
+  await t.test("cancels a locked Chat stream without terminating the application server", async () => {
+    const controller = new AbortController();
+    const pending = fetch(`${baseUrl}/api/outlines/outline-current/chat/stream`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "chat-locked-stream-cancel" },
+      body: JSON.stringify({ requestId: "chat-locked-stream-cancel", message: "CHAT_STALL_BODY", model: "捕获模型", includePrevious: false, includeCharacters: false }),
+    }).then(async (response) => {
+      assert.equal(response.status, 200);
+      await response.text();
+    });
+    // Vinext may buffer the downstream response headers, but it has already
+    // acquired the converted stream's reader once the upstream headers arrive.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    controller.abort();
+    await assert.rejects(pending, /abort|fetch failed/i);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const status = await api("/api/database/status");
+    assert.equal(status.response.status, 200, "中止 Chat 流后服务必须继续运行");
+    assert.equal(modelServer.received.at(-1).aborted, true, "中止 Chat 流必须取消上游模型请求");
+  });
+
   await t.test("normalizes Generate output and rejects empty output", async () => {
     const current = await api("/api/state");
     const withPreviousDefault = structuredClone(current.data.data);
@@ -635,6 +783,21 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const empty = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "EMPTY_RESPONSE", model: "捕获模型", target: "content" } });
     assert.equal(empty.response.status, 502);
     assert.match(empty.data.error, /空结果/);
+
+    const partialLength = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "PARTIAL_LENGTH", model: "捕获模型", target: "content", targetWords: 9000 } });
+    assert.equal(partialLength.response.status, 502, partialLength.text);
+    assert.match(partialLength.data.error, /输出长度上限/);
+    assert.match(partialLength.data.error, /丢弃/);
+    assert.equal(modelServer.received.at(-1).body.max_tokens, 18000, "正文应根据目标字数显式预留输出 tokens");
+
+    const partialError = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "PARTIAL_ERROR", model: "捕获模型", target: "content" } });
+    assert.equal(partialError.response.status, 502, partialError.text);
+    assert.match(partialError.data.error, /provider_unavailable/);
+    assert.match(partialError.data.error, /不完整结果/);
+
+    const unclosed = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "UNCLOSED_GENERATED_TEXT", model: "捕获模型", target: "content", includeOutlineTitle: true } });
+    assert.equal(unclosed.response.status, 502, unclosed.text);
+    assert.match(unclosed.data.error, /标签未闭合/);
   });
 
   await t.test("redacts upstream secrets and propagates request cancellation", async () => {
@@ -753,6 +916,8 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(task.attempt, 1);
     assert.ok(task.startedAt && task.completedAt && task.lastProgressAt);
     assert.equal(task.resultText, "模型生成正文");
+    assert.equal(task.inputTokens, 123);
+    assert.equal(task.outputTokens, 45);
     assert.deepEqual(task.contextOptions.firstAppearanceCharacterIds, ["character-lin"]);
     assert.match(modelServer.received.at(-1).body.messages[1].content, /<name>林澈<\/name>[\s\S]*?<appearance_status>first<\/appearance_status>/);
     const outline = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
@@ -767,6 +932,34 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.notEqual(outline.content, outline.versions[0].content, "Generate stores the result only once as a version");
     const currentBody = await api("/api/outlines/outline-current/content");
     assert.equal(currentBody.data.data.text, "模型生成正文");
+  });
+
+  await t.test("marks partial upstream completions failed without creating a version", async () => {
+    const taskId = "server-executor-partial-task";
+    const before = await api("/api/state");
+    const outlineBefore = before.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    const versionCount = outlineBefore.versions.length;
+    const receivedBefore = modelServer.received.length;
+    const created = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "PARTIAL_LENGTH", targetWords: 9000, model: "捕获模型" },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 502, executed.text);
+
+    const loaded = await api("/api/state");
+    revision = loaded.data.revision;
+    const task = loaded.data.data.tasks.find((item) => item.id === taskId);
+    const outline = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    assert.equal(task.state, "failed");
+    assert.equal(task.phase, "failed");
+    assert.equal(task.attempt, 1, "length failures should not be retried at additional cost");
+    assert.match(task.error, /输出长度上限/);
+    assert.equal(task.resultVersionId, undefined);
+    assert.equal(outline.versions.length, versionCount);
+    assert.equal(outline.versions.some((version) => version.taskId === taskId), false);
+    assert.equal(modelServer.received.length, receivedBefore + 1);
   });
 
   await t.test("backs up a direct current body before Generate replaces it", async () => {

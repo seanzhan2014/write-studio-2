@@ -85,6 +85,27 @@
       "when": 1786874384870,
       "tag": "0011_mixed_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1787320164660,
+      "tag": "0012_hesitant_sasquatch",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1787324704414,
+      "tag": "0013_remarkable_the_anarchist",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1787357417047,
+      "tag": "0014_runtime_schema_fast_path",
+      "breakpoints": true
     }
   ]
 }

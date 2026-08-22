@@ -32,6 +32,27 @@ async function resetFixture(transform) {
 test("REST validation, cascades, ordering and rollback", async (t) => {
   assert.ok(baseUrl, "WRITER_STUDIO_TEST_BASE_URL is required");
 
+  await t.test("exposes database versions and keeps unconfigured background sync inert", async () => {
+    const before = await api("/api/state");
+    assert.equal(Number.isSafeInteger(before.data.databaseVersion), true);
+    const status = await api("/api/sync/status");
+    assert.equal(status.response.status, 200, status.text);
+    assert.equal(status.data.state, "not_configured");
+    assert.equal(status.data.autoUploadEnabled, true);
+    assert.equal(status.data.localDatabaseVersion, before.data.databaseVersion);
+    const disabled = await api("/api/sync/settings", { method: "POST", body: { autoUploadEnabled: false } });
+    assert.equal(disabled.response.status, 200, disabled.text);
+    assert.equal(disabled.data.autoUploadEnabled, false);
+    const upload = await api("/api/sync/upload", { method: "POST" });
+    assert.equal(upload.response.status, 200, upload.text);
+    assert.equal(upload.data.state, "disabled");
+    const enabled = await api("/api/sync/settings", { method: "POST", body: { autoUploadEnabled: true } });
+    assert.equal(enabled.response.status, 200, enabled.text);
+    assert.equal(enabled.data.autoUploadEnabled, true);
+    const remoteOnly = await api("/api/sync/remote/meta");
+    assert.equal(remoteOnly.response.status, 404, remoteOnly.text);
+  });
+
   await t.test("requires a revision for business writes and rejects malformed JSON", async () => {
     await resetFixture();
     const missing = await api("/api/outlines/outline-current", { method: "PATCH", body: { title: "不应写入" } });
