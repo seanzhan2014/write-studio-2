@@ -1,10 +1,11 @@
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
-import { AiInputError, AiUpstreamCompletionError, findModel, generateText } from "@/db/ai";
+import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, type ArticleNameGenerationResult } from "@/db/ai";
 import { readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
+import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-versions";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -90,7 +91,7 @@ export async function POST(_request: Request, context: RouteContext) {
         runnerId, leaseUntil: leaseTime(), error: undefined,
       } satisfies Partial<AiTask>);
       const found = findOutline(data, task.outlineId);
-      if (found) found.outline.state = "running";
+      if (found && task.target !== "全部名称") found.outline.state = "running";
       return { changed: true, value: true };
     });
     if (!claimed) return json({ accepted: false, reason: "already_claimed" }, 202);
@@ -114,6 +115,7 @@ export async function POST(_request: Request, context: RouteContext) {
 
     try {
       let result: Awaited<ReturnType<typeof generateText>> | null = null;
+      let articleNameResult: ArticleNameGenerationResult | null = null;
       let lastError: unknown;
       for (let requestAttempt = Math.max(1, (initialTask.attempt ?? 0) + 1); requestAttempt <= 3; requestAttempt += 1) {
         if (upstreamController.signal.aborted) break;
@@ -139,17 +141,27 @@ export async function POST(_request: Request, context: RouteContext) {
             task.phase = "generating"; task.lastProgressAt = new Date().toISOString(); task.leaseUntil = leaseTime();
             return { changed: true, value: true };
           });
-          result = await generateText({
-            outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: initialTask.model,
-            target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
-            includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
-            includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
-            excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
-            contentMode: initialTask.contextOptions?.contentMode,
-            rewriteRetention: initialTask.contextOptions?.rewriteRetention,
-            firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
-            includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
-          }, upstreamController.signal);
+          if (initialTask.target === "全部名称") {
+            articleNameResult = await generateArticleNames({
+              articleId: initialTask.articleId,
+              chapterNaming: initialTask.contextOptions?.chapterNamingSnapshot,
+              outlineNaming: initialTask.contextOptions?.outlineNamingSnapshot,
+              model: initialTask.model,
+              instruction: initialTask.prompt,
+            }, upstreamController.signal);
+          } else {
+            result = await generateText({
+              outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: initialTask.model,
+              target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
+              includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
+              includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
+              excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
+              contentMode: initialTask.contextOptions?.contentMode,
+              rewriteRetention: initialTask.contextOptions?.rewriteRetention,
+              firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
+              includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
+            }, upstreamController.signal);
+          }
           break;
         } catch (error) {
           lastError = error;
@@ -157,7 +169,7 @@ export async function POST(_request: Request, context: RouteContext) {
         }
       }
 
-      if (!result) {
+      if (!result && !articleNameResult) {
         if (upstreamController.signal.aborted) return json({ accepted: true, cancelled: true }, 202);
         throw lastError instanceof Error ? lastError : new Error("生成失败");
       }
@@ -167,7 +179,56 @@ export async function POST(_request: Request, context: RouteContext) {
         if (!task || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
         task.phase = "saving";
         const found = findOutline(data, task.outlineId);
-        if (task.target === "正文" && found) {
+        let completedAt = new Date().toISOString();
+        let resultText = result?.text ?? "";
+        let receivedCharacters = result?.text.length ?? 0;
+        let inputTokens = result?.inputTokens;
+        let outputTokens = result?.outputTokens;
+        if (task.target === "全部名称" && articleNameResult) {
+          const article = data.articles.find((item) => item.id === task.articleId);
+          if (!article) return { changed: false, value: false };
+          let added = 0;
+          for (const generated of articleNameResult.chapterTitles) {
+            const chapter = article.chapters.find((item) => item.id === generated.id && !item.archived);
+            if (!chapter) continue;
+            const current = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+            const next = appendNameVersion(current, {
+              id: `name-ai-${crypto.randomUUID()}`, title: generated.title, source: "ai", createdAt: completedAt,
+              model: model?.name ?? task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
+            }, 120);
+            chapter.nameVersions = next.state.nameVersions;
+            chapter.defaultNameVersionId = next.state.defaultNameVersionId;
+            if (next.added) added += 1;
+          }
+          for (const generated of articleNameResult.outlineTitles) {
+            const chapter = article.chapters.find((item) => item.id === generated.chapterId && !item.archived);
+            const outline = chapter?.outlines.find((item) => item.id === generated.id && !item.archived);
+            if (!outline) continue;
+            const current = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+            const next = appendNameVersion(current, {
+              id: `name-ai-${crypto.randomUUID()}`, title: generated.title, source: "ai", createdAt: completedAt,
+              model: model?.name ?? task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
+            }, 80);
+            outline.nameVersions = next.state.nameVersions;
+            outline.defaultNameVersionId = next.state.defaultNameVersionId;
+            outline.updatedAt = completedAt;
+            if (next.added) added += 1;
+          }
+          article.updatedAt = completedAt;
+          resultText = `已一次生成 ${articleNameResult.chapterTitles.length} 个章节名和 ${articleNameResult.outlineTitles.length} 个大纲名，新增 ${added} 个候选版本。`;
+          receivedCharacters = [...articleNameResult.chapterTitles, ...articleNameResult.outlineTitles].reduce((total, item) => total + item.title.length, 0);
+          inputTokens = articleNameResult.inputTokens;
+          outputTokens = articleNameResult.outputTokens;
+          task.contextOptions = {
+            includePrevious: false,
+            includeCharacters: false,
+            estimatedCharacters: articleNameResult.inputCharacters,
+            ...task.contextOptions,
+            nameChapterCount: articleNameResult.chapterTitles.length,
+            nameOutlineCount: articleNameResult.outlineTitles.length,
+            generatedNameCount: added,
+          };
+        } else if (task.target === "正文" && found && result) {
           const completedAt = new Date().toISOString();
           const previousOutlineSnapshot = resolvedOutlineSnapshot(found.outline);
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
@@ -213,7 +274,7 @@ export async function POST(_request: Request, context: RouteContext) {
             generatedOutlineTitle: result.outlineTitle,
             generatedOutlineTitleError: result.outlineTitleError,
           };
-        } else if (found) {
+        } else if (found && result) {
           found.outline.state = "saved";
           task.contextOptions = {
             includePrevious: task.contextOptions?.includePrevious ?? true,
@@ -223,11 +284,11 @@ export async function POST(_request: Request, context: RouteContext) {
             generatedOutlineTitle: result.outlineTitle,
           };
         }
-        const completedAt = task.target === "正文" && found ? found.outline.updatedAt : new Date().toISOString();
+        completedAt = task.target === "正文" && found ? found.outline.updatedAt : completedAt;
         Object.assign(task, {
           state: "success", phase: "completed", completedAt, lastProgressAt: completedAt,
-          receivedCharacters: result.text.length, resultText: result.text,
-          inputTokens: result.inputTokens, outputTokens: result.outputTokens,
+          receivedCharacters, resultText,
+          inputTokens, outputTokens,
           runnerId: undefined, leaseUntil: undefined, error: undefined,
         } satisfies Partial<AiTask>);
         return { changed: true, value: true };
@@ -243,7 +304,7 @@ export async function POST(_request: Request, context: RouteContext) {
           error: error instanceof Error ? error.message : "生成失败", runnerId: undefined, leaseUntil: undefined,
         } satisfies Partial<AiTask>);
         const found = findOutline(data, task.outlineId);
-        if (found) found.outline.state = "failed";
+        if (found && task.target !== "全部名称") found.outline.state = "failed";
         return { changed: true, value: true };
       });
       return json({ accepted: true, completed: false, error: error instanceof Error ? error.message : "生成失败" }, 502);

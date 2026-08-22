@@ -97,21 +97,16 @@ function articleMetrics(articles: Article[], tasks: AiTask[]) {
   return [`${articles.length} 篇文章`, `${chapters} 个章节 · ${outlines} 条大纲`, `约 ${words.toLocaleString("zh-CN")} 字正文`, `${tasks.length} 条 AI 任务记录`];
 }
 
-function normalizeUrl(value: string) {
-  return value.trim().replace(/\/$/, "");
-}
-
 async function importProviders(providers: PortableAiProvider[]) {
   const existing = await loadProviders();
   const idMap = new Map<string, string>();
   for (const provider of providers) {
     if (!provider.id || !provider.name?.trim() || !provider.baseUrl?.trim()) throw new Error("AI Provider 配置缺少必要信息");
-    const matched = existing.find((candidate) => candidate.id === provider.id)
-      ?? existing.find((candidate) => candidate.name === provider.name && normalizeUrl(candidate.baseUrl) === normalizeUrl(provider.baseUrl));
+    const matched = existing.find((candidate) => candidate.id === provider.id);
     const response = await fetch(matched ? `/api/providers/${encodeURIComponent(matched.id)}` : "/api/providers", {
       method: matched ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl, timeoutMs: provider.timeoutMs }),
+      body: JSON.stringify({ ...(!matched ? { id: provider.id } : {}), name: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl, timeoutMs: provider.timeoutMs }),
     });
     const imported = await response.json() as StoredProvider & { error?: string };
     if (!response.ok || !imported.id) throw new Error(imported.error || `导入 Provider「${provider.name}」失败`);

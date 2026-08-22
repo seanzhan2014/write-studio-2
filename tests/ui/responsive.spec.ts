@@ -31,6 +31,21 @@ async function swipeOutlineLeft(target: Locator) {
   });
 }
 
+async function swipeNameVersion(target: Locator, direction: "left" | "right") {
+  await target.evaluate((element, swipeDirection) => {
+    const bounds = element.getBoundingClientRect();
+    const y = bounds.top + bounds.height / 2;
+    const startX = swipeDirection === "left" ? bounds.right - 24 : bounds.left + 24;
+    const endX = startX + (swipeDirection === "left" ? -92 : 92);
+    const touch = (x: number) => new Touch({ identifier: 9, target: element, clientX: x, clientY: y, screenX: x, screenY: y });
+    const start = touch(startX);
+    element.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
+    const move = touch(endX);
+    element.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [move], targetTouches: [move], changedTouches: [move] }));
+    element.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [move] }));
+  }, direction);
+}
+
 async function selectReaderTextAndOpenMenu(target: Locator, selectedText: string) {
   await target.evaluate((element, value) => {
     const text = element.textContent ?? "";
@@ -221,10 +236,8 @@ test("mobile overlays stay reachable across the supported viewport matrix", asyn
       const chapterActions = chapterSheet.locator(".ws-action-sheet-list > button");
       await chapterActions.last().scrollIntoViewIfNeeded();
       await expectInsideViewport(page, chapterActions.last());
-      await chapterSheet.getByRole("button", { name: "AI生成名称" }).click();
-      const namingDialog = page.locator(".name-generate-dialog");
-      await expectOverlayContract(page, namingDialog);
-      await namingDialog.getByRole("button", { name: "关闭名称生成" }).click();
+      await expect(chapterSheet.getByRole("button", { name: "AI生成名称" })).toHaveCount(0);
+      await chapterSheet.getByRole("button", { name: "关闭章节菜单" }).click();
 
       await page.locator('[data-outline-id="outline-current"] .icon-button').click();
       await page.locator(".outline-action-drawer .ws-action-sheet-list > button").first().click();
@@ -318,32 +331,39 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await review.getByRole("button", { name: "关闭 AI Review" }).click();
 
   await gotoSettled("/settings/models");
-  await page.getByRole("button", { name: "新建模型" }).click();
-  const modelEditor = page.locator(".ws-responsive-modal").filter({ hasText: "新建模型" });
-  await expectOverlayContract(page, modelEditor);
-  await modelEditor.getByRole("button", { name: "关闭模型编辑" }).click();
+  await page.getByRole("button", { name: "新建 Provider" }).click();
+  const providerEditor = page.locator(".ws-responsive-modal").filter({ hasText: "新建 Provider" });
+  await expectOverlayContract(page, providerEditor);
+  await providerEditor.getByRole("button", { name: "关闭 Provider 编辑" }).click();
 });
 
-test("model settings uses a viewport-safe editor and fetches models on mobile", async ({ page }, testInfo) => {
-  await page.route("**/api/models/discover", async (route) => {
+test("provider settings owns model discovery and opens a viewport-safe model editor", async ({ page }) => {
+  await page.route("**/api/providers", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [{ id: "provider-test", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://models.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 0 }] }) });
+  });
+  await page.route("**/api/models", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [] }) });
+  });
+  await page.route("**/api/providers/provider-test/discover", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: ["writer-fast", "writer-large"] }) });
   });
   await page.goto("/settings/models");
-  await expect(page.getByRole("button", { name: "新建模型" })).toBeVisible();
-  await page.getByRole("button", { name: "新建模型" }).click();
+  await expect(page.getByText("Providers", { exact: true })).toBeVisible();
+  const providerCard = page.locator(".provider-card").filter({ hasText: "Writer Provider" });
+  const providerToggle = providerCard.locator(".provider-group-toggle");
+  await expect(providerToggle).toHaveAttribute("aria-label", "折叠 Provider：Writer Provider");
+  await expect(providerCard.locator(".provider-group-body")).toBeVisible();
+  await providerToggle.click();
+  await expect(providerToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(providerCard.locator(".provider-group-body")).toHaveCount(0);
+  await providerToggle.click();
+  await expect(providerToggle).toHaveAttribute("aria-expanded", "true");
+  await providerCard.getByRole("button", { name: "Fetch 模型" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByLabel("显示名称")).toBeVisible();
-  const fetchModels = page.getByRole("button", { name: "Fetch 模型列表" });
-  await expect(fetchModels).toBeVisible();
-  await expect(page.getByLabel("超时（分钟）")).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("Writer Provider");
   await expect(page.getByLabel("最大输入字符数")).toHaveValue(/60,?000/);
-  if (testInfo.project.name === "mobile-chromium") {
-    const fetchBounds = await fetchModels.boundingBox();
-    expect(fetchBounds).not.toBeNull();
-    expect(fetchBounds!.height).toBeGreaterThanOrEqual(44);
-    await expect(fetchModels).toContainText("Fetch 模型列表");
-  }
-  await fetchModels.click();
   const discovered = page.getByLabel("选择获取到的大模型");
   await expect(discovered).toBeVisible();
   await expect(page.getByRole("dialog").getByText("writer-fast", { exact: true })).toBeVisible();
@@ -356,7 +376,7 @@ test("model settings uses a viewport-safe editor and fetches models on mobile", 
     await expect(option).toHaveAttribute("aria-selected", "true");
     await expect(option.locator("svg")).toHaveCount(1);
   }
-  await expect(page.getByRole("button", { name: "保存 2 个候选" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存 2 个模型" })).toBeVisible();
 
   const bounds = await page.getByRole("dialog").boundingBox();
   const viewport = page.viewportSize()!;
@@ -369,8 +389,11 @@ test("model settings uses a viewport-safe editor and fetches models on mobile", 
 
 test("model candidates can be assigned as independent task defaults", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop model settings");
-  await page.route("**/api/models/discover", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: ["deepseek-chat", "deepseek-reasoner", "writer-large"] }) });
+  await page.route("**/api/providers", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [
+      { id: "deepseek-provider", name: "DeepSeek Provider", adapterKind: "openai-compatible", baseUrl: "https://deepseek.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 },
+      { id: "writer-provider", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://writer.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 },
+    ] }) });
   });
   await page.route("**/api/models", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
@@ -378,22 +401,28 @@ test("model candidates can be assigned as independent task defaults", async ({ p
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ models: [
-        { id: "deepseek-candidate", name: "DeepSeek", baseUrl: "https://models.example/v1", modelId: "deepseek-chat", systemPrompt: "", hasSecret: true, timeoutMs: 120000 },
-        { id: "writer-candidate", name: "Writer", baseUrl: "https://models.example/v1", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000 },
+        { id: "deepseek-candidate", providerId: "deepseek-provider", providerName: "DeepSeek Provider", name: "DeepSeek", modelId: "deepseek-chat", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 },
+        { id: "writer-candidate", providerId: "writer-provider", providerName: "Writer Provider", name: "Writer", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 },
       ] }),
     });
   });
   await page.goto("/settings/models");
-  const deepseek = page.locator(".model-card").filter({ hasText: "DeepSeek" });
-  const writer = page.locator(".model-card").filter({ hasText: "Writer" });
+  const deepseekProvider = page.locator(".provider-card").filter({ hasText: "DeepSeek Provider" });
+  const writerProvider = page.locator(".provider-card").filter({ hasText: "Writer Provider" });
+  const deepseek = deepseekProvider.locator(".provider-model-row").filter({ hasText: "DeepSeek" });
+  const writer = writerProvider.locator(".provider-model-row").filter({ hasText: "Writer" });
+  await expect(deepseekProvider.locator(".provider-model-row")).toHaveCount(1);
+  await expect(writerProvider.locator(".provider-model-row")).toHaveCount(1);
+  await expect(deepseekProvider).not.toContainText("writer-large");
+  await expect(writerProvider).not.toContainText("deepseek-chat");
   await deepseek.getByRole("button", { name: "更多" }).click();
-  await page.getByRole("menuitem", { name: "设为 Chat 默认" }).click();
+  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Chat 默认" }).last().click();
   await deepseek.getByRole("button", { name: "更多" }).click();
-  await page.getByRole("menuitem", { name: "设为 Review 默认" }).click();
+  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Review 默认" }).last().click();
   await writer.getByRole("button", { name: "更多" }).click();
-  await page.getByRole("menuitem", { name: "设为 Generate 默认" }).click();
+  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Generate 默认" }).last().click();
   await writer.getByRole("button", { name: "更多" }).click();
-  await page.getByRole("menuitem", { name: "设为名称生成默认" }).click();
+  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为名称生成默认" }).last().click();
   await expect(deepseek).toContainText("默认 AI Chat");
   await expect(deepseek).toContainText("默认 AI Review");
   await expect(writer).toContainText("默认 AI Generate");
@@ -401,14 +430,9 @@ test("model candidates can be assigned as independent task defaults", async ({ p
 
   await deepseek.getByRole("button", { name: "编辑" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: "Fetch 模型列表" }).click();
-  const candidates = dialog.getByLabel("选择获取到的大模型");
-  await expect(candidates).toBeVisible();
-  await expect(dialog).toContainText("只有这里勾选并保存的候选才会出现在 AI Chat、Generate 和 Review 中");
-  await candidates.click();
-  await page.getByRole("option", { name: "deepseek-reasoner", exact: true }).click();
-  await expect(dialog.getByLabel("模型 ID")).toHaveValue("deepseek-chat, writer-large, deepseek-reasoner");
-  await expect(dialog.getByRole("button", { name: "保存候选配置" })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("DeepSeek Provider");
+  await expect(dialog.getByLabel("模型 ID")).toHaveValue("deepseek-chat");
+  await expect(dialog.getByText("API Key")).toHaveCount(0);
 });
 
 test("generate controls and context drawer fit the desktop viewport", async ({ page }, testInfo) => {
@@ -1137,9 +1161,11 @@ test("mobile starts at outline and separates article and global entry points", a
 
   await page.getByRole("button", { name: /切换文章，当前/ }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
-  for (const name of ["全大纲编辑", "全文编辑", "搜索", "文章资料"]) await expect(page.getByRole("button", { name })).toBeVisible();
+  for (const name of ["全章节编辑", "全大纲编辑", "全文编辑", "文章资料"]) await expect(page.getByRole("button", { name })).toBeVisible();
+  await expect(page.getByRole("button", { name: "搜索", exact: true })).toHaveCount(0);
   await expect(page.getByLabel("搜索文章")).toBeVisible();
   await page.getByRole("button", { name: "关闭文章菜单" }).click();
+  await expect(page.getByRole("button", { name: "新建大纲", exact: true })).toHaveCount(0);
 
   const more = page.getByRole("button", { name: "当前码头更多操作" });
   await expect(more).toBeVisible();
@@ -1148,7 +1174,7 @@ test("mobile starts at outline and separates article and global entry points", a
   await expect(page.getByRole("button", { name: "编辑大纲" })).toBeVisible();
   await expect(page.getByRole("button", { name: "AI Chat 大纲" })).toBeVisible();
   await expect(page.getByRole("button", { name: "AI Generate 大纲" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "重新生成大纲名字" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新生成大纲名字" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "删除大纲" })).toBeVisible();
   await page.getByRole("button", { name: "关闭大纲操作" }).click();
 
@@ -1156,22 +1182,36 @@ test("mobile starts at outline and separates article and global entry points", a
   await expect(page.getByRole("dialog").getByText("AI 任务", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "关闭 AI 任务" }).click();
   await page.getByRole("button", { name: "设置" }).click();
-  for (const name of ["常规", "外观与编辑器", "AI 模型", "AI 任务", "数据管理", "系统与诊断"]) await expect(page.getByRole("button", { name })).toBeVisible();
+  for (const name of ["常规", "外观与编辑器", "AI 服务", "AI 任务", "数据管理", "系统与诊断"]) await expect(page.getByRole("button", { name })).toBeVisible();
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
+test("desktop sidebar omits top-level create and search buttons", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const sidebar = page.locator(".sidebar");
+  await expect(sidebar.getByRole("button", { name: "新建大纲", exact: true })).toHaveCount(0);
+  await expect(sidebar.getByRole("button", { name: "搜索", exact: true })).toHaveCount(0);
+  for (const name of ["全章节编辑", "全大纲编辑", "全文编辑", "文章资料"]) {
+    await expect(sidebar.getByRole("button", { name, exact: true })).toBeVisible();
+  }
+});
+
 test("data management exports a secret-free complete backup and previews article imports", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop data management flow");
+  await page.route("**/api/providers", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [{ id: "provider-export", name: "导出 Provider", adapterKind: "openai-compatible", baseUrl: "https://models.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 }] }) });
+  });
   await page.route("**/api/models", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ models: [{
-        id: "model-export", name: "导出模型", baseUrl: "https://models.example/v1", modelId: "writer-large",
+        id: "model-export", providerId: "provider-export", providerName: "导出 Provider", name: "导出模型", baseUrl: "https://models.example/v1", modelId: "writer-large",
         systemPrompt: "保持克制", temperature: 0.7, maxOutput: 4096, maxInputCharacters: 60000,
-        timeoutMs: 120000, hasSecret: true, secret: "never-export-this",
+        timeoutMs: 120000, timeoutOverrideMs: null, hasSecret: true, secret: "never-export-this",
       }] }),
     });
   });
@@ -1185,9 +1225,10 @@ test("data management exports a secret-free complete backup and previews article
   expect(downloadPath).not.toBeNull();
   const backupText = await readFile(downloadPath!, "utf8");
   const backup = JSON.parse(backupText);
-  expect(backup).toMatchObject({ kind: "writer-studio-transfer", formatVersion: 1, scope: "complete" });
+  expect(backup).toMatchObject({ kind: "writer-studio-transfer", formatVersion: 2, scope: "complete" });
   expect(backupText).not.toContain("never-export-this");
-  expect(backup.data.models[0]).toMatchObject({ name: "导出模型", hadApiKey: true });
+  expect(backup.data.providers[0]).toMatchObject({ name: "导出 Provider", hadApiKey: true });
+  expect(backup.data.models[0]).toMatchObject({ name: "导出模型", providerId: "provider-export" });
 
   const current = await request.get("/api/state");
   const snapshot = await current.json();
@@ -1240,11 +1281,11 @@ test("mobile outline and chapter menus share a compact readable action layout", 
   }
 
   await page.getByRole("button", { name: "当前码头更多操作", exact: true }).click();
-  await expectReadableMenu(11);
+  await expectReadableMenu(10);
   await page.getByRole("button", { name: "关闭大纲操作", exact: true }).click();
 
   await page.getByRole("button", { name: "第一章更多操作", exact: true }).click();
-  await expectReadableMenu(8);
+  await expectReadableMenu(7);
   await page.getByRole("button", { name: "关闭章节菜单", exact: true }).click();
 });
 
@@ -1305,6 +1346,38 @@ test("full outline editor shows every plan in one auto-growing document", async 
   });
   expect(dimensions.clientHeight).toBeGreaterThanOrEqual(dimensions.scrollHeight - 2);
   expect(dimensions.overflowY).toBe("hidden");
+});
+
+test("full outline editor copies every visible chapter and plan in document order", async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => { (window as Window & { copiedOutlineText?: string }).copiedOutlineText = text; } },
+    });
+  });
+  await page.goto("/articles/article-main/outlines/edit-all");
+
+  const copy = page.locator(".continuous-document-editor.outline").getByRole("button", { name: "复制", exact: true });
+  await expect(copy).toBeVisible();
+  const articleTitle = page.locator(".continuous-document-editor.outline .page-header h1");
+  const [copyBounds, titleBounds] = await Promise.all([copy.boundingBox(), articleTitle.boundingBox()]);
+  expect(copyBounds!.x).toBeGreaterThan(titleBounds!.x + titleBounds!.width);
+  const copyCenterY = copyBounds!.y + copyBounds!.height / 2;
+  const titleCenterY = titleBounds!.y + titleBounds!.height / 2;
+  expect(Math.abs(copyCenterY - titleCenterY)).toBeLessThanOrEqual(5);
+  if (testInfo.project.name === "mobile-chromium") expect(copyBounds!.height).toBeGreaterThanOrEqual(40);
+  await copy.click();
+
+  const copied = await page.evaluate(() => (window as Window & { copiedOutlineText?: string }).copiedOutlineText);
+  expect(copied).toBe([
+    "第 1 章 第一章",
+    "1. 前序灯塔\n林澈在灯塔取得前序线索。",
+    "2. 当前码头\n林澈与顾屿在七码头会合。",
+    "3. 绝密后续大纲\n这是当前大纲之后的内容，绝不能进入上下文。",
+  ].join("\n\n"));
+  expect(copied).not.toContain("归档秘密");
+  await expect(page.getByText("已复制 1 个章节和 3 条大纲")).toBeVisible();
 });
 
 test("full outline editor offers inline create, delete, and archive controls", async ({ page, request }) => {
@@ -1851,70 +1924,147 @@ test("desktop outline rows reserve the more menu beside long titles", async ({ p
   await expect(page.getByText("大纲操作", { exact: true })).toBeVisible();
 });
 
-test("dedicated naming menus preview one response before applying", async ({ page }, testInfo) => {
+test("full chapter editor generates individual names as selectable history versions", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop naming workflow");
   test.setTimeout(60_000);
-  let calls = 0;
-  let requestBody: Record<string, unknown> | undefined;
+  const requests: Record<string, unknown>[] = [];
   await page.route("**/api/ai/names", async (route) => {
-    calls += 1;
-    requestBody = route.request().postDataJSON() as Record<string, unknown>;
-    const chapterRequest = requestBody.target === "chapter";
-    const outlineIds = Array.isArray(requestBody.outlineIds) ? requestBody.outlineIds as string[] : [];
+    const requestBody = route.request().postDataJSON() as Record<string, unknown>;
+    requests.push(requestBody);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(chapterRequest
-        ? { chapterTitle: calls >= 3 ? "雾港密钥" : "潮汐密钥", outlineTitles: outlineIds.map((id, index) => ({ id, title: `潮汐线索${index + 1}` })), inputCharacters: 1260, maxInputCharacters: 60000 }
-        : { outlineTitles: [{ id: "outline-current", title: "七码头潮汐密钥" }], inputCharacters: 860, maxInputCharacters: 60000 }),
+      body: JSON.stringify(requestBody.target === "outline"
+        ? { outlineTitles: [{ id: requestBody.outlineId, title: "七码头潮汐密钥" }], inputCharacters: 860, maxInputCharacters: 60000 }
+        : { chapterTitle: "潮汐密钥", outlineTitles: [], inputCharacters: 1260, maxInputCharacters: 60000 }),
     });
   });
-  await page.goto("/");
-  await page.getByRole("button", { name: "文章资料", exact: true }).click();
-  const outlineNaming = page.getByRole("group", { name: "大纲命名" });
-  await outlineNaming.getByLabel("格式").selectOption("seven");
-  await expect(outlineNaming.getByLabel("格式")).toHaveValue("seven");
-  await page.locator('[data-outline-id="outline-current"] .outline-title').click();
-  await page.locator('[data-outline-id="outline-current"] .row-more').click();
-  await page.getByRole("button", { name: "重新生成大纲名字" }).click();
-  await expect(page.getByText("只发送文章资料、命名设置和当前大纲内容，不发送现有章节名、大纲名、正文、正文版本或聊天记录。")).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "名称生成模型" })).toHaveValue(/继承 AI Generate/);
-  await page.getByRole("button", { name: "生成名称" }).click();
-  await expect(page.getByLabel("生成的大纲名：当前码头")).toHaveValue("七码头潮汐密钥");
-  expect(calls).toBe(1);
-  expect(requestBody).toMatchObject({ target: "outline", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current" });
-  expect(requestBody).toMatchObject({ outlineNaming: { format: "seven" } });
-  expect(requestBody).not.toHaveProperty("content");
-  expect(requestBody).not.toHaveProperty("reservedTitles");
-  await page.getByRole("button", { name: "应用名称" }).click();
-  await expect(page.locator('[data-outline-id="outline-current"] .outline-title')).toHaveText("七码头潮汐密钥");
 
-  await page.getByLabel("第一章更多操作").click();
-  await page.getByRole("button", { name: "AI生成名称" }).click();
-  await expect(page.getByText("选择生成项目")).toBeVisible();
-  await expect(page.getByRole("button", { name: "取消全选" })).toBeVisible();
-  await expect(page.getByLabel("选择章节名")).toBeChecked();
-  await expect(page.getByRole("button", { name: "生成所选名称" })).toBeVisible();
-  await page.getByRole("button", { name: "取消全选" }).click();
-  await expect(page.getByLabel("选择章节名")).not.toBeChecked();
-  await page.getByLabel("选择章节名").check();
-  await page.getByLabel("选择大纲名：七码头潮汐密钥").check();
-  await page.getByRole("button", { name: "生成所选名称" }).click();
-  await expect(page.getByLabel("生成的章节名")).toHaveValue("潮汐密钥");
-  expect(calls).toBe(2);
-  expect(requestBody).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: ["outline-current"], outlineNaming: { format: "seven" } });
-  expect(requestBody).not.toHaveProperty("reservedTitles");
-  const outlinePreview = page.locator(".name-preview-row").filter({ has: page.getByLabel("生成的大纲名：七码头潮汐密钥") });
-  await outlinePreview.getByRole("button", { name: "重新生成" }).click();
-  expect(calls).toBe(3);
-  expect(requestBody).toMatchObject({ target: "outline", outlineId: "outline-current", outlineNaming: { format: "seven" } });
-  const chapterPreview = page.locator(".name-preview-row").filter({ has: page.getByLabel("生成的章节名") });
-  await chapterPreview.getByRole("button", { name: "重新生成" }).click();
-  await expect(page.getByLabel("生成的章节名")).toHaveValue("雾港密钥");
-  expect(calls).toBe(4);
-  await chapterPreview.getByRole("button", { name: "应用", exact: true }).click();
-  await expect(page.getByRole("button", { name: "已应用", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "应用所有名称" })).toBeVisible();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "全章节编辑", exact: true }).click();
+  await expect(page.getByText("生成全部会创建一个后台任务，并在一次模型请求中返回整篇名称；AI 结果只会添加为候选版本。")).toBeVisible();
+
+  const outlineRow = page.locator(".full-outline-name-row").filter({ has: page.getByText("当前码头", { exact: true }) });
+  const originalOutline = outlineRow.getByRole("radio", { name: /当前码头/ });
+  await expect(originalOutline).toHaveAttribute("aria-checked", "true");
+  await outlineRow.getByRole("button", { name: "生成大纲名" }).click();
+  const outlineCandidate = outlineRow.getByRole("radio", { name: /七码头潮汐密钥/ });
+  await expect(outlineCandidate).toHaveAttribute("aria-checked", "false");
+  await expect(originalOutline).toHaveAttribute("aria-checked", "true");
+  expect(requests[0]).toMatchObject({ target: "outline", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current" });
+  expect(requests[0]).not.toHaveProperty("content");
+  await outlineCandidate.click();
+  await expect(outlineCandidate).toHaveAttribute("aria-checked", "true");
+
+  const chapterRow = page.locator(".full-chapter-card").first();
+  const originalChapter = chapterRow.getByRole("radio", { name: /第一章/ });
+  await expect(originalChapter).toHaveAttribute("aria-checked", "true");
+  await chapterRow.getByRole("button", { name: "生成章节名" }).click();
+  const chapterCandidate = chapterRow.getByRole("radio").filter({ has: page.getByText("潮汐密钥", { exact: true }) });
+  await expect(chapterCandidate).toHaveAttribute("aria-checked", "false");
+  expect(requests[1]).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: [] });
+  const selectedChapterSaved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  await chapterCandidate.click();
+  await selectedChapterSaved;
+  await expect(chapterCandidate).toHaveAttribute("aria-checked", "true");
+
+  await page.reload();
+  await expect(page.getByRole("radio").filter({ has: page.getByText("七码头潮汐密钥", { exact: true }) })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("radio").filter({ has: page.getByText("潮汐密钥", { exact: true }) })).toHaveAttribute("aria-checked", "true");
+});
+
+test("desktop full chapter editor deletes the default name and persists its fallback", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop naming workflow");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const outline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  outline.nameVersions = [
+    { id: "name-outline-candidate", title: "七码头候选", source: "ai", createdAt: outline.updatedAt },
+    { id: "name-outline-current", title: "当前码头", source: "manual", createdAt: outline.updatedAt },
+  ];
+  outline.defaultNameVersionId = "name-outline-current";
+  const seeded = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(seeded.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/chapters/edit-all");
+  const currentItem = page.locator(".name-version-item").filter({ hasText: "当前码头" });
+  await expect(currentItem.getByRole("button", { name: "删除大纲名「当前码头」" })).toBeVisible();
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  await currentItem.getByRole("button", { name: "删除大纲名「当前码头」" }).click();
+  await saved;
+  await expect(currentItem).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /七码头候选/ })).toHaveAttribute("aria-checked", "true");
+
+  await page.reload();
+  await expect(page.getByText("当前码头", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /七码头候选/ })).toHaveAttribute("aria-checked", "true");
+});
+
+test("mobile full chapter editor swipes both ways before deleting a name", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile naming workflow");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const outline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  outline.nameVersions = [
+    { id: "name-outline-candidate", title: "待删除候选", source: "ai", createdAt: outline.updatedAt },
+    { id: "name-outline-current", title: "当前码头", source: "manual", createdAt: outline.updatedAt },
+  ];
+  outline.defaultNameVersionId = "name-outline-current";
+  const seeded = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(seeded.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/chapters/edit-all");
+  const item = page.locator(".name-version-item").filter({ hasText: "待删除候选" });
+  const option = item.locator(".name-version-option");
+  const deleteAction = item.locator(".name-version-delete");
+  await expect(deleteAction).toHaveCSS("visibility", "hidden");
+  await swipeNameVersion(option, "left");
+  await expect(deleteAction).toHaveCSS("visibility", "visible");
+  await swipeNameVersion(option, "right");
+  await expect(deleteAction).toHaveCSS("visibility", "hidden");
+  await swipeNameVersion(option, "left");
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  await item.getByRole("button", { name: "删除大纲名「待删除候选」" }).click();
+  await saved;
+  await expect(item).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByText("待删除候选", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /当前码头/ })).toHaveAttribute("aria-checked", "true");
+});
+
+test("full chapter editor queues one background task for every chapter and outline", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop naming workflow");
+  test.setTimeout(60_000);
+  let directNameCalls = 0;
+  page.on("request", (requested) => { if (requested.url().endsWith("/api/ai/names")) directNameCalls += 1; });
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "全章节编辑", exact: true }).click();
+  await page.getByRole("button", { name: "生成全部章节名和大纲名" }).click();
+  const taskPanel = page.getByLabel("AI 任务");
+  await expect(taskPanel.getByText("整篇章节与大纲命名", { exact: true })).toBeVisible();
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> & { tasks: Array<{ target: string; state: string; contextOptions?: { nameChapterCount?: number; nameOutlineCount?: number } }> } };
+    const tasks = payload.data.tasks.filter((item) => item.target === "全部名称");
+    return { count: tasks.length, state: tasks[0]?.state, chapters: tasks[0]?.contextOptions?.nameChapterCount, outlines: tasks[0]?.contextOptions?.nameOutlineCount };
+  }).toEqual({ count: 1, state: "success", chapters: 1, outlines: 3 });
+  expect(directNameCalls).toBe(0);
+  await page.getByRole("button", { name: "关闭 AI 任务" }).click();
+
+  const chapterRow = page.locator(".full-chapter-card").first();
+  await expect(chapterRow.getByRole("radio", { name: /第一章/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(".name-version-option").filter({ hasText: "AI 候选" })).toHaveCount(4);
+  await expect(page.locator(".name-version-option.selected").filter({ hasText: "AI 候选" })).toHaveCount(0);
 });
 
 test("desktop full outline editor provides a scrollable viewport", async ({ page, request }, testInfo) => {
@@ -2173,7 +2323,7 @@ test("dark appearance keeps application and portal surfaces dark", async ({ page
   await expectDarkSurface(".outline-snapshot-content");
 
   await page.goto("/settings/models");
-  await page.locator(".settings-actionbar .mantine-Button-root").click();
+  await page.getByRole("button", { name: "新建 Provider" }).click();
   await expect(page.locator(".ws-modal-content")).toBeVisible();
   await expectDarkSurface(".ws-modal-content");
   await expectDarkSurface(".ws-modal-content .mantine-Input-input");

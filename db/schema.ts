@@ -18,6 +18,8 @@ export const chapters = sqliteTable("chapters", {
   id: text("id").primaryKey(),
   articleId: text("article_id").notNull().references(() => articles.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
+  nameVersionsJson: text("name_versions_json").notNull().default("[]"),
+  defaultNameVersionId: text("default_name_version_id"),
   position: integer("position").notNull(),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
@@ -33,6 +35,8 @@ export const outlines = sqliteTable("outlines", {
   articleId: text("article_id").notNull().references(() => articles.id, { onDelete: "cascade" }),
   chapterId: text("chapter_id").notNull().references(() => chapters.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
+  nameVersionsJson: text("name_versions_json").notNull().default("[]"),
+  defaultNameVersionId: text("default_name_version_id"),
   summary: text("summary").notNull().default(""),
   generateInstruction: text("generate_instruction").notNull().default(""),
   position: integer("position").notNull(),
@@ -209,7 +213,7 @@ export const aiModels = sqliteTable("ai_models", {
   secret: text("secret"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-});
+}, (table) => [index("ai_models_provider_idx").on(table.providerId)]);
 
 export const appSettings = sqliteTable("app_settings", {
   key: text("key").primaryKey(),

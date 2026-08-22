@@ -1,12 +1,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { StudioData } from "@/app/studio-state";
-import { exportModelsForSync, replaceModelsFromSync, type AiModelSyncRecord } from "@/db/ai";
+import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai";
 import { canAutomaticallyUpload, evaluateSyncPolicy } from "@/lib/sync-policy.mjs";
 import { ensureDatabase, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 
-export const SYNC_SCHEMA_VERSION = 3;
+export const SYNC_SCHEMA_VERSION = 4;
 const syncFormat = "writer-studio-sync-v1";
 const remoteTimeoutMs = 30_000;
 
@@ -18,6 +18,7 @@ export type SyncSnapshot = {
   createdAt: string;
   data: StudioData;
   modelScope: "none" | "config" | "all";
+  providers?: AiProviderSyncRecord[];
   models?: AiModelSyncRecord[];
 };
 
@@ -158,7 +159,10 @@ export async function createCurrentSnapshot(options?: Partial<SyncOverwriteOptio
     createdAt: new Date().toISOString(),
     data: state.data,
     modelScope,
-    ...(normalized.includeModels ? { models: await exportModelsForSync(normalized.includeSecrets) } : {}),
+    ...(normalized.includeModels ? {
+      providers: await exportProvidersForSync(normalized.includeSecrets),
+      models: await exportModelsForSync(normalized.includeSecrets),
+    } : {}),
   };
 }
 
@@ -170,7 +174,7 @@ export function validateSyncSnapshot(value: unknown): asserts value is SyncSnaps
     typeof snapshot.databaseId !== "string" || !snapshot.databaseId ||
     !snapshot.data || snapshot.data.version !== 1 || !Array.isArray(snapshot.data.articles) ||
     !([undefined, "none", "config", "all"] as unknown[]).includes(snapshot.modelScope) ||
-    (snapshot.modelScope !== undefined && snapshot.modelScope !== "none" && !Array.isArray(snapshot.models))
+    (snapshot.modelScope !== undefined && snapshot.modelScope !== "none" && (!Array.isArray(snapshot.providers) || !Array.isArray(snapshot.models)))
   ) {
     throw new SyncError("invalid_snapshot", "同步快照格式无效", 400);
   }
@@ -193,7 +197,7 @@ export async function replaceCurrentDatabase(snapshotValue: unknown, expectedDat
     throw new SyncError("version_mismatch", "写入期间数据库版本发生变化，请重试", 409, { actual: result.current.databaseVersion });
   }
   const modelScope = snapshot.modelScope ?? "none";
-  if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all");
+  if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all", snapshot.providers ?? []);
   return { ...await currentDatabaseMeta(), databaseVersion: result.databaseVersion };
 }
 
@@ -401,7 +405,7 @@ export async function pullCloudOverLocal(options?: Partial<SyncOverwriteOptions>
   const current = await readStudioState();
   const saved = await writeStudioState(cloud.data, current.revision);
   if (saved.conflict) throw new SyncError("local_changed", "本地数据库在覆盖前发生变化，请重试", 409);
-  if (normalized.includeModels) await replaceModelsFromSync(cloud.models ?? [], normalized.includeSecrets);
+  if (normalized.includeModels) await replaceModelsFromSync(cloud.models ?? [], normalized.includeSecrets, cloud.providers ?? []);
   await recordSyncSuccess({ schemaVersion: cloud.schemaVersion, databaseId: cloud.databaseId, databaseVersion: cloud.databaseVersion }, saved.databaseVersion);
   return { state: "synced" as const, message: "已用云端数据库覆盖本地", backupPath, localDatabaseVersion: saved.databaseVersion, remoteDatabaseVersion: cloud.databaseVersion };
 }

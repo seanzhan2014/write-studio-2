@@ -8,11 +8,13 @@ import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot 
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
+import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
 import { duplicateArticlesForImport, duplicateOutlineForImport } from "@/lib/data-transfer";
 
 type OutlinePlacement = "before" | "after";
+type NameEntityKind = "chapter" | "outline";
 
 export type Message = {
   id: string;
@@ -71,6 +73,8 @@ export type Outline = {
   archived: boolean;
   state: "saved" | "running" | "failed";
   updatedAt: string;
+  nameVersions?: NameVersion[];
+  defaultNameVersionId?: string | null;
   sourceVersionId?: string;
   manualExcellent?: boolean;
   excellentFragments?: ExcellentFragment[];
@@ -84,6 +88,8 @@ export type Outline = {
 export type Chapter = {
   id: string;
   title: string;
+  nameVersions?: NameVersion[];
+  defaultNameVersionId?: string | null;
   archived: boolean;
   outlines: Outline[];
 };
@@ -124,7 +130,7 @@ export type AiTask = {
   articleId: string;
   chapterId: string;
   outlineId: string;
-  target: "正文" | "大纲" | "章节标题" | "AI Chat";
+  target: "正文" | "大纲" | "章节标题" | "全部名称" | "AI Chat";
   prompt: string;
   model: string;
   state: "waiting" | "running" | "success" | "failed" | "cancelled";
@@ -157,6 +163,11 @@ export type AiTask = {
     generatedOutlineTitle?: string;
     generatedOutlineTitleError?: string;
     includeOutlineTitle?: boolean;
+    chapterNamingSnapshot?: NamingProfile;
+    outlineNamingSnapshot?: NamingProfile;
+    nameChapterCount?: number;
+    nameOutlineCount?: number;
+    generatedNameCount?: number;
     sessionId?: string;
     firstAppearanceCharacterIds?: string[];
     includeExcellentFragments?: boolean;
@@ -364,6 +375,10 @@ type StudioContextValue = {
   createChapter: (title?: string) => string;
   updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived">>) => void;
   applyGeneratedNames: (chapterId: string, chapterTitle: string | undefined, outlineTitles: Array<{ id: string; title: string }>) => void;
+  addGeneratedNameCandidates: (chapterId: string, chapterTitle: string | undefined, outlineTitles: Array<{ id: string; title: string }>, metadata?: { model?: string; instruction?: string }) => number;
+  addManualNameVersion: (kind: NameEntityKind, entityId: string, title: string, makeDefault?: boolean) => string | null;
+  setDefaultNameVersion: (kind: NameEntityKind, entityId: string, versionId: string) => void;
+  deleteNameVersion: (kind: NameEntityKind, entityId: string, versionId: string) => boolean;
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
@@ -643,10 +658,14 @@ function normalizeStudioData(source: StudioData): StudioData {
       chapterNaming: normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
       characters: (article.characters ?? []).map(normalizeCharacter),
-      chapters: article.chapters.map((chapter) => ({
+      chapters: article.chapters.map((chapter) => {
+        const chapterNameState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+        return {
         ...chapter,
+        ...chapterNameState,
         outlines: chapter.outlines.map((item) => {
           const normalizedTitle = normalizeOutlineTitle(item.title);
+          const outlineNameState = normalizeNameVersionState(item.id, normalizedTitle, item.nameVersions, item.defaultNameVersionId, item.updatedAt, 80);
           const versions = (item.versions ?? []).map((version) => ({ ...version, manualExcellent: version.manualExcellent === true, excellentFragments: normalizeExcellentFragments(version.content, version.excellentFragments) }));
           const validVersionId = (value: unknown) => typeof value === "string" && versions.some((version) => version.id === value) ? value : null;
           const legacyDefaultVersionId = validVersionId(item.sourceVersionId);
@@ -664,6 +683,7 @@ function normalizeStudioData(source: StudioData): StudioData {
           const { contentOverride: _legacyContentOverride, sourceVersionId: _legacySourceVersionId, ...currentItem } = item;
           const normalizedItem = {
             ...currentItem,
+            ...outlineNameState,
             title: normalizedTitle,
             generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
@@ -690,13 +710,14 @@ function normalizeStudioData(source: StudioData): StudioData {
           chat.sessions[0] = { ...chat.sessions[0], draft: legacy.draft ?? "", includePrevious: legacy.includePrevious !== false, includeCharacters: legacy.includeCharacters !== false };
           return { ...normalizedItem, chat };
         }),
-      })),
+      };
+      }),
     })),
   };
 }
 
 export function StudioProvider({ children }: { children: React.ReactNode }) {
-  const [data, setDataState] = useState<StudioData>(seedData);
+  const [data, setDataState] = useState<StudioData>(() => normalizeStudioData(seedData));
   const [hydrated, setHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StudioContextValue["saveStatus"]>("loading");
   const [saveError, setSaveError] = useState("");
@@ -866,7 +887,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     const requestedSnapshot = lastSavedRef.current;
     const request = (async () => {
       try {
-        const response = await fetch("/api/state", { cache: "no-store" });
+        const response = await fetch("/api/state", {
+          cache: "no-store",
+          headers: { "If-None-Match": `"writer-studio-state-${revisionRef.current}"` },
+        });
+        if (response.status === 304) return true;
         const payload = await response.json() as { data?: StudioData | null; revision?: number };
         if (!response.ok || !payload.data || payload.revision === undefined) return false;
         if (serializeDurable(dataRef.current) !== requestedSnapshot || lastSavedRef.current !== requestedSnapshot) return false;
@@ -1031,6 +1056,150 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           }),
         }),
       }));
+    },
+    addGeneratedNameCandidates(chapterId, chapterTitle, outlineTitles, metadata) {
+      const generated = new Map(outlineTitles.map((item) => [item.id, normalizeOutlineTitle(item.title)]));
+      const createdAt = new Date().toISOString();
+      let added = 0;
+      setData((current) => ({
+        ...current,
+        articles: current.articles.map((article) => article.id !== current.currentArticleId ? article : {
+          ...article,
+          updatedAt: createdAt,
+          chapters: article.chapters.map((chapter) => {
+            if (chapter.id !== chapterId) return chapter;
+            const chapterState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+            const chapterCandidate = chapterTitle?.trim().slice(0, 120);
+            const nextChapterState = chapterCandidate
+              ? appendNameVersion(chapterState, { id: makeId("name"), title: chapterCandidate, source: "ai", createdAt, ...metadata }, 120)
+              : { state: chapterState, added: false };
+            if (nextChapterState.added) added += 1;
+            return {
+              ...chapter,
+              ...nextChapterState.state,
+              outlines: chapter.outlines.map((outline) => {
+                const candidate = generated.get(outline.id);
+                if (!candidate) return outline;
+                const outlineState = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+                const next = appendNameVersion(outlineState, { id: makeId("name"), title: candidate, source: "ai", createdAt, ...metadata }, 80);
+                if (next.added) added += 1;
+                return { ...outline, ...next.state };
+              }),
+            };
+          }),
+        }),
+      }));
+      return added;
+    },
+    addManualNameVersion(kind, entityId, title, makeDefault = true) {
+      const normalized = kind === "outline" ? normalizeOutlineTitle(title) : title.trim().slice(0, 120);
+      if (!normalized) return null;
+      const createdAt = new Date().toISOString();
+      let versionId: string | null = null;
+      setData((current) => ({
+        ...current,
+        articles: current.articles.map((article) => article.id !== current.currentArticleId ? article : {
+          ...article,
+          updatedAt: createdAt,
+          chapters: article.chapters.map((chapter) => {
+            if (kind === "chapter" && chapter.id === entityId) {
+              const state = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+              const next = appendNameVersion(state, { id: makeId("name"), title: normalized, source: "manual", createdAt }, 120);
+              versionId = next.versionId;
+              return { ...chapter, ...next.state, ...(makeDefault ? { title: normalized, defaultNameVersionId: next.versionId } : {}) };
+            }
+            return {
+              ...chapter,
+              outlines: chapter.outlines.map((outline) => {
+                if (kind !== "outline" || outline.id !== entityId) return outline;
+                const state = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+                const next = appendNameVersion(state, { id: makeId("name"), title: normalized, source: "manual", createdAt }, 80);
+                versionId = next.versionId;
+                return { ...outline, ...next.state, ...(makeDefault ? { title: normalized, titleGenerationPending: false, defaultNameVersionId: next.versionId } : {}), updatedAt: createdAt };
+              }),
+            };
+          }),
+        }),
+      }));
+      return versionId;
+    },
+    setDefaultNameVersion(kind, entityId, versionId) {
+      const updatedAt = new Date().toISOString();
+      setData((current) => ({
+        ...current,
+        articles: current.articles.map((article) => article.id !== current.currentArticleId ? article : {
+          ...article,
+          updatedAt,
+          chapters: article.chapters.map((chapter) => {
+            if (kind === "chapter" && chapter.id === entityId) {
+              const state = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+              const selected = state.nameVersions.find((item) => item.id === versionId);
+              return selected ? { ...chapter, ...state, title: selected.title, defaultNameVersionId: selected.id } : chapter;
+            }
+            return {
+              ...chapter,
+              outlines: chapter.outlines.map((outline) => {
+                if (kind !== "outline" || outline.id !== entityId) return outline;
+                const state = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+                const selected = state.nameVersions.find((item) => item.id === versionId);
+                return selected ? { ...outline, ...state, title: selected.title, defaultNameVersionId: selected.id, titleGenerationPending: false, updatedAt } : outline;
+              }),
+            };
+          }),
+        }),
+      }));
+    },
+    deleteNameVersion(kind, entityId, versionId) {
+      const updatedAt = new Date().toISOString();
+      let deleted = false;
+      setData((current) => {
+        const articles = current.articles.map((article) => {
+          if (article.id !== current.currentArticleId) return article;
+          let articleChanged = false;
+          const chapters = article.chapters.map((chapter) => {
+            if (kind === "chapter" && chapter.id === entityId) {
+              const state = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
+              if (!state.nameVersions.some((item) => item.id === versionId)) return chapter;
+              const remaining = state.nameVersions.filter((item) => item.id !== versionId);
+              if (state.defaultNameVersionId === versionId && !remaining.length) return chapter;
+              deleted = true;
+              articleChanged = true;
+              if (state.defaultNameVersionId !== versionId) return { ...chapter, nameVersions: remaining };
+              const fallback = remaining[0];
+              return { ...chapter, nameVersions: remaining, title: fallback.title, defaultNameVersionId: fallback.id };
+            }
+
+            let chapterChanged = false;
+            const usedOutlineTitles = new Set(chapter.outlines
+              .filter((outline) => outline.id !== entityId)
+              .map((outline) => normalizeOutlineTitle(outline.title))
+              .filter(Boolean));
+            const outlines = chapter.outlines.map((outline) => {
+              if (kind !== "outline" || outline.id !== entityId) return outline;
+              const state = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+              if (!state.nameVersions.some((item) => item.id === versionId)) return outline;
+              const remaining = state.nameVersions.filter((item) => item.id !== versionId);
+              deleted = true;
+              articleChanged = true;
+              chapterChanged = true;
+              if (state.defaultNameVersionId !== versionId) return { ...outline, nameVersions: remaining, updatedAt };
+              const fallback = remaining.find((item) => !usedOutlineTitles.has(item.title));
+              return {
+                ...outline,
+                nameVersions: remaining,
+                title: fallback?.title ?? "",
+                defaultNameVersionId: fallback?.id ?? null,
+                titleGenerationPending: !fallback,
+                updatedAt,
+              };
+            });
+            return chapterChanged ? { ...chapter, outlines } : chapter;
+          });
+          return articleChanged ? { ...article, updatedAt, chapters } : article;
+        });
+        return deleted ? { ...current, articles } : current;
+      });
+      return deleted;
     },
     moveChapter(chapterId, direction) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => {

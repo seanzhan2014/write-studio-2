@@ -132,10 +132,10 @@ export async function POST(request: Request, context: RouteContext) {
     const articleId = String(body.articleId ?? ""), chapterId = String(body.chapterId ?? ""), outlineId = String(body.outlineId ?? "");
     const found = findOutline(data, outlineId);
     if (!found || found.article.id !== articleId || found.chapter.id !== chapterId) throw new Error("任务目标不存在或归属不一致");
-    const target = body.target === "outline" ? "大纲" : body.target === "chapter-title" ? "章节标题" : body.target === "content" ? "正文" : body.target === "chat" ? "AI Chat" : null;
+    const target = body.target === "outline" ? "大纲" : body.target === "chapter-title" ? "章节标题" : body.target === "all-names" ? "全部名称" : body.target === "content" ? "正文" : body.target === "chat" ? "AI Chat" : null;
     if (!target) throw new Error("任务目标无效");
     const instruction = String(body.instruction ?? "").trim().slice(0, 20000);
-    if (target !== "正文" && !instruction) throw new Error("生成指令不能为空");
+    if (target !== "正文" && target !== "全部名称" && !instruction) throw new Error("生成指令不能为空");
     if (target === "正文" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) throw new Error("正文生成模式无效");
     const contentMode = normalizeContentGenerationMode(body.contentMode);
     if (target === "正文" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) throw new Error("原文保留度无效");
@@ -170,6 +170,12 @@ export async function POST(request: Request, context: RouteContext) {
         ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
         outlinePlanSnapshot: found.outline.plan,
         outlineTitleSnapshot: found.outline.title,
+        ...(target === "全部名称" ? {
+          chapterNamingSnapshot: normalizeNamingProfile(found.article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
+          outlineNamingSnapshot: normalizeNamingProfile(found.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
+          nameChapterCount: found.article.chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && outline.plan.trim())).length,
+          nameOutlineCount: found.article.chapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !chapter.archived && !outline.archived && outline.plan.trim()).length, 0),
+        } : {}),
         modelId,
         firstAppearanceCharacterIds,
         sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
