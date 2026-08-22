@@ -37,7 +37,8 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, type AiContextSummary, type FirstAppearanceSuggestion } from "@/lib/ai-context";
+import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, type AiContextSummary, type FirstAppearanceSuggestion, type SelectedAiContext } from "@/lib/ai-context";
+import type { NamingArticleContext } from "@/db/ai";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
@@ -154,6 +155,82 @@ function Icon({ name }: { name: IconName }) {
 function clientId(prefix: string) {
   const uuid = globalThis.crypto?.randomUUID?.();
   return `${prefix}-${uuid ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 12)}`}`;
+}
+
+type ServerTaskInput = {
+  articleId: string;
+  chapterId: string;
+  outlineId: string;
+  target: "content" | "outline" | "chapter-title" | "all-names";
+  instruction: string;
+  model: string;
+  includePrevious?: boolean;
+  includeCharacters?: boolean;
+  includeExcellentFragments?: boolean;
+  excellentFragmentIds?: string[];
+  includeOutlineTitle?: boolean;
+  estimatedCharacters?: number;
+  targetWords?: number;
+  contentMode?: ContentGenerationMode;
+  rewriteRetention?: RewriteRetentionLevel;
+  firstAppearanceCharacterIds?: string[];
+  chapterNaming?: NamingProfile;
+  outlineNaming?: NamingProfile;
+  timeoutMs?: number;
+  promptContext?: SelectedAiContext;
+  currentPlan?: string;
+  outlineTitleSnapshot?: string;
+  namingContext?: NamingArticleContext;
+};
+
+async function createServerTask(studio: ReturnType<typeof useStudio>, input: ServerTaskInput) {
+  const taskId = clientId("task");
+  const response = await fetch("/api/ai/tasks", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
+    body: JSON.stringify(input),
+  });
+  const payload = await response.json() as { data?: AiTask; revision?: number; message?: string; error?: string };
+  if (!response.ok || !payload.data || payload.revision === undefined) throw new Error(payload.message || payload.error || "AI 任务创建失败");
+  const task = payload.data;
+  studio.acceptServerMutation(payload.revision, (current) => ({
+    ...current,
+    articles: input.currentPlan === undefined ? current.articles : current.articles.map((article) => article.id !== input.articleId ? article : ({
+      ...article,
+      updatedAt: task.createdAt,
+      chapters: article.chapters.map((chapter) => chapter.id !== input.chapterId ? chapter : ({
+        ...chapter,
+        outlines: chapter.outlines.map((outline) => outline.id !== input.outlineId ? outline : ({
+          ...outline,
+          plan: input.currentPlan!,
+          generateInstruction: input.instruction,
+          titleGenerationPending: input.currentPlan !== outline.plan ? true : outline.titleGenerationPending,
+          updatedAt: task.createdAt,
+        })),
+      })),
+    })),
+    tasks: [task, ...current.tasks.filter((item) => item.id !== task.id)].slice(0, 20),
+  }));
+  return task;
+}
+
+function namingArticleContext(article: Article): NamingArticleContext {
+  return {
+    id: article.id,
+    title: article.title,
+    summary: article.summary,
+    type: article.type,
+    style: article.style,
+    chapterNaming: article.chapterNaming,
+    outlineNaming: article.outlineNaming,
+    chapters: article.chapters.map((chapter) => ({
+      id: chapter.id,
+      title: chapter.title,
+      archived: chapter.archived,
+      outlines: chapter.outlines.map((outline) => ({ id: outline.id, title: outline.title, plan: outline.plan, archived: outline.archived })),
+    })),
+  };
 }
 
 type ActiveChatStream = { controller: AbortController; cancel: () => void };
@@ -536,7 +613,6 @@ function WriterStudioInner() {
       taskDispatches.current.add(task.id);
       void (async () => {
         try {
-          if (task.state === "waiting" && !await studioRef.current.saveNow()) return;
           await fetch(`/api/ai/tasks/${encodeURIComponent(task.id)}/execute`, { method: "POST", cache: "no-store" });
         } finally {
           taskDispatches.current.delete(task.id);
@@ -1600,10 +1676,10 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
   async function generate() {
     const outlineId = targetOutline?.id;
     if (!outlineId) { setError("该章节还没有可用大纲"); return; }
-    if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
     setLoading(true); setError("");
     try {
-      const response = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true }) });
+      const context = selectAiContext({ articles: [studio.currentArticle] }, outlineId, isChapter ? "chapter-title" : "outline", { includePrevious: true, includeCharacters: true, instruction: prompt });
+      const response = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
       const payload = await response.json() as { text?: string; outlineTitle?: string; error?: string };
       if (!response.ok || !payload.text) throw new Error(payload.error || "生成失败");
       setResult(payload.text);
@@ -1637,6 +1713,11 @@ type NameGeneratePreview = {
   outlineTitles: Array<{ id: string; title: string }>;
   inputCharacters: number;
   maxInputCharacters: number;
+  revision?: number;
+  added?: number;
+  articleUpdatedAt?: string;
+  chapterState?: { nameVersions: NameVersion[]; defaultNameVersionId: string | null };
+  outlineStates?: Array<{ id: string; updatedAt: string; nameVersions: NameVersion[]; defaultNameVersionId: string | null }>;
 };
 
 function MobileHeader({ title, status, onBack, onVersions, showVersions }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean }) {
@@ -2228,13 +2309,47 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
     const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && task.contextOptions?.includeExcellentFragments === includeExcellentFragments && task.contextOptions?.includeOutlineTitle === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
-    if (!await saveOutlineDraft() || !await studio.saveNow()) return;
-    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedRecord ? modelSelectionLabel(selectedRecord) : selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, estimatedCharacters: summary.total, ...(targetWords === undefined ? {} : { targetWords }), contentMode: generationMode, ...(generationMode === "rewrite" ? { rewriteRetention } : {}), outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, configuredModelId: selectedRecord?.id, modelId: selectedRecord?.modelId, modelName: selectedRecord ? modelSelectionLabel(selectedRecord) : undefined, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
-    if (!taskId) { window.alert("已有 20 个等待或运行中的任务，请先取消一个任务后再生成。"); return; }
-    setIncludeOutlineTitle(false);
-    setNotice("");
-    onTaskCreated();
-  }, [prompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
+    try {
+      const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
+        includePrevious,
+        includeCharacters,
+        includeExcellentFragments,
+        excellentFragmentIds,
+        contentMode: generationMode,
+        instruction: prompt,
+        currentPlan: outlinePlanDraft,
+        firstAppearanceCharacterIds: effectiveFirstAppearanceIds,
+      });
+      await createServerTask(studio, {
+        articleId: studio.currentArticle.id,
+        chapterId: studio.currentChapter.id,
+        outlineId: studio.currentOutline.id,
+        target: "content",
+        instruction: prompt.trim().slice(0, 20_000),
+        model: selectedModelReference,
+        includePrevious,
+        includeCharacters,
+        includeExcellentFragments,
+        includeOutlineTitle,
+        excellentFragmentIds,
+        estimatedCharacters: summary.total,
+        targetWords,
+        contentMode: generationMode,
+        rewriteRetention: generationMode === "rewrite" ? rewriteRetention : undefined,
+        firstAppearanceCharacterIds: effectiveFirstAppearanceIds,
+        timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
+        promptContext,
+        currentPlan: outlinePlanDraft,
+        outlineTitleSnapshot: studio.currentOutline.title,
+      });
+      lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outlinePlanDraft };
+      setIncludeOutlineTitle(false);
+      setNotice("");
+      onTaskCreated();
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
+    }
+  }, [prompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -2504,7 +2619,6 @@ function ChatMessageContent({ text }: { text: string }) {
 function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }: { models: ConfiguredModel[]; outlineId?: string; outlineTitle: string; onUseAsGenerate: (text: string) => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId) ?? studio.currentOutline;
-  const outlineChapter = studio.currentArticle.chapters.find((chapter) => chapter.outlines.some((item) => item.id === outline.id)) ?? studio.currentChapter;
   const chatModelRecord = configuredModelForReference(models, studio.data.settings.chatModel);
   const chatModelReference = chatModelRecord?.id ?? studio.data.settings.chatModel.trim();
   const chatbotName = chatbotDisplayName(models, chatModelReference);
@@ -2513,7 +2627,8 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const activeChatTask = studio.data.tasks.find((task) => task.target === "AI Chat" && task.outlineId === outline.id && (task.state === "waiting" || task.state === "running"));
   const sessionChatTask = activeChatTask?.contextOptions?.sessionId === session?.id ? activeChatTask : undefined;
   const isStreaming = Boolean(activeChatTask);
-  const streaming = sessionChatTask?.resultText ?? "";
+  const [localStreaming, setLocalStreaming] = useState<{ taskId: string; text: string } | null>(null);
+  const streaming = localStreaming?.taskId === sessionChatTask?.id ? localStreaming.text : sessionChatTask?.resultText ?? "";
   const [contextOpen, setContextOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -2531,10 +2646,9 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const currentStream = useRef<ChatStreamState | null>(null);
   const submissionLock = useRef("");
   const [submittingTaskId, setSubmittingTaskId] = useState("");
-  const chatStudioRef = useRef(studio);
   const isSubmitting = Boolean(submittingTaskId);
   const chatBusy = isStreaming || isSubmitting;
-  const chatProgressLabel = isSubmitting ? "正在提交" : activeChatTask?.phase === "connecting" ? "正在连接" : "正在回复";
+  const chatProgressLabel = isSubmitting ? "正在提交" : streaming ? "正在回复" : activeChatTask?.phase === "connecting" ? "正在连接" : "正在回复";
   const chatProgressText = streaming || (isSubmitting ? "正在保存消息并创建任务…" : activeChatTask?.phase === "connecting" ? "正在连接模型…" : "正在思考…");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
   try {
@@ -2565,31 +2679,63 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
     if (session && chatSessionHasUnread(session)) studio.markChatSessionRead(outline.id, session.id);
   }, [outline.id, session, studio]);
 
+  function applyChatTransaction(payload: { revision: number; task: AiTask | Partial<AiTask>; messages?: Message[]; message?: Message; sessionTitle?: string; sessionUpdatedAt?: string }, taskId: string, sessionId: string) {
+    studio.acceptServerMutation(payload.revision, (current) => ({
+      ...current,
+      articles: current.articles.map((article) => ({
+        ...article,
+        chapters: article.chapters.map((chapter) => ({
+          ...chapter,
+          outlines: chapter.outlines.map((item) => item.id !== outline.id ? item : ({
+            ...item,
+            chat: {
+              ...item.chat,
+              sessions: item.chat.sessions.map((candidate) => candidate.id !== sessionId ? candidate : ({
+                ...candidate,
+                title: payload.sessionTitle ?? candidate.title,
+                draft: "",
+                updatedAt: payload.sessionUpdatedAt ?? candidate.updatedAt,
+                messages: payload.messages ?? (payload.message && !candidate.messages.some((entry) => entry.id === payload.message!.id) ? [...candidate.messages, payload.message] : candidate.messages),
+              })),
+            },
+          })),
+        })),
+      })),
+      tasks: current.tasks.some((item) => item.id === taskId)
+        ? current.tasks.map((item) => item.id === taskId ? { ...item, ...payload.task } as AiTask : item)
+        : [payload.task as AiTask, ...current.tasks].slice(0, 20),
+    }));
+  }
+
+  async function finalizeChat(stream: ChatStreamState, status: "success" | "failed" | "cancelled", error = "", stopped = false) {
+    const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "finalize", taskId: stream.taskId, sessionId: stream.sessionId, status, result: stream.result, error, stopped, chatbotName, messageId: clientId("message-assistant") }),
+    });
+    const payload = await response.json() as { revision?: number; task?: Partial<AiTask>; message?: Message; sessionUpdatedAt?: string; error?: string };
+    if (!response.ok || payload.revision === undefined || !payload.task) throw new Error(payload.error || "聊天结果保存失败");
+    applyChatTransaction({ revision: payload.revision, task: payload.task, message: payload.message, sessionUpdatedAt: payload.sessionUpdatedAt }, stream.taskId, stream.sessionId);
+    setLocalStreaming((current) => current?.taskId === stream.taskId ? null : current);
+  }
+
   function stopStream(stream: ChatStreamState, stopped = true) {
     if (stream.finalized) return;
     stream.finalized = true;
     stream.controller.abort();
     releaseActiveChatStream(stream.taskId, stream.controller);
-    const currentStudio = chatStudioRef.current;
-    if (stream.result) currentStudio.addChatMessage(outline.id, { id: clientId("message"), role: "assistant", text: stream.result, createdAt: new Date().toISOString(), stopped }, stream.sessionId);
-    const completedAt = new Date().toISOString();
-    currentStudio.updateTask(stream.taskId, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, receivedCharacters: stream.result.length, resultText: stream.result || undefined, error: stopped ? "用户停止了聊天回复" : undefined });
     if (currentStream.current === stream) currentStream.current = null;
     if (submissionLock.current === stream.submissionToken) {
       submissionLock.current = "";
       setSubmittingTaskId("");
     }
-    void currentStudio.saveNow();
+    void finalizeChat(stream, "cancelled", stopped ? "用户停止了聊天回复" : "", stopped).catch((reason) => onNotice(reason instanceof Error ? reason.message : "聊天停止状态保存失败"));
   }
-  useEffect(() => {
-    chatStudioRef.current = studio;
-  });
-
   function cancelCurrentChatTask() {
     if (!activeChatTask || cancelActiveChatStream(activeChatTask.id)) return;
-    const completedAt = new Date().toISOString();
-    studio.updateTask(activeChatTask.id, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, runnerId: undefined, leaseUntil: undefined });
-    void studio.saveNow();
+    const stream: ChatStreamState = { taskId: activeChatTask.id, sessionId: activeChatTask.contextOptions?.sessionId ?? session?.id ?? "", submissionToken: "", controller: new AbortController(), result: activeChatTask.resultText ?? "", finalized: true };
+    void finalizeChat(stream, "cancelled", "用户停止了聊天回复", true).catch((reason) => onNotice(reason instanceof Error ? reason.message : "聊天停止状态保存失败"));
   }
 
   async function requestAnswer(question: string, addUser: boolean, targetSessionId = session?.id, targetSession = session) {
@@ -2603,50 +2749,31 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       setSubmittingTaskId("");
     };
     try {
-      const taskId = studio.addTask({
-        articleId: studio.currentArticle.id,
-        chapterId: outlineChapter.id,
-        outlineId: outline.id,
-        target: "AI Chat",
-        prompt: question.slice(0, 20000),
-        model: chatModelRecord ? modelSelectionLabel(chatModelRecord) : chatModelReference,
-        state: "running",
-        phase: "preparing",
-        attempt: 1,
-        startedAt: new Date().toISOString(),
-        lastProgressAt: new Date().toISOString(),
-        receivedCharacters: 0,
-        timeoutMs: chatModelRecord?.timeoutMs ?? 600_000,
-        contextOptions: {
-          includePrevious: targetSession.includePrevious,
-          includeCharacters: targetSession.includeCharacters,
-          estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
-          sessionId: targetSessionId,
-          configuredModelId: chatModelRecord?.id,
-          modelId: chatModelRecord?.modelId,
-          modelName: chatModelRecord ? modelSelectionLabel(chatModelRecord) : undefined,
-        },
-      });
-      if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
+      const taskId = clientId("task");
       setSubmittingTaskId(taskId);
-      if (addUser) {
-        studio.addChatMessage(outline.id, { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() }, targetSessionId);
-        studio.setChatDraft(outline.id, "", targetSessionId);
-        if (targetSession.title === "新对话") studio.renameChatSession(outline.id, targetSessionId, question.slice(0, 24));
-      }
+      const userMessage: Message = { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() };
+      const submittedMessages = addUser ? [...targetSession.messages, userMessage] : targetSession.messages;
+      const submittedTitle = addUser && targetSession.title === "新对话" ? question.slice(0, 24) : targetSession.title;
+      let promptContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, sessionId: targetSessionId });
+      promptContext = { ...promptContext, recentMessages: submittedMessages.slice(-20).map((item) => ({ role: item.role, text: item.text })) };
+      const submitResponse = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
+        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
+      });
+      const submitted = await submitResponse.json() as { revision?: number; task?: AiTask; messages?: Message[]; sessionTitle?: string; sessionUpdatedAt?: string; error?: string };
+      if (!submitResponse.ok || submitted.revision === undefined || !submitted.task || !submitted.messages) throw new Error(submitted.error || "消息提交失败");
+      applyChatTransaction({ revision: submitted.revision, task: submitted.task, messages: submitted.messages, sessionTitle: submitted.sessionTitle, sessionUpdatedAt: submitted.sessionUpdatedAt }, taskId, targetSessionId);
+      releaseSubmission();
       const controller = new AbortController();
       const stream: ChatStreamState = { taskId, sessionId: targetSessionId, submissionToken, controller, result: "", finalized: false };
       currentStream.current = stream;
       registerActiveChatStream(taskId, { controller, cancel: () => stopStream(stream, true) });
       try {
-        const saved = await studio.saveNow();
-        releaseSubmission();
-        if (!saved) throw new Error("消息保存失败，尚未调用 AI，请检查保存提示后重试");
         if (controller.signal.aborted) return;
-        studio.updateTask(taskId, { phase: "connecting", lastProgressAt: new Date().toISOString() });
-        const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters }) });
+        const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
-        studio.updateTask(taskId, { phase: "generating", lastProgressAt: new Date().toISOString() });
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         while (true) {
@@ -2660,7 +2787,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
           // a development proxy delays the response close or strips custom headers.
           const terminatorIndex = decoded.indexOf("\u001e");
           stream.result += terminatorIndex >= 0 ? decoded.slice(0, terminatorIndex) : decoded;
-          studio.updateTask(taskId, { phase: "receiving", lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, resultText: stream.result });
+          setLocalStreaming({ taskId, text: stream.result });
           if (terminatorIndex >= 0) {
             void reader.cancel();
             break;
@@ -2669,23 +2796,20 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
         if (controller.signal.aborted) return;
         if (!stream.result) throw new Error(`${chatbotName} 返回了空结果`);
         stream.finalized = true;
-        studio.addChatMessage(outline.id, { id: clientId("message-assistant"), role: "assistant", text: stream.result, createdAt: new Date().toISOString() }, targetSessionId);
-        studio.updateTask(taskId, { state: "success", phase: "completed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, resultText: stream.result, error: undefined });
-        void chatStudioRef.current.saveNow();
+        await finalizeChat(stream, "success");
       } catch (error) {
         if (!controller.signal.aborted) {
           stream.finalized = true;
           const errorMessage = error instanceof Error ? error.message : "请求失败";
-          studio.addChatMessage(outline.id, { id: clientId("message-error"), role: "assistant", text: `${chatbotName} 错误：${errorMessage}`, createdAt: new Date().toISOString() }, targetSessionId);
-          studio.updateTask(taskId, { state: "failed", phase: "failed", completedAt: new Date().toISOString(), lastProgressAt: new Date().toISOString(), receivedCharacters: stream.result.length, error: errorMessage });
-          if (errorMessage.startsWith("消息保存失败")) onNotice(errorMessage);
-          void chatStudioRef.current.saveNow();
+          await finalizeChat(stream, "failed", errorMessage);
         }
       } finally {
         releaseActiveChatStream(taskId, controller);
         if (currentStream.current === stream) currentStream.current = null;
         stream.finalized = true;
       }
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : "AI Chat 提交失败");
     } finally {
       releaseSubmission();
     }
@@ -3034,7 +3158,10 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
         chapterNaming: article.chapterNaming,
         outlineNaming: article.outlineNaming,
         model: selectedModelReference,
+        modelLabel: modelDisplayLabel(models, selectedModelReference),
         instruction: instruction.trim(),
+        context: namingArticleContext(article),
+        persist: true,
         ...body,
       }),
     });
@@ -3044,15 +3171,29 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
   }
 
   async function storeCandidates(chapter: Chapter, payload: NameGeneratePreview) {
-    const added = studio.addGeneratedNameCandidates(chapter.id, payload.chapterTitle, payload.outlineTitles, { model: modelDisplayLabel(models, selectedModelReference), instruction: instruction.trim() });
-    if (!await studio.saveNow()) throw new Error("候选名称已加入本地页面，但保存失败；请先解决保存问题");
-    return added;
+    if (payload.revision === undefined || payload.added === undefined) throw new Error("名称已经生成，但服务端没有返回保存结果");
+    const outlineStates = new Map((payload.outlineStates ?? []).map((item) => [item.id, item]));
+    studio.acceptServerMutation(payload.revision, (current) => ({
+      ...current,
+      articles: current.articles.map((item) => item.id !== article.id ? item : ({
+        ...item,
+        updatedAt: payload.articleUpdatedAt ?? item.updatedAt,
+        chapters: item.chapters.map((candidate) => candidate.id !== chapter.id ? candidate : ({
+          ...candidate,
+          ...(payload.chapterState ?? {}),
+          outlines: candidate.outlines.map((outline) => {
+            const state = outlineStates.get(outline.id);
+            return state ? { ...outline, ...state } : outline;
+          }),
+        })),
+      })),
+    }));
+    return payload.added;
   }
 
   async function generateChapterName(chapter: Chapter) {
     if (!eligibleOutlines(chapter).length) { setError(`「${chapter.title}」没有可供参考的大纲内容`); return; }
     if (missingSecret) { setError("所选模型还没有载入 API 密钥"); return; }
-    if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
     setBusy(`chapter:${chapter.id}`); setError("");
     try {
       const payload = await requestNames(chapter, { target: "chapter", includeChapter: true, outlineIds: [] });
@@ -3065,7 +3206,6 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
   async function generateOutlineName(chapter: Chapter, outline: Outline) {
     if (!outline.plan.trim()) { setError(`「${outlineDisplayTitle(outline)}」的大纲内容为空`); return; }
     if (missingSecret) { setError("所选模型还没有载入 API 密钥"); return; }
-    if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
     setBusy(`outline:${outline.id}`); setError("");
     try {
       const payload = await requestNames(chapter, { target: "outline", outlineId: outline.id });
@@ -3079,40 +3219,32 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
     if (!eligibleChapters.length) { setError("没有可生成名称的章节；请先填写大纲内容"); return; }
     if (missingSecret) { setError("所选模型还没有载入 API 密钥"); return; }
     if (activeAllTask) { onTaskCreated(); return; }
-    if (!await studio.saveNow()) { setError("请先解决当前保存问题再生成"); return; }
     const anchorChapter = eligibleChapters[0];
     const anchorOutline = eligibleOutlines(anchorChapter)[0];
     const eligibleOutlineCount = eligibleChapters.reduce((total, chapter) => total + eligibleOutlines(chapter).length, 0);
     const estimatedCharacters = article.summary.length + article.type.length + article.style.length + eligibleChapters.reduce((total, chapter) => total + eligibleOutlines(chapter).reduce((sum, outline) => sum + outline.plan.length, 0), 0);
-    const taskId = studio.addTask({
-      articleId: article.id,
-      chapterId: anchorChapter.id,
-      outlineId: anchorOutline.id,
-      target: "全部名称",
-      prompt: instruction.trim(),
-      model: selectedRecord ? modelSelectionLabel(selectedRecord) : selectedModelReference,
-      phase: "queued",
-      attempt: 0,
-      receivedCharacters: 0,
-      timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
-      contextOptions: {
+    try {
+      await createServerTask(studio, {
+        articleId: article.id,
+        chapterId: anchorChapter.id,
+        outlineId: anchorOutline.id,
+        target: "all-names",
+        instruction: instruction.trim(),
+        model: selectedModelReference,
         includePrevious: false,
         includeCharacters: false,
         estimatedCharacters,
-        chapterNamingSnapshot: article.chapterNaming,
-        outlineNamingSnapshot: article.outlineNaming,
-        nameChapterCount: eligibleChapters.length,
-        nameOutlineCount: eligibleOutlineCount,
-        configuredModelId: selectedRecord?.id,
-        modelId: selectedRecord?.modelId,
-        modelName: selectedRecord ? modelSelectionLabel(selectedRecord) : undefined,
-      },
-    });
-    if (!taskId) { setError("已有 20 个等待或运行中的任务，请先取消一个任务"); return; }
-    if (!await studio.saveNow()) { setError("后台名称任务已经创建，但保存失败；请先解决保存问题"); return; }
-    setError("");
-    onNotice(`已创建后台任务，将用一次模型请求生成 ${eligibleChapters.length} 个章节和 ${eligibleOutlineCount} 个大纲的名称`);
-    onTaskCreated();
+        chapterNaming: article.chapterNaming,
+        outlineNaming: article.outlineNaming,
+        timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
+        namingContext: namingArticleContext(article),
+      });
+      setError("");
+      onNotice(`已创建后台任务，将用一次模型请求生成 ${eligibleChapters.length} 个章节和 ${eligibleOutlineCount} 个大纲的名称`);
+      onTaskCreated();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "后台名称任务创建失败");
+    }
   }
 
   async function selectDefault(kind: "chapter" | "outline", entityId: string, versionId: string, chapter?: Chapter) {
@@ -3688,42 +3820,83 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
   }
 
   async function runReview(input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string }) {
-    for (const outlineId of [...dirtyContentIds]) {
-      if (!await commitContent(outlineId)) throw new Error("正文尚未保存，不能开始 AI Review");
-    }
-    if (!await studio.saveNow()) throw new Error("正文尚未保存，不能开始 AI Review");
+    const chapter = studio.currentArticle.chapters.find((item) => item.id === input.chapterId);
+    if (!chapter) throw new Error("Review 章节不存在");
+    const sourceOutlines = chapter.outlines.filter((item) => !item.archived).map((item) => ({
+      id: item.id,
+      title: item.title,
+      plan: item.plan,
+      name: resolvedOutlineContentName(item),
+      text: contentDraftsRef.current[item.id] ?? resolvedOutlineContent(item),
+      baseText: resolvedOutlineContent(item),
+      sourceVersionId: editSourceVersionIdsRef.current[item.id],
+    })).filter((item) => item.text.trim());
     const response = await fetch("/api/ai/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ articleId: studio.currentArticle.id, ...input }),
+      body: JSON.stringify({ articleId: studio.currentArticle.id, ...input, source: {
+        article: {
+          id: studio.currentArticle.id,
+          title: studio.currentArticle.title,
+          summary: studio.currentArticle.summary,
+          type: studio.currentArticle.type,
+          style: studio.currentArticle.style,
+          characters: studio.currentArticle.characters.filter((person) => !person.archived).map((person) => ({ name: person.name, aliases: person.aliases, description: person.description })),
+        },
+        chapter: { id: chapter.id, title: chapter.title },
+        outlines: sourceOutlines,
+        requirements: input.requirements,
+        additionalRequirement: input.additionalRequirement,
+        model: input.model,
+      } }),
     });
     const payload = await response.json() as {
       error?: string;
       updated?: Array<{ outlineId: string; versionId: string; name: string; text: string }>;
+      patches?: Array<{ outlineId: string } & Partial<Outline>>;
+      revision?: number;
+      articleUpdatedAt?: string;
       editCount?: number;
       inputTokens?: number;
       outputTokens?: number;
     };
     if (!response.ok) throw new Error(payload.error || "AI Review 失败");
-    const refreshed = await studio.refreshFromServer();
-    if (!refreshed) throw new Error("AI Review 已保存，但页面未能刷新；请刷新页面查看新正文");
+    const persistedTexts = new Map((payload.patches ?? []).map((patch) => {
+      const version = patch.currentVersionId ? patch.versions?.find((item) => item.id === patch.currentVersionId) : undefined;
+      return [patch.outlineId, version?.content ?? patch.content ?? ""];
+    }));
+    if (payload.revision !== undefined) {
+      const patches = new Map((payload.patches ?? []).map((item) => [item.outlineId, item]));
+      studio.acceptServerMutation(payload.revision, (current) => ({
+        ...current,
+        articles: current.articles.map((article) => article.id !== studio.currentArticle.id ? article : ({
+          ...article,
+          updatedAt: payload.articleUpdatedAt ?? article.updatedAt,
+          chapters: article.chapters.map((item) => item.id !== chapter.id ? item : ({ ...item, outlines: item.outlines.map((outline) => {
+            const patch = patches.get(outline.id);
+            return patch ? { ...outline, ...patch } : outline;
+          }) })),
+        })),
+      }));
+    }
     const updated = payload.updated ?? [];
-    if (updated.length) {
+    if (updated.length || persistedTexts.size) {
       const nextDrafts = { ...contentDraftsRef.current };
       const nextSelections = { ...versionSelections };
-      for (const item of updated) {
-        nextDrafts[item.outlineId] = item.text;
-        contentBaselinesRef.current[item.outlineId] = item.text;
-        defaultContentsRef.current[item.outlineId] = item.text;
-        delete nextSelections[item.outlineId];
-        studio.clearContentDraft(item.outlineId);
+      for (const [outlineId, text] of persistedTexts) {
+        nextDrafts[outlineId] = text;
+        contentBaselinesRef.current[outlineId] = text;
+        defaultContentsRef.current[outlineId] = text;
+        delete nextSelections[outlineId];
+        delete editSourceVersionIdsRef.current[outlineId];
+        studio.clearContentDraft(outlineId);
       }
       contentDraftsRef.current = nextDrafts;
       setContentDrafts(nextDrafts);
       setVersionSelections(nextSelections);
       setDirtyContentIds((current) => {
         const next = new Set(current);
-        updated.forEach((item) => next.delete(item.outlineId));
+        persistedTexts.forEach((_, outlineId) => next.delete(outlineId));
         return next;
       });
     }
@@ -4019,7 +4192,10 @@ function ModelSettings() {
     setProviders(providerPayload.providers);
     setModels(modelPayload.models);
   }, []);
-  useEffect(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "AI 服务加载失败")); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "AI 服务加载失败")); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   function closeProviderForm() { setProviderFormOpen(false); setEditingProviderId(null); setProviderForm({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" }); }
   function openCreateProvider() { setError(""); setEditingProviderId(null); setProviderForm({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" }); setProviderFormOpen(true); }
@@ -4202,11 +4378,11 @@ function DatabaseSettings() {
     }
   }, []);
   useEffect(() => {
-    void loadSyncStatus();
+    const initial = window.setTimeout(() => { void loadSyncStatus(); }, 0);
     const refresh = () => { void loadSyncStatus(); };
     const timer = window.setInterval(refresh, 15_000);
     window.addEventListener("writer-studio-sync-status", refresh);
-    return () => { window.clearInterval(timer); window.removeEventListener("writer-studio-sync-status", refresh); };
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); window.removeEventListener("writer-studio-sync-status", refresh); };
   }, [loadSyncStatus]);
   async function check() { setChecking(true); const response = await fetch("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; setChecking(false); window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); }
   async function setAutoUpload(enabled: boolean) {
@@ -4530,15 +4706,22 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     onOpen(task.outlineId, task.target === "AI Chat" ? "chat" : "write", task.target === "正文" ? task.resultVersionId : undefined);
     onClose();
   }
+  async function updateTaskState(task: AiTask, action: "cancel" | "retry") {
+    const response = await fetch(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    const payload = await response.json() as { task?: Partial<AiTask>; revision?: number; error?: string };
+    if (!response.ok || !payload.task || payload.revision === undefined) throw new Error(payload.error || "任务状态更新失败");
+    studio.acceptServerMutation(payload.revision, (current) => ({
+      ...current,
+      articles: action !== "cancel" || task.target === "AI Chat" || task.target === "全部名称" ? current.articles : current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => outline.id === task.outlineId ? { ...outline, state: "saved" } : outline) })) })),
+      tasks: current.tasks.map((item) => item.id === task.id ? { ...item, ...payload.task } as AiTask : item),
+    }));
+  }
   function cancelTask(task: AiTask) {
     if (task.target === "AI Chat" && cancelActiveChatStream(task.id)) return;
-    const completedAt = new Date().toISOString();
-    studio.updateTask(task.id, { state: "cancelled", phase: "cancelled", completedAt, lastProgressAt: completedAt, runnerId: undefined, leaseUntil: undefined });
-    if (task.target !== "AI Chat" && task.target !== "全部名称") studio.updateOutline(task.outlineId, { state: "saved" });
-    void studio.saveNow();
+    void updateTaskState(task, "cancel").catch((reason) => window.alert(reason instanceof Error ? reason.message : "取消任务失败"));
   }
   function retryTask(task: AiTask) {
-    studio.updateTask(task.id, { state: "waiting", phase: "queued", attempt: 0, startedAt: undefined, completedAt: undefined, lastProgressAt: undefined, receivedCharacters: 0, runnerId: undefined, leaseUntil: undefined, error: undefined });
+    void updateTaskState(task, "retry").catch((reason) => window.alert(reason instanceof Error ? reason.message : "重试任务失败"));
   }
   function applyResult(task: AiTask) {
     if (task.target === "大纲" && task.resultText) {

@@ -761,6 +761,13 @@ async function selectPromptContext(outlineId: string, kind: AiContextKind, optio
   }
 }
 
+function suppliedPromptContext(context: SelectedAiContext | undefined, outlineId: string, kind: AiContextKind) {
+  if (!context) return null;
+  if (context.kind !== kind || context.currentOutline?.id !== outlineId) throw new AiInputError("AI 上下文与目标不匹配");
+  if (JSON.stringify(context).length > 200_000) throw new AiInputError("AI 上下文过大，请减少引用内容");
+  return structuredClone(context);
+}
+
 export async function assertAiTargetAvailable(outlineId: string) {
   await selectPromptContext(outlineId, "outline", { includePrevious: false, includeCharacters: false });
 }
@@ -962,10 +969,11 @@ function generateMaxTokens(model: AiModelRecord, target: GenerateTarget, targetW
   return Math.min(65_536, Math.max(4_096, Math.ceil(targetWords * 2)));
 }
 
-export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean }, signal?: AbortSignal) {
+export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean; context?: SelectedAiContext }, signal?: AbortSignal) {
   const contentMode = normalizeContentGenerationMode(input.contentMode);
   const rewriteRetention = normalizeRewriteRetentionLevel(input.rewriteRetention);
-  const source = await selectPromptContext(input.outlineId, input.target, input);
+  const source = suppliedPromptContext(input.context, input.outlineId, input.target)
+    ?? await selectPromptContext(input.outlineId, input.target, input);
   const instruction = String(input.instruction ?? "").trim();
   const targetWords = normalizeOptionalGenerateTargetWords(input.targetWords);
   if (input.target === "content" && contentMode !== "fresh" && !source.currentOutline.content.trim()) {
@@ -1003,6 +1011,28 @@ export type NameGenerationResult = {
   inputCharacters: number;
   maxInputCharacters: number;
 };
+
+export type NamingArticleContext = {
+  id: string;
+  title: string;
+  summary: string;
+  type: string;
+  style: string;
+  chapterNaming?: NamingProfile;
+  outlineNaming?: NamingProfile;
+  chapters: Array<{
+    id: string;
+    title: string;
+    archived: boolean;
+    outlines: Array<{ id: string; title: string; plan: string; archived: boolean }>;
+  }>;
+};
+
+function suppliedNamingContext(context: NamingArticleContext | undefined, articleId: string) {
+  if (!context) return null;
+  if (context.id !== articleId || JSON.stringify(context).length > 200_000) throw new AiInputError("命名上下文与文章不匹配或过大");
+  return structuredClone(context);
+}
 
 export type ArticleNameGenerationResult = {
   chapterTitles: Array<{ id: string; title: string }>;
@@ -1051,9 +1081,10 @@ function generatedNameForPreview(value: string, profile: NamingProfile, maximum:
   return name;
 }
 
-export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string }, signal?: AbortSignal): Promise<NameGenerationResult> {
-  const state = await readStudioState();
-  const article = state.data?.articles.find((item) => item.id === input.articleId);
+export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string; context?: NamingArticleContext }, signal?: AbortSignal): Promise<NameGenerationResult> {
+  const supplied = suppliedNamingContext(input.context, input.articleId);
+  const state = supplied ? null : await readStudioState();
+  const article = supplied ?? state?.data?.articles.find((item) => item.id === input.articleId);
   const chapter = article?.chapters.find((item) => item.id === input.chapterId);
   if (!article || !chapter || chapter.archived) throw new AiInputError("命名目标不存在或已归档");
   const instruction = String(input.instruction ?? "").trim().slice(0, 20000);
@@ -1145,9 +1176,10 @@ function parseArticleNamesResponse(value: string) {
   return { chapterTitles, outlineTitles };
 }
 
-export async function generateArticleNames(input: { articleId: string; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string }, signal?: AbortSignal): Promise<ArticleNameGenerationResult> {
-  const state = await readStudioState();
-  const article = state.data?.articles.find((item) => item.id === input.articleId);
+export async function generateArticleNames(input: { articleId: string; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string; context?: NamingArticleContext }, signal?: AbortSignal): Promise<ArticleNameGenerationResult> {
+  const supplied = suppliedNamingContext(input.context, input.articleId);
+  const state = supplied ? null : await readStudioState();
+  const article = supplied ?? state?.data?.articles.find((item) => item.id === input.articleId);
   if (!article) throw new AiInputError("命名文章不存在");
   const chapters = article.chapters
     .filter((chapter) => !chapter.archived)
@@ -1374,8 +1406,9 @@ function localGenerate(target: GenerateTarget, title: string, plan: string, cont
   return { text: contentMode === "continue" ? appendContinuation(content, generated) : generated, outlineTitle: includeOutlineTitle ? localNameForProfile(title, plan, instruction, outlineNaming) : undefined };
 }
 
-export async function streamChat(input: { outlineId: string; message: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string }, signal?: AbortSignal) {
-  const source = await selectPromptContext(input.outlineId, "chat", input);
+export async function streamChat(input: { outlineId: string; message: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; context?: SelectedAiContext }, signal?: AbortSignal) {
+  const source = suppliedPromptContext(input.context, input.outlineId, "chat")
+    ?? await selectPromptContext(input.outlineId, "chat", input);
   const model = await findModel(input.model);
   if (input.model && !model) throw new AiInputError("所选聊天模型不存在，请重新选择");
   if (!model) {

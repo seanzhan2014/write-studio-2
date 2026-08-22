@@ -1,5 +1,6 @@
 import { AiInputError, streamChat } from "@/db/ai";
 import { claimChatRequest } from "@/db/runtime";
+import type { SelectedAiContext } from "@/lib/ai-context";
 
 async function requestHash(input: { outlineId: string; sessionId?: string; message: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean }) {
   const encoded = new TextEncoder().encode(JSON.stringify([
@@ -17,7 +18,7 @@ async function requestHash(input: { outlineId: string; sessionId?: string; messa
 export async function POST(request: Request, context: { params: Promise<{ outlineId: string }> }) {
   try {
     const { outlineId } = await context.params;
-    const body = await request.json() as { message?: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; requestId?: string };
+    const body = await request.json() as { message?: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; requestId?: string; context?: SelectedAiContext };
     if (!body.message?.trim()) return Response.json({ error: "消息不能为空" }, { status: 400 });
     const headerRequestId = request.headers.get("idempotency-key")?.trim();
     const bodyRequestId = body.requestId?.trim();
@@ -33,7 +34,7 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
       }
       console.info(JSON.stringify({ event: "chat_request_claimed", requestId, outlineId }));
     }
-    const stream = await streamChat({ outlineId, message: body.message.slice(0, 20000), model: body.model, includePrevious: body.includePrevious, includeCharacters: body.includeCharacters, sessionId: body.sessionId }, request.signal);
+    const stream = await streamChat({ outlineId, message: body.message.slice(0, 20000), model: body.model, includePrevious: body.includePrevious, includeCharacters: body.includeCharacters, sessionId: body.sessionId, context: body.context }, request.signal);
     // Vinext's development response adapter can keep a locally produced
     // ReadableStream open after all chunks were sent. Buffer only the tiny local
     // PoC reply so the browser receives an immediate, definitively closed body;

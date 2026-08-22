@@ -216,7 +216,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
       id: outline.id,
       title: outlineDisplayTitle(outline),
       titleGenerationPending: outline.titleGenerationPending === true,
-      plan: outline.plan,
+      plan: currentPlan,
       content: kind === "chat" || kind === "content" ? currentContent : "",
     },
     previousOutlines: kind === "chapter-title" ? [] : previous.map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })),

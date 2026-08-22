@@ -8,6 +8,8 @@ import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot 
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
+import type { SelectedAiContext } from "@/lib/ai-context";
+import type { NamingArticleContext } from "@/db/ai";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
@@ -173,6 +175,8 @@ export type AiTask = {
     firstAppearanceCharacterIds?: string[];
     includeExcellentFragments?: boolean;
     excellentFragmentIds?: string[];
+    promptContext?: SelectedAiContext;
+    namingContext?: NamingArticleContext;
   };
 };
 
@@ -417,7 +421,7 @@ type StudioContextValue = {
   replaceChatMessages: (outlineId: string, messages: Message[], sessionId?: string) => void;
   markChatSessionRead: (outlineId: string, sessionId: string) => void;
   clearChat: (outlineId: string) => void;
-  addTask: (task: Omit<AiTask, "id" | "createdAt" | "state"> & { state?: AiTask["state"] }) => string | null;
+  addTask: (task: Omit<AiTask, "id" | "createdAt" | "state"> & { id?: string; createdAt?: string; state?: AiTask["state"] }) => string | null;
   updateTask: (taskId: string, patch: Partial<AiTask>) => void;
   removeTask: (taskId: string) => void;
   clearCompletedTasks: () => void;
@@ -429,6 +433,7 @@ type StudioContextValue = {
   updateRelationship: (relationshipId: string, patch: Partial<Relationship>) => void;
   deleteRelationship: (relationshipId: string) => void;
   clearBusinessData: () => Promise<boolean>;
+  acceptServerMutation: (revision: number, update: (current: StudioData) => StudioData) => void;
   refreshFromServer: () => Promise<boolean>;
   saveNow: () => Promise<boolean>;
   retrySave: () => Promise<boolean>;
@@ -953,11 +958,56 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     return () => { document.removeEventListener("visibilitychange", onHidden); window.removeEventListener("pagehide", onPageHide); };
   }, [hydrated, enqueueSave]);
 
+  const currentArticle = data.articles.find((article) => article.id === data.currentArticleId) ?? data.articles[0] ?? emptyArticle;
+  const currentPair = currentArticle.id ? findOutlineInArticle(currentArticle, data.currentOutlineId) ?? findOutlineInArticle(currentArticle, firstOutline(currentArticle)) : null;
+  const currentChapter = currentPair?.chapter ?? currentArticle.chapters[0] ?? emptyChapter;
+  const currentOutline = currentPair?.outline ?? currentChapter?.outlines[0] ?? emptyOutline;
+
+  const acceptServerMutation = useCallback((revision: number, update: (current: StudioData) => StudioData) => {
+    if (revision < revisionRef.current) return;
+    const nextLocal = update(dataRef.current);
+    let base: StudioData;
+    try {
+      base = lastSavedRef.current
+        ? normalizeStudioData(JSON.parse(lastSavedRef.current) as StudioData)
+        : durableSnapshot(dataRef.current);
+    } catch {
+      base = durableSnapshot(dataRef.current);
+    }
+    const nextBase = durableSnapshot(update(base));
+    revisionRef.current = revision;
+    lastSavedRef.current = stableStudioStringify(nextBase);
+    dataRef.current = nextLocal;
+    setData(nextLocal);
+    setConflict(null);
+    setSaveStatus(serializeDurable(nextLocal) === lastSavedRef.current ? "saved" : "unsaved");
+  }, [setData]);
+
   useEffect(() => {
     if (!hydrated) return;
+    let polling = false;
     const refreshVisible = () => { if (document.visibilityState === "visible") void refreshFromServer(); };
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void refreshFromServer();
+      if (polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) return;
+      polling = true;
+      void fetch("/api/ai/tasks", { cache: "no-store" })
+        .then(async (response) => {
+          const payload = await response.json() as { tasks?: AiTask[]; runningOutlineIds?: string[]; revision?: number };
+          if (!response.ok || !payload.tasks || payload.revision === undefined) return;
+          const activeIds = new Set(dataRef.current.tasks.filter((task) => task.state === "waiting" || task.state === "running").map((task) => task.id));
+          const terminalTransition = payload.tasks.some((task) => activeIds.has(task.id) && task.state !== "waiting" && task.state !== "running");
+          if (terminalTransition) await refreshFromServer();
+          else {
+            const runningOutlineIds = new Set(payload.runningOutlineIds ?? []);
+            acceptServerMutation(payload.revision, (current) => ({
+              ...current,
+              tasks: payload.tasks!,
+              articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => runningOutlineIds.has(outline.id) ? { ...outline, state: "running" } : outline) })) })),
+            }));
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => { polling = false; });
     }, 3000);
     document.addEventListener("visibilitychange", refreshVisible);
     window.addEventListener("focus", refreshVisible);
@@ -966,12 +1016,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", refreshVisible);
       window.removeEventListener("focus", refreshVisible);
     };
-  }, [hydrated, refreshFromServer]);
-
-  const currentArticle = data.articles.find((article) => article.id === data.currentArticleId) ?? data.articles[0] ?? emptyArticle;
-  const currentPair = currentArticle.id ? findOutlineInArticle(currentArticle, data.currentOutlineId) ?? findOutlineInArticle(currentArticle, firstOutline(currentArticle)) : null;
-  const currentChapter = currentPair?.chapter ?? currentArticle.chapters[0] ?? emptyChapter;
-  const currentOutline = currentPair?.outline ?? currentChapter?.outlines[0] ?? emptyOutline;
+  }, [hydrated, refreshFromServer, acceptServerMutation]);
 
   const value = useMemo<StudioContextValue>(() => ({
     data,
@@ -1564,9 +1609,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     addTask(task) {
       if (dataRef.current.tasks.length >= 20 && !dataRef.current.tasks.some((item) => ["success", "failed", "cancelled"].includes(item.state))) return null;
-      const id = makeId("task");
+      const id = task.id ?? makeId("task");
       setData((current) => {
-        const tasks = [{ ...task, id, state: task.state ?? "waiting", createdAt: new Date().toISOString() }, ...current.tasks];
+        const tasks = [{ ...task, id, state: task.state ?? "waiting", createdAt: task.createdAt ?? new Date().toISOString() }, ...current.tasks.filter((item) => item.id !== id)];
         while (tasks.length > 20) {
           const removable = tasks.map((item, index) => ({ item, index })).reverse().find(({ item }) => ["success", "failed", "cancelled"].includes(item.state));
           if (!removable) break;
@@ -1659,6 +1704,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
     },
+    acceptServerMutation,
     refreshFromServer,
     saveNow() {
       return enqueueSave(dataRef.current);
@@ -1689,7 +1735,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("unsaved");
       await enqueueSave(withDeviceUi);
     },
-  }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, enqueueSave, refreshFromServer, setData]);
+  }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, acceptServerMutation, enqueueSave, refreshFromServer, setData]);
 
   return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
 }
