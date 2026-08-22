@@ -163,6 +163,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(saved.response.status, 200, saved.text);
     revision = saved.data.revision;
     const loaded = await api("/api/state");
+    assert.equal(loaded.data.executionOrigin, "local");
     assert.equal(loaded.data.data.articles[0].relationships.length, 1);
     assert.equal(loaded.data.data.articles[0].characters.length, 3);
     assert.equal(loaded.data.data.articles[0].characters[0].description, "海港长大的冷静修理师。");
@@ -891,6 +892,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     changed.tasks.unshift({
       id: "task-progress-metadata", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current",
       target: "正文", prompt: "进度元数据", model: "捕获模型", state: "running", phase: "receiving", attempt: 2,
+      executionOrigin: "cloud",
       createdAt: "2026-07-31T00:00:00.000Z", startedAt: "2026-07-31T00:00:01.000Z", lastProgressAt: "2026-07-31T00:00:05.000Z",
       receivedCharacters: 1234, timeoutMs: 5000, runnerId: "runner-test", leaseUntil: "2026-07-31T00:00:20.000Z",
       contextOptions: { includePrevious: true, includeCharacters: true, estimatedCharacters: 99 },
@@ -906,7 +908,16 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(task.timeoutMs, 5000);
     assert.equal(task.runnerId, "runner-test");
     assert.equal(task.leaseUntil, "2026-07-31T00:00:20.000Z");
-    const cancelled = await api("/api/ai/tasks/task-progress-metadata/cancel", { method: "POST" });
+    assert.equal(task.executionOrigin, "cloud");
+    const versionBeforeRejectedExecution = (await api("/api/database/status")).data.databaseVersion;
+    const rejectedExecution = await api("/api/ai/tasks/task-progress-metadata/execute", { method: "POST" });
+    assert.equal(rejectedExecution.response.status, 202, rejectedExecution.text);
+    assert.equal(rejectedExecution.data.reason, "foreign_origin");
+    assert.equal((await api("/api/database/status")).data.databaseVersion, versionBeforeRejectedExecution, "reading a foreign task and rejecting its execution must not advance the sync version");
+    const transferred = await api("/api/ai/tasks/task-progress-metadata/state", { method: "POST", body: { action: "transfer" } });
+    assert.equal(transferred.response.status, 200, transferred.text);
+    assert.equal(transferred.data.task.executionOrigin, "local");
+    const cancelled = await api("/api/ai/tasks/task-progress-metadata/state", { method: "POST", body: { action: "cancel" } });
     assert.equal(cancelled.response.status, 200, cancelled.text);
     revision = cancelled.data.revision;
   });
@@ -954,8 +965,12 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(created.data.data.contextOptions.configuredModelId, modelId);
     assert.equal(created.data.data.contextOptions.modelName, "Fake Provider-捕获模型");
     assert.equal(created.data.data.contextOptions.modelId, "fake-model");
+    assert.equal(created.data.data.executionOrigin, "local");
+    const versionBeforeExecute = (await api("/api/database/status")).data.databaseVersion;
     const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
     assert.equal(executed.response.status, 200, executed.text);
+    const versionAfterExecute = (await api("/api/database/status")).data.databaseVersion;
+    assert.equal(versionAfterExecute, versionBeforeExecute + 1, "task claim/progress use runtime revision; only the final result advances the sync version");
     const loaded = await api("/api/state");
     revision = loaded.data.revision;
     const task = loaded.data.data.tasks.find((item) => item.id === taskId);

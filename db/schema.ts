@@ -158,6 +158,7 @@ export const aiTasks = sqliteTable("ai_tasks", {
   target: text("target").notNull(),
   instruction: text("instruction").notNull(),
   modelId: text("model_id").notNull(),
+  executionOrigin: text("execution_origin").notNull().default("local"),
   contextOptionsJson: text("context_options_json").notNull().default("{}"),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   status: text("status").notNull(),

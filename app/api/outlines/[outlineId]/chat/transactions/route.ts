@@ -3,6 +3,7 @@ import { findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { modelSelectionLabel } from "@/lib/model-label";
 import type { SelectedAiContext } from "@/lib/ai-context";
+import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 
 type SubmittedMessage = Pick<Message, "id" | "role" | "text" | "createdAt" | "stopped">;
 
@@ -41,7 +42,8 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
       if (!target || Number(target.archived) || Number(target.chapter_archived)) return json({ error: "聊天目标不存在或已归档" }, 422);
       const existing = await db.prepare("SELECT id FROM ai_tasks WHERE id=?").bind(taskId).first<string>("id");
       if (existing) return json({ error: "该消息已经提交" }, 409);
-      const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE status IN ('queued','running')").first<number>("count") ?? 0);
+      const executionOrigin = currentTaskExecutionOrigin();
+      const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
       if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
       const modelReference = String(body.model ?? "").trim();
       const model = modelReference ? await findModel(modelReference) : null;
@@ -60,6 +62,7 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
         target: "AI Chat",
         prompt: question,
         model: model ? modelSelectionLabel(model) : "",
+        executionOrigin,
         state: "running",
         phase: "connecting",
         attempt: 1,
@@ -84,7 +87,7 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
         db.prepare("INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET draft='',model_id=excluded.model_id,context_options_json=excluded.context_options_json,updated_at=excluded.updated_at,revision=chat_sessions.revision+1").bind(sessionId, task.articleId, outlineId, "", model?.id ?? null, sessionOptions, target.session_created_at ? String(target.session_created_at) : createdAt, createdAt),
         db.prepare("DELETE FROM chat_messages WHERE session_id=?").bind(sessionId),
         ...messages.map((message, index) => db.prepare("INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)").bind(message.id, sessionId, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt)),
-        db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,phase,last_progress_at,received_characters,timeout_ms,runner_id,created_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, task.articleId, task.chapterId, outlineId, "chat", question, task.model, JSON.stringify(task.contextOptions), task.id, "running", 1, "connecting", createdAt, 0, task.timeoutMs, task.runnerId, createdAt, createdAt),
+        db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,last_progress_at,received_characters,timeout_ms,runner_id,created_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, task.articleId, task.chapterId, outlineId, "chat", question, task.model, executionOrigin, JSON.stringify(task.contextOptions), task.id, "running", 1, "connecting", createdAt, 0, task.timeoutMs, task.runnerId, createdAt, createdAt),
         db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt),
       ];
       await db.batch(statements);
@@ -93,6 +96,7 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
 
     const taskRow = await db.prepare("SELECT * FROM ai_tasks WHERE id=? AND outline_id=? AND target='chat'").bind(taskId, outlineId).first<Record<string, unknown>>();
     if (!taskRow) return json({ error: "聊天任务不存在" }, 404);
+    if (normalizeTaskExecutionOrigin(taskRow.execution_origin) !== currentTaskExecutionOrigin()) return json({ error: "聊天任务属于另一端，不能在当前运行端完成" }, 409);
     const result = String(body.result ?? "");
     const error = String(body.error ?? "").slice(0, 5_000);
     const requestedStatus = String(body.status ?? "success");

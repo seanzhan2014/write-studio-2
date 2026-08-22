@@ -586,22 +586,22 @@ function WriterStudioInner() {
   }, [toast]);
 
   useEffect(() => {
-    if (!studio.data.tasks.some((task) => task.state === "waiting" || task.state === "running")) return;
+    if (!studio.data.tasks.some((task) => task.executionOrigin === studio.executionOrigin && (task.state === "waiting" || task.state === "running"))) return;
     const timer = window.setInterval(() => setTaskLeaseTick((value) => value + 1), 3000);
     return () => window.clearInterval(timer);
-  }, [studio.data.tasks]);
+  }, [studio.data.tasks, studio.executionOrigin]);
 
   useEffect(() => {
     if (!studio.hydrated || studio.saveStatus === "failed" || studio.saveStatus === "conflict") return;
     const currentStudio = studioRef.current;
     const currentTime = Date.now();
     const leaseExpired = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= currentTime);
-    const runningTasks = currentStudio.data.tasks.filter((task) => task.target !== "AI Chat" && task.state === "running" && !leaseExpired(task));
+    const runningTasks = currentStudio.data.tasks.filter((task) => task.executionOrigin === currentStudio.executionOrigin && task.target !== "AI Chat" && task.state === "running" && !leaseExpired(task));
     const available = Math.max(0, currentStudio.data.settings.taskConcurrency - runningTasks.length);
     const occupiedBodyOutlines = new Set(runningTasks.filter((task) => task.target === "正文").map((task) => task.outlineId));
     const dispatchableTasks: AiTask[] = [];
     for (const task of currentStudio.data.tasks
-      .filter((task) => task.target !== "AI Chat" && (task.state === "waiting" || leaseExpired(task)))
+      .filter((task) => task.executionOrigin === currentStudio.executionOrigin && task.target !== "AI Chat" && (task.state === "waiting" || leaseExpired(task)))
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())) {
       if (dispatchableTasks.length >= available) break;
       if (task.target === "正文" && occupiedBodyOutlines.has(task.outlineId)) continue;
@@ -620,7 +620,7 @@ function WriterStudioInner() {
         }
       })();
     });
-  }, [studio.hydrated, studio.saveStatus, studio.data.tasks, studio.data.settings.taskConcurrency, taskLeaseTick]);
+  }, [studio.executionOrigin, studio.hydrated, studio.saveStatus, studio.data.tasks, studio.data.settings.taskConcurrency, taskLeaseTick]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -4706,7 +4706,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     onOpen(task.outlineId, task.target === "AI Chat" ? "chat" : "write", task.target === "正文" ? task.resultVersionId : undefined);
     onClose();
   }
-  async function updateTaskState(task: AiTask, action: "cancel" | "retry") {
+  async function updateTaskState(task: AiTask, action: "cancel" | "retry" | "transfer") {
     const response = await fetch(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
     const payload = await response.json() as { task?: Partial<AiTask>; revision?: number; error?: string };
     if (!response.ok || !payload.task || payload.revision === undefined) throw new Error(payload.error || "任务状态更新失败");
@@ -4722,6 +4722,9 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
   }
   function retryTask(task: AiTask) {
     void updateTaskState(task, "retry").catch((reason) => window.alert(reason instanceof Error ? reason.message : "重试任务失败"));
+  }
+  function transferTask(task: AiTask) {
+    void updateTaskState(task, "transfer").catch((reason) => window.alert(reason instanceof Error ? reason.message : "转移任务失败"));
   }
   function applyResult(task: AiTask) {
     if (task.target === "大纲" && task.resultText) {
@@ -4751,6 +4754,8 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     return duration(end - start);
   };
   const isStale = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= clock);
+  const isForeign = (task: AiTask) => task.executionOrigin !== studio.executionOrigin;
+  const transferLabel = studio.executionOrigin === "cloud" ? "转移到云端执行" : "转移到本地执行";
   return <ScrollableDrawer
     scrollMode="content"
     opened
@@ -4765,7 +4770,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     <div className="task-panel" aria-label="AI 任务">
       {selectedTask ? <section className="task-detail" aria-label="任务详情">
         <div className="task-detail-body" data-ui-overlay-scroll>
-          <div className={`task-detail-status ${isStale(selectedTask) ? "stale" : ""}`}><span className={`state-dot ${selectedTask.state}`} /><span className="ui-label">{isStale(selectedTask) ? "执行心跳已中断" : labels[selectedTask.state]}</span><span>{phaseLabels[selectedTask.phase ?? "queued"]} · 已用时 {taskElapsed(selectedTask)}</span></div>
+          <div className={`task-detail-status ${isStale(selectedTask) ? "stale" : ""}`}><span className={`state-dot ${selectedTask.state}`} /><span className="ui-label">{isStale(selectedTask) ? "执行心跳已中断" : labels[selectedTask.state]}</span><span>{phaseLabels[selectedTask.phase ?? "queued"]} · {selectedTask.executionOrigin === "cloud" ? "云端执行" : "本地执行"} · 已用时 {taskElapsed(selectedTask)}</span></div>
           <dl className="task-detail-metadata">
             <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${generateTargetWordsLabel(selectedTask.contextOptions?.targetWords)}` : ""}</dd></div>
             {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}{selectedTask.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(selectedTask.contextOptions.rewriteRetention)}` : ""}</dd></div>}
@@ -4787,6 +4792,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
         <footer className="task-detail-actions">
           <button type="button" onClick={() => locate(selectedTask)}>{selectedTask.target === "全部名称" ? "查看名称候选" : selectedTask.state === "success" && selectedTask.target === "正文" ? "打开生成版本" : "打开对应内容"}</button>
           {(selectedTask.state === "waiting" || selectedTask.state === "running") && <button type="button" onClick={() => cancelTask(selectedTask)}>取消</button>}
+          {isForeign(selectedTask) && selectedTask.target !== "AI Chat" && (selectedTask.state === "waiting" || isStale(selectedTask)) && <button type="button" onClick={() => transferTask(selectedTask)}>{transferLabel}</button>}
           {selectedTask.state === "success" && selectedTask.target !== "AI Chat" && selectedTask.target !== "正文" && selectedTask.target !== "全部名称" && <button type="button" onClick={() => applyResult(selectedTask)}>应用结果</button>}
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
@@ -4804,6 +4810,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
             <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
             {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
+            {isForeign(task) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
             {task.state === "success" && task.target !== "AI Chat" && task.target !== "正文" && task.target !== "全部名称" && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
             {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
             {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}

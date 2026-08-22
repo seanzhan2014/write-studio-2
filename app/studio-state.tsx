@@ -128,6 +128,8 @@ export type Article = {
   relationships: Relationship[];
 };
 
+export type TaskExecutionOrigin = "local" | "cloud";
+
 export type AiTask = {
   id: string;
   articleId: string;
@@ -136,6 +138,7 @@ export type AiTask = {
   target: "正文" | "大纲" | "章节标题" | "全部名称" | "AI Chat";
   prompt: string;
   model: string;
+  executionOrigin: TaskExecutionOrigin;
   state: "waiting" | "running" | "success" | "failed" | "cancelled";
   phase?: "queued" | "preparing" | "connecting" | "generating" | "receiving" | "saving" | "retrying" | "completed" | "failed" | "cancelled";
   attempt?: number;
@@ -340,8 +343,8 @@ const seedData: StudioData = {
     },
   ],
   tasks: [
-    { id: "task-demo", articleId: "harbor-letters", chapterId: "chapter-1", outlineId: "outline-2", target: "正文", prompt: "延续悬疑氛围，让林澈和顾屿在旧码头重逢", model: "创作主模型", state: "cancelled", createdAt: "2026-07-28T14:31:00.000Z", error: "演示任务，不会自动执行" },
-    { id: "task-failed", articleId: "harbor-letters", chapterId: "chapter-2", outlineId: "outline-5", target: "正文", prompt: "让海图显示出不存在的航线", model: "创作主模型", state: "failed", createdAt: "2026-07-28T13:50:00.000Z", error: "模拟服务暂时不可用" },
+    { id: "task-demo", articleId: "harbor-letters", chapterId: "chapter-1", outlineId: "outline-2", target: "正文", prompt: "延续悬疑氛围，让林澈和顾屿在旧码头重逢", model: "创作主模型", executionOrigin: "local", state: "cancelled", createdAt: "2026-07-28T14:31:00.000Z", error: "演示任务，不会自动执行" },
+    { id: "task-failed", articleId: "harbor-letters", chapterId: "chapter-2", outlineId: "outline-5", target: "正文", prompt: "让海图显示出不存在的航线", model: "创作主模型", executionOrigin: "local", state: "failed", createdAt: "2026-07-28T13:50:00.000Z", error: "模拟服务暂时不可用" },
   ],
   settings: {
     theme: "light",
@@ -366,6 +369,7 @@ const seedData: StudioData = {
 
 type StudioContextValue = {
   data: StudioData;
+  executionOrigin: TaskExecutionOrigin;
   hydrated: boolean;
   saveStatus: "loading" | "saved" | "unsaved" | "saving" | "failed" | "conflict";
   saveError: string;
@@ -622,6 +626,7 @@ function normalizeAiTask(task: AiTask): AiTask {
   const contentMode = task.target === "正文" ? normalizeContentGenerationMode(task.contextOptions?.contentMode) : undefined;
   return {
     ...task,
+    executionOrigin: task.executionOrigin === "cloud" ? "cloud" : "local",
     contextOptions: task.contextOptions ? {
       ...task.contextOptions,
       ...(task.target === "正文" ? { contentMode, rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
@@ -725,6 +730,7 @@ function normalizeStudioData(source: StudioData): StudioData {
 
 export function StudioProvider({ children }: { children: React.ReactNode }) {
   const [data, setDataState] = useState<StudioData>(() => normalizeStudioData(seedData));
+  const [executionOrigin, setExecutionOrigin] = useState<TaskExecutionOrigin>("local");
   const [hydrated, setHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StudioContextValue["saveStatus"]>("loading");
   const [saveError, setSaveError] = useState("");
@@ -752,11 +758,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
         if (!response.ok) throw new Error(`数据库加载失败（${response.status}）`);
-        const payload = await response.json() as { data: StudioData | null; revision: number };
+        const payload = await response.json() as { data: StudioData | null; revision: number; executionOrigin?: TaskExecutionOrigin };
         const databaseData = normalizeStudioData(payload.data ?? emptyStudioData(seedData.settings));
         let loaded = databaseData;
         let migratedLegacy = false;
         revisionRef.current = payload.revision;
+        setExecutionOrigin(payload.executionOrigin === "cloud" ? "cloud" : "local");
         if (loaded.articles.length === 0 && payload.revision === 0) {
           const legacy = window.localStorage.getItem(legacyStorageKey);
           if (legacy) {
@@ -918,8 +925,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           headers: { "If-None-Match": `"writer-studio-state-${revisionRef.current}"` },
         });
         if (response.status === 304) return true;
-        const payload = await response.json() as { data?: StudioData | null; revision?: number };
+        const payload = await response.json() as { data?: StudioData | null; revision?: number; executionOrigin?: TaskExecutionOrigin };
         if (!response.ok || !payload.data || payload.revision === undefined) return false;
+        setExecutionOrigin(payload.executionOrigin === "cloud" ? "cloud" : "local");
         if (serializeDurable(dataRef.current) !== requestedSnapshot || lastSavedRef.current !== requestedSnapshot) return false;
         const server = durableSnapshot(normalizeStudioData(payload.data));
         const serialized = stableStudioStringify(server);
@@ -951,14 +959,17 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   }, [data, hydrated, conflict, enqueueSave]);
 
   useEffect(() => {
-    if (!hydrated || saveStatus !== "saved") return;
+    const hasActiveTasks = data.tasks.some((task) => task.state === "waiting" || task.state === "running");
+    if (!hydrated || saveStatus !== "saved" || hasActiveTasks) return;
     const timer = window.setTimeout(() => { void triggerBackgroundCloudUpload(); }, 5_000);
     return () => window.clearTimeout(timer);
-  }, [hydrated, saveStatus]);
+  }, [data.tasks, hydrated, saveStatus]);
 
   useEffect(() => {
     if (!hydrated) return;
-    const uploadWhenOnline = () => { void triggerBackgroundCloudUpload(); };
+    const uploadWhenOnline = () => {
+      if (!dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void triggerBackgroundCloudUpload();
+    };
     window.addEventListener("online", uploadWhenOnline);
     return () => window.removeEventListener("online", uploadWhenOnline);
   }, [hydrated]);
@@ -1009,7 +1020,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     let polling = false;
     const refreshVisible = () => { if (document.visibilityState === "visible") void refreshFromServer(); };
     const timer = window.setInterval(() => {
-      if (polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) return;
+      if (polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.executionOrigin === executionOrigin && (task.state === "waiting" || task.state === "running"))) return;
       polling = true;
       void fetch("/api/ai/tasks", { cache: "no-store" })
         .then(async (response) => {
@@ -1037,10 +1048,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", refreshVisible);
       window.removeEventListener("focus", refreshVisible);
     };
-  }, [hydrated, refreshFromServer, acceptServerMutation]);
+  }, [executionOrigin, hydrated, refreshFromServer, acceptServerMutation]);
 
   const value = useMemo<StudioContextValue>(() => ({
     data,
+    executionOrigin,
     hydrated,
     saveStatus,
     saveError,
@@ -1632,7 +1644,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (dataRef.current.tasks.length >= 20 && !dataRef.current.tasks.some((item) => ["success", "failed", "cancelled"].includes(item.state))) return null;
       const id = task.id ?? makeId("task");
       setData((current) => {
-        const tasks = [{ ...task, id, state: task.state ?? "waiting", createdAt: task.createdAt ?? new Date().toISOString() }, ...current.tasks.filter((item) => item.id !== id)];
+        const tasks = [{ ...task, id, executionOrigin: task.executionOrigin ?? executionOrigin, state: task.state ?? "waiting", createdAt: task.createdAt ?? new Date().toISOString() }, ...current.tasks.filter((item) => item.id !== id)];
         while (tasks.length > 20) {
           const removable = tasks.map((item, index) => ({ item, index })).reverse().find(({ item }) => ["success", "failed", "cancelled"].includes(item.state));
           if (!removable) break;
@@ -1756,7 +1768,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("unsaved");
       await enqueueSave(withDeviceUi);
     },
-  }), [data, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, acceptServerMutation, enqueueSave, refreshFromServer, setData]);
+  }), [data, executionOrigin, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, acceptServerMutation, enqueueSave, refreshFromServer, setData]);
 
   return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
 }

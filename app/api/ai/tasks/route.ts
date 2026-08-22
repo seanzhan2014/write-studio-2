@@ -5,6 +5,7 @@ import { isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_W
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
+import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 
 type TaskTarget = "content" | "outline" | "chapter-title" | "all-names";
 type TaskBody = Record<string, unknown> & {
@@ -32,6 +33,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
     id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
     target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
     prompt: String(row.instruction ?? ""), model: String(row.model_id ?? ""),
+    executionOrigin: normalizeTaskExecutionOrigin(row.execution_origin),
     state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : String(row.status) as AiTask["state"],
     attempt: Number(row.attempt ?? 0), phase: row.phase ? String(row.phase) as AiTask["phase"] : undefined,
     createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined, completedAt: row.completed_at ? String(row.completed_at) : undefined,
@@ -88,7 +90,8 @@ export async function POST(request: Request) {
       FROM outlines o JOIN chapters c ON c.id=o.chapter_id JOIN articles a ON a.id=o.article_id
       WHERE o.id=? AND o.article_id=? AND o.chapter_id=?`).bind(outlineId, articleId, chapterId).first<Record<string, unknown>>();
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
-    const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE status IN ('queued','running')").first<number>("count") ?? 0);
+    const executionOrigin = currentTaskExecutionOrigin();
+    const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
     if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
 
     const requestedModel = String(body.model ?? "").trim();
@@ -146,6 +149,7 @@ export async function POST(request: Request) {
       target: target === "content" ? "正文" : target === "outline" ? "大纲" : target === "chapter-title" ? "章节标题" : "全部名称",
       prompt: instruction,
       model: configuredModel ? modelSelectionLabel(configuredModel) : "",
+      executionOrigin,
       state: "waiting",
       phase: "queued",
       attempt: 0,
@@ -159,7 +163,7 @@ export async function POST(request: Request) {
       statements.push(db.prepare("UPDATE outlines SET summary=COALESCE(?,summary),generate_instruction=?,title_generation_pending=CASE WHEN ? IS NOT NULL AND ?<>summary THEN 1 ELSE title_generation_pending END,updated_at=?,revision=revision+1 WHERE id=?").bind(submittedPlan ?? null, instruction, submittedPlan ?? null, submittedPlan ?? null, createdAt, outlineId));
       statements.push(db.prepare("UPDATE articles SET updated_at=?,revision=revision+1 WHERE id=?").bind(createdAt, articleId));
     }
-    statements.push(db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,phase,received_characters,timeout_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, articleId, chapterId, outlineId, target, instruction, task.model, JSON.stringify(contextOptions), task.id, "queued", 0, "queued", 0, task.timeoutMs, createdAt));
+    statements.push(db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,received_characters,timeout_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, articleId, chapterId, outlineId, target, instruction, task.model, executionOrigin, JSON.stringify(contextOptions), task.id, "queued", 0, "queued", 0, task.timeoutMs, createdAt));
     statements.push(db.prepare("DELETE FROM ai_tasks WHERE status NOT IN ('queued','running') AND id NOT IN (SELECT id FROM ai_tasks WHERE status NOT IN ('queued','running') ORDER BY created_at DESC,rowid DESC LIMIT MAX(0,20-(SELECT COUNT(*) FROM ai_tasks WHERE status IN ('queued','running'))))"));
     statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt));
     await db.batch(statements);
