@@ -612,7 +612,7 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ models: [{ id: "model-remote", name: "Remote Writer", modelId: "provider/gpt-4.2-current", hasSecret: true, timeoutMs: 600_000 }] }),
+      body: JSON.stringify({ models: [{ id: "model-remote", providerName: "Remote Provider", name: "Remote Writer", modelId: "provider/gpt-4.2-current", hasSecret: true, timeoutMs: 600_000 }] }),
     });
   });
   const current = await request.get("/api/state");
@@ -632,16 +632,16 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   const model = page.getByRole("combobox", { name: "本次模型" });
   await expect(model).toBeVisible();
   await model.click();
-  await expect(page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" })).toBeVisible();
-  await page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" }).click();
-  await expect(model).toHaveValue("Remote Writer · gpt-4.2-current");
+  await expect(page.getByRole("option", { name: "Remote Provider-Remote Writer" })).toBeVisible();
+  await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
+  await expect(model).toHaveValue("Remote Provider-Remote Writer");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
     return payload.data.settings.generateModel;
   }).toBe("model-remote");
   await page.reload();
-  await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Writer · gpt-4.2-current");
+  await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Provider-Remote Writer");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
   await expect(page.getByText(testInfo.project.name === "mobile-chromium" ? "成功后自动设为当前正文，并保留为版本。" : "任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。", { exact: true })).toBeVisible();
@@ -655,7 +655,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ models: [{ id: "model-remote", name: "Remote Writer", modelId: "provider/gpt-4.2-current", hasSecret: true, timeoutMs: 600_000 }] }),
+      body: JSON.stringify({ models: [{ id: "model-remote", providerName: "Remote Provider", name: "Remote Writer", modelId: "provider/gpt-4.2-current", hasSecret: true, timeoutMs: 600_000 }] }),
     });
   });
   await page.goto("/articles/article-main/outlines/outline-current/write");
@@ -670,7 +670,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
   await page.getByRole("tab", { name: "AI Generate" }).click();
   const model = page.getByRole("combobox", { name: "本次模型" });
   await model.click();
-  await page.getByRole("option", { name: "Remote Writer · gpt-4.2-current" }).click();
+  await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
   await expect(page.locator(".save-state")).toContainText(/未保存|正在保存/);
 
   try {
@@ -1515,7 +1515,7 @@ test("full content title row exposes AI Review and reusable multi-select require
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ models: [{ id: "review-model", name: "Kimi Review", modelId: "accounts/fireworks/models/kimi-k2p6", hasSecret: true, timeoutMs: 600_000 }] }),
+      body: JSON.stringify({ models: [{ id: "review-model", providerName: "Fireworks", name: "Kimi Review", modelId: "accounts/fireworks/models/kimi-k2p6", hasSecret: true, timeoutMs: 600_000 }] }),
     });
   });
   await page.goto("/articles/article-main/edit");
@@ -1531,7 +1531,7 @@ test("full content title row exposes AI Review and reusable multi-select require
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("固定检查", { exact: true })).toBeVisible();
   await expect(dialog.getByLabel("Review 章节")).toBeVisible();
-  await expect(dialog.getByLabel("模型")).toHaveValue("Kimi Review · kimi-k2p6");
+  await expect(dialog.getByLabel("模型")).toHaveValue("Fireworks-Kimi Review");
   const additional = dialog.getByLabel("本次附加要求");
   await additional.fill("统一雨景中的感官描写");
   await dialog.getByRole("button", { name: "保存为预定义要求" }).click();
@@ -1826,20 +1826,20 @@ test("AI Chat message action menu closes when clicking elsewhere", async ({ page
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 });
 
-test("AI Chat displays the configured model name and id consistently", async ({ page }) => {
+test("AI Chat displays the Provider-model format consistently", async ({ page }) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ models: [{ id: "model-remote", name: "Remote Writer", modelId: "provider/gpt-4.1-mini", hasSecret: true, timeoutMs: 600_000 }] }),
+      body: JSON.stringify({ models: [{ id: "model-remote", providerName: "Remote Provider", name: "Remote Writer", modelId: "provider/gpt-4.1-mini", hasSecret: true, timeoutMs: 600_000 }] }),
     });
   });
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   const model = page.getByLabel("聊天模型");
   await expect(model).toBeVisible();
   await model.selectOption("model-remote");
-  await expect(model.locator("option:checked")).toHaveText("Remote Writer · gpt-4.1-mini");
-  await expect(page.locator(".message.assistant .message-meta .ui-label").first()).toHaveText("Remote Writer · gpt-4.1-mini");
+  await expect(model.locator("option:checked")).toHaveText("Remote Provider-Remote Writer");
+  await expect(page.locator(".message.assistant .message-meta .ui-label").first()).toHaveText("Remote Provider-Remote Writer");
 });
 
 test("mobile icon controls use glass surfaces and consistent touch sizing", async ({ page }, testInfo) => {

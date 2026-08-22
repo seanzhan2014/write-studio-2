@@ -6,6 +6,7 @@ import { reviewSourceDigest, type ReviewOutlineSource } from "@/lib/ai-review.mj
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "@/lib/review-options";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
+import { modelSelectionLabel } from "@/lib/model-label";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -109,7 +110,7 @@ export async function POST(request: Request) {
           content: text,
           source: "AI Review",
           createdAt,
-          model: result.model.name,
+          model: modelSelectionLabel(result.model),
           modelId: result.model.modelId,
           prompt: promptSnapshot,
           taskId: reviewId,

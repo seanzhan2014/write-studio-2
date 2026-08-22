@@ -6,6 +6,7 @@ import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "../lib/revi
 import { DEFAULT_MAX_INPUT_CHARACTERS, normalizeMaxInputCharacters } from "../lib/model-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingProfileInstruction, normalizeGeneratedName, normalizeNamingProfile, validateGeneratedName, type NamingProfile } from "../lib/naming-options";
 import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
+import { modelSelectionLabel } from "../lib/model-label";
 
 export type AiProviderRecord = {
   id: string;
@@ -262,7 +263,7 @@ export async function findModel(reference?: string) {
   const models = await listModels();
   const normalized = String(reference ?? "").trim();
   if (!normalized) return null;
-  return models.find((model) => model.id === normalized || model.name === normalized) ?? null;
+  return models.find((model) => model.id === normalized || model.name === normalized || modelSelectionLabel(model) === normalized) ?? null;
 }
 
 async function legacyProvider(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; timeoutMs?: unknown }, sourceModel?: AiModelRecord | null) {

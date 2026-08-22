@@ -45,6 +45,7 @@ import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-con
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { BUILTIN_REVIEW_REQUIREMENTS, MAX_REVIEW_PRESETS, MAX_REVIEW_PRESET_CHARACTERS, normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
+import { modelSelectionLabel } from "@/lib/model-label";
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
@@ -220,11 +221,16 @@ async function copyTextToClipboard(text: string) {
   }
 }
 
-type ConfiguredModel = { id: string; name: string; modelId: string; hasSecret: boolean; timeoutMs: number; maxInputCharacters: number };
+type ConfiguredModel = { id: string; providerName: string; name: string; modelId: string; hasSecret: boolean; timeoutMs: number; maxInputCharacters: number };
 
 function configuredModelForReference(models: ConfiguredModel[], reference: string) {
   const normalized = reference.trim();
-  return models.find((model) => model.id === normalized || model.name === normalized);
+  return models.find((model) => model.id === normalized || model.name === normalized || modelSelectionLabel(model) === normalized);
+}
+
+function modelMatchesReference(model: ConfiguredModel, reference: string) {
+  const normalized = reference.trim();
+  return model.id === normalized || model.name === normalized || modelSelectionLabel(model) === normalized;
 }
 
 function ExcellentText({ text, fragments }: { text: string; fragments?: ExcellentFragment[] }) {
@@ -269,22 +275,11 @@ function canonicalModelReference(models: ConfiguredModel[], reference: string) {
   return configuredModelForReference(models, reference)?.id ?? reference.trim();
 }
 
-function modelIdSuffix(value: string) {
-  const identifier = value.trim();
-  if (!identifier) return "";
-  const lastSlash = identifier.lastIndexOf("/");
-  return identifier.slice(lastSlash + 1) || identifier;
-}
-
-function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelId?: string, fixedModelName?: string) {
+function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelName?: string) {
   const reference = selectedModel.trim();
   if (!reference) return "本地 PoC 引擎";
   const configured = configuredModelForReference(models, reference);
-  const name = fixedModelName?.trim() || configured?.name || reference;
-  const identifier = modelIdSuffix(fixedModelId ?? configured?.modelId ?? "");
-  const normalizedIdentifier = identifier.toLocaleLowerCase();
-  const nameParts = name.toLocaleLowerCase().split(/[\s·|/()[\]{}]+/).filter(Boolean);
-  return identifier && !nameParts.includes(normalizedIdentifier) ? `${name} · ${identifier}` : name;
+  return configured ? modelSelectionLabel(configured) : fixedModelName?.trim() || reference;
 }
 
 function chatbotDisplayName(models: ConfiguredModel[], selectedModel: string) {
@@ -2234,12 +2229,12 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && task.contextOptions?.includeExcellentFragments === includeExcellentFragments && task.contextOptions?.includeOutlineTitle === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     if (!await saveOutlineDraft() || !await studio.saveNow()) return;
-    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, estimatedCharacters: summary.total, ...(targetWords === undefined ? {} : { targetWords }), contentMode: generationMode, ...(generationMode === "rewrite" ? { rewriteRetention } : {}), outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, modelId: selectedRecord?.modelId, modelName: selectedRecord?.name, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
+    const taskId = studio.addTask({ articleId: studio.currentArticle.id, chapterId: studio.currentChapter.id, outlineId: studio.currentOutline.id, target: "正文", prompt: prompt.trim().slice(0, 20000), model: selectedRecord ? modelSelectionLabel(selectedRecord) : selectedModelReference, phase: "queued", attempt: 0, receivedCharacters: 0, timeoutMs: selectedRecord?.timeoutMs ?? 600_000, contextOptions: { includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, estimatedCharacters: summary.total, ...(targetWords === undefined ? {} : { targetWords }), contentMode: generationMode, ...(generationMode === "rewrite" ? { rewriteRetention } : {}), outlinePlanSnapshot: outlinePlanDraft, outlineTitleSnapshot: studio.currentOutline.title, configuredModelId: selectedRecord?.id, modelId: selectedRecord?.modelId, modelName: selectedRecord ? modelSelectionLabel(selectedRecord) : undefined, firstAppearanceCharacterIds: effectiveFirstAppearanceIds } });
     if (!taskId) { window.alert("已有 20 个等待或运行中的任务，请先取消一个任务后再生成。"); return; }
     setIncludeOutlineTitle(false);
     setNotice("");
     onTaskCreated();
-  }, [prompt, studio, selectedModelReference, selectedRecord?.modelId, selectedRecord?.name, selectedRecord?.timeoutMs, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
+  }, [prompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated, saveOutlineDraft]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -2361,7 +2356,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
 
         <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
           {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><span className="ui-title">{latestFailed.prompt || "按大纲生成"}</span><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => studio.updateTask(latestFailed.id, { state: "waiting", error: undefined })}>原样重试</button></div></article>}
           {!activeTasks.length && !latestFailed && <div className="generate-empty-row">没有进行中的正文生成任务。</div>}
         </section>
@@ -2614,7 +2609,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
         outlineId: outline.id,
         target: "AI Chat",
         prompt: question.slice(0, 20000),
-        model: chatModelReference,
+        model: chatModelRecord ? modelSelectionLabel(chatModelRecord) : chatModelReference,
         state: "running",
         phase: "preparing",
         attempt: 1,
@@ -2627,8 +2622,9 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
           includeCharacters: targetSession.includeCharacters,
           estimatedCharacters: chatContext ? summarizeAiContext(chatContext, question).total : 0,
           sessionId: targetSessionId,
+          configuredModelId: chatModelRecord?.id,
           modelId: chatModelRecord?.modelId,
-          modelName: chatModelRecord?.name,
+          modelName: chatModelRecord ? modelSelectionLabel(chatModelRecord) : undefined,
         },
       });
       if (!taskId) { onNotice("AI 任务已满，请先清理任务记录"); return; }
@@ -2736,7 +2732,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   }
 
   function saveCandidate(text: string) {
-    studio.saveVersion(outline.id, timestampContentName(), "AI Chat", text, { model: chatModelRecord?.name ?? chatModelReference, modelId: chatModelRecord?.modelId, prompt: session?.title, manualExcellent: false });
+    studio.saveVersion(outline.id, timestampContentName(), "AI Chat", text, { model: chatModelRecord ? modelSelectionLabel(chatModelRecord) : chatModelReference, modelId: chatModelRecord?.modelId, prompt: session?.title, manualExcellent: false });
     setMessageMenuId("");
     onNotice("已保存为候选版本");
   }
@@ -3094,7 +3090,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
       outlineId: anchorOutline.id,
       target: "全部名称",
       prompt: instruction.trim(),
-      model: selectedModelReference,
+      model: selectedRecord ? modelSelectionLabel(selectedRecord) : selectedModelReference,
       phase: "queued",
       attempt: 0,
       receivedCharacters: 0,
@@ -3107,8 +3103,9 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
         outlineNamingSnapshot: article.outlineNaming,
         nameChapterCount: eligibleChapters.length,
         nameOutlineCount: eligibleOutlineCount,
+        configuredModelId: selectedRecord?.id,
         modelId: selectedRecord?.modelId,
-        modelName: selectedRecord?.name,
+        modelName: selectedRecord ? modelSelectionLabel(selectedRecord) : undefined,
       },
     });
     if (!taskId) { setError("已有 20 个等待或运行中的任务，请先取消一个任务"); return; }
@@ -4098,11 +4095,11 @@ function ModelSettings() {
         const response = await fetch(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const model = await response.json() as Model & { error?: string };
         if (!response.ok) throw new Error(model.error || "模型更新失败");
-        if (previous && previous.name !== model.name) {
-          if ([previous.id, previous.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: model.id });
-          if ([previous.id, previous.name].includes(studio.data.settings.generateModel)) studio.updateSettings({ generateModel: model.id });
-          if (studio.data.settings.namingModelMode === "fixed" && [previous.id, previous.name].includes(studio.data.settings.namingModel)) studio.updateSettings({ namingModel: model.id });
-          if ([previous.id, previous.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: model.id });
+        if (previous && (previous.name !== model.name || previous.providerName !== model.providerName)) {
+          if (modelMatchesReference(previous, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: model.id });
+          if (modelMatchesReference(previous, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: model.id });
+          if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(previous, studio.data.settings.namingModel)) studio.updateSettings({ namingModel: model.id });
+          if (modelMatchesReference(previous, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: model.id });
         }
       }
       closeModelForm(); await load();
@@ -4112,10 +4109,10 @@ function ModelSettings() {
   async function removeModel(model: Model) {
     if (!window.confirm(`删除模型「${model.name}」？`)) return;
     await fetch(`/api/models/${model.id}`, { method: "DELETE" });
-    if ([model.id, model.name].includes(studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
-    if ([model.id, model.name].includes(studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
-    if (studio.data.settings.namingModelMode === "fixed" && [model.id, model.name].includes(studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
-    if ([model.id, model.name].includes(studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
+    if (modelMatchesReference(model, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
+    if (modelMatchesReference(model, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
+    if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
+    if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
     await load();
   }
 
@@ -4130,7 +4127,7 @@ function ModelSettings() {
       <Button size="sm" leftSection={<Icon name="plus" />} onClick={openCreateProvider}>新建 Provider</Button>
     </Group>
     {!providerFormOpen && !modelFormOpen && error && <Alert className="settings-error" color="red" role="alert">{error}</Alert>}
-    <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !models.some((model) => model.id === studio.data.settings.namingModel || model.name === studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{model.providerName} / {model.name}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
+    <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !configuredModelForReference(models, studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
     <SettingSection title="Providers">
       <Stack gap="sm" className="provider-list provider-groups">
         {providers.map((provider) => {
@@ -4152,16 +4149,16 @@ function ModelSettings() {
             {!collapsed && <div className="provider-group-body">
               {providerModels.length > 0 && <div className="provider-model-header" aria-hidden="true"><span>模型</span><span>默认用途</span><span>最大输入</span><span>操作</span></div>}
               {providerModels.map((model) => {
-                const isGenerateDefault = [model.id, model.name].includes(studio.data.settings.generateModel);
-                const isNamingDefault = studio.data.settings.namingModelMode === "fixed" && [model.id, model.name].includes(studio.data.settings.namingModel);
-                const isChatDefault = [model.id, model.name].includes(studio.data.settings.chatModel);
-                const isReviewDefault = [model.id, model.name].includes(studio.data.settings.reviewModel);
+                const isGenerateDefault = modelMatchesReference(model, studio.data.settings.generateModel);
+                const isNamingDefault = studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel);
+                const isChatDefault = modelMatchesReference(model, studio.data.settings.chatModel);
+                const isReviewDefault = modelMatchesReference(model, studio.data.settings.reviewModel);
                 const hasDefault = isGenerateDefault || isNamingDefault || isChatDefault || isReviewDefault;
                 return <article className="provider-model-row" data-provider-model-id={model.id} key={model.id}>
                   <div className="provider-model-main"><h4>{model.name}</h4><p>{model.modelId}</p></div>
                   <div className="model-default-tags provider-model-defaults">{isGenerateDefault && <em>默认 AI Generate</em>}{isNamingDefault && <em>默认名称生成</em>}{isChatDefault && <em>默认 AI Chat</em>}{isReviewDefault && <em>默认 AI Review</em>}{!hasDefault && <span className="provider-model-no-default">—</span>}</div>
                   <span className="provider-model-limit">{model.maxInputCharacters.toLocaleString("zh-CN")} 字符</span>
-                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={studio.data.settings.generateModel === model.id} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel === model.id} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={studio.data.settings.chatModel === model.id} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item><Menu.Item disabled={studio.data.settings.reviewModel === model.id} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item><Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
+                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={isGenerateDefault} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={isNamingDefault} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={isChatDefault} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item><Menu.Item disabled={isReviewDefault} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item><Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
                 </article>;
               })}
               {!providerModels.length && <div className="provider-model-empty">这个 Provider 还没有模型</div>}
@@ -4499,6 +4496,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
 
 function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => void }) {
   const studio = useStudio();
+  const models = useConfiguredModels();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [clock, setClock] = useState(() => Date.now());
@@ -4588,7 +4586,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <dl className="task-detail-metadata">
             <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${generateTargetWordsLabel(selectedTask.contextOptions?.targetWords)}` : ""}</dd></div>
             {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}{selectedTask.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(selectedTask.contextOptions.rewriteRetention)}` : ""}</dd></div>}
-            <div><dt>模型</dt><dd>{modelDisplayLabel([], selectedTask.model || "", selectedTask.contextOptions?.modelId, selectedTask.contextOptions?.modelName)}</dd></div>
+            <div><dt>模型</dt><dd>{modelDisplayLabel(models, selectedTask.model || "", selectedTask.contextOptions?.modelName)}</dd></div>
             <div><dt>阶段</dt><dd>{phaseLabels[selectedTask.phase ?? "queued"]}</dd></div>
             <div><dt>尝试</dt><dd>{selectedTask.attempt ? `${selectedTask.attempt} / 3` : "—"}</dd></div>
             <div><dt>超时</dt><dd>{duration(selectedTask.timeoutMs ?? 600_000)}</dd></div>
@@ -4620,7 +4618,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
           <p>{article?.title ?? "未知文章"}{task.target === "全部名称" ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
           <blockquote>{task.prompt || (task.target === "全部名称" ? "使用文章命名设置" : "按大纲生成")}</blockquote>
           {task.error && <p className="task-error">{task.error}</p>}
-          <div><span>{modelDisplayLabel([], task.model || "", task.contextOptions?.modelId, task.contextOptions?.modelName)}</span><span className="task-buttons">
+          <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
             <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
             {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
             {task.state === "success" && task.target !== "AI Chat" && task.target !== "正文" && task.target !== "全部名称" && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}

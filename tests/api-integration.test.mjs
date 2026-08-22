@@ -336,6 +336,9 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const local = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "使用本地引擎", model: "", target: "outline" } });
     assert.equal(local.response.status, 200, local.text);
     assert.equal(modelServer.received.length, receivedBefore);
+    const providerQualified = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "使用统一模型名称", model: "Fake Provider-捕获模型", target: "outline" } });
+    assert.equal(providerQualified.response.status, 200, providerQualified.text);
+    assert.equal(modelServer.received.length, receivedBefore + 1);
   });
 
   await t.test("rejects archived AI targets before any model request", async () => {
@@ -906,6 +909,10 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     });
     assert.equal(created.response.status, 200, created.text);
     assert.equal(created.data.data.phase, "queued");
+    assert.equal(created.data.data.model, "Fake Provider-捕获模型");
+    assert.equal(created.data.data.contextOptions.configuredModelId, modelId);
+    assert.equal(created.data.data.contextOptions.modelName, "Fake Provider-捕获模型");
+    assert.equal(created.data.data.contextOptions.modelId, "fake-model");
     const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
     assert.equal(executed.response.status, 200, executed.text);
     const loaded = await api("/api/state");
@@ -924,7 +931,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(outline.versions[0].taskId, taskId);
     assert.equal(outline.versions[0].content, "模型生成正文");
     assert.match(outline.versions[0].name, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} · fake-model$/);
-    assert.equal(outline.versions[0].model, "捕获模型");
+    assert.equal(outline.versions[0].model, "Fake Provider-捕获模型");
     assert.equal(outline.versions[0].modelId, "fake-model");
     assert.deepEqual(outline.versions[0].outlineSnapshot, { title: "当前码头", plan: "林澈与顾屿在七码头会合。" });
     assert.equal(outline.defaultVersionId, "version-manual", "Generate must retain the existing default selection");
