@@ -32,8 +32,10 @@ export async function POST(request: Request) {
       const current = normalizeNameVersionState(body.chapterId, chapter.title, JSON.parse(String(chapter.name_versions_json ?? "[]")) as NameVersion[], chapter.default_name_version_id, String(chapter.updated_at), 120);
       const next = appendNameVersion(current, { id: `name-ai-${crypto.randomUUID()}`, title: generated.chapterTitle, source: "ai", createdAt, model: modelLabel, instruction: body.instruction || undefined }, 120);
       chapterState = next.state;
-      if (next.added) added += 1;
-      statements.push(db.prepare("UPDATE chapters SET name_versions_json=?,default_name_version_id=?,updated_at=?,revision=revision+1 WHERE id=?").bind(JSON.stringify(next.state.nameVersions), next.state.defaultNameVersionId, createdAt, body.chapterId));
+      if (next.added) {
+        added += 1;
+        statements.push(db.prepare("UPDATE chapters SET name_versions_json=?,default_name_version_id=?,updated_at=?,revision=revision+1 WHERE id=?").bind(JSON.stringify(next.state.nameVersions), next.state.defaultNameVersionId, createdAt, body.chapterId));
+      }
     }
     const outlineStates = [];
     for (const item of generated.outlineTitles) {
@@ -41,15 +43,19 @@ export async function POST(request: Request) {
       if (!outline || Number(outline.archived)) continue;
       const current = normalizeNameVersionState(item.id, outline.title, JSON.parse(String(outline.name_versions_json ?? "[]")) as NameVersion[], outline.default_name_version_id, String(outline.updated_at), 80);
       const next = appendNameVersion(current, { id: `name-ai-${crypto.randomUUID()}`, title: item.title, source: "ai", createdAt, model: modelLabel, instruction: body.instruction || undefined }, 80);
-      if (next.added) added += 1;
-      outlineStates.push({ id: item.id, updatedAt: createdAt, ...next.state });
-      statements.push(db.prepare("UPDATE outlines SET name_versions_json=?,default_name_version_id=?,updated_at=?,revision=revision+1 WHERE id=?").bind(JSON.stringify(next.state.nameVersions), next.state.defaultNameVersionId, createdAt, item.id));
+      if (next.added) {
+        added += 1;
+        statements.push(db.prepare("UPDATE outlines SET name_versions_json=?,default_name_version_id=?,updated_at=?,revision=revision+1 WHERE id=?").bind(JSON.stringify(next.state.nameVersions), next.state.defaultNameVersionId, createdAt, item.id));
+      }
+      outlineStates.push({ id: item.id, updatedAt: next.added ? createdAt : String(outline.updated_at), ...next.state });
     }
-    statements.push(db.prepare("UPDATE articles SET updated_at=?,revision=revision+1 WHERE id=?").bind(createdAt, body.articleId));
-    statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt));
-    await db.batch(statements);
+    if (added > 0) {
+      statements.push(db.prepare("UPDATE articles SET updated_at=?,revision=revision+1 WHERE id=?").bind(createdAt, body.articleId));
+      statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt));
+      await db.batch(statements);
+    }
     const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
-    return Response.json({ ...generated, added, articleUpdatedAt: createdAt, chapterState, outlineStates, revision });
+    return Response.json({ ...generated, added, articleUpdatedAt: added > 0 ? createdAt : undefined, chapterState, outlineStates, revision });
   } catch (error) {
     const status = error instanceof AiPromptTooLongError ? 413 : error instanceof AiInputError ? 422 : 502;
     return Response.json({
