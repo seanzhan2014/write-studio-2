@@ -220,3 +220,9 @@ export const appSettings = sqliteTable("app_settings", {
   valueJson: text("value_json").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const syncChangeLog = sqliteTable("sync_change_log", {
+  databaseVersion: integer("database_version").primaryKey(),
+  changeJson: text("change_json").notNull(),
+  createdAt: text("created_at").notNull(),
+});

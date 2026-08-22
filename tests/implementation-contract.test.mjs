@@ -94,6 +94,20 @@ test("unchanged state refreshes use revision etags instead of reloading the full
   assert.match(state, /if \(response\.status === 304\) return true/);
 });
 
+test("ordinary saves and automatic cloud uploads use bounded change sets", async () => {
+  const state = await read("app/studio-state.tsx");
+  const mutations = await read("app/api/state/mutations/route.ts");
+  const runtime = await read("db/runtime.ts");
+  const sync = await read("db/sync.ts");
+  assert.match(state, /diffStudioData\(base, durable\)/);
+  assert.match(state, /fetch\("\/api\/state\/mutations"/);
+  assert.match(mutations, /applyStudioChanges/);
+  assert.match(runtime, /INSERT INTO sync_change_log/);
+  assert.match(sync, /remoteApplyChanges/);
+  assert.match(sync, /createPendingChanges/);
+  assert.match(sync, /remoteReplace\(config, await createCurrentSnapshot\(\), stored\.lastCloudVersion\)/, "a full snapshot remains available only as a gap-recovery fallback");
+});
+
 test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
   const sync = await read("db/sync.ts");
   const ai = await read("db/ai.ts");

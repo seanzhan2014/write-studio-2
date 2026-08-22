@@ -11,6 +11,7 @@ import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normali
 import type { SelectedAiContext } from "@/lib/ai-context";
 import type { NamingArticleContext } from "@/db/ai";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
+import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
 import { duplicateArticlesForImport, duplicateOutlineForImport } from "@/lib/data-transfer";
@@ -815,22 +816,41 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     const durable = durableSnapshot(snapshot);
     const serialized = stableStudioStringify(durable);
     if (serialized === lastSavedRef.current) return true;
+    let base: StudioData;
+    try {
+      base = lastSavedRef.current ? normalizeStudioData(JSON.parse(lastSavedRef.current) as StudioData) : durable;
+    } catch {
+      base = durable;
+    }
+    const changes = diffStudioData(base, durable);
+    if (isStudioChangesEmpty(changes)) {
+      lastSavedRef.current = serialized;
+      return true;
+    }
     setSaveStatus("saving");
     setSaveError("");
     const controller = new AbortController();
     const timeout = globalThis.setTimeout(() => controller.abort("save-timeout"), saveRequestTimeoutMs);
     try {
-      const response = await fetch("/api/state", {
-        method: "PUT",
+      const response = await fetch("/api/state/mutations", {
+        method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", "If-Match": String(revisionRef.current) },
-        body: JSON.stringify({ data: durable }),
+        body: JSON.stringify({ changes }),
       });
       const payload = await response.json() as { revision?: number; data?: StudioData; message?: string };
-      if (response.status === 409 && payload.data) {
+      if (response.status === 409) {
+        if (!payload.data) {
+          const currentResponse = await fetch("/api/state", { cache: "no-store" });
+          const currentPayload = await currentResponse.json() as { revision?: number; data?: StudioData | null };
+          if (currentResponse.ok && currentPayload.data && currentPayload.revision !== undefined) {
+            payload.data = currentPayload.data;
+            payload.revision = currentPayload.revision;
+          }
+        }
+        if (!payload.data) throw new Error(payload.message || "保存冲突，无法读取服务端状态");
         if (rebaseAttempt < 3 && lastSavedRef.current) {
           try {
-            const base = JSON.parse(lastSavedRef.current) as StudioData;
             const server = durableSnapshot(normalizeStudioData(payload.data));
             const latestUi = deviceUiFromData(dataRef.current);
             const latestLocal = durableSnapshot(dataRef.current);
@@ -932,7 +952,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || saveStatus !== "saved") return;
-    void triggerBackgroundCloudUpload();
+    const timer = window.setTimeout(() => { void triggerBackgroundCloudUpload(); }, 5_000);
+    return () => window.clearTimeout(timer);
   }, [hydrated, saveStatus]);
 
   useEffect(() => {

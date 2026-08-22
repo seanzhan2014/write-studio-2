@@ -182,6 +182,47 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.deepEqual(loaded.data.data.settings.generatePresets, []);
   });
 
+  await t.test("persists one changed outline without sending or rebuilding the full library", async () => {
+    const current = await api("/api/state");
+    const article = current.data.data.articles[0];
+    const chapter = article.chapters[0];
+    const originalOutline = structuredClone(chapter.outlines.find((item) => item.id === "outline-current"));
+    const outline = structuredClone(originalOutline);
+    outline.plan = "只通过增量接口更新的大纲";
+    outline.content = "只通过增量接口更新的正文";
+    outline.updatedAt = "2026-07-28T16:00:00.000Z";
+    const changes = {
+      version: 1,
+      articles: { upsert: [], delete: [] },
+      chapters: { upsert: [], delete: [] },
+      outlines: { upsert: [{ articleId: article.id, chapterId: chapter.id, position: (chapter.outlines.findIndex((item) => item.id === outline.id) + 1) * 1024, outline }], delete: [] },
+      characters: { upsert: [], delete: [] },
+      relationships: { upsert: [], delete: [] },
+      tasks: { upsert: [], delete: [] },
+    };
+    const saved = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(current.data.revision) }, body: { changes } });
+    assert.equal(saved.response.status, 200, saved.text);
+    assert.equal(saved.data.data, undefined, "incremental saves must not echo the full snapshot");
+    revision = saved.data.revision;
+
+    const stale = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(current.data.revision) }, body: { changes } });
+    assert.equal(stale.response.status, 409, stale.text);
+    assert.equal(stale.data.data, undefined, "conflicts return only version metadata");
+
+    const loaded = await api("/api/state");
+    const updated = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    assert.equal(updated.plan, "只通过增量接口更新的大纲");
+    assert.equal(updated.content, "只通过增量接口更新的正文");
+    assert.equal(loaded.data.data.articles[0].characters.length, 3, "unrelated rows survive an outline mutation");
+    assert.ok(loaded.data.data.articles[0].chapters[0].outlines.some((item) => item.id !== "outline-current"), "sibling outlines survive an outline mutation");
+
+    const restoredChanges = structuredClone(changes);
+    restoredChanges.outlines.upsert[0].outline = originalOutline;
+    const restored = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(loaded.data.revision) }, body: { changes: restoredChanges } });
+    assert.equal(restored.response.status, 200, restored.text);
+    revision = restored.data.revision;
+  });
+
   await t.test("revalidates unchanged state without returning the full snapshot", async () => {
     const loaded = await api("/api/state");
     const etag = loaded.response.headers.get("etag");
