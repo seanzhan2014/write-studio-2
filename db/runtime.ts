@@ -409,7 +409,9 @@ async function ensureCharacterDescriptionShape(db: SqliteDatabase) {
       revision INTEGER NOT NULL DEFAULT 1, CHECK(character_low_id <> character_high_id),
       UNIQUE(article_id, character_low_id, character_high_id)
     )`),
-    db.prepare("INSERT INTO relationships_next SELECT * FROM relationships"),
+    db.prepare(`INSERT INTO relationships_next(
+      id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision
+    ) SELECT id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision FROM relationships`),
     db.prepare("DROP TABLE relationships"),
     db.prepare("DROP TABLE characters"),
     db.prepare("ALTER TABLE characters_next RENAME TO characters"),
@@ -432,14 +434,18 @@ async function ensureMultipleChatSessions(db: SqliteDatabase) {
       model_id TEXT, context_options_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1
     )`),
-    db.prepare("INSERT INTO chat_sessions_next SELECT * FROM chat_sessions"),
+    db.prepare(`INSERT INTO chat_sessions_next(
+      id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision
+    ) SELECT id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision FROM chat_sessions`),
     db.prepare(`CREATE TABLE chat_messages_next (
       id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL REFERENCES chat_sessions_next(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'complete' CHECK(status IN ('complete','stopped')),
       order_index INTEGER NOT NULL, created_at TEXT NOT NULL, UNIQUE(session_id, order_index)
     )`),
-    db.prepare("INSERT INTO chat_messages_next SELECT * FROM chat_messages"),
+    db.prepare(`INSERT INTO chat_messages_next(
+      id,session_id,role,content,status,order_index,created_at
+    ) SELECT id,session_id,role,content,status,order_index,created_at FROM chat_messages`),
     db.prepare("DROP TABLE chat_messages"),
     db.prepare("DROP TABLE chat_sessions"),
     db.prepare("ALTER TABLE chat_sessions_next RENAME TO chat_sessions"),
@@ -741,18 +747,18 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         });
         uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         outline.chat.sessions.forEach((session) => {
-          statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
-          session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
+          statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+          session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
         });
       });
     });
     article.characters.forEach((character) => {
-      statements.push(insert(db, "INSERT INTO characters VALUES(?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, character.archived ? 1 : 0, now, now, nextRevision]));
+      statements.push(insert(db, "INSERT INTO characters(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, character.archived ? 1 : 0, now, now, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}`]));
     });
     article.relationships.forEach((relationship) => {
       const [low, high] = [relationship.characterAId, relationship.characterBId].sort();
-      statements.push(insert(db, "INSERT INTO relationships VALUES(?,?,?,?,?,?,?,?)", [relationship.id, article.id, low, high, relationship.description, now, now, nextRevision]));
+      statements.push(insert(db, "INSERT INTO relationships(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?)", [relationship.id, article.id, low, high, relationship.description, now, now, nextRevision]));
     });
   }
   for (const task of data.tasks.slice(0, 20)) {
@@ -876,8 +882,8 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     uniqueExcellentFragments(outline.content, outline.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
     statements.push(db.prepare("DELETE FROM chat_sessions WHERE outline_id=?").bind(outline.id));
     for (const session of outline.chat.sessions) {
-      statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
-      session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
+      statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+      session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
     }
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='outline' AND entity_id=?").bind(outline.id));
     statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, item.chapterId, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${resolvedOutlineContent(outline)}`]));
