@@ -7,7 +7,7 @@ import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
-export const SYNC_SCHEMA_VERSION = 5;
+export const SYNC_SCHEMA_VERSION = 6;
 const syncFormat = "writer-studio-sync-v1";
 const syncChangesFormat = "writer-studio-changes-v1";
 const remoteTimeoutMs = 30_000;
@@ -480,10 +480,14 @@ async function recordSyncFailure(state: LocalSyncState, error: string) {
 
 async function performBackgroundUpload() {
   if (isCloudDatabase()) return { state: "cloud" as const, uploaded: false, message: statusMessage("cloud") };
-  const [config, stored, local, autoUploadEnabled] = await Promise.all([localSyncConfig(), storedSyncMeta(), currentDatabaseMeta(), isAutoUploadEnabled()]);
+  const [config, stored, local, localState, autoUploadEnabled] = await Promise.all([localSyncConfig(), storedSyncMeta(), currentDatabaseMeta(), readStudioState(), isAutoUploadEnabled()]);
   if (!autoUploadEnabled) return { state: "disabled" as const, uploaded: false, message: "自动后台上传已关闭" };
   if (!config) return { state: "not_configured" as const, uploaded: false, message: statusMessage("not_configured") };
   if (stored.lastCloudVersion === null) return { state: "unpaired" as const, uploaded: false, message: statusMessage("unpaired") };
+  const activeTasks = localState.data?.tasks.filter((task) => task.state === "waiting" || task.state === "running") ?? [];
+  if (activeTasks.length) {
+    return { state: "pending" as const, uploaded: false, deferred: true, reason: "active_tasks" as const, message: `有 ${activeTasks.length} 个 AI 任务尚未结束，完成后再自动上传` };
+  }
   try {
     const remote = await remoteMeta(config);
     const acknowledgesPendingOperation = remoteAcknowledgesPendingOperation({

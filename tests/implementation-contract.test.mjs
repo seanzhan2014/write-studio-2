@@ -141,6 +141,23 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(app, /云端版本 = 同步基线/);
 });
 
+test("task execution ownership keeps cloud reads from resuming local work", async () => {
+  const schema = await read("db/schema.ts");
+  const runtime = await read("db/runtime.ts");
+  const sync = await read("db/sync.ts");
+  const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
+  const taskState = await read("app/api/ai/tasks/[taskId]/state/route.ts");
+  const app = await read("app/WriterStudioApp.tsx");
+  assert.match(schema, /executionOrigin: text\("execution_origin"\)\.notNull\(\)\.default\("local"\)/);
+  assert.match(runtime, /execution_origin TEXT NOT NULL DEFAULT 'local'/);
+  assert.match(executor, /initialTask\.executionOrigin !== executionOrigin/);
+  assert.match(executor, /WHERE key='state_revision'/, "claiming a task advances only the runtime revision");
+  assert.match(app, /task\.executionOrigin === currentStudio\.executionOrigin/);
+  assert.match(taskState, /body\.action !== "transfer"/);
+  assert.match(sync, /reason: "active_tasks"/);
+  assert.match(sync, /完成后再自动上传/);
+});
+
 test("explicit mobile outline and AI context decisions are retained", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");

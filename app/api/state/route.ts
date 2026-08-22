@@ -1,6 +1,7 @@
 import { readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import type { StudioData } from "@/app/studio-state";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
+import { currentTaskExecutionOrigin } from "@/db/task-execution";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ export async function GET(request: Request) {
       if (matchesEtag(request, etag)) return new Response(null, { status: 304, headers: stateHeaders(etag) });
     }
     const state = await readStudioState();
-    return json(state, 200, stateEtag(state.revision));
+    return json({ ...state, executionOrigin: currentTaskExecutionOrigin() }, 200, stateEtag(state.revision));
   } catch (error) {
     return json({ error: "database_unavailable", message: error instanceof Error ? error.message : "数据库不可用" }, 503);
   }

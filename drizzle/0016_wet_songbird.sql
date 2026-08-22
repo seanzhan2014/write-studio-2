@@ -1,0 +1,1 @@
+ALTER TABLE `ai_tasks` ADD `execution_origin` text DEFAULT 'local' NOT NULL;

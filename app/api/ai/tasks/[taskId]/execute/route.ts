@@ -8,6 +8,7 @@ import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot 
 import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-versions";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { diffStudioData } from "@/lib/studio-changes";
+import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -27,6 +28,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
     id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
     target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
     prompt: String(row.instruction ?? ""), model: String(row.model_id ?? ""),
+    executionOrigin: normalizeTaskExecutionOrigin(row.execution_origin),
     state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : String(row.status) as AiTask["state"],
     attempt: Number(row.attempt ?? 0), phase: row.phase ? String(row.phase) as AiTask["phase"] : undefined,
     createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined,
@@ -99,13 +101,15 @@ export async function POST(_request: Request, context: RouteContext) {
     const initialTask = initialRow ? taskFromRow(initialRow) : null;
     if (!initialTask) return json({ error: "任务不存在" }, 404);
     if (initialTask.target === "AI Chat") return json({ error: "AI Chat 由流式会话执行" }, 400);
+    const executionOrigin = currentTaskExecutionOrigin();
+    if (initialTask.executionOrigin !== executionOrigin) return json({ accepted: false, reason: "foreign_origin", executionOrigin: initialTask.executionOrigin }, 202);
     const model = await findModel(initialTask.contextOptions?.configuredModelId ?? initialTask.model);
     const executionModelReference = model?.id ?? initialTask.model;
     const timeoutMs = model?.timeoutMs ?? initialTask.timeoutMs ?? 600_000;
     const leaseExpired = initialTask.state === "running" && (!initialTask.leaseUntil || new Date(initialTask.leaseUntil).getTime() <= Date.now());
     if (initialTask.state !== "waiting" && !leaseExpired) return json({ accepted: false, reason: "already_claimed" }, 202);
     if (initialTask.target === "正文") {
-      const hasEarlierBodyTask = await db.prepare("SELECT 1 AS found FROM ai_tasks WHERE id<>? AND outline_id=? AND target='content' AND status IN ('queued','running') AND (created_at<? OR (created_at=? AND id<?)) LIMIT 1").bind(taskId, initialTask.outlineId, initialTask.createdAt, initialTask.createdAt, taskId).first<number>("found");
+      const hasEarlierBodyTask = await db.prepare("SELECT 1 AS found FROM ai_tasks WHERE id<>? AND outline_id=? AND execution_origin=? AND target='content' AND status IN ('queued','running') AND (created_at<? OR (created_at=? AND id<?)) LIMIT 1").bind(taskId, initialTask.outlineId, executionOrigin, initialTask.createdAt, initialTask.createdAt, taskId).first<number>("found");
       if (hasEarlierBodyTask) return json({ accepted: false, reason: "earlier_task" }, 202);
     }
     if (leaseExpired && (initialTask.attempt ?? 0) >= 3) {
@@ -117,11 +121,11 @@ export async function POST(_request: Request, context: RouteContext) {
       return json({ accepted: false, reason: "retry_exhausted" }, 202);
     }
     const startedAt = new Date().toISOString();
-    const claimResult = await db.prepare("UPDATE ai_tasks SET status='running',phase='preparing',attempt=?,started_at=?,completed_at=NULL,last_progress_at=?,received_characters=0,timeout_ms=?,runner_id=?,lease_until=?,error_message=NULL WHERE id=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))")
-      .bind(Math.max(1, (initialTask.attempt ?? 0) + 1), startedAt, startedAt, timeoutMs, runnerId, leaseTime(), taskId, startedAt).run();
+    const claimResult = await db.prepare("UPDATE ai_tasks SET status='running',phase='preparing',attempt=?,started_at=?,completed_at=NULL,last_progress_at=?,received_characters=0,timeout_ms=?,runner_id=?,lease_until=?,error_message=NULL WHERE id=? AND execution_origin=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))")
+      .bind(Math.max(1, (initialTask.attempt ?? 0) + 1), startedAt, startedAt, timeoutMs, runnerId, leaseTime(), taskId, executionOrigin, startedAt).run();
     const claimed = Number(claimResult.meta?.changes ?? 0) > 0;
     if (claimed) {
-      const statements = [db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(startedAt)];
+      const statements = [db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key='state_revision'").bind(startedAt)];
       if (initialTask.target !== "全部名称") statements.unshift(db.prepare("UPDATE outlines SET state='running',updated_at=?,revision=revision+1 WHERE id=?").bind(startedAt, initialTask.outlineId));
       await db.batch(statements);
     }
