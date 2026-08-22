@@ -3,11 +3,13 @@ import path from "node:path";
 import type { StudioData } from "@/app/studio-state";
 import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai";
 import { canAutomaticallyUpload, evaluateSyncPolicy } from "@/lib/sync-policy.mjs";
-import { ensureDatabase, readStudioState, writeStudioState } from "@/db/runtime";
+import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
+import { isStudioChanges, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
-export const SYNC_SCHEMA_VERSION = 4;
+export const SYNC_SCHEMA_VERSION = 5;
 const syncFormat = "writer-studio-sync-v1";
+const syncChangesFormat = "writer-studio-changes-v1";
 const remoteTimeoutMs = 30_000;
 
 export type SyncSnapshot = {
@@ -23,6 +25,14 @@ export type SyncSnapshot = {
 };
 
 export type SyncOverwriteOptions = { includeModels: boolean; includeSecrets: boolean };
+
+export type SyncChangesEnvelope = {
+  format: typeof syncChangesFormat;
+  schemaVersion: number;
+  sourceDatabaseId: string;
+  throughLocalVersion: number;
+  changes: StudioChanges;
+};
 
 export type RemoteDatabaseMeta = {
   schemaVersion: number;
@@ -268,6 +278,53 @@ async function remoteReplace(config: SyncConfig, snapshot: SyncSnapshot, expecte
   });
 }
 
+async function remoteApplyChanges(config: SyncConfig, envelope: SyncChangesEnvelope, expectedDatabaseVersion: number) {
+  return remoteRequest<RemoteDatabaseMeta>(config, "/api/sync/remote/changes", {
+    method: "PUT",
+    body: JSON.stringify({ envelope, expectedDatabaseVersion }),
+  });
+}
+
+function validateSyncChangesEnvelope(value: unknown): asserts value is SyncChangesEnvelope {
+  const envelope = value as Partial<SyncChangesEnvelope> | null;
+  if (!envelope || envelope.format !== syncChangesFormat || envelope.schemaVersion !== SYNC_SCHEMA_VERSION || typeof envelope.sourceDatabaseId !== "string" || !envelope.sourceDatabaseId || !Number.isSafeInteger(envelope.throughLocalVersion) || !isStudioChanges(envelope.changes)) {
+    throw new SyncError("invalid_changes", "同步增量格式无效", 400);
+  }
+}
+
+export async function applyRemoteChanges(value: unknown, expectedDatabaseVersion: number) {
+  validateSyncChangesEnvelope(value);
+  const envelope = value;
+  const meta = await currentDatabaseMeta();
+  if (meta.schemaVersion !== SYNC_SCHEMA_VERSION) throw new SyncError("schema_mismatch", "数据库结构版本不同，禁止增量同步", 409);
+  if (!Number.isSafeInteger(expectedDatabaseVersion) || meta.databaseVersion !== expectedDatabaseVersion) {
+    throw new SyncError("version_mismatch", "云端数据库版本已变化，禁止自动同步", 409, { expected: expectedDatabaseVersion, actual: meta.databaseVersion });
+  }
+  const result = await applyStudioChanges(envelope.changes, await readStudioRevision(), { recordSyncChange: false, expectedDatabaseVersion });
+  if (result.conflict) throw new SyncError("version_mismatch", "增量写入期间数据库版本发生变化，请重试", 409, { actual: result.databaseVersion });
+  return { schemaVersion: meta.schemaVersion, databaseId: meta.databaseId, databaseVersion: result.databaseVersion };
+}
+
+async function createPendingChanges(lastUploadedLocalVersion: number, local: RemoteDatabaseMeta): Promise<SyncChangesEnvelope | null> {
+  await ensureDatabase();
+  const result = await getDatabase().prepare("SELECT database_version,change_json FROM sync_change_log WHERE database_version>? AND database_version<=? ORDER BY database_version").bind(lastUploadedLocalVersion, local.databaseVersion).all<Record<string, unknown>>();
+  const records = result.results ?? [];
+  if (!records.length || Number(records[0].database_version) !== lastUploadedLocalVersion + 1 || Number(records.at(-1)?.database_version) !== local.databaseVersion) return null;
+  for (let index = 0; index < records.length; index += 1) if (Number(records[index].database_version) !== lastUploadedLocalVersion + index + 1) return null;
+  const changes = records.map((row) => {
+    let parsed: unknown;
+    try { parsed = JSON.parse(String(row.change_json)); } catch { return null; }
+    return isStudioChanges(parsed) ? parsed : null;
+  });
+  if (changes.some((value) => !value)) return null;
+  return { format: syncChangesFormat, schemaVersion: local.schemaVersion, sourceDatabaseId: local.databaseId, throughLocalVersion: local.databaseVersion, changes: mergeStudioChanges(changes as StudioChanges[]) };
+}
+
+async function pruneChangeLog(throughLocalVersion: number) {
+  await ensureDatabase();
+  await getDatabase().prepare("DELETE FROM sync_change_log WHERE database_version<=?").bind(throughLocalVersion).run();
+}
+
 function statusMessage(state: LocalSyncState) {
   if (state === "not_configured") return "尚未配置云端连接";
   if (state === "unpaired") return "尚未建立同步基线，请先手动选择一次覆盖方向";
@@ -352,9 +409,13 @@ async function performBackgroundUpload() {
       return { state: policy, uploaded: false, blocked: true, message: statusMessage(policy) };
     }
     await writeSettings({ sync_status: "uploading", sync_last_error: "" });
-    const snapshot = await createCurrentSnapshot();
-    const replaced = await remoteReplace(config, snapshot, stored.lastCloudVersion);
-    await recordSyncSuccess(replaced, snapshot.databaseVersion);
+    const envelope = stored.lastUploadedLocalVersion === null ? null : await createPendingChanges(stored.lastUploadedLocalVersion, local);
+    const localVersion = local.databaseVersion;
+    const replaced = envelope
+      ? await remoteApplyChanges(config, envelope, stored.lastCloudVersion)
+      : await remoteReplace(config, await createCurrentSnapshot(), stored.lastCloudVersion);
+    await recordSyncSuccess(replaced, localVersion);
+    await pruneChangeLog(localVersion);
     return { state: "synced" as const, uploaded: true, message: statusMessage("synced"), remoteDatabaseVersion: replaced.databaseVersion };
   } catch (error) {
     const state: LocalSyncState = error instanceof SyncError && ["version_mismatch", "schema_mismatch"].includes(error.code)
@@ -406,6 +467,7 @@ export async function pullCloudOverLocal(options?: Partial<SyncOverwriteOptions>
   const saved = await writeStudioState(cloud.data, current.revision);
   if (saved.conflict) throw new SyncError("local_changed", "本地数据库在覆盖前发生变化，请重试", 409);
   if (normalized.includeModels) await replaceModelsFromSync(cloud.models ?? [], normalized.includeSecrets, cloud.providers ?? []);
+  await pruneChangeLog(saved.databaseVersion);
   await recordSyncSuccess({ schemaVersion: cloud.schemaVersion, databaseId: cloud.databaseId, databaseVersion: cloud.databaseVersion }, saved.databaseVersion);
   return { state: "synced" as const, message: "已用云端数据库覆盖本地", backupPath, localDatabaseVersion: saved.databaseVersion, remoteDatabaseVersion: cloud.databaseVersion };
 }
@@ -422,5 +484,6 @@ export async function pushLocalOverCloud(options?: Partial<SyncOverwriteOptions>
   const backupPath = writeRecoverySnapshot("sync-cloud-before-push", cloudBefore);
   const replaced = await remoteReplace(config, local, cloudBefore.databaseVersion);
   await recordSyncSuccess(replaced, local.databaseVersion);
+  await pruneChangeLog(local.databaseVersion);
   return { state: "synced" as const, message: "已用本地数据库覆盖云端", backupPath, localDatabaseVersion: local.databaseVersion, remoteDatabaseVersion: replaced.databaseVersion };
 }

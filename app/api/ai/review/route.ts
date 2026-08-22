@@ -1,12 +1,13 @@
 import type { StudioData, Version } from "@/app/studio-state";
 import { AiInputError, reviewChapter, type AiReviewInput } from "@/db/ai";
-import { readStudioState, writeStudioState } from "@/db/runtime";
+import { applyStudioChanges, readStudioState } from "@/db/runtime";
 import { aiReviewContentName, resolvedOutlineContentName } from "@/lib/content-name.mjs";
 import { reviewSourceDigest, type ReviewOutlineSource } from "@/lib/ai-review.mjs";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { BUILTIN_REVIEW_REQUIREMENTS, normalizeReviewPresets } from "@/lib/review-options";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { modelSelectionLabel } from "@/lib/model-label";
+import { diffStudioData } from "@/lib/studio-changes";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -145,7 +146,7 @@ export async function POST(request: Request) {
         updated.push({ outlineId: outline.id, versionId, name, text });
       }
       targetArticle.updatedAt = createdAt;
-      const saved = await writeStudioState(next, current.revision);
+      const saved = await applyStudioChanges(diffStudioData(current.data, next), current.revision);
       if (!saved.conflict) {
         const affectedIds = new Set([...(supplied?.outlines.filter((item) => item.text !== item.baseText).map((item) => item.id) ?? []), ...updated.map((item) => item.outlineId)]);
         const patches = targetChapter.outlines.filter((outline) => affectedIds.has(outline.id)).map((outline) => ({

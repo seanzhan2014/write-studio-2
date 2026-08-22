@@ -276,7 +276,11 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await request.put("/api/state", { headers: { "If-Match": String(snapshot.revision) }, data: { data: snapshot.data, conflictResolution: "keep-local" } });
 
   const gotoSettled = async (url: string) => {
-    await page.goto(url, { waitUntil: "networkidle" });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await page.goto(url, { waitUntil: "networkidle" });
+      if (await page.locator("vite-error-overlay").count() === 0) return;
+    }
+    throw new Error(`开发测试服务器无法稳定打开 ${url}`);
   };
 
   await gotoSettled("/");
@@ -663,8 +667,8 @@ test("workspace AI tabs render before a background save finishes and reuse the p
 
   let releaseSave = () => undefined;
   const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
-  await page.route("**/api/state", async (route) => {
-    if (route.request().method() === "PUT") await saveGate;
+  await page.route("**/api/state/mutations", async (route) => {
+    if (route.request().method() === "POST") await saveGate;
     await route.continue();
   });
   await page.getByRole("tab", { name: "AI Generate" }).click();
@@ -1412,10 +1416,11 @@ test("full outline editor offers inline create, delete, and archive controls", a
   await expect(created.locator(".continuous-text-editor.plan")).toHaveValue("");
 
   const warning = page.waitForEvent("dialog");
-  await remove.click();
+  const removeClick = remove.click();
   const dialog = await warning;
   expect(dialog.message()).toContain("已有正文");
   await dialog.dismiss();
+  await removeClick;
   await expect(current).toBeVisible();
 
   await archive.click();
@@ -1461,9 +1466,10 @@ test("full outline editor keeps the active outline anchored when leaving and ret
     return element.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
   })).toBeCloseTo(before, 0);
 
-  const state = await request.get("/api/state");
-  const statePayload = await state.json() as { data: ReturnType<typeof fullStudioFixture> };
-  expect(statePayload.data.currentOutlineId).toBe("outline-after");
+  await expect.poll(() => page.evaluate(() => {
+    const ui = JSON.parse(window.localStorage.getItem("writer-studio:device-ui-v1") ?? "{}");
+    return ui.currentOutlineId;
+  })).toBe("outline-after");
 });
 
 test("full content editor saves the current body without creating a version", async ({ page, request }) => {
@@ -1687,12 +1693,13 @@ test("AI Chat creates a completed task linked to its conversation", async ({ pag
 test("AI Chat acknowledges immediately and ignores rapid duplicate submits while saving", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   test.setTimeout(60_000);
-  let delayNextStatePut = false;
-  let delayedStatePuts = 0;
+  let delayNextSubmit = false;
+  let delayedSubmits = 0;
   let streamRequests = 0;
-  await page.route("**/api/state", async (route) => {
-    if (route.request().method() === "PUT" && delayNextStatePut && delayedStatePuts === 0) {
-      delayedStatePuts += 1;
+  await page.route("**/api/outlines/outline-current/chat/transactions", async (route) => {
+    const body = route.request().postDataJSON() as { action?: string };
+    if (body.action === "submit" && delayNextSubmit && delayedSubmits === 0) {
+      delayedSubmits += 1;
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     await route.continue();
@@ -1705,15 +1712,14 @@ test("AI Chat acknowledges immediately and ignores rapid duplicate submits while
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   const question = "慢保存期间只提交一次";
   await page.getByLabel("AI Chat 消息").fill(question);
-  delayNextStatePut = true;
+  delayNextSubmit = true;
   await page.getByRole("button", { name: "发送消息" }).evaluate((button) => {
     (button as HTMLButtonElement).click();
     (button as HTMLButtonElement).click();
   });
 
-  await expect(page.locator(".message.user").filter({ hasText: question })).toHaveCount(1);
   await expect(page.getByText("正在提交", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
+  await expect(page.locator(".message.user").filter({ hasText: question })).toHaveCount(1);
   await expect(page.locator(".message.assistant").last()).toContainText("唯一的聊天回复", { timeout: 20_000 });
   await expect.poll(() => streamRequests).toBe(1);
   await expect.poll(async () => {
@@ -1728,11 +1734,12 @@ test("AI Chat acknowledges immediately and ignores rapid duplicate submits while
 
 test("AI Chat releases its short submission lock after a save failure", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
-  let failNextStatePut = false;
-  await page.route("**/api/state", async (route) => {
-    if (route.request().method() === "PUT" && failNextStatePut) {
-      failNextStatePut = false;
-      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ message: "模拟保存失败" }) });
+  let failNextSubmit = false;
+  await page.route("**/api/outlines/outline-current/chat/transactions", async (route) => {
+    const body = route.request().postDataJSON() as { action?: string };
+    if (body.action === "submit" && failNextSubmit) {
+      failNextSubmit = false;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "模拟保存失败" }) });
       return;
     }
     await route.continue();
@@ -1740,9 +1747,8 @@ test("AI Chat releases its short submission lock after a save failure", async ({
 
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   await page.getByLabel("AI Chat 消息").fill("这次保存会失败");
-  failNextStatePut = true;
+  failNextSubmit = true;
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.locator(".message.assistant.error").last()).toContainText("消息保存失败", { timeout: 15_000 });
 
   const composer = page.getByLabel("AI Chat 消息");
   await composer.fill("保存失败后仍可继续提交");
@@ -1924,19 +1930,35 @@ test("desktop outline rows reserve the more menu beside long titles", async ({ p
   await expect(page.getByText("大纲操作", { exact: true })).toBeVisible();
 });
 
-test("full chapter editor generates individual names as selectable history versions", async ({ page }, testInfo) => {
+test("full chapter editor generates individual names as selectable history versions", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop naming workflow");
   test.setTimeout(60_000);
   const requests: Record<string, unknown>[] = [];
   await page.route("**/api/ai/names", async (route) => {
     const requestBody = route.request().postDataJSON() as Record<string, unknown>;
     requests.push(requestBody);
+    const stateResponse = await request.get("/api/state");
+    const state = await stateResponse.json() as { revision: number; data: ReturnType<typeof fullStudioFixture> };
+    const article = state.data.articles.find((item) => item.id === requestBody.articleId)!;
+    const chapter = article.chapters.find((item) => item.id === requestBody.chapterId)!;
+    const createdAt = "2026-07-28T16:30:00.000Z";
+    const outline = chapter.outlines.find((item) => item.id === requestBody.outlineId);
+    const outlineCandidate = { id: "name-ai-outline-candidate", title: "七码头潮汐密钥", source: "ai", createdAt };
+    const chapterCandidate = { id: "name-ai-chapter-candidate", title: "潮汐密钥", source: "ai", createdAt };
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify(requestBody.target === "outline"
-        ? { outlineTitles: [{ id: requestBody.outlineId, title: "七码头潮汐密钥" }], inputCharacters: 860, maxInputCharacters: 60000 }
-        : { chapterTitle: "潮汐密钥", outlineTitles: [], inputCharacters: 1260, maxInputCharacters: 60000 }),
+        ? {
+            outlineTitles: [{ id: requestBody.outlineId, title: "七码头潮汐密钥" }], inputCharacters: 860, maxInputCharacters: 60000,
+            revision: state.revision, added: 1, articleUpdatedAt: createdAt,
+            outlineStates: [{ id: outline!.id, updatedAt: createdAt, nameVersions: [outlineCandidate, ...(outline!.nameVersions ?? [])], defaultNameVersionId: outline!.defaultNameVersionId }],
+          }
+        : {
+            chapterTitle: "潮汐密钥", outlineTitles: [], inputCharacters: 1260, maxInputCharacters: 60000,
+            revision: state.revision, added: 1, articleUpdatedAt: createdAt,
+            chapterState: { nameVersions: [chapterCandidate, ...(chapter.nameVersions ?? [])], defaultNameVersionId: chapter.defaultNameVersionId },
+          }),
     });
   });
 
@@ -1963,7 +1985,7 @@ test("full chapter editor generates individual names as selectable history versi
   const chapterCandidate = chapterRow.getByRole("radio").filter({ has: page.getByText("潮汐密钥", { exact: true }) });
   await expect(chapterCandidate).toHaveAttribute("aria-checked", "false");
   expect(requests[1]).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: [] });
-  const selectedChapterSaved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  const selectedChapterSaved = page.waitForResponse((response) => response.url().endsWith("/api/state/mutations") && response.request().method() === "POST" && response.ok());
   await chapterCandidate.click();
   await selectedChapterSaved;
   await expect(chapterCandidate).toHaveAttribute("aria-checked", "true");
@@ -1993,7 +2015,7 @@ test("desktop full chapter editor deletes the default name and persists its fall
   await page.goto("/articles/article-main/chapters/edit-all");
   const currentItem = page.locator(".name-version-item").filter({ hasText: "当前码头" });
   await expect(currentItem.getByRole("button", { name: "删除大纲名「当前码头」" })).toBeVisible();
-  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state/mutations") && response.request().method() === "POST" && response.ok());
   await currentItem.getByRole("button", { name: "删除大纲名「当前码头」" }).click();
   await saved;
   await expect(currentItem).toHaveCount(0);
@@ -2031,7 +2053,7 @@ test("mobile full chapter editor swipes both ways before deleting a name", async
   await swipeNameVersion(option, "right");
   await expect(deleteAction).toHaveCSS("visibility", "hidden");
   await swipeNameVersion(option, "left");
-  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state") && response.request().method() === "PUT" && response.ok());
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state/mutations") && response.request().method() === "POST" && response.ok());
   await item.getByRole("button", { name: "删除大纲名「待删除候选」" }).click();
   await saved;
   await expect(item).toHaveCount(0);

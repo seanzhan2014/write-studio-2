@@ -1,12 +1,13 @@
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
 import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, type ArticleNameGenerationResult } from "@/db/ai";
-import { ensureDatabase, getDatabase, readStudioState, writeStudioState } from "@/db/runtime";
+import { applyStudioChanges, ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-versions";
 import { modelSelectionLabel } from "@/lib/model-label";
+import { diffStudioData } from "@/lib/studio-changes";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -59,7 +60,7 @@ async function mutateState<T>(mutate: (data: StudioData) => Mutation<T>): Promis
     const next = structuredClone(current.data);
     const outcome = mutate(next);
     if (!outcome.changed) return outcome.value;
-    const saved = await writeStudioState(next, current.revision);
+    const saved = await applyStudioChanges(diffStudioData(current.data, next), current.revision);
     if (!saved.conflict) return outcome.value;
   }
   throw new Error("任务状态更新冲突，请稍后重试");

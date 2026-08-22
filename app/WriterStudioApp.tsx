@@ -2628,7 +2628,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const sessionChatTask = activeChatTask?.contextOptions?.sessionId === session?.id ? activeChatTask : undefined;
   const isStreaming = Boolean(activeChatTask);
   const [localStreaming, setLocalStreaming] = useState<{ taskId: string; text: string } | null>(null);
-  const streaming = localStreaming?.taskId === sessionChatTask?.id ? localStreaming.text : sessionChatTask?.resultText ?? "";
+  const streaming = localStreaming && localStreaming.taskId === sessionChatTask?.id ? localStreaming.text : sessionChatTask?.resultText ?? "";
   const [contextOpen, setContextOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);

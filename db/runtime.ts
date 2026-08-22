@@ -9,7 +9,8 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { decryptAiSecret } from "@/lib/ai-secret";
-import { databaseEngine, getDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
+import type { StudioChanges } from "@/lib/studio-changes";
+import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
 
@@ -126,12 +127,15 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS sync_change_log (
+    database_version INTEGER PRIMARY KEY NOT NULL, change_json TEXT NOT NULL, created_at TEXT NOT NULL
+  )`,
 ];
 
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "1";
+const RUNTIME_SCHEMA_VERSION = "2";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -200,7 +204,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '4', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '5', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -736,11 +740,152 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   return { conflict: false as const, revision: nextRevision, databaseVersion: nextDatabaseVersion };
 }
 
+function taskTargetValue(task: StudioData["tasks"][number]) {
+  return task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title";
+}
+
+function taskStatusValue(task: StudioData["tasks"][number]) {
+  return task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state;
+}
+
+export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number }) {
+  await ensureDatabase();
+  const db = getDatabase();
+  const currentRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? currentRevision);
+  if (currentRevision !== expectedRevision || (options?.expectedDatabaseVersion !== undefined && currentDatabaseVersion !== options.expectedDatabaseVersion)) {
+    return { conflict: true as const, revision: currentRevision, databaseVersion: currentDatabaseVersion };
+  }
+
+  const now = new Date().toISOString();
+  const nextRevision = currentRevision + 1;
+  const nextDatabaseVersion = currentDatabaseVersion + 1;
+  const statements: SqliteStatement[] = [
+    db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
+  ];
+
+  for (const id of changes.tasks.delete) statements.push(db.prepare("DELETE FROM ai_tasks WHERE id=?").bind(id));
+  for (const id of changes.relationships.delete) statements.push(db.prepare("DELETE FROM relationships WHERE id=?").bind(id));
+  for (const id of changes.characters.delete) {
+    statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='character' AND entity_id=?").bind(id));
+    statements.push(db.prepare("DELETE FROM characters WHERE id=?").bind(id));
+  }
+  for (const id of changes.outlines.delete) {
+    statements.push(db.prepare("DELETE FROM search_documents WHERE outline_id=? OR (entity_type='outline' AND entity_id=?)").bind(id, id));
+    statements.push(db.prepare("DELETE FROM outlines WHERE id=?").bind(id));
+  }
+  for (const id of changes.chapters.delete) {
+    statements.push(db.prepare("DELETE FROM search_documents WHERE chapter_id=? OR (entity_type='chapter' AND entity_id=?)").bind(id, id));
+    statements.push(db.prepare("DELETE FROM chapters WHERE id=?").bind(id));
+  }
+  for (const id of changes.articles.delete) {
+    statements.push(db.prepare("DELETE FROM search_documents WHERE article_id=?").bind(id));
+    statements.push(db.prepare("DELETE FROM articles WHERE id=?").bind(id));
+  }
+
+  changes.chapters.upsert.forEach((item, index) => statements.push(db.prepare("UPDATE chapters SET position=? WHERE id=?").bind(-1_000_000_000 - index, item.chapter.id)));
+  changes.outlines.upsert.forEach((item, index) => statements.push(db.prepare("UPDATE outlines SET position=? WHERE id=?").bind(-1_000_000_000 - index, item.outline.id)));
+
+  for (const article of changes.articles.upsert) {
+    statements.push(insert(db, `INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,summary=excluded.summary,article_type=excluded.article_type,style=excluded.style,chapter_naming_json=excluded.chapter_naming_json,outline_naming_json=excluded.outline_naming_json,updated_at=excluded.updated_at,last_opened_at=excluded.last_opened_at,revision=excluded.revision`,
+    [article.id, article.title.slice(0, 120), article.summary.slice(0, 10_000), article.type.slice(0, 120), article.style.slice(0, 5_000), JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
+  }
+
+  for (const item of changes.chapters.upsert) {
+    const chapter = item.chapter;
+    const names = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, now, 120);
+    statements.push(insert(db, `INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,position,archived,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,position=excluded.position,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [chapter.id, item.articleId, chapter.title.slice(0, 120), JSON.stringify(names.nameVersions), names.defaultNameVersionId, item.position, chapter.archived ? 1 : 0, now, now, nextRevision]));
+    statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='chapter' AND entity_id=?").bind(chapter.id));
+    statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, chapter.id, null, "chapter", chapter.id, chapter.title, ""]));
+  }
+
+  for (const item of changes.outlines.upsert) {
+    const outline = item.outline;
+    const normalizedTitle = normalizeOutlineTitle(outline.title);
+    const names = normalizeNameVersionState(outline.id, normalizedTitle, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+    const defaultVersionId = Object.prototype.hasOwnProperty.call(outline, "defaultVersionId") ? outline.defaultVersionId : outline.sourceVersionId ?? null;
+    const currentVersionId = Object.prototype.hasOwnProperty.call(outline, "currentVersionId") ? outline.currentVersionId : outline.contentOverride === false ? outline.sourceVersionId ?? null : null;
+    const contentOutlineSnapshot = outline.contentOutlineSnapshot
+      ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
+      ?? { title: normalizedTitle, plan: outline.plan };
+    statements.push(insert(db, `INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,summary=excluded.summary,generate_instruction=excluded.generate_instruction,position=excluded.position,archived=excluded.archived,state=excluded.state,title_generation_pending=excluded.title_generation_pending,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [outline.id, item.articleId, item.chapterId, normalizedTitle, JSON.stringify(names.nameVersions), names.defaultNameVersionId, outline.plan.slice(0, 10_000), String(outline.generateInstruction ?? "").slice(0, 20_000), item.position, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
+    statements.push(insert(db, `INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(outline_id) DO UPDATE SET text=excluded.text,content_name=excluded.content_name,content_override=excluded.content_override,source_version_id=excluded.source_version_id,current_version_id=excluded.current_version_id,default_version_id=excluded.default_version_id,outline_snapshot_json=excluded.outline_snapshot_json,manual_excellent=excluded.manual_excellent,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
+    statements.push(db.prepare("DELETE FROM versions WHERE outline_id=?").bind(outline.id));
+    statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=?").bind(outline.id));
+    const usedFragmentIds = new Set<string>();
+    for (const version of outline.versions) {
+      statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
+      uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
+    }
+    uniqueExcellentFragments(outline.content, outline.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
+    statements.push(db.prepare("DELETE FROM chat_sessions WHERE outline_id=?").bind(outline.id));
+    for (const session of outline.chat.sessions) {
+      statements.push(insert(db, "INSERT INTO chat_sessions VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+      session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
+    }
+    statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='outline' AND entity_id=?").bind(outline.id));
+    statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, item.chapterId, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${resolvedOutlineContent(outline)}`]));
+  }
+
+  for (const item of changes.characters.upsert) {
+    const character = item.character;
+    statements.push(insert(db, `INSERT INTO characters(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,name=excluded.name,aliases_json=excluded.aliases_json,description=excluded.description,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [character.id, item.articleId, character.name.slice(0, 120), JSON.stringify([...new Set(character.aliases.map((value) => value.trim()).filter(Boolean))].slice(0, 50)), character.description.slice(0, 20_000), character.archived ? 1 : 0, now, now, nextRevision]));
+    statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='character' AND entity_id=?").bind(character.id));
+    statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}`]));
+  }
+
+  for (const item of changes.relationships.upsert) {
+    const relationship = item.relationship;
+    const [low, high] = [relationship.characterAId, relationship.characterBId].sort();
+    statements.push(insert(db, `INSERT INTO relationships(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,character_low_id=excluded.character_low_id,character_high_id=excluded.character_high_id,description=excluded.description,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [relationship.id, item.articleId, low, high, relationship.description.slice(0, 5_000), now, now, nextRevision]));
+  }
+
+  for (const task of changes.tasks.upsert.slice(0, 20)) {
+    statements.push(insert(db, `INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,outline_id=excluded.outline_id,target=excluded.target,instruction=excluded.instruction,model_id=excluded.model_id,context_options_json=excluded.context_options_json,status=excluded.status,attempt=excluded.attempt,result_text=excluded.result_text,result_version_id=excluded.result_version_id,error_message=excluded.error_message,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,phase=excluded.phase,last_progress_at=excluded.last_progress_at,received_characters=excluded.received_characters,timeout_ms=excluded.timeout_ms,runner_id=excluded.runner_id,lease_until=excluded.lease_until,started_at=excluded.started_at,completed_at=excluded.completed_at`,
+    [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
+  }
+
+  if (changes.settings) statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(changes.settings) }), now]));
+  if ((options?.recordSyncChange ?? !isCloudDatabase())) {
+    statements.push(db.prepare("DELETE FROM sync_change_log WHERE database_version<?").bind(Math.max(0, nextDatabaseVersion - 500)));
+    statements.push(insert(db, "INSERT INTO sync_change_log(database_version,change_json,created_at) VALUES(?,?,?)", [nextDatabaseVersion, JSON.stringify(changes), now]));
+  }
+  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
+  statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)", [String(nextDatabaseVersion), now]));
+
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    const actualRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+    const actualDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? actualRevision);
+    if (actualRevision !== expectedRevision || actualDatabaseVersion !== currentDatabaseVersion) return { conflict: true as const, revision: actualRevision, databaseVersion: actualDatabaseVersion };
+    throw error;
+  }
+  return { conflict: false as const, revision: nextRevision, databaseVersion: nextDatabaseVersion };
+}
+
 export async function databaseStatus() {
-  const state = await readStudioState();
+  await ensureDatabase();
   const db = getDatabase();
   const searchMode = await db.prepare("SELECT value_json FROM app_settings WHERE key='search_mode'").first<string>("value_json");
-  return { connected: true, engine: databaseEngine(), revision: state.revision, databaseVersion: state.databaseVersion, articles: state.data?.articles.length ?? 0, searchMode: safeJson(searchMode, "substring") };
+  const [revision, databaseVersion, articles] = await Promise.all([
+    db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json"),
+    db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json"),
+    db.prepare("SELECT COUNT(*) AS count FROM articles").first<number>("count"),
+  ]);
+  return { connected: true, engine: databaseEngine(), revision: Number(revision ?? 0), databaseVersion: Number(databaseVersion ?? revision ?? 0), articles: Number(articles ?? 0), searchMode: safeJson(searchMode, "substring") };
 }
 
 export async function claimChatRequest(requestId: string, requestHash: string) {

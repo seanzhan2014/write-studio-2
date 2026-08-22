@@ -1,6 +1,6 @@
 import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
 import { findModel } from "@/db/ai";
-import { clearBusinessData, readStudioState, searchDocuments, writeStudioState } from "@/db/runtime";
+import { applyStudioChanges, clearBusinessData, readStudioState, searchDocuments } from "@/db/runtime";
 import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
 import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
@@ -8,6 +8,7 @@ import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import type { SelectedAiContext } from "@/lib/ai-context";
+import { diffStudioData } from "@/lib/studio-changes";
 
 type RouteContext = { params: Promise<{ segments: string[] }> };
 type Json = Record<string, unknown>;
@@ -58,8 +59,8 @@ async function commit(request: Request, mutate: (data: StudioData) => unknown, a
       else if (task.state === "cancelled") { task.phase = "cancelled"; task.completedAt ??= now(); }
       else task.phase ??= "generating";
     }
-    const saved = await writeStudioState(next, expected);
-    if (saved.conflict) return reply({ error: "revision_conflict", ...saved.current }, 409);
+    const saved = await applyStudioChanges(diffStudioData(state.data, next), expected);
+    if (saved.conflict) return reply({ error: "revision_conflict", revision: saved.revision, databaseVersion: saved.databaseVersion }, 409);
     return reply({ data: result, revision: saved.revision });
   } catch (error) {
     return mutationError(error);
