@@ -9,7 +9,7 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { decryptAiSecret } from "@/lib/ai-secret";
-import type { StudioChanges } from "@/lib/studio-changes";
+import { diffStudioData, isStudioChangesEmpty, type StudioChanges } from "@/lib/studio-changes";
 import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
@@ -670,18 +670,45 @@ async function ensureArticleNamingColumns(db: SqliteDatabase) {
   if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
 }
 
-export async function writeStudioState(data: StudioData, expectedRevision: number) {
+type StudioWriteOptions = { syncOperationId?: string };
+
+function syncOperationReceiptStatements(db: SqliteDatabase, operationId: string | undefined, databaseVersion: number, now: string) {
+  if (!operationId) return [];
+  return [
+    db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('sync_last_applied_operation_id',?,?)").bind(operationId, now),
+    db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('sync_last_applied_operation_version',?,?)").bind(String(databaseVersion), now),
+  ];
+}
+
+export async function writeStudioState(data: StudioData, expectedRevision: number, options?: StudioWriteOptions) {
   await ensureDatabase();
   const db = getDatabase();
-  const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
-  if (current !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
-  const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
+  const currentState = await readStudioState();
+  const current = currentState.revision;
+  if (current !== expectedRevision) return { conflict: true as const, current: currentState };
+  const currentDatabaseVersion = currentState.databaseVersion;
+
+  if (currentState.data && isStudioChangesEmpty(diffStudioData(currentState.data, data))) {
+    if (!options?.syncOperationId) return { conflict: false as const, revision: current, databaseVersion: currentDatabaseVersion, unchanged: true as const };
+    const now = new Date().toISOString();
+    try {
+      await db.batch([
+        db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(current, currentDatabaseVersion, crypto.randomUUID(), now),
+        ...syncOperationReceiptStatements(db, options.syncOperationId, currentDatabaseVersion, now),
+      ]);
+      return { conflict: false as const, revision: current, databaseVersion: currentDatabaseVersion, unchanged: true as const };
+    } catch (error) {
+      const actual = await readStudioState();
+      if (actual.revision !== current || actual.databaseVersion !== currentDatabaseVersion) return { conflict: true as const, current: actual };
+      throw error;
+    }
+  }
 
   const now = new Date().toISOString();
   const nextRevision = expectedRevision + 1;
   const nextDatabaseVersion = currentDatabaseVersion + 1;
   const statements: SqliteStatement[] = [
-    db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, crypto.randomUUID(), now),
+    db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
@@ -730,11 +757,12 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)", [String(nextDatabaseVersion), now]));
+  statements.push(...syncOperationReceiptStatements(db, options?.syncOperationId, nextDatabaseVersion, now));
   try {
     await db.batch(statements);
   } catch (error) {
-    const actual = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
-    if (actual !== expectedRevision) return { conflict: true as const, current: await readStudioState() };
+    const actual = await readStudioState();
+    if (actual.revision !== expectedRevision || actual.databaseVersion !== currentDatabaseVersion) return { conflict: true as const, current: actual };
     throw error;
   }
   return { conflict: false as const, revision: nextRevision, databaseVersion: nextDatabaseVersion };
@@ -748,13 +776,30 @@ function taskStatusValue(task: StudioData["tasks"][number]) {
   return task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state;
 }
 
-export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number }) {
+export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string }) {
   await ensureDatabase();
   const db = getDatabase();
   const currentRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? currentRevision);
   if (currentRevision !== expectedRevision || (options?.expectedDatabaseVersion !== undefined && currentDatabaseVersion !== options.expectedDatabaseVersion)) {
     return { conflict: true as const, revision: currentRevision, databaseVersion: currentDatabaseVersion };
+  }
+
+  if (isStudioChangesEmpty(changes)) {
+    if (!options?.syncOperationId) return { conflict: false as const, revision: currentRevision, databaseVersion: currentDatabaseVersion, unchanged: true as const };
+    const now = new Date().toISOString();
+    try {
+      await db.batch([
+        db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
+        ...syncOperationReceiptStatements(db, options.syncOperationId, currentDatabaseVersion, now),
+      ]);
+      return { conflict: false as const, revision: currentRevision, databaseVersion: currentDatabaseVersion, unchanged: true as const };
+    } catch (error) {
+      const actualRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
+      const actualDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? actualRevision);
+      if (actualRevision !== expectedRevision || actualDatabaseVersion !== currentDatabaseVersion) return { conflict: true as const, revision: actualRevision, databaseVersion: actualDatabaseVersion };
+      throw error;
+    }
   }
 
   const now = new Date().toISOString();
@@ -864,6 +909,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
   }
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)", [String(nextDatabaseVersion), now]));
+  statements.push(...syncOperationReceiptStatements(db, options?.syncOperationId, nextDatabaseVersion, now));
 
   try {
     await db.batch(statements);

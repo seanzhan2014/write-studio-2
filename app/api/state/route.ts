@@ -1,5 +1,6 @@
 import { readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import type { StudioData } from "@/app/studio-state";
+import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +43,11 @@ export async function PUT(request: Request) {
     if (!Number.isFinite(expectedRevision)) return json({ error: "if_match_required" }, 428);
     const body = await request.json() as { data?: StudioData };
     if (!body.data || body.data.version !== 1 || !Array.isArray(body.data.articles)) return json({ error: "invalid_state" }, 400);
+    const current = await readStudioState();
+    if (current.revision !== expectedRevision) return json({ error: "revision_conflict", ...current }, 409);
+    if (current.data && isStudioChangesEmpty(diffStudioData(current.data, body.data))) {
+      return json({ revision: current.revision, databaseVersion: current.databaseVersion, unchanged: true });
+    }
     const result = await writeStudioState(body.data, expectedRevision);
     if (result.conflict) return json({ error: "revision_conflict", ...result.current }, 409);
     return json({ revision: result.revision, databaseVersion: result.databaseVersion });

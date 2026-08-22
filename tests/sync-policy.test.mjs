@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canAutomaticallyUpload, evaluateSyncPolicy, shouldDisableAutomaticUpload } from "../lib/sync-policy.mjs";
+import { canAutomaticallyUpload, classifyRemoteWriteConflict, evaluateSyncPolicy, remoteAcknowledgesPendingOperation, shouldDisableAutomaticUpload } from "../lib/sync-policy.mjs";
 
 const baseline = {
   localSchemaVersion: 1,
@@ -42,4 +42,25 @@ test("a version conflict disables automatic uploads until the user intervenes", 
   assert.equal(shouldDisableAutomaticUpload("diverged"), true);
   assert.equal(shouldDisableAutomaticUpload("offline"), false);
   assert.equal(shouldDisableAutomaticUpload("schema_mismatch"), false);
+});
+
+test("a transient state-revision race is not treated as database divergence", () => {
+  assert.equal(classifyRemoteWriteConflict(7, 7), "revision_busy");
+  assert.equal(classifyRemoteWriteConflict(7, 8), "version_mismatch");
+  assert.equal(shouldDisableAutomaticUpload("pending"), false);
+});
+
+test("a lost upload response is recovered only from the exact durable receipt", () => {
+  const receipt = {
+    pendingOperationId: "operation-a",
+    pendingLocalVersion: 12,
+    localDatabaseVersion: 12,
+    remoteOperationId: "operation-a",
+    remoteOperationVersion: 8,
+    remoteDatabaseVersion: 8,
+  };
+  assert.equal(remoteAcknowledgesPendingOperation(receipt), true);
+  assert.equal(remoteAcknowledgesPendingOperation({ ...receipt, remoteOperationId: "operation-b" }), false);
+  assert.equal(remoteAcknowledgesPendingOperation({ ...receipt, remoteDatabaseVersion: 9 }), false);
+  assert.equal(remoteAcknowledgesPendingOperation({ ...receipt, pendingLocalVersion: 13 }), false);
 });

@@ -61,6 +61,31 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(malformed.response.status, 400, malformed.text);
   });
 
+  await t.test("does not advance database versions for identical writes", async () => {
+    await resetFixture();
+    const before = await api("/api/state");
+    const identicalState = await api("/api/state", {
+      method: "PUT",
+      headers: { "If-Match": String(before.data.revision) },
+      body: { data: before.data.data },
+    });
+    assert.equal(identicalState.response.status, 200, identicalState.text);
+    assert.equal(identicalState.data.unchanged, true);
+    assert.equal(identicalState.data.revision, before.data.revision);
+    assert.equal(identicalState.data.databaseVersion, before.data.databaseVersion);
+
+    const identicalPatch = await api("/api/articles/article-main", {
+      method: "PATCH",
+      headers: { "If-Match": String(before.data.revision) },
+      body: { title: before.data.data.articles.find((article) => article.id === "article-main").title },
+    });
+    assert.equal(identicalPatch.response.status, 200, identicalPatch.text);
+    assert.equal(identicalPatch.data.unchanged, true);
+    assert.equal(identicalPatch.data.revision, before.data.revision);
+    const after = await api("/api/state");
+    assert.equal(after.data.databaseVersion, before.data.databaseVersion);
+  });
+
   await t.test("uses field allow-lists instead of accepting nested graph replacement", async () => {
     let revision = await resetFixture();
     const patched = await api("/api/articles/article-main", {

@@ -2,15 +2,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { StudioData } from "@/app/studio-state";
 import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai";
-import { canAutomaticallyUpload, evaluateSyncPolicy, shouldDisableAutomaticUpload } from "@/lib/sync-policy.mjs";
+import { canAutomaticallyUpload, classifyRemoteWriteConflict, evaluateSyncPolicy, remoteAcknowledgesPendingOperation, shouldDisableAutomaticUpload } from "@/lib/sync-policy.mjs";
 import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
-import { isStudioChanges, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
+import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
 export const SYNC_SCHEMA_VERSION = 5;
 const syncFormat = "writer-studio-sync-v1";
 const syncChangesFormat = "writer-studio-changes-v1";
 const remoteTimeoutMs = 30_000;
+const remoteRevisionRetryLimit = 3;
 
 export type SyncSnapshot = {
   format: typeof syncFormat;
@@ -38,6 +39,8 @@ export type RemoteDatabaseMeta = {
   schemaVersion: number;
   databaseId: string;
   databaseVersion: number;
+  lastAppliedOperationId?: string;
+  lastAppliedOperationVersion?: number | null;
 };
 
 export type LocalSyncState =
@@ -70,6 +73,9 @@ type StoredSyncMeta = {
   lastRemoteDatabaseId: string;
   lastSyncAt: string;
   lastError: string;
+  pendingOperationId: string;
+  pendingOperationKey: string;
+  pendingOperationLocalVersion: number | null;
 };
 
 function parseVersion(value: string | undefined) {
@@ -132,6 +138,9 @@ async function storedSyncMeta(): Promise<StoredSyncMeta> {
     "sync_last_remote_database_id",
     "sync_last_at",
     "sync_last_error",
+    "sync_pending_operation_id",
+    "sync_pending_operation_key",
+    "sync_pending_operation_local_version",
   ]);
   return {
     lastCloudVersion: parseVersion(values.get("sync_last_cloud_version")),
@@ -139,7 +148,32 @@ async function storedSyncMeta(): Promise<StoredSyncMeta> {
     lastRemoteDatabaseId: values.get("sync_last_remote_database_id") ?? "",
     lastSyncAt: values.get("sync_last_at") ?? "",
     lastError: values.get("sync_last_error") ?? "",
+    pendingOperationId: values.get("sync_pending_operation_id") ?? "",
+    pendingOperationKey: values.get("sync_pending_operation_key") ?? "",
+    pendingOperationLocalVersion: parseVersion(values.get("sync_pending_operation_local_version")),
   };
+}
+
+function normalizeSyncOperationId(value: unknown) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value)) {
+    throw new SyncError("invalid_operation_id", "同步操作编号无效", 400);
+  }
+  return value;
+}
+
+async function pendingSyncOperationId(operationKey: string, localDatabaseVersion: number) {
+  const stored = await storedSyncMeta();
+  if (stored.pendingOperationKey === operationKey && stored.pendingOperationLocalVersion === localDatabaseVersion && normalizeSyncOperationId(stored.pendingOperationId)) return stored.pendingOperationId;
+  const operationId = crypto.randomUUID();
+  await writeSettings({ sync_pending_operation_id: operationId, sync_pending_operation_key: operationKey, sync_pending_operation_local_version: String(localDatabaseVersion) });
+  return operationId;
+}
+
+async function snapshotOperationKey(prefix: string, snapshot: SyncSnapshot) {
+  const encoded = new TextEncoder().encode(JSON.stringify({ ...snapshot, createdAt: "" }));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
+  return `${prefix}:${Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export async function currentDatabaseMeta(): Promise<RemoteDatabaseMeta> {
@@ -149,6 +183,41 @@ export async function currentDatabaseMeta(): Promise<RemoteDatabaseMeta> {
   const databaseId = settings.get("sync_database_id") ?? "";
   if (!databaseId) throw new SyncError("database_identity_missing", "数据库缺少同步标识", 500);
   return { schemaVersion, databaseId, databaseVersion };
+}
+
+export async function currentDatabaseSyncMeta(): Promise<RemoteDatabaseMeta> {
+  const [meta, operation] = await Promise.all([
+    currentDatabaseMeta(),
+    readSettings(["sync_last_applied_operation_id", "sync_last_applied_operation_version"]),
+  ]);
+  return {
+    ...meta,
+    lastAppliedOperationId: operation.get("sync_last_applied_operation_id") || undefined,
+    lastAppliedOperationVersion: parseVersion(operation.get("sync_last_applied_operation_version")),
+  };
+}
+
+async function wasSyncOperationApplied(operationId: string, current: RemoteDatabaseMeta) {
+  if (!operationId) return false;
+  const values = await readSettings(["sync_last_applied_operation_id", "sync_last_applied_operation_version"]);
+  if (values.get("sync_last_applied_operation_id") !== operationId) return false;
+  const appliedVersion = parseVersion(values.get("sync_last_applied_operation_version"));
+  if (appliedVersion === null) return false;
+  if (current.databaseVersion !== appliedVersion) {
+    throw new SyncError("version_mismatch", "该同步操作完成后云端数据库又发生了变化", 409, { expected: appliedVersion, actual: current.databaseVersion });
+  }
+  return true;
+}
+
+function remoteWriteConflict(expectedDatabaseVersion: number, actualDatabaseVersion: number) {
+  const code = classifyRemoteWriteConflict(expectedDatabaseVersion, actualDatabaseVersion);
+  return code === "revision_busy"
+    ? new SyncError(code, "云端任务状态正在更新，稍后可继续自动同步", 409, { expected: expectedDatabaseVersion, actual: actualDatabaseVersion })
+    : new SyncError(code, "云端数据库版本已变化，禁止自动同步", 409, { expected: expectedDatabaseVersion, actual: actualDatabaseVersion });
+}
+
+async function pauseBeforeRevisionRetry(attempt: number) {
+  await new Promise<void>((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
 }
 
 function normalizedOverwriteOptions(value?: Partial<SyncOverwriteOptions>): SyncOverwriteOptions {
@@ -190,25 +259,38 @@ export function validateSyncSnapshot(value: unknown): asserts value is SyncSnaps
   }
 }
 
-export async function replaceCurrentDatabase(snapshotValue: unknown, expectedDatabaseVersion: number) {
+export async function replaceCurrentDatabase(snapshotValue: unknown, expectedDatabaseVersion: number, operationIdValue?: unknown) {
   validateSyncSnapshot(snapshotValue);
   const snapshot = snapshotValue;
-  const current = await readStudioState();
-  const meta = await currentDatabaseMeta();
+  const operationId = normalizeSyncOperationId(operationIdValue);
+  let meta = await currentDatabaseMeta();
   if (snapshot.schemaVersion !== SYNC_SCHEMA_VERSION || meta.schemaVersion !== SYNC_SCHEMA_VERSION) {
     throw new SyncError("schema_mismatch", "数据库结构版本不同，禁止复制；请先升级两端应用", 409, { local: meta.schemaVersion, incoming: snapshot.schemaVersion });
   }
-  if (!Number.isSafeInteger(expectedDatabaseVersion) || current.databaseVersion !== expectedDatabaseVersion) {
-    throw new SyncError("version_mismatch", "云端数据库版本已变化，禁止自动复制", 409, { expected: expectedDatabaseVersion, actual: current.databaseVersion });
+  if (await wasSyncOperationApplied(operationId, meta)) {
+    const modelScope = snapshot.modelScope ?? "none";
+    if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all", snapshot.providers ?? []);
+    return meta;
   }
-  if (!current.data) throw new SyncError("database_unavailable", "数据库内容不可用", 503);
-  const result = await writeStudioState(snapshot.data, current.revision);
-  if (result.conflict) {
-    throw new SyncError("version_mismatch", "写入期间数据库版本发生变化，请重试", 409, { actual: result.current.databaseVersion });
+  if (!Number.isSafeInteger(expectedDatabaseVersion) || meta.databaseVersion !== expectedDatabaseVersion) {
+    throw remoteWriteConflict(expectedDatabaseVersion, meta.databaseVersion);
   }
-  const modelScope = snapshot.modelScope ?? "none";
-  if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all", snapshot.providers ?? []);
-  return { ...await currentDatabaseMeta(), databaseVersion: result.databaseVersion };
+
+  for (let attempt = 0; attempt < remoteRevisionRetryLimit; attempt += 1) {
+    const current = await readStudioState();
+    if (current.databaseVersion !== expectedDatabaseVersion) throw remoteWriteConflict(expectedDatabaseVersion, current.databaseVersion);
+    if (!current.data) throw new SyncError("database_unavailable", "数据库内容不可用", 503);
+    const result = await writeStudioState(snapshot.data, current.revision, { syncOperationId: operationId || undefined });
+    if (!result.conflict) {
+      const modelScope = snapshot.modelScope ?? "none";
+      if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all", snapshot.providers ?? []);
+      meta = await currentDatabaseMeta();
+      return { ...meta, databaseVersion: result.databaseVersion };
+    }
+    if (result.current.databaseVersion !== expectedDatabaseVersion) throw remoteWriteConflict(expectedDatabaseVersion, result.current.databaseVersion);
+    if (attempt + 1 < remoteRevisionRetryLimit) await pauseBeforeRevisionRetry(attempt);
+  }
+  throw remoteWriteConflict(expectedDatabaseVersion, expectedDatabaseVersion);
 }
 
 function safeTokenEqual(left: string, right: string) {
@@ -271,17 +353,17 @@ async function remoteSnapshot(config: SyncConfig, options?: Partial<SyncOverwrit
   return snapshot;
 }
 
-async function remoteReplace(config: SyncConfig, snapshot: SyncSnapshot, expectedDatabaseVersion: number) {
+async function remoteReplace(config: SyncConfig, snapshot: SyncSnapshot, expectedDatabaseVersion: number, operationId: string) {
   return remoteRequest<RemoteDatabaseMeta>(config, "/api/sync/remote/replace", {
     method: "PUT",
-    body: JSON.stringify({ snapshot, expectedDatabaseVersion }),
+    body: JSON.stringify({ snapshot, expectedDatabaseVersion, operationId }),
   });
 }
 
-async function remoteApplyChanges(config: SyncConfig, envelope: SyncChangesEnvelope, expectedDatabaseVersion: number) {
+async function remoteApplyChanges(config: SyncConfig, envelope: SyncChangesEnvelope, expectedDatabaseVersion: number, operationId: string) {
   return remoteRequest<RemoteDatabaseMeta>(config, "/api/sync/remote/changes", {
     method: "PUT",
-    body: JSON.stringify({ envelope, expectedDatabaseVersion }),
+    body: JSON.stringify({ envelope, expectedDatabaseVersion, operationId }),
   });
 }
 
@@ -292,17 +374,23 @@ function validateSyncChangesEnvelope(value: unknown): asserts value is SyncChang
   }
 }
 
-export async function applyRemoteChanges(value: unknown, expectedDatabaseVersion: number) {
+export async function applyRemoteChanges(value: unknown, expectedDatabaseVersion: number, operationIdValue?: unknown) {
   validateSyncChangesEnvelope(value);
   const envelope = value;
+  const operationId = normalizeSyncOperationId(operationIdValue);
   const meta = await currentDatabaseMeta();
   if (meta.schemaVersion !== SYNC_SCHEMA_VERSION) throw new SyncError("schema_mismatch", "数据库结构版本不同，禁止增量同步", 409);
+  if (await wasSyncOperationApplied(operationId, meta)) return meta;
   if (!Number.isSafeInteger(expectedDatabaseVersion) || meta.databaseVersion !== expectedDatabaseVersion) {
-    throw new SyncError("version_mismatch", "云端数据库版本已变化，禁止自动同步", 409, { expected: expectedDatabaseVersion, actual: meta.databaseVersion });
+    throw remoteWriteConflict(expectedDatabaseVersion, meta.databaseVersion);
   }
-  const result = await applyStudioChanges(envelope.changes, await readStudioRevision(), { recordSyncChange: false, expectedDatabaseVersion });
-  if (result.conflict) throw new SyncError("version_mismatch", "增量写入期间数据库版本发生变化，请重试", 409, { actual: result.databaseVersion });
-  return { schemaVersion: meta.schemaVersion, databaseId: meta.databaseId, databaseVersion: result.databaseVersion };
+  for (let attempt = 0; attempt < remoteRevisionRetryLimit; attempt += 1) {
+    const result = await applyStudioChanges(envelope.changes, await readStudioRevision(), { recordSyncChange: false, expectedDatabaseVersion, syncOperationId: operationId || undefined });
+    if (!result.conflict) return { schemaVersion: meta.schemaVersion, databaseId: meta.databaseId, databaseVersion: result.databaseVersion };
+    if (result.databaseVersion !== expectedDatabaseVersion) throw remoteWriteConflict(expectedDatabaseVersion, result.databaseVersion);
+    if (attempt + 1 < remoteRevisionRetryLimit) await pauseBeforeRevisionRetry(attempt);
+  }
+  throw remoteWriteConflict(expectedDatabaseVersion, expectedDatabaseVersion);
 }
 
 async function createPendingChanges(lastUploadedLocalVersion: number, local: RemoteDatabaseMeta): Promise<SyncChangesEnvelope | null> {
@@ -378,6 +466,9 @@ async function recordSyncSuccess(remote: RemoteDatabaseMeta, localDatabaseVersio
     sync_last_at: new Date().toISOString(),
     sync_last_error: "",
     sync_status: "synced",
+    sync_pending_operation_id: "",
+    sync_pending_operation_key: "",
+    sync_pending_operation_local_version: "",
   });
 }
 
@@ -395,6 +486,23 @@ async function performBackgroundUpload() {
   if (stored.lastCloudVersion === null) return { state: "unpaired" as const, uploaded: false, message: statusMessage("unpaired") };
   try {
     const remote = await remoteMeta(config);
+    const acknowledgesPendingOperation = remoteAcknowledgesPendingOperation({
+      pendingOperationId: stored.pendingOperationId,
+      pendingLocalVersion: stored.pendingOperationLocalVersion,
+      localDatabaseVersion: local.databaseVersion,
+      remoteOperationId: remote.lastAppliedOperationId,
+      remoteOperationVersion: remote.lastAppliedOperationVersion,
+      remoteDatabaseVersion: remote.databaseVersion,
+    });
+    if (acknowledgesPendingOperation) {
+      const uploadedLocalVersion = stored.pendingOperationLocalVersion!;
+      await recordSyncSuccess(remote, uploadedLocalVersion);
+      await pruneChangeLog(uploadedLocalVersion);
+      if (uploadedLocalVersion === local.databaseVersion) {
+        return { state: "synced" as const, uploaded: false, recovered: true, message: "已确认上次上传实际成功", remoteDatabaseVersion: remote.databaseVersion };
+      }
+      return performBackgroundUpload();
+    }
     const policy = evaluateSyncPolicy({
       localSchemaVersion: local.schemaVersion,
       remoteSchemaVersion: remote.schemaVersion,
@@ -413,13 +521,28 @@ async function performBackgroundUpload() {
     await writeSettings({ sync_status: "uploading", sync_last_error: "" });
     const envelope = stored.lastUploadedLocalVersion === null ? null : await createPendingChanges(stored.lastUploadedLocalVersion, local);
     const localVersion = local.databaseVersion;
-    const replaced = envelope
-      ? await remoteApplyChanges(config, envelope, stored.lastCloudVersion)
-      : await remoteReplace(config, await createCurrentSnapshot(), stored.lastCloudVersion);
+    if (envelope && isStudioChangesEmpty(envelope.changes)) {
+      await recordSyncSuccess(remote, localVersion);
+      await pruneChangeLog(localVersion);
+      return { state: "synced" as const, uploaded: false, message: statusMessage("synced"), remoteDatabaseVersion: remote.databaseVersion };
+    }
+    let replaced: RemoteDatabaseMeta;
+    if (envelope) {
+      const operationId = await pendingSyncOperationId(`auto:changes:${envelope.sourceDatabaseId}:${envelope.throughLocalVersion}`, localVersion);
+      replaced = await remoteApplyChanges(config, envelope, stored.lastCloudVersion, operationId);
+    } else {
+      const snapshot = await createCurrentSnapshot();
+      const operationId = await pendingSyncOperationId(`auto:replace:${snapshot.databaseId}:${snapshot.databaseVersion}`, localVersion);
+      replaced = await remoteReplace(config, snapshot, stored.lastCloudVersion, operationId);
+    }
     await recordSyncSuccess(replaced, localVersion);
     await pruneChangeLog(localVersion);
     return { state: "synced" as const, uploaded: true, message: statusMessage("synced"), remoteDatabaseVersion: replaced.databaseVersion };
   } catch (error) {
+    if (error instanceof SyncError && error.code === "revision_busy") {
+      await recordSyncFailure("pending", error.message);
+      return { state: "pending" as const, uploaded: false, retryable: true, message: error.message };
+    }
     const state: LocalSyncState = error instanceof SyncError && ["version_mismatch", "schema_mismatch"].includes(error.code)
       ? error.code === "schema_mismatch" ? "schema_mismatch" : "diverged"
       : "offline";
@@ -484,7 +607,14 @@ export async function pushLocalOverCloud(options?: Partial<SyncOverwriteOptions>
     throw new SyncError("schema_mismatch", "两端数据库结构版本不同，不能覆盖", 409, { local: local.schemaVersion, remote: cloudBefore.schemaVersion });
   }
   const backupPath = writeRecoverySnapshot("sync-cloud-before-push", cloudBefore);
-  const replaced = await remoteReplace(config, local, cloudBefore.databaseVersion);
+  const operationId = await pendingSyncOperationId(await snapshotOperationKey("manual:push", local), local.databaseVersion);
+  let replaced: RemoteDatabaseMeta;
+  try {
+    replaced = await remoteReplace(config, local, cloudBefore.databaseVersion, operationId);
+  } catch (error) {
+    if (error instanceof SyncError && error.code === "version_mismatch") await recordSyncFailure("diverged", error.message);
+    throw error;
+  }
   await recordSyncSuccess(replaced, local.databaseVersion);
   await pruneChangeLog(local.databaseVersion);
   return { state: "synced" as const, message: "已用本地数据库覆盖云端", backupPath, localDatabaseVersion: local.databaseVersion, remoteDatabaseVersion: replaced.databaseVersion };

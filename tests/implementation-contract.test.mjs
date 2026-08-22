@@ -105,7 +105,7 @@ test("ordinary saves and automatic cloud uploads use bounded change sets", async
   assert.match(runtime, /INSERT INTO sync_change_log/);
   assert.match(sync, /remoteApplyChanges/);
   assert.match(sync, /createPendingChanges/);
-  assert.match(sync, /remoteReplace\(config, await createCurrentSnapshot\(\), stored\.lastCloudVersion\)/, "a full snapshot remains available only as a gap-recovery fallback");
+  assert.match(sync, /const snapshot = await createCurrentSnapshot\(\)[\s\S]*remoteReplace\(config, snapshot, stored\.lastCloudVersion, operationId\)/, "a full snapshot remains available only as a gap-recovery fallback");
 });
 
 test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
@@ -122,6 +122,12 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(sync, /writeRecoverySnapshot\("sync-cloud-before-push"/);
   assert.match(sync, /sync_auto_upload/);
   assert.match(sync, /shouldDisableAutomaticUpload\(state\)[\s\S]*sync_auto_upload = "0"/);
+  assert.match(sync, /sync_pending_operation_id/);
+  assert.match(sync, /sync_last_applied_operation_id/);
+  assert.match(sync, /wasSyncOperationApplied/);
+  assert.match(sync, /revision_busy/);
+  assert.match(sync, /pendingSyncOperationId/);
+  assert.match(runtime, /isStudioChangesEmpty/);
   assert.match(sync, /modelScope/);
   assert.match(ai, /exportModelsForSync/);
   assert.match(ai, /replaceModelsFromSync/);
