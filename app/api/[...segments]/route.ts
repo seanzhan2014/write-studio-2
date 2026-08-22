@@ -1,10 +1,12 @@
 import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
+import { findModel } from "@/db/ai";
 import { clearBusinessData, readStudioState, searchDocuments, writeStudioState } from "@/db/runtime";
 import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
 import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
+import { modelSelectionLabel } from "@/lib/model-label";
 
 type RouteContext = { params: Promise<{ segments: string[] }> };
 type Json = Record<string, unknown>;
@@ -109,6 +111,8 @@ export async function POST(request: Request, context: RouteContext) {
     const existing = state.data?.tasks.find((task) => task.id === key);
     if (existing) return reply({ data: existing, revision: state.revision });
   }
+  const requestedTaskModel = s[0] === "ai" && s[1] === "tasks" && s.length === 2 ? String(body.model ?? "").trim() : "";
+  const configuredTaskModel = requestedTaskModel ? await findModel(requestedTaskModel) : null;
   if (s[0] === "articles" && s.length === 1) return commit(request, (data) => {
     const createdAt = now(), articleId = id("article"), chapterId = id("chapter"), outlineId = id("outline");
     const outline: Outline = { id: outlineId, title: "", titleGenerationPending: true, plan: "", generateInstruction: "", content: "", currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: createdAt, versions: [], chat: emptyChat(outlineId, createdAt) };
@@ -144,7 +148,7 @@ export async function POST(request: Request, context: RouteContext) {
     const targetWords = targetWordsUnset ? undefined : Number(body.targetWords);
     if (target === "正文" && targetWords !== undefined && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数`);
     const estimate = Number(body.estimatedCharacters ?? 0);
-    const modelId = String(body.modelId ?? "").trim().slice(0, 300) || undefined;
+    const modelId = configuredTaskModel?.modelId ?? (String(body.modelId ?? "").trim().slice(0, 300) || undefined);
     const activeCharacterIds = new Set(found.article.characters.filter((character) => !character.archived).map((character) => character.id));
     const requestedFirstAppearanceIds = Array.isArray(body.firstAppearanceCharacterIds)
       ? [...new Set(body.firstAppearanceCharacterIds.map(String).filter((characterId) => activeCharacterIds.has(characterId)))].slice(0, 200)
@@ -158,7 +162,7 @@ export async function POST(request: Request, context: RouteContext) {
       ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200)
       : undefined;
     const task: AiTask = {
-      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: String(body.model ?? ""), state: "waiting" as const, createdAt: now(),
+      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : requestedTaskModel, state: "waiting" as const, createdAt: now(),
       contextOptions: {
         includePrevious: body.includePrevious !== false,
         includeCharacters: body.includeCharacters !== false,
@@ -176,7 +180,9 @@ export async function POST(request: Request, context: RouteContext) {
           nameChapterCount: found.article.chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && outline.plan.trim())).length,
           nameOutlineCount: found.article.chapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !chapter.archived && !outline.archived && outline.plan.trim()).length, 0),
         } : {}),
+        configuredModelId: configuredTaskModel?.id,
         modelId,
+        modelName: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : undefined,
         firstAppearanceCharacterIds,
         sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
       },

@@ -158,6 +158,7 @@ export type AiTask = {
     rewriteRetention?: RewriteRetentionLevel;
     outlinePlanSnapshot?: string;
     outlineTitleSnapshot?: string;
+    configuredModelId?: string;
     modelId?: string;
     modelName?: string;
     generatedOutlineTitle?: string;
@@ -347,7 +348,7 @@ const seedData: StudioData = {
     showArchived: false,
     openLastArticle: true,
     taskConcurrency: 2,
-    chatModel: "快速对话模型",
+    chatModel: "",
     generateModel: "",
     namingModelMode: "inherit",
     namingModel: "",

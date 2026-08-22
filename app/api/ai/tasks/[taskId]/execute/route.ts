@@ -6,6 +6,7 @@ import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-versions";
+import { modelSelectionLabel } from "@/lib/model-label";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -62,7 +63,8 @@ export async function POST(_request: Request, context: RouteContext) {
     const initialTask = initialState.data && findTask(initialState.data, taskId);
     if (!initialTask) return json({ error: "任务不存在" }, 404);
     if (initialTask.target === "AI Chat") return json({ error: "AI Chat 由流式会话执行" }, 400);
-    const model = await findModel(initialTask.model);
+    const model = await findModel(initialTask.contextOptions?.configuredModelId ?? initialTask.model);
+    const executionModelReference = model?.id ?? initialTask.model;
     const timeoutMs = model?.timeoutMs ?? initialTask.timeoutMs ?? 600_000;
     const claimed = await mutateState((data) => {
       const task = findTask(data, taskId);
@@ -146,12 +148,12 @@ export async function POST(_request: Request, context: RouteContext) {
               articleId: initialTask.articleId,
               chapterNaming: initialTask.contextOptions?.chapterNamingSnapshot,
               outlineNaming: initialTask.contextOptions?.outlineNamingSnapshot,
-              model: initialTask.model,
+              model: executionModelReference,
               instruction: initialTask.prompt,
             }, upstreamController.signal);
           } else {
             result = await generateText({
-              outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: initialTask.model,
+              outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: executionModelReference,
               target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
               includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
               includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
@@ -194,7 +196,7 @@ export async function POST(_request: Request, context: RouteContext) {
             const current = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
             const next = appendNameVersion(current, {
               id: `name-ai-${crypto.randomUUID()}`, title: generated.title, source: "ai", createdAt: completedAt,
-              model: model?.name ?? task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
+              model: model ? modelSelectionLabel(model) : task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
             }, 120);
             chapter.nameVersions = next.state.nameVersions;
             chapter.defaultNameVersionId = next.state.defaultNameVersionId;
@@ -207,7 +209,7 @@ export async function POST(_request: Request, context: RouteContext) {
             const current = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
             const next = appendNameVersion(current, {
               id: `name-ai-${crypto.randomUUID()}`, title: generated.title, source: "ai", createdAt: completedAt,
-              model: model?.name ?? task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
+              model: model ? modelSelectionLabel(model) : task.contextOptions?.modelName ?? task.model, instruction: task.prompt,
             }, 80);
             outline.nameVersions = next.state.nameVersions;
             outline.defaultNameVersionId = next.state.defaultNameVersionId;
@@ -239,7 +241,7 @@ export async function POST(_request: Request, context: RouteContext) {
           const version: Version = {
             id: `version-${crypto.randomUUID()}`,
             name: aiGenerateContentName(model?.modelId ?? task.contextOptions?.modelId, completedAt),
-            content: result.text, source: "AI Generate", createdAt: completedAt, model: model?.name ?? task.contextOptions?.modelName ?? task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
+            content: result.text, source: "AI Generate", createdAt: completedAt, model: model ? modelSelectionLabel(model) : task.contextOptions?.modelName ?? task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
             outlineSnapshot: {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
