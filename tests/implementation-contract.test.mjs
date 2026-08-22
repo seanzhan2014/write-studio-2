@@ -19,7 +19,7 @@ test("character records use only name, aliases, description and archive business
   const characterSchema = schema.match(/export const characters[\s\S]*?export const relationships/)?.[0] ?? "";
   for (const field of ["name", "aliasesJson", "description", "archived"]) assert.match(characterSchema, new RegExp(`\\b${field}\\b`));
   for (const removed of ["role", "appearance", "personality", "abilities", "background", "color"]) assert.doesNotMatch(characterSchema, new RegExp(`\\b${removed}\\b`));
-  assert.match(runtime, /INSERT INTO characters VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision\)\s*VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
   assert.match(state, /description: string/);
   assert.match(app, /character-description-input/);
 });
@@ -45,10 +45,14 @@ test("writing workspace menu supports named save-as versions", async () => {
   assert.match(app, /const saved = await studio\.saveNow\(\);[\s\S]*已另存为/);
 });
 
-test("relationship snapshot insert matches the eight-column table", async () => {
+test("snapshot inserts name every migration-sensitive column explicitly", async () => {
   const runtime = await read("db/runtime.ts");
-  assert.match(runtime, /INSERT INTO relationships VALUES\(\?,\?,\?,\?,\?,\?,\?,\?\)/);
-  assert.doesNotMatch(runtime, /INSERT INTO relationships VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO relationships\(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO chat_sessions\(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO chat_messages\(id,session_id,role,content,status,order_index,created_at\)/);
+  assert.doesNotMatch(runtime, /INSERT INTO (?:characters|relationships|chat_sessions|chat_messages) VALUES/);
+  assert.doesNotMatch(runtime, /INSERT INTO (?:characters|relationships|chat_sessions|chat_messages)_next SELECT \*/);
 });
 
 test("schema-extensible inserts name their columns explicitly", async () => {
