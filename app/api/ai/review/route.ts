@@ -52,6 +52,7 @@ export async function POST(request: Request) {
       model?: unknown;
       requirements?: unknown;
       additionalRequirement?: unknown;
+      source?: AiReviewInput & { outlines: Array<ReviewOutlineSource & { baseText: string; sourceVersionId?: string }> };
     };
     const articleId = String(body.articleId ?? "").trim();
     const chapterId = String(body.chapterId ?? "").trim();
@@ -60,22 +61,24 @@ export async function POST(request: Request) {
     const additionalRequirement = String(body.additionalRequirement ?? "").trim().slice(0, 20_000);
     if (!articleId || !chapterId || !model) return json({ error: "请选择文章、章节和 Review 模型" }, 400);
 
-    const initialState = await readStudioState();
-    if (!initialState.data) return json({ error: "没有可用文章" }, 400);
-    const initial = findChapterSource(initialState.data, articleId, chapterId);
-    if (!initial) return json({ error: "Review 章节不存在" }, 404);
-    if (!initial.outlines.length) return json({ error: "当前章节没有可供 Review 的当前正文" }, 400);
-    const contextSnapshot = JSON.stringify({ article: initial.inputArticle, chapterTitle: initial.chapter.title });
+    const supplied = body.source && JSON.stringify(body.source).length <= 1_000_000 && body.source.article.id === articleId && body.source.chapter.id === chapterId ? structuredClone(body.source) : null;
+    const initialState = supplied ? null : await readStudioState();
+    if (!supplied && !initialState?.data) return json({ error: "没有可用文章" }, 400);
+    const stored = supplied ? null : findChapterSource(initialState!.data!, articleId, chapterId);
+    if (!supplied && !stored) return json({ error: "Review 章节不存在" }, 404);
+    const reviewInput: AiReviewInput = supplied ?? { article: stored!.inputArticle, chapter: { id: stored!.chapter.id, title: stored!.chapter.title }, outlines: stored!.outlines, requirements, additionalRequirement, model };
+    if (!reviewInput.outlines.length) return json({ error: "当前章节没有可供 Review 的当前正文" }, 400);
+    const contextSnapshot = JSON.stringify({ article: reviewInput.article, chapterTitle: reviewInput.chapter.title });
     const result = await reviewChapter({
-      article: initial.inputArticle,
-      chapter: { id: initial.chapter.id, title: initial.chapter.title },
-      outlines: initial.outlines,
+      article: reviewInput.article,
+      chapter: reviewInput.chapter,
+      outlines: reviewInput.outlines,
       requirements,
       additionalRequirement,
       model,
     });
     const changed = result.revised.filter((item) => item.revisedText !== item.text);
-    if (!changed.length) {
+    if (!changed.length && (!supplied || supplied.outlines.every((item) => item.text === item.baseText))) {
       return json({ updated: [], editCount: result.editCount, inputTokens: result.usage.promptTokens, outputTokens: result.usage.completionTokens });
     }
 
@@ -87,9 +90,13 @@ export async function POST(request: Request) {
       if (!current.data) return json({ error: "正文数据已不存在" }, 409);
       const source = findChapterSource(current.data, articleId, chapterId);
       if (!source) return json({ error: "Review 章节已不存在" }, 409);
-      const currentDigest = await reviewSourceDigest(chapterId, source.outlines);
-      const currentContext = JSON.stringify({ article: source.inputArticle, chapterTitle: source.chapter.title });
-      if (currentDigest !== result.sourceDigest || currentContext !== contextSnapshot) {
+      const currentDigest = supplied ? result.sourceDigest : await reviewSourceDigest(chapterId, source.outlines);
+      const currentContext = supplied ? contextSnapshot : JSON.stringify({ article: source.inputArticle, chapterTitle: source.chapter.title });
+      const suppliedSourceChanged = supplied ? supplied.outlines.some((item) => {
+        const outline = source.chapter.outlines.find((candidate) => candidate.id === item.id);
+        return !outline || resolvedOutlineContent(outline) !== item.baseText;
+      }) : false;
+      if (currentDigest !== result.sourceDigest || currentContext !== contextSnapshot || suppliedSourceChanged) {
         return json({ error: "Review 期间章节正文或资料发生了变化，未覆盖任何正文", code: "review_source_changed" }, 409);
       }
 
@@ -98,6 +105,20 @@ export async function POST(request: Request) {
       const targetArticle = next.articles.find((item) => item.id === articleId);
       const targetChapter = targetArticle?.chapters.find((item) => item.id === chapterId);
       if (!targetArticle || !targetChapter) return json({ error: "Review 章节已不存在" }, 409);
+      if (supplied) for (const submitted of supplied.outlines) {
+        const outline = targetChapter.outlines.find((item) => item.id === submitted.id);
+        if (!outline || submitted.text === resolvedOutlineContent(outline)) continue;
+        const sourceVersion = submitted.sourceVersionId ? outline.versions.find((version) => version.id === submitted.sourceVersionId) : undefined;
+        const sourceText = sourceVersion?.content ?? resolvedOutlineContent(outline);
+        const sourceFragments = sourceVersion ? normalizeExcellentFragments(sourceVersion.content, sourceVersion.excellentFragments) : activeExcellentFragments(outline);
+        outline.content = submitted.text;
+        outline.contentName = submitted.name;
+        outline.currentVersionId = null;
+        outline.contentOutlineSnapshot = sourceVersion?.outlineSnapshot ?? { title: outline.title, plan: outline.plan };
+        outline.manualExcellent = sourceVersion?.manualExcellent ?? false;
+        outline.excellentFragments = cloneExcellentFragments(submitted.text, reanchorExcellentFragments(sourceText, submitted.text, sourceFragments));
+        outline.updatedAt = createdAt;
+      }
       const updated: Array<{ outlineId: string; versionId: string; name: string; text: string }> = [];
       for (const outline of targetChapter.outlines) {
         const text = revisedById.get(outline.id);
@@ -126,7 +147,20 @@ export async function POST(request: Request) {
       targetArticle.updatedAt = createdAt;
       const saved = await writeStudioState(next, current.revision);
       if (!saved.conflict) {
-        return json({ updated, editCount: result.editCount, inputTokens: result.usage.promptTokens, outputTokens: result.usage.completionTokens });
+        const affectedIds = new Set([...(supplied?.outlines.filter((item) => item.text !== item.baseText).map((item) => item.id) ?? []), ...updated.map((item) => item.outlineId)]);
+        const patches = targetChapter.outlines.filter((outline) => affectedIds.has(outline.id)).map((outline) => ({
+          outlineId: outline.id,
+          content: outline.content,
+          contentName: outline.contentName,
+          currentVersionId: outline.currentVersionId,
+          contentOutlineSnapshot: outline.contentOutlineSnapshot,
+          manualExcellent: outline.manualExcellent,
+          excellentFragments: outline.excellentFragments,
+          versions: outline.versions,
+          state: outline.state,
+          updatedAt: outline.updatedAt,
+        }));
+        return json({ updated, patches, revision: saved.revision, articleUpdatedAt: targetArticle.updatedAt, editCount: result.editCount, inputTokens: result.usage.promptTokens, outputTokens: result.usage.completionTokens });
       }
     }
     return json({ error: "保存 AI Review 结果时发生持续冲突，未覆盖任何正文" }, 409);

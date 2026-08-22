@@ -402,7 +402,10 @@ test("mobile Generate edits use an explicit draft save and insecure HTTP clipboa
   assert.match(app, /const \[outlinePlanDraft, setOutlinePlanDraft\]/);
   assert.match(app, /value=\{outlinePlanDraft\}/);
   assert.doesNotMatch(app, /id="generate-outline-plan"[\s\S]{0,700}onBlur=\{\(\) => void studio\.saveNow\(\)\}/);
-  assert.match(app, /await saveOutlineDraft\(\)/);
+  assert.match(app, /createServerTask\(studio, \{/);
+  assert.match(app, /currentPlan: outlinePlanDraft/);
+  const generateSubmit = app.match(/const submit = useCallback[\s\S]*?useEffect\(\(\) => \{/)[0];
+  assert.doesNotMatch(generateSubmit, /saveNow\(|await saveOutlineDraft/);
   assert.match(state, /saveOutlinePlan: \(outlineId: string, plan: string\) => Promise<boolean>/);
   assert.match(state, /mergeStudioConflict/);
   assert.match(state, /durableSnapshot/);
@@ -434,8 +437,8 @@ test("AI Generate only bundles outline naming when the user opts in", async () =
   assert.match(naming, /词牌名.*绝对不要出现在结果中/);
   assert.match(app, /NAMING_EXPRESSION_OPTIONS/);
   assert.match(app, /生成句数/);
-  assert.match(app, /outlinePlanSnapshot: outlinePlanDraft/);
-  assert.match(app, /includeOutlineTitle, excellentFragmentIds/);
+  assert.match(app, /currentPlan: outlinePlanDraft/);
+  assert.match(app, /includeOutlineTitle,[\s\S]*excellentFragmentIds/);
   assert.match(executor, /found\.outline\.plan === task\.contextOptions\?\.outlinePlanSnapshot/);
   assert.match(runtime, /max_input_characters INTEGER NOT NULL DEFAULT 60000/);
   assert.match(migration, /max_input_characters/);
@@ -456,9 +459,9 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(app, /生成全部章节名和大纲名/);
   assert.match(app, /生成章节名/);
   assert.match(app, /生成大纲名/);
-  assert.match(app, /studio\.addGeneratedNameCandidates/);
+  assert.match(app, /persist: true/);
   assert.match(app, /studio\.setDefaultNameVersion/);
-  assert.match(app, /target: "全部名称"/);
+  assert.match(app, /target: "all-names"/);
   assert.match(app, /生成全部会创建一个后台任务/);
   assert.doesNotMatch(app.match(/async function generateAll\(\)[\s\S]*?async function selectDefault/)?.[0] ?? "", /for \(const|requestNames\(/);
   const outlineActions = app.match(/function OutlineActionSheet[\s\S]*?function DesktopOutlineMenu/)?.[0] ?? "";
@@ -476,6 +479,8 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(migration, /default_name_version_id/);
   assert.match(app, /chapterNaming: article\.chapterNaming/);
   assert.match(app, /outlineNaming: article\.outlineNaming/);
+  assert.match(app, /namingContext: namingArticleContext\(article\)/);
+  assert.match(app, /studio\.acceptServerMutation/);
   assert.match(ai, /export async function generateNames/);
   assert.match(ai, /export async function generateArticleNames/);
   assert.match(ai, /purpose="article-chapter-and-outline-naming"/);
@@ -560,8 +565,9 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
   assert.match(state, /target: "正文" \| "大纲" \| "章节标题" \| "全部名称" \| "AI Chat"/);
   assert.match(state, /clearCompletedTasks: \(\) => void/);
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
-  assert.match(app, /target: "AI Chat"[\s\S]*state: "running"/);
-  assert.match(app, /studio\.updateTask\(taskId, \{ state: "success", phase: "completed"[\s\S]*resultText: stream\.result/);
+  assert.match(app, /action: "submit"[\s\S]*promptContext/);
+  assert.match(app, /finalizeChat\(stream, "success"\)/);
+  assert.match(app, /setLocalStreaming\(\{ taskId, text: stream\.result \}\)/);
   assert.match(app, /submissionLock\.current = submissionToken/);
   assert.match(app, /"Idempotency-Key": taskId/);
   assert.match(app, /正在保存消息并创建任务/);
@@ -578,6 +584,26 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
   assert.match(runtime, /row\.target === "chat" \? "AI Chat"/);
   assert.match(runtime, /task\.target === "AI Chat" \? "chat"/);
   assert.match(api, /s\[2\] === "completed"[\s\S]*task\.state !== "success"/);
+});
+
+test("AI entry points use bounded server transactions instead of full-state save barriers", async () => {
+  const [app, taskRoute, chatRoute, state] = await Promise.all([
+    read("app/WriterStudioApp.tsx"),
+    read("app/api/ai/tasks/route.ts"),
+    read("app/api/outlines/[outlineId]/chat/transactions/route.ts"),
+    read("app/studio-state.tsx"),
+  ]);
+  const generateSubmit = app.match(/const submit = useCallback[\s\S]*?useEffect\(\(\) => \{/)[0];
+  const chatSubmit = app.match(/async function requestAnswer[\s\S]*?async function send/)[0];
+  const naming = app.match(/async function requestNames[\s\S]*?async function selectDefault/)[0];
+  const review = app.match(/async function runReview[\s\S]*?function clearDragState/)[0];
+  for (const flow of [generateSubmit, chatSubmit, naming, review]) assert.doesNotMatch(flow, /saveNow\(/);
+  assert.match(taskRoute, /INSERT INTO ai_tasks/);
+  assert.match(taskRoute, /UPDATE outlines SET summary=COALESCE/);
+  assert.match(chatRoute, /INSERT INTO chat_messages/);
+  assert.match(chatRoute, /UPDATE ai_tasks SET status=/);
+  assert.match(state, /fetch\("\/api\/ai\/tasks"/);
+  assert.doesNotMatch(state, /setInterval\([\s\S]{0,500}refreshFromServer\(\)[\s\S]{0,100}3000/);
 });
 
 test("version selection previews immediately and writing uses explicit draft commits", async () => {

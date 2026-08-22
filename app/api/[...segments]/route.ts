@@ -7,6 +7,7 @@ import { resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-c
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { modelSelectionLabel } from "@/lib/model-label";
+import type { SelectedAiContext } from "@/lib/ai-context";
 
 type RouteContext = { params: Promise<{ segments: string[] }> };
 type Json = Record<string, unknown>;
@@ -161,8 +162,27 @@ export async function POST(request: Request, context: RouteContext) {
     const excellentFragmentIds = target === "正文" && body.includeExcellentFragments === true && Array.isArray(body.excellentFragmentIds)
       ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200)
       : undefined;
+    const promptContext = body.promptContext && typeof body.promptContext === "object"
+      ? structuredClone(body.promptContext) as SelectedAiContext
+      : undefined;
+    const expectedContextKind = target === "正文" ? "content" : target === "大纲" ? "outline" : target === "章节标题" ? "chapter-title" : target === "AI Chat" ? "chat" : undefined;
+    if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedContextKind || JSON.stringify(promptContext).length > 200_000)) {
+      throw new Error("AI 上下文与任务目标不匹配或过大");
+    }
+    const namingContext = target === "全部名称" && body.namingContext && typeof body.namingContext === "object"
+      ? structuredClone(body.namingContext)
+      : undefined;
+    if (namingContext && (String(namingContext.id ?? "") !== articleId || JSON.stringify(namingContext).length > 200_000)) throw new Error("命名上下文与文章不匹配或过大");
+    const createdAt = now();
+    const submittedPlan = target === "正文" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
+    if (submittedPlan !== undefined && submittedPlan !== found.outline.plan) {
+      found.outline.plan = submittedPlan;
+      found.outline.titleGenerationPending = true;
+      found.outline.updatedAt = createdAt;
+      found.article.updatedAt = found.outline.updatedAt;
+    }
     const task: AiTask = {
-      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : requestedTaskModel, state: "waiting" as const, createdAt: now(),
+      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : requestedTaskModel, state: "waiting" as const, createdAt,
       contextOptions: {
         includePrevious: body.includePrevious !== false,
         includeCharacters: body.includeCharacters !== false,
@@ -172,11 +192,11 @@ export async function POST(request: Request, context: RouteContext) {
         contentMode: target === "正文" ? contentMode : undefined,
         ...(target === "正文" && rewriteRetention ? { rewriteRetention } : {}),
         ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
-        outlinePlanSnapshot: found.outline.plan,
-        outlineTitleSnapshot: found.outline.title,
+        outlinePlanSnapshot: promptContext?.currentOutline.plan ?? found.outline.plan,
+        outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? found.outline.title).slice(0, 80),
         ...(target === "全部名称" ? {
-          chapterNamingSnapshot: normalizeNamingProfile(found.article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
-          outlineNamingSnapshot: normalizeNamingProfile(found.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
+          chapterNamingSnapshot: normalizeNamingProfile(body.chapterNaming ?? found.article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
+          outlineNamingSnapshot: normalizeNamingProfile(body.outlineNaming ?? found.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
           nameChapterCount: found.article.chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && outline.plan.trim())).length,
           nameOutlineCount: found.article.chapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !chapter.archived && !outline.archived && outline.plan.trim()).length, 0),
         } : {}),
@@ -185,6 +205,8 @@ export async function POST(request: Request, context: RouteContext) {
         modelName: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : undefined,
         firstAppearanceCharacterIds,
         sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
+        promptContext,
+        namingContext,
       },
     };
     if (target === "正文") {

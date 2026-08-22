@@ -1,6 +1,6 @@
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
 import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, type ArticleNameGenerationResult } from "@/db/ai";
-import { readStudioState, writeStudioState } from "@/db/runtime";
+import { ensureDatabase, getDatabase, readStudioState, writeStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
@@ -17,6 +17,24 @@ function json(value: unknown, status = 200) {
 
 function findTask(data: StudioData, taskId: string) {
   return data.tasks.find((task) => task.id === taskId);
+}
+
+function taskFromRow(row: Record<string, unknown>): AiTask {
+  let contextOptions: AiTask["contextOptions"];
+  try { contextOptions = JSON.parse(String(row.context_options_json ?? "{}")) as AiTask["contextOptions"]; } catch { contextOptions = undefined; }
+  return {
+    id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
+    target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
+    prompt: String(row.instruction ?? ""), model: String(row.model_id ?? ""),
+    state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : String(row.status) as AiTask["state"],
+    attempt: Number(row.attempt ?? 0), phase: row.phase ? String(row.phase) as AiTask["phase"] : undefined,
+    createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined,
+    completedAt: row.completed_at ? String(row.completed_at) : undefined, lastProgressAt: row.last_progress_at ? String(row.last_progress_at) : undefined,
+    receivedCharacters: row.received_characters == null ? undefined : Number(row.received_characters), timeoutMs: row.timeout_ms == null ? undefined : Number(row.timeout_ms),
+    runnerId: row.runner_id ? String(row.runner_id) : undefined, leaseUntil: row.lease_until ? String(row.lease_until) : undefined,
+    resultText: row.result_text ? String(row.result_text) : undefined, resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
+    error: row.error_message ? String(row.error_message) : undefined, contextOptions,
+  };
 }
 
 function findOutline(data: StudioData, outlineId: string) {
@@ -55,47 +73,57 @@ function leaseTime() {
   return new Date(Date.now() + 20_000).toISOString();
 }
 
+async function updateOwnedTaskProgress(taskId: string, runnerId: string, patch: { phase?: AiTask["phase"]; attempt?: number }, visible = true) {
+  await ensureDatabase();
+  const db = getDatabase();
+  const progressedAt = new Date().toISOString();
+  const assignments = ["last_progress_at=?", "lease_until=?"];
+  const values: unknown[] = [progressedAt, leaseTime()];
+  if (patch.phase) { assignments.push("phase=?"); values.push(patch.phase); }
+  if (patch.attempt !== undefined) { assignments.push("attempt=?"); values.push(patch.attempt); }
+  values.push(taskId, runnerId);
+  const result = await db.prepare(`UPDATE ai_tasks SET ${assignments.join(",")} WHERE id=? AND status='running' AND runner_id=?`).bind(...values).run();
+  const updated = Number(result.meta?.changes ?? 0) > 0;
+  if (updated && visible) await db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key='state_revision'").bind(progressedAt).run();
+  return updated;
+}
+
 export async function POST(_request: Request, context: RouteContext) {
   const { taskId } = await context.params;
   const runnerId = `server-${crypto.randomUUID()}`;
   try {
-    const initialState = await readStudioState();
-    const initialTask = initialState.data && findTask(initialState.data, taskId);
+    await ensureDatabase();
+    const db = getDatabase();
+    const initialRow = await db.prepare("SELECT * FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
+    const initialTask = initialRow ? taskFromRow(initialRow) : null;
     if (!initialTask) return json({ error: "任务不存在" }, 404);
     if (initialTask.target === "AI Chat") return json({ error: "AI Chat 由流式会话执行" }, 400);
     const model = await findModel(initialTask.contextOptions?.configuredModelId ?? initialTask.model);
     const executionModelReference = model?.id ?? initialTask.model;
     const timeoutMs = model?.timeoutMs ?? initialTask.timeoutMs ?? 600_000;
-    const claimed = await mutateState((data) => {
-      const task = findTask(data, taskId);
-      if (!task) return { changed: false, value: false };
-      const leaseExpired = task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= Date.now());
-      if (task.state !== "waiting" && !leaseExpired) return { changed: false, value: false };
-      if (task.target === "正文") {
-        const taskCreatedAt = new Date(task.createdAt).getTime();
-        const hasEarlierBodyTask = data.tasks.some((candidate) => candidate.id !== task.id
-          && candidate.outlineId === task.outlineId
-          && candidate.target === "正文"
-          && (candidate.state === "waiting" || candidate.state === "running")
-          && (new Date(candidate.createdAt).getTime() < taskCreatedAt
-            || (candidate.createdAt === task.createdAt && candidate.id < task.id)));
-        if (hasEarlierBodyTask) return { changed: false, value: false };
-      }
-      if (leaseExpired && (task.attempt ?? 0) >= 3) {
-        const completedAt = new Date().toISOString();
-        Object.assign(task, { state: "failed", phase: "failed", completedAt, lastProgressAt: completedAt, error: "任务执行中断，重试次数已用尽", runnerId: undefined, leaseUntil: undefined } satisfies Partial<AiTask>);
-        return { changed: true, value: false };
-      }
-      const startedAt = new Date().toISOString();
-      Object.assign(task, {
-        state: "running", phase: "preparing", attempt: Math.max(1, (task.attempt ?? 0) + 1), startedAt,
-        completedAt: undefined, lastProgressAt: startedAt, receivedCharacters: 0, timeoutMs,
-        runnerId, leaseUntil: leaseTime(), error: undefined,
-      } satisfies Partial<AiTask>);
-      const found = findOutline(data, task.outlineId);
-      if (found && task.target !== "全部名称") found.outline.state = "running";
-      return { changed: true, value: true };
-    });
+    const leaseExpired = initialTask.state === "running" && (!initialTask.leaseUntil || new Date(initialTask.leaseUntil).getTime() <= Date.now());
+    if (initialTask.state !== "waiting" && !leaseExpired) return json({ accepted: false, reason: "already_claimed" }, 202);
+    if (initialTask.target === "正文") {
+      const hasEarlierBodyTask = await db.prepare("SELECT 1 AS found FROM ai_tasks WHERE id<>? AND outline_id=? AND target='content' AND status IN ('queued','running') AND (created_at<? OR (created_at=? AND id<?)) LIMIT 1").bind(taskId, initialTask.outlineId, initialTask.createdAt, initialTask.createdAt, taskId).first<number>("found");
+      if (hasEarlierBodyTask) return json({ accepted: false, reason: "earlier_task" }, 202);
+    }
+    if (leaseExpired && (initialTask.attempt ?? 0) >= 3) {
+      const failedAt = new Date().toISOString();
+      await db.batch([
+        db.prepare("UPDATE ai_tasks SET status='error',phase='failed',completed_at=?,last_progress_at=?,error_message=?,runner_id=NULL,lease_until=NULL WHERE id=?").bind(failedAt, failedAt, "任务执行中断，重试次数已用尽", taskId),
+        db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(failedAt),
+      ]);
+      return json({ accepted: false, reason: "retry_exhausted" }, 202);
+    }
+    const startedAt = new Date().toISOString();
+    const claimResult = await db.prepare("UPDATE ai_tasks SET status='running',phase='preparing',attempt=?,started_at=?,completed_at=NULL,last_progress_at=?,received_characters=0,timeout_ms=?,runner_id=?,lease_until=?,error_message=NULL WHERE id=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?)))")
+      .bind(Math.max(1, (initialTask.attempt ?? 0) + 1), startedAt, startedAt, timeoutMs, runnerId, leaseTime(), taskId, startedAt).run();
+    const claimed = Number(claimResult.meta?.changes ?? 0) > 0;
+    if (claimed) {
+      const statements = [db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(startedAt)];
+      if (initialTask.target !== "全部名称") statements.unshift(db.prepare("UPDATE outlines SET state='running',updated_at=?,revision=revision+1 WHERE id=?").bind(startedAt, initialTask.outlineId));
+      await db.batch(statements);
+    }
     if (!claimed) return json({ accepted: false, reason: "already_claimed" }, 202);
 
     const upstreamController = new AbortController();
@@ -103,16 +131,9 @@ export async function POST(_request: Request, context: RouteContext) {
     const heartbeat = setInterval(() => {
       if (heartbeatBusy || upstreamController.signal.aborted) return;
       heartbeatBusy = true;
-      void mutateState((data) => {
-        const task = findTask(data, taskId);
-        if (!task || task.state !== "running" || task.runnerId !== runnerId) {
-          upstreamController.abort("cancelled");
-          return { changed: false, value: false };
-        }
-        task.lastProgressAt = new Date().toISOString();
-        task.leaseUntil = leaseTime();
-        return { changed: true, value: true };
-      }).catch(() => undefined).finally(() => { heartbeatBusy = false; });
+      void updateOwnedTaskProgress(taskId, runnerId, {}, false)
+        .then((updated) => { if (!updated) upstreamController.abort("cancelled"); })
+        .catch(() => undefined).finally(() => { heartbeatBusy = false; });
     }, 5_000);
 
     try {
@@ -122,27 +143,12 @@ export async function POST(_request: Request, context: RouteContext) {
       for (let requestAttempt = Math.max(1, (initialTask.attempt ?? 0) + 1); requestAttempt <= 3; requestAttempt += 1) {
         if (upstreamController.signal.aborted) break;
         if (requestAttempt > 1) {
-          await mutateState((data) => {
-            const task = findTask(data, taskId);
-            if (!task || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
-            task.phase = "retrying"; task.attempt = requestAttempt; task.lastProgressAt = new Date().toISOString(); task.leaseUntil = leaseTime();
-            return { changed: true, value: true };
-          });
+          if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "retrying", attempt: requestAttempt })) break;
           await new Promise((resolve) => setTimeout(resolve, requestAttempt === 2 ? 1_000 : 2_000));
         }
-        await mutateState((data) => {
-          const task = findTask(data, taskId);
-          if (!task || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
-          task.phase = "connecting"; task.attempt = requestAttempt; task.lastProgressAt = new Date().toISOString(); task.leaseUntil = leaseTime();
-          return { changed: true, value: true };
-        });
+        if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "connecting", attempt: requestAttempt })) break;
         try {
-          await mutateState((data) => {
-            const task = findTask(data, taskId);
-            if (!task || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
-            task.phase = "generating"; task.lastProgressAt = new Date().toISOString(); task.leaseUntil = leaseTime();
-            return { changed: true, value: true };
-          });
+          if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "generating" })) break;
           if (initialTask.target === "全部名称") {
             articleNameResult = await generateArticleNames({
               articleId: initialTask.articleId,
@@ -150,6 +156,7 @@ export async function POST(_request: Request, context: RouteContext) {
               outlineNaming: initialTask.contextOptions?.outlineNamingSnapshot,
               model: executionModelReference,
               instruction: initialTask.prompt,
+              context: initialTask.contextOptions?.namingContext,
             }, upstreamController.signal);
           } else {
             result = await generateText({
@@ -162,6 +169,7 @@ export async function POST(_request: Request, context: RouteContext) {
               rewriteRetention: initialTask.contextOptions?.rewriteRetention,
               firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
               includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
+              context: initialTask.contextOptions?.promptContext,
             }, upstreamController.signal);
           }
           break;
