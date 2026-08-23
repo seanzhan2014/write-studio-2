@@ -438,7 +438,7 @@ type StudioContextValue = {
   updateRelationship: (relationshipId: string, patch: Partial<Relationship>) => void;
   deleteRelationship: (relationshipId: string) => void;
   clearBusinessData: () => Promise<boolean>;
-  acceptServerMutation: (revision: number, update: (current: StudioData) => StudioData) => void;
+  acceptServerMutation: (revision: number, update: (current: StudioData) => StudioData, coverage?: "complete" | "partial") => void;
   refreshFromServer: () => Promise<boolean>;
   saveNow: () => Promise<boolean>;
   retrySave: () => Promise<boolean>;
@@ -846,6 +846,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ changes }),
       });
       const payload = await response.json() as { revision?: number; data?: StudioData; message?: string };
+      // An authoritative API response may have advanced the shared revision
+      // while this request was in flight. Never let this older response roll
+      // the accepted revision and save baseline backward.
+      if (epoch !== saveEpochRef.current) return response.ok && payload.revision !== undefined;
       if (response.status === 409) {
         if (!payload.data) {
           const currentResponse = await fetch("/api/state", { cache: "no-store" });
@@ -900,6 +904,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }
       return true;
     } catch (error) {
+      if (epoch !== saveEpochRef.current) return false;
       setSaveError(controller.signal.reason === "save-timeout" ? "保存超时，请检查网络后重试" : error instanceof Error ? error.message : "保存失败");
       setSaveStatus("failed");
       return false;
@@ -995,7 +1000,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const currentChapter = currentPair?.chapter ?? currentArticle.chapters[0] ?? emptyChapter;
   const currentOutline = currentPair?.outline ?? currentChapter?.outlines[0] ?? emptyOutline;
 
-  const acceptServerMutation = useCallback((revision: number, update: (current: StudioData) => StudioData) => {
+  const acceptServerMutation = useCallback((revision: number, update: (current: StudioData) => StudioData, coverage: "complete" | "partial" = "complete") => {
     if (revision < revisionRef.current) return;
     const nextLocal = update(dataRef.current);
     let base: StudioData;
@@ -1007,7 +1012,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       base = durableSnapshot(dataRef.current);
     }
     const nextBase = durableSnapshot(update(base));
-    revisionRef.current = revision;
+    // A partial task poll does not describe every field covered by the global
+    // revision. It may update the visible task progress and its matching slice
+    // of the save baseline, but only a complete mutation response may advance
+    // the revision used by subsequent writes.
+    if (coverage === "complete") {
+      saveEpochRef.current += 1;
+      revisionRef.current = revision;
+    }
     lastSavedRef.current = stableStudioStringify(nextBase);
     dataRef.current = nextLocal;
     setData(nextLocal);
@@ -1035,7 +1047,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
               ...current,
               tasks: payload.tasks!,
               articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => runningOutlineIds.has(outline.id) ? { ...outline, state: "running" } : outline) })) })),
-            }));
+            }), "partial");
           }
         })
         .catch(() => undefined)

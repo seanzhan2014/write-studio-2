@@ -112,6 +112,23 @@ test("keeps a genuine same-data conflict for explicit user resolution", () => {
   assert.equal(mergeAiManagedConflict(base, local, server), null);
 });
 
+test("accepts newer AI runtime progress without reporting an empty-body conflict", () => {
+  const base = fixture();
+  const local = structuredClone(base);
+  const server = structuredClone(base);
+  local.tasks[0] = { ...local.tasks[0], state: "running", phase: "generating", attempt: 1, receivedCharacters: 0, lastProgressAt: "local-progress", runnerId: "runner-local" };
+  local.articles[0].chapters[0].outlines[0].state = "running";
+  server.tasks[0] = { ...server.tasks[0], state: "running", phase: "receiving", attempt: 1, receivedCharacters: 0, lastProgressAt: "server-progress", runnerId: "runner-server" };
+  server.articles[0].chapters[0].outlines[0].state = "saved";
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(result.merged.tasks[0].phase, "receiving");
+  assert.equal(result.merged.tasks[0].lastProgressAt, "server-progress");
+  assert.equal(result.merged.articles[0].chapters[0].outlines[0].state, "saved");
+  assert.equal(result.merged.articles[0].chapters[0].outlines[0].content, "");
+});
+
 test("merges edits to one article with a concurrently imported article", () => {
   const base = fixture();
   const local = structuredClone(base);

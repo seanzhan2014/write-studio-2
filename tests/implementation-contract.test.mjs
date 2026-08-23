@@ -645,6 +645,8 @@ test("AI entry points use bounded server transactions instead of full-state save
   assert.match(chatRoute, /INSERT INTO chat_messages/);
   assert.match(chatRoute, /UPDATE ai_tasks SET status=/);
   assert.match(state, /fetch\("\/api\/ai\/tasks"/);
+  assert.match(state, /\}\), "partial"\);/, "task polling must not treat a partial task snapshot as a complete global revision");
+  assert.match(state, /epoch !== saveEpochRef\.current/, "stale save responses must not roll the accepted server baseline backward");
   assert.doesNotMatch(state, /setInterval\([\s\S]{0,500}refreshFromServer\(\)[\s\S]{0,100}3000/);
 });
 
