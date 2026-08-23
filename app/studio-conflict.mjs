@@ -164,6 +164,21 @@ function recordConflict(context, path, localValue, serverValue) {
   return clone(serverValue);
 }
 
+const serverOwnedTaskFields = new Set([
+  "state", "phase", "attempt", "startedAt", "completedAt", "lastProgressAt",
+  "receivedCharacters", "runnerId", "leaseUntil", "resultText", "resultVersionId",
+  "error", "inputTokens", "outputTokens",
+]);
+
+function serverOwnsField(path) {
+  const entityPart = [...path].reverse().find((part) => typeof part !== "string");
+  const field = typeof path.at(-1) === "string" ? path.at(-1) : "";
+  if (entityPart?.collection === "tasks" && serverOwnedTaskFields.has(field)) return true;
+  // Outline.state only mirrors the durable AI worker lifecycle. User-authored
+  // outline and body fields continue through the normal three-way merge.
+  return entityPart?.collection === "outlines" && field === "state";
+}
+
 function mergeKeyedArray(base, local, server, path, context) {
   const baseMap = new Map(base.map((item) => [item.id, item]));
   const localMap = new Map(local.map((item) => [item.id, item]));
@@ -208,13 +223,9 @@ function mergeKeyedArray(base, local, server, path, context) {
 
 function mergeValue(base, local, server, path, context) {
   if (same(local, server)) return clone(local);
-  if (same(local, base)) return clone(server);
-  if (same(server, base)) return clone(local);
 
   const field = typeof path.at(-1) === "string" ? path.at(-1) : "";
-  if (field === "updatedAt" && typeof local === "string" && typeof server === "string") {
-    return new Date(local).getTime() >= new Date(server).getTime() ? local : server;
-  }
+  if (serverOwnsField(path)) return clone(server);
 
   if (Array.isArray(base) && Array.isArray(local) && Array.isArray(server) && isKeyedArray(base, local, server)) {
     return mergeKeyedArray(base, local, server, path, context);
@@ -234,6 +245,13 @@ function mergeValue(base, local, server, path, context) {
       if (value !== MISSING) result[key] = value;
     }
     return result;
+  }
+
+  if (same(local, base)) return clone(server);
+  if (same(server, base)) return clone(local);
+
+  if (field === "updatedAt" && typeof local === "string" && typeof server === "string") {
+    return new Date(local).getTime() >= new Date(server).getTime() ? local : server;
   }
 
   return recordConflict(context, path, local, server);
