@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     if (body.persist !== true) return Response.json(generated);
     await ensureDatabase();
     const db = getDatabase();
-    const chapter = await db.prepare("SELECT c.title,c.name_versions_json,c.default_name_version_id,c.archived,a.updated_at FROM chapters c JOIN articles a ON a.id=c.article_id WHERE c.id=? AND c.article_id=?").bind(body.chapterId, body.articleId).first<Record<string, unknown>>();
+    const chapter = await db.prepare("SELECT c.title,c.name_versions_json,c.default_name_version_id,c.archived,c.created_at FROM chapters c WHERE c.id=? AND c.article_id=?").bind(body.chapterId, body.articleId).first<Record<string, unknown>>();
     if (!chapter || Number(chapter.archived)) throw new AiInputError("命名目标不存在或已归档");
     const createdAt = new Date().toISOString();
     const modelLabel = String(body.modelLabel ?? body.model ?? "").slice(0, 300) || undefined;
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     let chapterState: ReturnType<typeof normalizeNameVersionState> | undefined;
     const statements = [];
     if (generated.chapterTitle) {
-      const current = normalizeNameVersionState(body.chapterId, chapter.title, JSON.parse(String(chapter.name_versions_json ?? "[]")) as NameVersion[], chapter.default_name_version_id, String(chapter.updated_at), 120);
+      const current = normalizeNameVersionState(body.chapterId, chapter.title, JSON.parse(String(chapter.name_versions_json ?? "[]")) as NameVersion[], chapter.default_name_version_id, String(chapter.created_at), 120);
       const next = appendNameVersion(current, { id: `name-ai-${crypto.randomUUID()}`, title: generated.chapterTitle, source: "ai", createdAt, model: modelLabel, instruction: body.instruction || undefined }, 120);
       chapterState = next.state;
       if (next.added) {
@@ -39,9 +39,9 @@ export async function POST(request: Request) {
     }
     const outlineStates = [];
     for (const item of generated.outlineTitles) {
-      const outline = await db.prepare("SELECT title,name_versions_json,default_name_version_id,updated_at,archived FROM outlines WHERE id=? AND chapter_id=?").bind(item.id, body.chapterId).first<Record<string, unknown>>();
+      const outline = await db.prepare("SELECT title,name_versions_json,default_name_version_id,created_at,updated_at,archived FROM outlines WHERE id=? AND chapter_id=?").bind(item.id, body.chapterId).first<Record<string, unknown>>();
       if (!outline || Number(outline.archived)) continue;
-      const current = normalizeNameVersionState(item.id, outline.title, JSON.parse(String(outline.name_versions_json ?? "[]")) as NameVersion[], outline.default_name_version_id, String(outline.updated_at), 80);
+      const current = normalizeNameVersionState(item.id, outline.title, JSON.parse(String(outline.name_versions_json ?? "[]")) as NameVersion[], outline.default_name_version_id, String(outline.created_at), 80);
       const next = appendNameVersion(current, { id: `name-ai-${crypto.randomUUID()}`, title: item.title, source: "ai", createdAt, model: modelLabel, instruction: body.instruction || undefined }, 80);
       if (next.added) {
         added += 1;

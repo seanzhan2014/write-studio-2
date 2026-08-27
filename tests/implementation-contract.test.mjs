@@ -112,6 +112,18 @@ test("ordinary saves and automatic cloud uploads use bounded change sets", async
   assert.match(sync, /const snapshot = await createCurrentSnapshot\(\)[\s\S]*remoteReplace\(config, snapshot, stored\.lastCloudVersion, operationId\)/, "a full snapshot remains available only as a gap-recovery fallback");
 });
 
+test("synthetic name and chat metadata use stable database creation times", async () => {
+  const [runtime, names] = await Promise.all([
+    read("db/runtime.ts"),
+    read("app/api/ai/names/route.ts"),
+  ]);
+  assert.match(runtime, /createdAt: String\(outlineRow\.created_at\), updatedAt: String\(outlineRow\.updated_at\)/);
+  assert.match(runtime, /outlineRow\.default_name_version_id,\s*String\(outlineRow\.created_at\)/);
+  assert.match(runtime, /chapterRow\.default_name_version_id,\s*String\(chapterRow\.created_at\)/);
+  assert.match(names, /chapter\.default_name_version_id, String\(chapter\.created_at\)/);
+  assert.match(names, /outline\.default_name_version_id, String\(outline\.created_at\)/);
+});
+
 test("cloud sync uses a database-version baseline and manual overwrite escape hatches", async () => {
   const sync = await read("db/sync.ts");
   const ai = await read("db/ai.ts");

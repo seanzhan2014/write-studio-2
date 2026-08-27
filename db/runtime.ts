@@ -548,7 +548,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         const fallbackSession = {
           id: `chat:${outlineId}`, title: "新对话", messages: [], draft: "", includePrevious: true, includeCharacters: true,
           lastReadMessageId: null,
-          createdAt: String(outlineRow.updated_at), updatedAt: String(outlineRow.updated_at),
+          createdAt: String(outlineRow.created_at), updatedAt: String(outlineRow.updated_at),
         };
         const activeSessionId = String(sessionItems[0]?.id ?? fallbackSession.id);
         const mapExcellentFragments = (sourceText: string, versionId?: string): ExcellentFragment[] => normalizeExcellentFragments(sourceText, excellentFragments
@@ -579,7 +579,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           outlineTitle,
           safeJson<NameVersion[]>(outlineRow.name_versions_json, []),
           outlineRow.default_name_version_id,
-          String(outlineRow.updated_at),
+          String(outlineRow.created_at),
           80,
         );
         return {
@@ -600,7 +600,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         String(chapterRow.title),
         safeJson<NameVersion[]>(chapterRow.name_versions_json, []),
         chapterRow.default_name_version_id,
-        String(chapterRow.updated_at),
+        String(chapterRow.created_at),
         120,
       );
       return { id: chapterId, title: String(chapterRow.title), ...chapterNameState, archived: bool(chapterRow.archived), outlines: chapterOutlines };

@@ -173,6 +173,11 @@ const serverOwnedTaskFields = new Set([
 function serverOwnsField(path) {
   const entityPart = [...path].reverse().find((part) => typeof part !== "string");
   const field = typeof path.at(-1) === "string" ? path.at(-1) : "";
+  // Creation timestamps are immutable system metadata, not editable content.
+  // Legacy rows can synthesize the fixed `name-current:*` version on both
+  // sides with different fallback timestamps. The database should settle
+  // that metadata without asking the user to resolve a content conflict.
+  if (field === "createdAt") return true;
   if (entityPart?.collection === "tasks" && serverOwnedTaskFields.has(field)) return true;
   // Outline.state only mirrors the durable AI worker lifecycle. User-authored
   // outline and body fields continue through the normal three-way merge.
