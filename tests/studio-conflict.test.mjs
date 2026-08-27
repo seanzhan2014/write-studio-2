@@ -129,6 +129,28 @@ test("accepts newer AI runtime progress without reporting an empty-body conflict
   assert.equal(result.merged.articles[0].chapters[0].outlines[0].content, "");
 });
 
+test("does not report a conflict for a regenerated current-name creation timestamp", () => {
+  const base = fixture();
+  const baseOutline = base.articles[0].chapters[0].outlines[0];
+  baseOutline.nameVersions = [{ id: "name-current:outline", title: "佛堂春戏", source: "manual", createdAt: "2026-08-24T16:30:00.000Z" }];
+  baseOutline.defaultNameVersionId = "name-current:outline";
+
+  const local = structuredClone(base);
+  const localOutline = local.articles[0].chapters[0].outlines[0];
+  localOutline.plan = "本设备修改后的大纲";
+  localOutline.nameVersions[0].createdAt = "2026-08-24T16:43:55.491Z";
+
+  const server = structuredClone(base);
+  const serverOutline = server.articles[0].chapters[0].outlines[0];
+  serverOutline.updatedAt = "2026-08-24T16:52:57.596Z";
+  serverOutline.nameVersions[0].createdAt = "2026-08-24T16:52:57.596Z";
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(result.merged.articles[0].chapters[0].outlines[0].plan, "本设备修改后的大纲");
+  assert.equal(result.merged.articles[0].chapters[0].outlines[0].nameVersions[0].createdAt, "2026-08-24T16:52:57.596Z");
+});
+
 test("merges edits to one article with a concurrently imported article", () => {
   const base = fixture();
   const local = structuredClone(base);
