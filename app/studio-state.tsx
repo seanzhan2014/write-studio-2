@@ -14,7 +14,7 @@ import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
-import { duplicateArticlesForImport, duplicateOutlineForImport } from "@/lib/data-transfer";
+import { duplicateArticleForCopy, duplicateArticlesForImport, duplicateOutlineForImport, type ArticleCopyOptions } from "@/lib/data-transfer";
 
 type OutlinePlacement = "before" | "after";
 type NameEntityKind = "chapter" | "outline";
@@ -380,6 +380,7 @@ type StudioContextValue = {
   setCurrentArticle: (articleId: string) => void;
   setCurrentOutline: (outlineId: string) => void;
   createArticle: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => string;
+  duplicateArticle: (articleId: string, options: ArticleCopyOptions) => { articleId: string; outlineId: string } | null;
   updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "chapterNaming" | "outlineNaming">>) => void;
   deleteArticle: (articleId: string) => void;
   createChapter: (title?: string) => string;
@@ -1110,6 +1111,23 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       };
       setData((current) => ({ ...current, currentArticleId: articleId, currentOutlineId: outlineId, articles: [article, ...current.articles] }));
       return outlineId;
+    },
+    duplicateArticle(articleId, options) {
+      let result: { articleId: string; outlineId: string } | null = null;
+      setData((current) => {
+        const source = current.articles.find((article) => article.id === articleId);
+        if (!source) return current;
+        const copied = duplicateArticleForCopy(source, options, current.articles.map((article) => article.title));
+        const outlineId = copied.lastOutlineId || firstOutline(copied);
+        result = { articleId: copied.id, outlineId };
+        return normalizeStudioData({
+          ...current,
+          currentArticleId: copied.id,
+          currentOutlineId: outlineId,
+          articles: [copied, ...current.articles],
+        });
+      });
+      return result;
     },
     updateArticle(patch) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, ...patch, updatedAt: new Date().toISOString() } : article) }));

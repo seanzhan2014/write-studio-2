@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { fullStudioFixture } from "../fixtures.mjs";
+import type { StudioData } from "../../app/studio-state";
 
 async function expectIconControl(target: Locator) {
   await expect(target).toBeVisible();
@@ -1256,6 +1257,131 @@ test("data management exports a secret-free complete backup and previews article
     const response = await request.get("/api/state");
     return (await response.json()).data.articles.length;
   }).toBe(2);
+});
+
+test("article copy choices preserve selected defaults or complete histories without AI tasks", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop article copy flow");
+  type CopiedOutline = {
+    title: string;
+    content: string;
+    currentVersionId: string | null;
+    defaultVersionId: string | null;
+    versions: Array<{ id: string; taskId?: string }>;
+    nameVersions: Array<{ id: string }>;
+    chat: { sessions: Array<{ messages: unknown[] }> };
+  };
+  type CopiedArticle = {
+    id: string;
+    title: string;
+    summary: string;
+    type: string;
+    style: string;
+    chapters: Array<{ outlines: CopiedOutline[] }>;
+    characters: Array<{ id: string }>;
+    relationships: Array<{ characterAId: string; characterBId: string }>;
+  };
+  type CopiedState = { articles: CopiedArticle[]; tasks: Array<{ articleId: string }> };
+  const currentState = await request.get("/api/state");
+  const currentPayload = await currentState.json() as { revision: number };
+  const fixture = fullStudioFixture() as unknown as StudioData;
+  const sourceArticle = fixture.articles[0];
+  const sourceChapter = sourceArticle.chapters[0];
+  const sourceOutline = sourceChapter.outlines.find((outline) => outline.id === "outline-current")!;
+  sourceChapter.nameVersions = [
+    { id: "name-chapter-default", title: sourceChapter.title, source: "manual", createdAt: sourceArticle.createdAt },
+    { id: "name-chapter-candidate", title: "候选章节名", source: "ai", createdAt: sourceArticle.createdAt },
+  ];
+  sourceChapter.defaultNameVersionId = "name-chapter-default";
+  sourceOutline.nameVersions = [
+    { id: "name-outline-default", title: sourceOutline.title, source: "manual", createdAt: sourceOutline.updatedAt },
+    { id: "name-outline-candidate", title: "候选大纲名", source: "ai", createdAt: sourceOutline.updatedAt },
+  ];
+  sourceOutline.defaultNameVersionId = "name-outline-default";
+  sourceOutline.versions = [
+    { id: "version-current", name: "当前正文", content: "当前版本正文", source: "手动", createdAt: sourceOutline.updatedAt, taskId: "copy-source-task", outlineSnapshot: { title: sourceOutline.title, plan: sourceOutline.plan } },
+    { id: "version-default", name: "默认正文", content: "指定的默认版本正文", source: "AI Generate", createdAt: sourceOutline.updatedAt, taskId: "copy-source-task", outlineSnapshot: { title: sourceOutline.title, plan: sourceOutline.plan } },
+  ];
+  sourceOutline.currentVersionId = "version-current";
+  sourceOutline.defaultVersionId = "version-default";
+  fixture.tasks = [{
+    id: "copy-source-task", articleId: sourceArticle.id, chapterId: sourceChapter.id, outlineId: sourceOutline.id,
+    target: "正文", prompt: "只属于原文章", model: "", executionOrigin: "local", state: "cancelled", createdAt: sourceArticle.createdAt,
+  }];
+  const prepared = await request.put("/api/state", {
+    headers: { "If-Match": String(currentPayload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(prepared.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("button", { name: "文章资料更多操作" }).click();
+  await page.getByRole("button", { name: "复制这篇文章" }).click();
+  const defaultsDialog = page.getByRole("dialog", { name: "复制文章" });
+  await expect(defaultsDialog).toBeVisible();
+  for (const label of ["章节与大纲", "正文", "人物资料", "写作风格"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(label) })).toBeChecked();
+  for (const label of ["简介与文章类型", "AI 对话记录"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(label) })).not.toBeChecked();
+  await expect(defaultsDialog.getByRole("radio", { name: "仅默认名称" })).toBeChecked();
+  await expect(defaultsDialog.getByRole("radio", { name: "仅默认正文" })).toBeChecked();
+  await defaultsDialog.getByRole("button", { name: "创建副本" }).click();
+  await expect(page.getByText("文章副本已创建")).toBeVisible();
+
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const payload = await response.json();
+    return payload.data.articles.length;
+  }).toBe(2);
+  let copiedState = ((await (await request.get("/api/state")).json()) as { data: CopiedState }).data;
+  const defaultCopy = copiedState.articles.find((article) => article.title === "严格测试文章（副本）")!;
+  expect(defaultCopy).toBeTruthy();
+  expect(defaultCopy.summary).toBe("");
+  expect(defaultCopy.type).toBe("");
+  expect(defaultCopy.style).toBe("克制");
+  expect(defaultCopy.chapters).toHaveLength(sourceArticle.chapters.length);
+  expect(defaultCopy.characters).toHaveLength(sourceArticle.characters.length);
+  expect(defaultCopy.relationships).toHaveLength(sourceArticle.relationships.length);
+  const defaultOutline = defaultCopy.chapters.flatMap((chapter) => chapter.outlines).find((outline) => outline.title === sourceOutline.title)!;
+  expect(defaultOutline.content).toBe("指定的默认版本正文");
+  expect(defaultOutline.versions).toHaveLength(1);
+  expect(defaultOutline.currentVersionId).toBe(defaultOutline.versions[0].id);
+  expect(defaultOutline.defaultVersionId).toBe(defaultOutline.versions[0].id);
+  expect(defaultOutline.versions[0].taskId).toBeUndefined();
+  expect(defaultOutline.nameVersions).toHaveLength(1);
+  expect(defaultOutline.chat.sessions).toHaveLength(1);
+  expect(defaultOutline.chat.sessions[0].messages).toHaveLength(0);
+  const copiedCharacterIds = new Set(defaultCopy.characters.map((character) => character.id));
+  expect(copiedCharacterIds.has(defaultCopy.relationships[0].characterAId)).toBe(true);
+  expect(copiedCharacterIds.has(defaultCopy.relationships[0].characterBId)).toBe(true);
+  expect(copiedState.tasks).toHaveLength(1);
+  expect(copiedState.tasks[0].articleId).toBe("article-main");
+
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("button", { name: "文章资料更多操作" }).click();
+  await page.getByRole("button", { name: "复制这篇文章" }).click();
+  const allDialog = page.getByRole("dialog", { name: "复制文章" });
+  await allDialog.getByRole("radio", { name: "全部候选名称" }).check();
+  await allDialog.getByRole("radio", { name: "全部正文版本" }).check();
+  await allDialog.getByRole("checkbox", { name: /简介与文章类型/ }).check();
+  await allDialog.getByRole("checkbox", { name: /AI 对话记录/ }).check();
+  await allDialog.getByRole("button", { name: "创建副本" }).click();
+  await expect(page.getByText("文章副本已创建")).toBeVisible();
+
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    return (await response.json()).data.articles.length;
+  }).toBe(3);
+  copiedState = ((await (await request.get("/api/state")).json()) as { data: CopiedState }).data;
+  const allCopy = copiedState.articles.find((article) => article.title === "严格测试文章（副本 2）")!;
+  expect(allCopy.summary).toBe(sourceArticle.summary);
+  expect(allCopy.type).toBe(sourceArticle.type);
+  const allOutline = allCopy.chapters.flatMap((chapter) => chapter.outlines).find((outline) => outline.title === sourceOutline.title)!;
+  expect(allOutline.versions).toHaveLength(2);
+  expect(allOutline.currentVersionId).not.toBe(allOutline.defaultVersionId);
+  expect(allOutline.versions.every((version) => version.taskId === undefined)).toBe(true);
+  expect(allOutline.nameVersions).toHaveLength(2);
+  expect(new Set(allOutline.nameVersions.map((version) => version.id)).has("name-outline-default")).toBe(false);
+  expect(allOutline.chat.sessions).toHaveLength(2);
+  expect(allOutline.chat.sessions[0].messages).toHaveLength(22);
+  expect(copiedState.tasks).toHaveLength(1);
 });
 
 test("mobile outline and chapter menus share a compact readable action layout", async ({ page }, testInfo) => {

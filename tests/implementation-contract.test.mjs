@@ -792,7 +792,12 @@ test("data management exposes scoped exports, safe imports and secret-free model
   assert.match(transfer, /不包含 API Key/);
   assert.match(helpers, /kind: TRANSFER_KIND/);
   assert.match(helpers, /state: interrupted \? "cancelled"/);
+  assert.match(helpers, /duplicateArticleForCopy/);
+  assert.match(helpers, /contentVersions: "default"/);
   assert.doesNotMatch(helpers, /\bsecret\s*:/);
   assert.match(state, /duplicateOutlineForImport/);
   assert.match(state, /duplicateArticlesForImport/);
+  assert.match(state, /duplicateArticleForCopy/);
+  assert.match(app, /复制这篇文章/);
+  assert.match(app, /AI 任务、执行状态和任务历史不会复制/);
 });
