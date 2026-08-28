@@ -49,6 +49,7 @@ import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_C
 import { modelSelectionLabel } from "@/lib/model-label";
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
+import { DEFAULT_ARTICLE_COPY_OPTIONS, suggestArticleCopyTitle, type ArticleCopyOptions } from "@/lib/data-transfer";
 import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
 import { DataTransferProvider, useDataTransfer } from "./data-transfer";
 import { MobileActionSheet, ResponsiveModal, ScrollableDrawer, type ActionSheetItem } from "./ui/overlays";
@@ -751,7 +752,7 @@ function WriterStudioInner() {
         {view === "outline-edit" && <ContinuousDocumentEditor key={`outline-edit:${activeArticle.id}`} mode="outline" positionMemory={continuousDocumentPositions} onNotice={setToast} />}
         {view === "read" && <ContinuousDocumentEditor key={`content-edit:${activeArticle.id}`} mode="content" positionMemory={continuousDocumentPositions} onNotice={setToast} />}
         {view === "search" && <SearchPage onOutline={openOutline} onCharacter={() => go("info-characters")} />}
-        {view.startsWith("info-") && <ArticleInfoPage view={view} onGo={go} />}
+        {view.startsWith("info-") && <ArticleInfoPage view={view} onGo={go} onNotice={setToast} />}
         {view.startsWith("settings-") && <SettingsPage view={view} onGo={go} />}
       </main>
 
@@ -4061,15 +4062,36 @@ function SearchResult({ type, title, snippet, onClick }: { type: string; title: 
   return <button className="search-result" type="button" onClick={onClick}><span className="result-type">{type}</span><div><span className="ui-title">{title}</span><p>{snippet}</p></div><span>打开 →</span></button>;
 }
 
-function ArticleInfoPage({ view, onGo }: { view: View; onGo: (view: View) => void }) {
+function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (view: View) => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const transfer = useDataTransfer();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [copySource, setCopySource] = useState<Article | null>(null);
   useDismissOnOutside(moreOpen, () => setMoreOpen(false), ".info-more-trigger, .info-more-menu");
+
+  async function copyArticle(options: ArticleCopyOptions) {
+    if (!copySource) return false;
+    if (!await studio.saveNow()) {
+      onNotice("请先完成当前文章的保存");
+      return false;
+    }
+    const copied = studio.duplicateArticle(copySource.id, options);
+    if (!copied) {
+      onNotice("原文章不存在，无法创建副本");
+      return false;
+    }
+    const saved = await studio.saveNow();
+    setCopySource(null);
+    window.history.pushState({}, "", `/articles/${copied.articleId}/info/basic`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    onNotice(saved ? "文章副本已创建" : "副本已创建，保存尚未完成");
+    return true;
+  }
+
   return (
     <div className="page-scroll"><div className="standard-page info-page">
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
-      {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
+      {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
         ["info-basic", "基本信息"], ["info-chapters", "章节"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
       ]} active={view} onGo={onGo} />
@@ -4077,6 +4099,7 @@ function ArticleInfoPage({ view, onGo }: { view: View; onGo: (view: View) => voi
       {view === "info-chapters" && <ArticleChapterNames />}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
+      {copySource && <ArticleCopyDialog article={copySource} existingTitles={studio.data.articles.map((article) => article.title)} onClose={() => setCopySource(null)} onCreate={copyArticle} />}
     </div></div>
   );
 }
@@ -4865,6 +4888,69 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
       <footer><span>生成并发 {generateRunningCount} / {studio.data.settings.taskConcurrency}{chatRunningCount ? ` · Chat ${chatRunningCount}` : ""}</span><span className="task-footer-actions"><button type="button" disabled={!completedCount} onClick={() => studio.clearCompletedTasks()}>清空已完成{completedCount ? ` (${completedCount})` : ""}</button><button type="button" onClick={() => { onClose(); window.history.pushState({}, "", "/settings/tasks"); window.dispatchEvent(new PopStateEvent("popstate")); }}>任务设置 →</button></span></footer></>}
     </div>
   </ScrollableDrawer>;
+}
+
+function ArticleCopyDialog({ article, existingTitles, onClose, onCreate }: {
+  article: Article;
+  existingTitles: string[];
+  onClose: () => void;
+  onCreate: (options: ArticleCopyOptions) => Promise<boolean>;
+}) {
+  const [options, setOptions] = useState<ArticleCopyOptions>(() => ({
+    ...DEFAULT_ARTICLE_COPY_OPTIONS,
+    title: suggestArticleCopyTitle(article.title, existingTitles),
+  }));
+  const [copying, setCopying] = useState(false);
+  function setOption<K extends keyof ArticleCopyOptions>(key: K, value: ArticleCopyOptions[K]) {
+    setOptions((current) => ({ ...current, [key]: value }));
+  }
+  const setStructure = (checked: boolean) => setOptions((current) => ({
+    ...current,
+    includeStructure: checked,
+    ...(checked ? {} : { includeContent: false }),
+  }));
+
+  return <ResponsiveModal
+    opened
+    onClose={() => { if (!copying) onClose(); }}
+    closeButtonProps={{ "aria-label": "关闭复制文章" }}
+    title="复制文章"
+    size="lg"
+    classNames={{ body: "article-copy-dialog-body" }}
+  >
+    <form className="article-copy-form" onSubmit={(event) => {
+      event.preventDefault();
+      if (!options.title.trim() || copying) return;
+      setCopying(true);
+      void onCreate({ ...options, title: options.title.trim() }).finally(() => setCopying(false));
+    }}>
+      <label className="article-copy-title">副本标题 <em>必填</em><input autoFocus value={options.title} onChange={(event) => setOption("title", event.target.value)} required maxLength={120} /></label>
+      <div className="article-copy-options">
+        <section className="article-copy-option-card">
+          <label className="article-copy-check"><input type="checkbox" checked={options.includeStructure} onChange={(event) => setStructure(event.target.checked)} /><span><strong>章节与大纲</strong><small>复制章节、大纲内容和归档状态</small></span></label>
+          <fieldset disabled={!options.includeStructure}>
+            <legend>章节与大纲名称</legend>
+            <label><input type="radio" name="copy-name-versions" checked={options.nameVersions === "default"} onChange={() => setOption("nameVersions", "default")} />仅默认名称</label>
+            <label><input type="radio" name="copy-name-versions" checked={options.nameVersions === "all"} onChange={() => setOption("nameVersions", "all")} />全部候选名称</label>
+          </fieldset>
+        </section>
+        <section className={`article-copy-option-card ${options.includeStructure ? "" : "disabled"}`}>
+          <label className="article-copy-check"><input type="checkbox" checked={options.includeContent} disabled={!options.includeStructure} onChange={(event) => setOption("includeContent", event.target.checked)} /><span><strong>正文</strong><small>正文依赖对应的章节与大纲</small></span></label>
+          <fieldset disabled={!options.includeStructure || !options.includeContent}>
+            <legend>正文版本</legend>
+            <label><input type="radio" name="copy-content-versions" checked={options.contentVersions === "default"} onChange={() => setOption("contentVersions", "default")} />仅默认正文</label>
+            <label><input type="radio" name="copy-content-versions" checked={options.contentVersions === "all"} onChange={() => setOption("contentVersions", "all")} />全部正文版本</label>
+          </fieldset>
+        </section>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeCharacters} onChange={(event) => setOption("includeCharacters", event.target.checked)} /><span><strong>人物资料</strong><small>包含人物、别名、归档状态和人物关系</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeStyle} onChange={(event) => setOption("includeStyle", event.target.checked)} /><span><strong>写作风格</strong><small>保留文章的写作风格设置</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeMetadata} onChange={(event) => setOption("includeMetadata", event.target.checked)} /><span><strong>简介与文章类型</strong><small>默认留空，便于把副本发展为新项目</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeChat} onChange={(event) => setOption("includeChat", event.target.checked)} /><span><strong>AI 对话记录</strong><small>复制历史消息，不复制未发送草稿</small></span></label>
+      </div>
+      <p className="article-copy-task-note">AI 任务、执行状态和任务历史不会复制。</p>
+      <footer><button className="secondary-button" type="button" disabled={copying} onClick={onClose}>取消</button><button className="primary-compact" type="submit" disabled={!options.title.trim() || copying}>{copying ? "正在创建…" : "创建副本"}</button></footer>
+    </form>
+  </ResponsiveModal>;
 }
 
 function NewArticleDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => void }) {

@@ -1,4 +1,5 @@
 import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
+import type { NameVersion } from "@/lib/name-versions";
 
 export const TRANSFER_KIND = "writer-studio-transfer" as const;
 export const TRANSFER_VERSION = 2 as const;
@@ -46,6 +47,32 @@ export type TransferEnvelope<S extends TransferScope = TransferScope> = {
   scope: S;
   exportedAt: string;
   data: TransferDataByScope[S];
+};
+
+export type ArticleCopyVersionMode = "default" | "all";
+
+export type ArticleCopyOptions = {
+  title: string;
+  includeStructure: boolean;
+  includeContent: boolean;
+  contentVersions: ArticleCopyVersionMode;
+  nameVersions: ArticleCopyVersionMode;
+  includeCharacters: boolean;
+  includeStyle: boolean;
+  includeMetadata: boolean;
+  includeChat: boolean;
+};
+
+export const DEFAULT_ARTICLE_COPY_OPTIONS: ArticleCopyOptions = {
+  title: "",
+  includeStructure: true,
+  includeContent: true,
+  contentVersions: "default",
+  nameVersions: "default",
+  includeCharacters: true,
+  includeStyle: true,
+  includeMetadata: false,
+  includeChat: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -154,6 +181,7 @@ type IdMaps = {
   articles: Map<string, string>;
   chapters: Map<string, string>;
   outlines: Map<string, string>;
+  names: Map<string, string>;
   versions: Map<string, string>;
   fragments: Map<string, string>;
   characters: Map<string, string>;
@@ -165,7 +193,7 @@ type IdMaps = {
 
 function maps(): IdMaps {
   return {
-    articles: new Map(), chapters: new Map(), outlines: new Map(), versions: new Map(), fragments: new Map(),
+    articles: new Map(), chapters: new Map(), outlines: new Map(), names: new Map(), versions: new Map(), fragments: new Map(),
     characters: new Map(), relationships: new Map(), sessions: new Map(), messages: new Map(), tasks: new Map(),
   };
 }
@@ -177,6 +205,7 @@ function register(map: Map<string, string>, id: unknown, prefix: string) {
 
 function registerOutline(source: Outline, ids: IdMaps) {
   register(ids.outlines, source.id, "outline");
+  source.nameVersions?.forEach((version) => register(ids.names, version.id, "name"));
   source.excellentFragments?.forEach((fragment) => register(ids.fragments, fragment.id, "excellent"));
   source.versions?.forEach((version) => {
     register(ids.versions, version.id, "version");
@@ -196,6 +225,7 @@ function registerArticles(articles: Article[], tasks: AiTask[]) {
     article.relationships?.forEach((relationship) => register(ids.relationships, relationship.id, "relationship"));
     article.chapters?.forEach((chapter) => {
       register(ids.chapters, chapter.id, "chapter");
+      chapter.nameVersions?.forEach((version) => register(ids.names, version.id, "name"));
       chapter.outlines?.forEach((outline) => registerOutline(outline, ids));
     });
   });
@@ -209,6 +239,13 @@ function mapped(map: Map<string, string>, id: unknown) {
 
 function cloneFragments<T extends { id: string }>(items: T[] | undefined, ids: IdMaps): T[] {
   return (items ?? []).map((item) => ({ ...item, id: mapped(ids.fragments, item.id) || makeId("excellent") }));
+}
+
+function cloneNameState(source: { nameVersions?: NameVersion[]; defaultNameVersionId?: string | null }, ids: IdMaps) {
+  return {
+    nameVersions: (source.nameVersions ?? []).map((version) => ({ ...version, id: mapped(ids.names, version.id) || makeId("name") })),
+    defaultNameVersionId: mapped(ids.names, source.defaultNameVersionId) || null,
+  };
 }
 
 function cloneOutline(source: Outline, ids: IdMaps): Outline {
@@ -239,6 +276,7 @@ function cloneOutline(source: Outline, ids: IdMaps): Outline {
   return {
     ...source,
     id,
+    ...cloneNameState(source, ids),
     currentVersionId: mapped(ids.versions, source.currentVersionId) || null,
     defaultVersionId: mapped(ids.versions, source.defaultVersionId) || null,
     excellentFragments: cloneFragments(source.excellentFragments, ids),
@@ -258,6 +296,141 @@ function uniqueTitle(title: string, used: Set<string>) {
   return candidate;
 }
 
+export function suggestArticleCopyTitle(title: string, existingTitles: string[] = []) {
+  const used = new Set(existingTitles.map((value) => value.trim()).filter(Boolean));
+  const base = title.trim() || "未命名文章";
+  const suffix = "（副本）";
+  let candidate = `${base.slice(0, Math.max(1, 120 - suffix.length))}${suffix}`;
+  let index = 2;
+  while (used.has(candidate)) {
+    const numberedSuffix = `（副本 ${index}）`;
+    candidate = `${base.slice(0, Math.max(1, 120 - numberedSuffix.length))}${numberedSuffix}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function cloneArticleGraph(source: Article, ids: IdMaps, title = source.title): Article {
+  const article: Article = {
+    ...source,
+    id: mapped(ids.articles, source.id) || makeId("article"),
+    title,
+    lastOutlineId: mapped(ids.outlines, source.lastOutlineId),
+    characters: (source.characters ?? []).map((character) => ({ ...character, id: mapped(ids.characters, character.id) || makeId("character") })),
+    relationships: (source.relationships ?? []).map((relationship) => ({
+      ...relationship,
+      id: mapped(ids.relationships, relationship.id) || makeId("relationship"),
+      characterAId: mapped(ids.characters, relationship.characterAId),
+      characterBId: mapped(ids.characters, relationship.characterBId),
+    })).filter((relationship) => relationship.characterAId && relationship.characterBId),
+    chapters: (source.chapters ?? []).map((chapter) => ({
+      ...chapter,
+      id: mapped(ids.chapters, chapter.id) || makeId("chapter"),
+      ...cloneNameState(chapter, ids),
+      outlines: (chapter.outlines ?? []).map((outline) => cloneOutline(outline, ids)),
+    })),
+  };
+  if (!article.lastOutlineId) article.lastOutlineId = article.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
+  return article;
+}
+
+function emptyCopiedChat(outlineId: string, createdAt: string): Outline["chat"] {
+  const sessionId = `chat:${outlineId}:${makeId("session")}`;
+  return {
+    activeSessionId: sessionId,
+    sessions: [{
+      id: sessionId,
+      title: "新对话",
+      messages: [],
+      draft: "",
+      includePrevious: true,
+      includeCharacters: true,
+      lastReadMessageId: null,
+      createdAt,
+      updatedAt: createdAt,
+    }],
+  };
+}
+
+function keepDefaultContent(outline: Outline): Outline {
+  const selectedId = outline.defaultVersionId || outline.currentVersionId;
+  const selected = selectedId ? outline.versions.find((version) => version.id === selectedId) : undefined;
+  if (!selected) return { ...outline, currentVersionId: null, defaultVersionId: null, versions: [] };
+  return {
+    ...outline,
+    content: selected.content,
+    contentName: selected.name,
+    currentVersionId: selected.id,
+    defaultVersionId: selected.id,
+    contentOutlineSnapshot: selected.outlineSnapshot ?? outline.contentOutlineSnapshot,
+    manualExcellent: false,
+    excellentFragments: [],
+    versions: [selected],
+  };
+}
+
+export function duplicateArticleForCopy(source: Article, requested: ArticleCopyOptions, existingTitles: string[] = []) {
+  const options = { ...DEFAULT_ARTICLE_COPY_OPTIONS, ...requested };
+  const ids = registerArticles([source], []);
+  const createdAt = new Date().toISOString();
+  const title = options.title.trim().slice(0, 120) || suggestArticleCopyTitle(source.title, existingTitles);
+  const article = cloneArticleGraph(source, ids, title);
+  article.createdAt = createdAt;
+  article.updatedAt = createdAt;
+  article.summary = options.includeMetadata ? source.summary : "";
+  article.type = options.includeMetadata ? source.type : "";
+  article.style = options.includeStyle ? source.style : "";
+  if (!options.includeCharacters) {
+    article.characters = [];
+    article.relationships = [];
+  }
+  if (!options.includeStructure) {
+    article.chapters = [];
+    article.lastOutlineId = "";
+    return article;
+  }
+  article.chapters = article.chapters.map((chapter) => ({
+    ...chapter,
+    ...(options.nameVersions === "default" ? { nameVersions: [], defaultNameVersionId: null } : {}),
+    outlines: chapter.outlines.map((outline) => {
+      let copied: Outline = {
+        ...outline,
+        updatedAt: createdAt,
+        state: "saved",
+        ...(options.nameVersions === "default" ? { nameVersions: [], defaultNameVersionId: null } : {}),
+        ...(!options.includeChat ? { chat: emptyCopiedChat(outline.id, createdAt) } : {
+          chat: {
+            ...outline.chat,
+            activeSessionId: outline.chat.sessions[0]?.id ?? outline.chat.activeSessionId,
+            sessions: outline.chat.sessions.map((session) => ({
+              ...session,
+              draft: "",
+              includePrevious: true,
+              includeCharacters: true,
+              lastReadMessageId: null,
+            })),
+          },
+        }),
+      };
+      if (!options.includeContent) {
+        copied = {
+          ...copied,
+          content: "",
+          contentName: "",
+          currentVersionId: null,
+          defaultVersionId: null,
+          contentOutlineSnapshot: { title: copied.title, plan: copied.plan },
+          manualExcellent: false,
+          excellentFragments: [],
+          versions: [],
+        };
+      } else if (options.contentVersions === "default") copied = keepDefaultContent(copied);
+      return copied;
+    }),
+  }));
+  return article;
+}
+
 export function duplicateOutlineForImport(source: Outline): Outline {
   const ids = maps();
   registerOutline(source, ids);
@@ -267,28 +440,7 @@ export function duplicateOutlineForImport(source: Outline): Outline {
 export function duplicateArticlesForImport(articles: Article[], tasks: AiTask[], existingTitles: string[] = []) {
   const ids = registerArticles(articles, tasks);
   const usedTitles = new Set(existingTitles);
-  const importedArticles = articles.map((article) => {
-    const imported: Article = {
-      ...article,
-      id: mapped(ids.articles, article.id) || makeId("article"),
-      title: uniqueTitle(article.title, usedTitles),
-      lastOutlineId: mapped(ids.outlines, article.lastOutlineId),
-      characters: (article.characters ?? []).map((character) => ({ ...character, id: mapped(ids.characters, character.id) || makeId("character") })),
-      relationships: (article.relationships ?? []).map((relationship) => ({
-        ...relationship,
-        id: mapped(ids.relationships, relationship.id) || makeId("relationship"),
-        characterAId: mapped(ids.characters, relationship.characterAId),
-        characterBId: mapped(ids.characters, relationship.characterBId),
-      })).filter((relationship) => relationship.characterAId && relationship.characterBId),
-      chapters: (article.chapters ?? []).map((chapter) => ({
-        ...chapter,
-        id: mapped(ids.chapters, chapter.id) || makeId("chapter"),
-        outlines: (chapter.outlines ?? []).map((outline) => cloneOutline(outline, ids)),
-      })),
-    };
-    if (!imported.lastOutlineId) imported.lastOutlineId = imported.chapters.flatMap((chapter) => chapter.outlines)[0]?.id ?? "";
-    return imported;
-  });
+  const importedArticles = articles.map((article) => cloneArticleGraph(article, ids, uniqueTitle(article.title, usedTitles)));
   const importedTasks = tasks.map((task) => {
     const interrupted = task.state === "waiting" || task.state === "running";
     return {
