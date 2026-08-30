@@ -5657,6 +5657,7 @@ kbd {
   .mobile-outline-row-wrap {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
+    isolation: isolate;
     overflow: hidden;
     position: relative;
     touch-action: pan-y;
@@ -5678,6 +5679,8 @@ kbd {
 .mobile-outline-row-wrap.archived .mobile-outline-main span:not(.ui-title) { color: var(--text-disabled); }
   .mobile-outline-row-wrap.reveal-left .mobile-outline-row { transform: translateX(-76px); }
   .mobile-outline-row-wrap.reveal-right .mobile-outline-row { transform: translateX(104px); }
+  .mobile-outline-row-wrap.reveal-left .mobile-row-more,
+  .mobile-outline-row-wrap.reveal-right .mobile-row-more { pointer-events: none; }
   .mobile-outline-row-wrap.dragging { overflow: visible; z-index: 12; }
   .mobile-outline-row-wrap.dragging .swipe-action { opacity: 0; }
   .mobile-outline-row-wrap.dragging .mobile-outline-row {
@@ -5705,8 +5708,8 @@ kbd {
   .mobile-outline-main span:not(.ui-title) { color: var(--text-secondary); font-size: 9px; }
   .swipe-action { bottom: 0; display: flex; pointer-events: none; position: absolute; top: 0; visibility: hidden; z-index: 1; }
   .mobile-outline-row-wrap.reveal-right .swipe-add,
-  .mobile-outline-row-wrap.reveal-left .swipe-manage { pointer-events: auto; visibility: visible; z-index: 4; }
-  .swipe-action button { align-items: center; border: 0; color: white; display: flex; font-size: 10px; gap: 4px; justify-content: center; padding: 0; touch-action: manipulation; }
+  .mobile-outline-row-wrap.reveal-left .swipe-manage { pointer-events: auto; visibility: visible; z-index: 8; }
+  .swipe-action button { align-items: center; border: 0; color: white; display: flex; font-size: 10px; gap: 4px; height: 100%; justify-content: center; padding: 0; touch-action: manipulation; }
   .swipe-add { left: 0; width: 104px; }
   .swipe-add button { background: var(--accent); width: 104px; }
   .swipe-manage { right: 0; width: 76px; }
@@ -5857,9 +5860,16 @@ kbd {
   .chat-context-fixed small,
   .chat-context-panel > label small { max-width: 145px; }
   .page-scroll { height: calc(100dvh - 53px); }
+  .page-scroll.keyboard-aware-page-scroll {
+    flex: 0 0 var(--continuous-visible-height, calc(100dvh - 53px));
+    height: var(--continuous-visible-height, calc(100dvh - 53px));
+    max-height: var(--continuous-visible-height, calc(100dvh - 53px));
+    overscroll-behavior-y: contain;
+    scroll-padding-block: 24px calc(28px + env(safe-area-inset-bottom) + var(--continuous-keyboard-gap, 0px));
+  }
   .standard-page,
   .reader-page { padding: 28px 18px 65px; }
-  .continuous-document-editor { padding: 28px 18px calc(72px + env(safe-area-inset-bottom)); }
+  .continuous-document-editor { padding: 28px 18px calc(72px + env(safe-area-inset-bottom) + var(--continuous-keyboard-gap, 0px)); }
   .full-chapter-editor { padding: 28px 14px calc(72px + env(safe-area-inset-bottom)); }
   .full-chapter-editor .page-header { align-items: stretch; margin-bottom: 22px; }
   .full-chapter-editor .page-actions,

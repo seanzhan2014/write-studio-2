@@ -17,19 +17,53 @@ async function expectIconControl(target: Locator) {
   expect(glyph!.height).toBeLessThanOrEqual(21);
 }
 
-async function swipeOutlineLeft(target: Locator) {
-  await target.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    const y = bounds.top + bounds.height / 2;
-    const startX = bounds.right - 24;
-    const endX = startX - 92;
-    const touch = (x: number) => new Touch({ identifier: 7, target: element, clientX: x, clientY: y, screenX: x, screenY: y });
-    const start = touch(startX);
-    element.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
-    const move = touch(endX);
-    element.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [move], targetTouches: [move], changedTouches: [move] }));
-    element.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [move] }));
-  });
+async function swipeOutlineLeft(page: Page, target: Locator) {
+  const bounds = await target.boundingBox();
+  expect(bounds).not.toBeNull();
+  const y = bounds!.y + bounds!.height / 2;
+  const startX = bounds!.x + bounds!.width - 24;
+  const endX = startX - 92;
+  if (page.context().browser()?.browserType().name() !== "chromium") {
+    await target.evaluate((element, points) => {
+      const pointer = (type: string, x: number, buttons: number) => element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 7,
+        pointerType: "touch",
+        isPrimary: true,
+        buttons,
+        clientX: x,
+        clientY: points.y,
+      }));
+      pointer("pointerdown", points.startX, 1);
+      for (const x of [points.startX - 24, points.startX - 52, points.endX]) pointer("pointermove", x, 1);
+      pointer("pointerup", points.endX, 0);
+    }, { startX, endX, y });
+    return;
+  }
+  const session = await page.context().newCDPSession(page);
+  const point = (x: number) => ({ x, y, radiusX: 2, radiusY: 2, force: 0.7, id: 7 });
+  try {
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point(startX)] });
+    for (const x of [startX - 24, startX - 52, endX]) {
+      await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(x)] });
+    }
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } finally {
+    await session.detach();
+  }
+}
+
+async function touchTapCenter(page: Page, target: Locator, expectedLabel: string) {
+  const bounds = await target.boundingBox();
+  expect(bounds).not.toBeNull();
+  const point = { x: bounds!.x + bounds!.width / 2, y: bounds!.y + bounds!.height / 2 };
+  const hitLabel = await page.evaluate(({ x, y }) => {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    return hit?.closest("button")?.getAttribute("aria-label") ?? "";
+  }, point);
+  expect(hitLabel).toBe(expectedLabel);
+  await target.tap({ position: { x: bounds!.width / 2, y: bounds!.height / 2 } });
 }
 
 async function swipeNameVersion(target: Locator, direction: "left" | "right") {
@@ -38,12 +72,19 @@ async function swipeNameVersion(target: Locator, direction: "left" | "right") {
     const y = bounds.top + bounds.height / 2;
     const startX = swipeDirection === "left" ? bounds.right - 24 : bounds.left + 24;
     const endX = startX + (swipeDirection === "left" ? -92 : 92);
-    const touch = (x: number) => new Touch({ identifier: 9, target: element, clientX: x, clientY: y, screenX: x, screenY: y });
-    const start = touch(startX);
-    element.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [start], targetTouches: [start], changedTouches: [start] }));
-    const move = touch(endX);
-    element.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [move], targetTouches: [move], changedTouches: [move] }));
-    element.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [move] }));
+    const pointer = (type: string, x: number, buttons: number) => element.dispatchEvent(new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 9,
+      pointerType: "touch",
+      isPrimary: true,
+      buttons,
+      clientX: x,
+      clientY: y,
+    }));
+    pointer("pointerdown", startX, 1);
+    pointer("pointermove", endX, 1);
+    pointer("pointerup", endX, 0);
   }, direction);
 }
 
@@ -1420,16 +1461,17 @@ test("mobile outline and chapter menus share a compact readable action layout", 
 });
 
 test("mobile outline swipe archives and restores without opening the more menu", async ({ page, request }, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
+  test.skip(testInfo.project.name !== "mobile-chromium" && testInfo.project.name !== "mobile-webkit-swipe", "mobile layout");
   await page.goto("/");
 
   const showArchived = page.getByRole("switch", { name: "显示归档大纲" });
   await expect(showArchived).toHaveAttribute("aria-checked", "false");
   const current = page.locator('[data-outline-id="outline-current"]');
-  await swipeOutlineLeft(current.locator(".mobile-outline-main"));
+  await swipeOutlineLeft(page, current.locator(".mobile-outline-main"));
   await expect(current).toHaveClass(/reveal-left/);
 
-  await current.getByRole("button", { name: "归档大纲：当前码头" }).click();
+  await expect(current.getByRole("button", { name: "当前码头更多操作" })).toHaveCSS("pointer-events", "none");
+  await touchTapCenter(page, current.getByRole("button", { name: "归档大纲：当前码头" }), "归档大纲：当前码头");
   await expect(page.getByText("大纲操作", { exact: true })).toHaveCount(0);
   await expect(current).toHaveCount(0);
   await expect.poll(async () => {
@@ -1443,10 +1485,10 @@ test("mobile outline swipe archives and restores without opening the more menu",
   const archivedCurrent = page.locator('[data-outline-id="outline-current"]');
   await expect(archivedCurrent).toBeVisible();
   await expect(archivedCurrent.locator(".swipe-manage")).toHaveCSS("visibility", "hidden");
-  await swipeOutlineLeft(archivedCurrent.locator(".mobile-outline-main"));
+  await swipeOutlineLeft(page, archivedCurrent.locator(".mobile-outline-main"));
   await expect(archivedCurrent).toHaveClass(/reveal-left/);
   await expect(archivedCurrent.locator(".swipe-manage")).toHaveCSS("visibility", "visible");
-  await archivedCurrent.getByRole("button", { name: "恢复大纲：当前码头" }).click();
+  await touchTapCenter(page, archivedCurrent.getByRole("button", { name: "恢复大纲：当前码头" }), "恢复大纲：当前码头");
   await expect(archivedCurrent).toBeVisible();
 
   await showArchived.click();
@@ -1476,6 +1518,57 @@ test("full outline editor shows every plan in one auto-growing document", async 
   });
   expect(dimensions.clientHeight).toBeGreaterThanOrEqual(dimensions.scrollHeight - 2);
   expect(dimensions.overflowY).toBe("hidden");
+});
+
+test("mobile full outline editor keeps the caret above a visual-viewport keyboard", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium" && testInfo.project.name !== "mobile-webkit-keyboard", "mobile keyboard layout");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-after")!;
+  target.plan = Array.from({ length: 42 }, (_, index) => `键盘可见性测试第 ${index + 1} 行。`).join("\n");
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.addInitScript(() => {
+    class MockVisualViewport extends EventTarget {
+      width = 390;
+      height = 844;
+      offsetLeft = 0;
+      offsetTop = 0;
+      pageLeft = 0;
+      pageTop = 0;
+      scale = 1;
+    }
+    const viewport = new MockVisualViewport();
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    (window as Window & { setVisualViewportForTest?: (height: number, offsetTop?: number) => void }).setVisualViewportForTest = (height, offsetTop = 0) => {
+      viewport.height = height;
+      viewport.offsetTop = offsetTop;
+      viewport.dispatchEvent(new Event("resize"));
+    };
+  });
+
+  await page.goto("/articles/article-main/outlines/edit-all");
+  const scroll = page.locator(".keyboard-aware-page-scroll");
+  const plan = page.getByLabel("大纲内容：绝密后续大纲");
+  await plan.focus();
+  await plan.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.dispatchEvent(new Event("select", { bubbles: true }));
+  });
+  await page.evaluate(() => (window as Window & { setVisualViewportForTest?: (height: number) => void }).setVisualViewportForTest?.(430));
+
+  await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeLessThan(430);
+  await expect.poll(() => scroll.evaluate((element) => Number((element as HTMLElement).dataset.visualViewportHeight))).toBe(430);
+  await expect.poll(() => plan.evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(404);
+
+  await page.evaluate(() => (window as Window & { setVisualViewportForTest?: (height: number) => void }).setVisualViewportForTest?.(844));
+  await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(700);
 });
 
 test("full outline editor copies every visible chapter and plan in document order", async ({ page }, testInfo) => {

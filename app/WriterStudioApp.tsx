@@ -1408,6 +1408,119 @@ function MobileOutlineHome({
   );
 }
 
+function useHorizontalSwipe({
+  disabled = false,
+  ignoreSelector,
+  threshold = 46,
+  onSwipeLeft,
+  onSwipeRight,
+}: {
+  disabled?: boolean;
+  ignoreSelector?: string;
+  threshold?: number;
+  onSwipeLeft: () => void;
+  onSwipeRight: () => void;
+}) {
+  const trackedPointerId = useRef<number | null>(null);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const horizontal = useRef(false);
+  const suppressClick = useRef(false);
+  const suppressionTimer = useRef<number | null>(null);
+  const onSwipeLeftRef = useRef(onSwipeLeft);
+  const onSwipeRightRef = useRef(onSwipeRight);
+  onSwipeLeftRef.current = onSwipeLeft;
+  onSwipeRightRef.current = onSwipeRight;
+
+  const clearSuppressionTimer = useCallback(() => {
+    if (suppressionTimer.current === null) return;
+    window.clearTimeout(suppressionTimer.current);
+    suppressionTimer.current = null;
+  }, []);
+
+  const allowActionClick = useCallback(() => {
+    clearSuppressionTimer();
+    suppressClick.current = false;
+  }, [clearSuppressionTimer]);
+
+  const suppressClicksFor = useCallback((duration = 260) => {
+    clearSuppressionTimer();
+    suppressClick.current = true;
+    suppressionTimer.current = window.setTimeout(() => {
+      suppressClick.current = false;
+      suppressionTimer.current = null;
+    }, duration);
+  }, [clearSuppressionTimer]);
+
+  const cancelGesture = useCallback(() => {
+    trackedPointerId.current = null;
+    horizontal.current = false;
+  }, []);
+
+  useEffect(() => () => clearSuppressionTimer(), [clearSuppressionTimer]);
+  useEffect(() => {
+    if (disabled) cancelGesture();
+  }, [cancelGesture, disabled]);
+
+  const onPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const target = event.target as Element | null;
+    if (disabled || !event.isPrimary || (event.pointerType !== "touch" && event.pointerType !== "pen") || (ignoreSelector && target?.closest(ignoreSelector))) {
+      cancelGesture();
+      allowActionClick();
+      return;
+    }
+    trackedPointerId.current = event.pointerId;
+    startX.current = event.clientX;
+    startY.current = event.clientY;
+    horizontal.current = false;
+    allowActionClick();
+  }, [allowActionClick, cancelGesture, disabled, ignoreSelector]);
+
+  const onPointerMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (trackedPointerId.current !== event.pointerId) return;
+    const deltaX = event.clientX - startX.current;
+    const deltaY = event.clientY - startY.current;
+    if (Math.abs(deltaX) <= 12 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+    horizontal.current = true;
+    suppressClicksFor();
+    event.preventDefault();
+  }, [suppressClicksFor]);
+
+  const onPointerUp = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (trackedPointerId.current !== event.pointerId) return;
+    const deltaX = event.clientX - startX.current;
+    const deltaY = event.clientY - startY.current;
+    const completedSwipe = horizontal.current && Math.abs(deltaX) > threshold && Math.abs(deltaX) > Math.abs(deltaY);
+    cancelGesture();
+    if (!completedSwipe) {
+      allowActionClick();
+      return;
+    }
+    suppressClicksFor();
+    if (deltaX < 0) onSwipeLeftRef.current();
+    else onSwipeRightRef.current();
+  }, [allowActionClick, cancelGesture, suppressClicksFor, threshold]);
+
+  const onPointerCancel = useCallback(() => {
+    cancelGesture();
+    allowActionClick();
+  }, [allowActionClick, cancelGesture]);
+
+  const onClickCapture = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target as Element | null;
+    if (ignoreSelector && target?.closest(ignoreSelector)) {
+      allowActionClick();
+      return;
+    }
+    if (!suppressClick.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [allowActionClick, ignoreSelector]);
+
+  const handlers = useMemo(() => ({ onPointerDown, onPointerMove, onPointerUp, onPointerCancel }), [onPointerCancel, onPointerDown, onPointerMove, onPointerUp]);
+  return useMemo(() => ({ handlers, onClickCapture, allowActionClick, suppressClicksFor, cancelGesture }), [allowActionClick, cancelGesture, handlers, onClickCapture, suppressClicksFor]);
+}
+
 function MobileOutlineRow({
   style,
   item,
@@ -1433,66 +1546,38 @@ function MobileOutlineRow({
 }) {
   const displayTitle = outlineDisplayTitle(item);
   const [reveal, setReveal] = useState<"left" | "right" | null>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
-  const startX = useRef(0);
-  const startY = useRef(0);
-  const suppressClick = useRef(false);
   const wasDragging = useRef(false);
+  const handledSwipePointer = useRef(false);
+  const handledSwipePointerTimer = useRef<number | null>(null);
+  const pendingSwipeActionTimer = useRef<number | null>(null);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, data: { type: "outline", outlineId: item.id } });
+  const swipe = useHorizontalSwipe({
+    disabled: isDragging,
+    ignoreSelector: ".icon-button, .swipe-action",
+    onSwipeLeft: () => setReveal("left"),
+    onSwipeRight: () => setReveal("right"),
+  });
 
   useEffect(() => {
     if (isDragging) {
       wasDragging.current = true;
-      suppressClick.current = true;
+      swipe.cancelGesture();
+      swipe.suppressClicksFor(400);
       navigator.vibrate?.(12);
       return;
     }
     if (!wasDragging.current) return;
     const timeout = window.setTimeout(() => {
       wasDragging.current = false;
-      suppressClick.current = false;
+      swipe.allowActionClick();
       setReveal(null);
     }, 250);
     return () => window.clearTimeout(timeout);
-  }, [isDragging]);
-
-  useEffect(() => {
-    const row = rowRef.current;
-    if (!row) return;
-    const touchStart = (event: TouchEvent) => {
-      if (event.touches.length !== 1 || (event.target as Element | null)?.closest(".icon-button, .swipe-action")) return;
-      const touch = event.touches[0];
-      startX.current = touch.clientX;
-      startY.current = touch.clientY;
-      suppressClick.current = false;
-    };
-    const touchMove = (event: TouchEvent) => {
-      if (event.touches.length !== 1 || isDragging) return;
-      const touch = event.touches[0];
-      const deltaX = touch.clientX - startX.current;
-      const deltaY = touch.clientY - startY.current;
-      if (Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY)) event.preventDefault();
-    };
-    const touchEnd = (event: TouchEvent) => {
-      const touch = event.changedTouches[0];
-      if (!touch || isDragging || wasDragging.current) return;
-      const deltaX = touch.clientX - startX.current;
-      const deltaY = touch.clientY - startY.current;
-      if (Math.abs(deltaX) > 46 && Math.abs(deltaX) > Math.abs(deltaY)) {
-        suppressClick.current = true;
-        setReveal(deltaX < 0 ? "left" : "right");
-        window.setTimeout(() => { suppressClick.current = false; }, 180);
-      }
-    };
-    row.addEventListener("touchstart", touchStart, { passive: true });
-    row.addEventListener("touchmove", touchMove, { passive: false });
-    row.addEventListener("touchend", touchEnd, { passive: true });
-    return () => {
-      row.removeEventListener("touchstart", touchStart);
-      row.removeEventListener("touchmove", touchMove);
-      row.removeEventListener("touchend", touchEnd);
-    };
-  }, [isDragging]);
+  }, [isDragging, swipe]);
+  useEffect(() => () => {
+    if (handledSwipePointerTimer.current !== null) window.clearTimeout(handledSwipePointerTimer.current);
+    if (pendingSwipeActionTimer.current !== null) window.clearTimeout(pendingSwipeActionTimer.current);
+  }, []);
 
   const sortableStyle: CSSProperties = {
     ...style,
@@ -1501,25 +1586,52 @@ function MobileOutlineRow({
     zIndex: isDragging ? 3 : style?.zIndex,
   };
 
-  function prepareSwipeAction(event: React.PointerEvent<HTMLButtonElement>) {
-    event.stopPropagation();
-    suppressClick.current = false;
+  function prepareSwipeAction() {
+    swipe.allowActionClick();
   }
 
   function runSwipeAction(action: () => void) {
-    suppressClick.current = false;
+    swipe.allowActionClick();
     setReveal(null);
     action();
   }
 
+  function runSwipeActionFromPointer(event: React.PointerEvent<HTMLButtonElement>, action: () => void) {
+    if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+    event.preventDefault();
+    event.stopPropagation();
+    handledSwipePointer.current = true;
+    if (handledSwipePointerTimer.current !== null) window.clearTimeout(handledSwipePointerTimer.current);
+    handledSwipePointerTimer.current = window.setTimeout(() => {
+      handledSwipePointer.current = false;
+      handledSwipePointerTimer.current = null;
+    }, 400);
+    if (pendingSwipeActionTimer.current !== null) window.clearTimeout(pendingSwipeActionTimer.current);
+    // Keep the touched button mounted until WebKit finishes its synthesized click;
+    // removing the row during pointerup can retarget that click to the next row's menu.
+    pendingSwipeActionTimer.current = window.setTimeout(() => {
+      pendingSwipeActionTimer.current = null;
+      runSwipeAction(action);
+    }, 0);
+  }
+
+  function runSwipeActionFromClick(event: React.MouseEvent<HTMLButtonElement>, action: () => void) {
+    event.stopPropagation();
+    if (handledSwipePointer.current) {
+      event.preventDefault();
+      handledSwipePointer.current = false;
+      return;
+    }
+    runSwipeAction(action);
+  }
+
   return (
-    <div ref={(node) => { rowRef.current = node; setNodeRef(node); }} style={sortableStyle} data-outline-id={item.id} aria-grabbed={isDragging} className={`mobile-outline-row-wrap ${reveal ? `reveal-${reveal}` : ""} ${selected ? "selected" : ""} ${item.archived ? "archived" : ""} ${isDragging ? "dragging" : ""} ${dropPlacement ? `drop-${dropPlacement}` : ""}`} onClickCapture={(event) => { if (suppressClick.current) { event.preventDefault(); event.stopPropagation(); } }} onContextMenu={(event) => event.preventDefault()}>
-      <div className="swipe-action swipe-add" aria-hidden={reveal !== "right"}><button type="button" tabIndex={reveal === "right" ? 0 : -1} aria-label={`在${displayTitle}下方新建大纲`} onPointerDown={prepareSwipeAction} onClick={(event) => { event.stopPropagation(); runSwipeAction(onAdd); }}><Icon name="plus" />下方新建</button></div>
-      <div className={`swipe-action swipe-manage ${item.archived ? "restore" : ""}`} aria-hidden={reveal !== "left"}><button type="button" tabIndex={reveal === "left" ? 0 : -1} aria-label={`${item.archived ? "恢复" : "归档"}大纲：${displayTitle}`} onPointerDown={prepareSwipeAction} onClick={(event) => { event.stopPropagation(); runSwipeAction(onToggleArchive); }}><Icon name={item.archived ? "refresh" : "archive"} />{item.archived ? "恢复" : "归档"}</button></div>
+    <div ref={setNodeRef} style={sortableStyle} data-outline-id={item.id} aria-grabbed={isDragging} className={`mobile-outline-row-wrap ${reveal ? `reveal-${reveal}` : ""} ${selected ? "selected" : ""} ${item.archived ? "archived" : ""} ${isDragging ? "dragging" : ""} ${dropPlacement ? `drop-${dropPlacement}` : ""}`} {...swipe.handlers} onClickCapture={swipe.onClickCapture} onContextMenu={(event) => event.preventDefault()}>
+      <div className="swipe-action swipe-add" aria-hidden={reveal !== "right"}><button type="button" tabIndex={reveal === "right" ? 0 : -1} aria-label={`在${displayTitle}下方新建大纲`} onPointerDown={prepareSwipeAction} onPointerUp={(event) => runSwipeActionFromPointer(event, onAdd)} onClick={(event) => runSwipeActionFromClick(event, onAdd)}><Icon name="plus" />下方新建</button></div>
+      <div className={`swipe-action swipe-manage ${item.archived ? "restore" : ""}`} aria-hidden={reveal !== "left"}><button type="button" tabIndex={reveal === "left" ? 0 : -1} aria-label={`${item.archived ? "恢复" : "归档"}大纲：${displayTitle}`} onPointerDown={prepareSwipeAction} onPointerUp={(event) => runSwipeActionFromPointer(event, onToggleArchive)} onClick={(event) => runSwipeActionFromClick(event, onToggleArchive)}><Icon name={item.archived ? "refresh" : "archive"} />{item.archived ? "恢复" : "归档"}</button></div>
       <div className="mobile-outline-row">
         <span className="outline-number">{String(index + 1).padStart(2, "0")}</span>
         <button className="mobile-outline-main" type="button" {...attributes} {...listeners} onClick={() => {
-          if (suppressClick.current) return;
           if (reveal) setReveal(null);
           else onOpen();
         }}>
@@ -1527,7 +1639,7 @@ function MobileOutlineRow({
           {item.state !== "saved" && <span>{item.state === "running" ? "AI Generate 运行中" : "生成失败"}</span>}
         </button>
         {item.state !== "saved" && <span className={`state-dot ${item.state}`} />}
-        <IconButton name="more" label={`${displayTitle}更多操作`} className="mobile-row-more" aria-haspopup="dialog" aria-expanded={menuOpen} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onMore(); }} />
+        <IconButton name="more" label={`${displayTitle}更多操作`} className="mobile-row-more" aria-haspopup="dialog" aria-expanded={menuOpen} onPointerDown={() => swipe.allowActionClick()} onClick={(event) => { event.stopPropagation(); onMore(); }} />
       </div>
     </div>
   );
@@ -2991,64 +3103,17 @@ function NameVersionOption({ label, version, selected, revealed, deleteDisabled,
   onDelete: () => void;
 }) {
   const compact = useMediaQuery("(max-width: 767px)") === true;
-  const itemRef = useRef<HTMLDivElement>(null);
-  const startX = useRef(0);
-  const startY = useRef(0);
-  const tracking = useRef(false);
-  const suppressClick = useRef(false);
-
-  useEffect(() => {
-    const item = itemRef.current;
-    if (!item) return;
-    const touchStart = (event: TouchEvent) => {
-      if (event.touches.length !== 1 || (event.target as Element | null)?.closest(".name-version-delete")) return;
-      const touch = event.touches[0];
-      startX.current = touch.clientX;
-      startY.current = touch.clientY;
-      tracking.current = true;
-      suppressClick.current = false;
-    };
-    const touchMove = (event: TouchEvent) => {
-      if (!tracking.current || event.touches.length !== 1) return;
-      const touch = event.touches[0];
-      const deltaX = touch.clientX - startX.current;
-      const deltaY = touch.clientY - startY.current;
-      if (Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY)) event.preventDefault();
-    };
-    const touchEnd = (event: TouchEvent) => {
-      if (!tracking.current) return;
-      tracking.current = false;
-      const touch = event.changedTouches[0];
-      if (!touch) return;
-      const deltaX = touch.clientX - startX.current;
-      const deltaY = touch.clientY - startY.current;
-      if (Math.abs(deltaX) > 46 && Math.abs(deltaX) > Math.abs(deltaY)) {
-        suppressClick.current = true;
-        onReveal(deltaX < 0);
-        window.setTimeout(() => { suppressClick.current = false; }, 180);
-      }
-    };
-    const touchCancel = () => { tracking.current = false; };
-    item.addEventListener("touchstart", touchStart, { passive: true });
-    item.addEventListener("touchmove", touchMove, { passive: false });
-    item.addEventListener("touchend", touchEnd, { passive: true });
-    item.addEventListener("touchcancel", touchCancel, { passive: true });
-    return () => {
-      item.removeEventListener("touchstart", touchStart);
-      item.removeEventListener("touchmove", touchMove);
-      item.removeEventListener("touchend", touchEnd);
-      item.removeEventListener("touchcancel", touchCancel);
-    };
-  }, [onReveal]);
+  const swipe = useHorizontalSwipe({
+    disabled: !compact,
+    ignoreSelector: ".name-version-delete",
+    onSwipeLeft: () => onReveal(true),
+    onSwipeRight: () => onReveal(false),
+  });
 
   return <div
-    ref={itemRef}
     className={`name-version-item ${revealed ? "revealed" : ""} ${deleteDisabled ? "delete-disabled" : ""}`}
-    onClickCapture={(event) => {
-      if (!suppressClick.current) return;
-      event.preventDefault();
-      event.stopPropagation();
-    }}
+    {...swipe.handlers}
+    onClickCapture={swipe.onClickCapture}
   >
     <div className="name-version-delete" aria-hidden={compact && !revealed}>
       <button
@@ -3057,7 +3122,7 @@ function NameVersionOption({ label, version, selected, revealed, deleteDisabled,
         tabIndex={compact && !revealed ? -1 : undefined}
         aria-label={`删除${label}「${version.title}」`}
         title={deleteDisabled ? "章节至少需要保留一个名称" : `删除${label}`}
-        onPointerDown={(event) => { event.stopPropagation(); suppressClick.current = false; }}
+        onPointerDown={() => swipe.allowActionClick()}
         onClick={(event) => { event.stopPropagation(); onReveal(false); onDelete(); }}
       ><Icon name="trash" /><span>删除</span></button>
     </div>
@@ -3358,6 +3423,151 @@ function AutoGrowTextarea({ value, onChange, onFocus, onBlur, className, label, 
   />;
 }
 
+function textareaCaretBounds(textarea: HTMLTextAreaElement) {
+  const computed = window.getComputedStyle(textarea);
+  const textareaBounds = textarea.getBoundingClientRect();
+  const lineHeight = Number.parseFloat(computed.lineHeight) || Number.parseFloat(computed.fontSize) * 1.4 || 22;
+  const mirror = document.createElement("div");
+  mirror.setAttribute("aria-hidden", "true");
+  mirror.style.position = "fixed";
+  mirror.style.left = "-100000px";
+  mirror.style.top = "0";
+  mirror.style.visibility = "hidden";
+  mirror.style.pointerEvents = "none";
+  mirror.style.boxSizing = computed.boxSizing;
+  mirror.style.width = `${textareaBounds.width}px`;
+  mirror.style.minHeight = "0";
+  mirror.style.maxHeight = "none";
+  mirror.style.overflow = "visible";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = computed.overflowWrap || "break-word";
+  mirror.style.wordBreak = computed.wordBreak;
+  mirror.style.fontFamily = computed.fontFamily;
+  mirror.style.fontSize = computed.fontSize;
+  mirror.style.fontStyle = computed.fontStyle;
+  mirror.style.fontWeight = computed.fontWeight;
+  mirror.style.fontVariant = computed.fontVariant;
+  mirror.style.lineHeight = computed.lineHeight;
+  mirror.style.letterSpacing = computed.letterSpacing;
+  mirror.style.textAlign = computed.textAlign;
+  mirror.style.textIndent = computed.textIndent;
+  mirror.style.textTransform = computed.textTransform;
+  mirror.style.tabSize = computed.tabSize;
+  mirror.style.padding = computed.padding;
+  mirror.style.border = computed.border;
+  mirror.append(document.createTextNode(textarea.value.slice(0, textarea.selectionStart ?? 0).replace(/\r\n/g, "\n")));
+  const marker = document.createElement("span");
+  marker.textContent = "\u200b";
+  marker.style.display = "inline-block";
+  marker.style.height = `${lineHeight}px`;
+  marker.style.width = "1px";
+  marker.style.verticalAlign = "top";
+  mirror.append(marker);
+  document.body.append(mirror);
+  const top = textareaBounds.top + marker.offsetTop - textarea.scrollTop;
+  mirror.remove();
+  return { top, bottom: top + lineHeight };
+}
+
+function useContinuousEditorViewport(scrollRef: { current: HTMLDivElement | null }) {
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const mobile = window.matchMedia("(max-width: 767px)");
+    const visualViewport = window.visualViewport;
+    let layoutFrame = 0;
+    let caretFrame = 0;
+    let settleTimer = 0;
+
+    const viewportMetrics = () => {
+      const height = Math.max(0, visualViewport?.height ?? window.innerHeight);
+      const top = Math.max(0, visualViewport?.offsetTop ?? 0);
+      return { height, top, bottom: top + height };
+    };
+
+    const ensureFocusedEditorVisible = () => {
+      caretFrame = 0;
+      if (!mobile.matches) return;
+      const active = document.activeElement;
+      if (!(active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement)
+        || !container.contains(active)
+        || !active.matches(".continuous-text-editor, .continuous-outline-title-input")) return;
+      const viewport = viewportMetrics();
+      const containerBounds = container.getBoundingClientRect();
+      const safeTop = Math.max(viewport.top, containerBounds.top) + 24;
+      const safeBottom = Math.min(viewport.bottom, containerBounds.bottom) - 28;
+      if (safeBottom <= safeTop) return;
+      const activeBounds = active instanceof HTMLTextAreaElement ? textareaCaretBounds(active) : active.getBoundingClientRect();
+      if (activeBounds.bottom > safeBottom) container.scrollTop += activeBounds.bottom - safeBottom;
+      else if (activeBounds.top < safeTop) container.scrollTop += activeBounds.top - safeTop;
+    };
+
+    const scheduleCaretVisibility = () => {
+      if (caretFrame) window.cancelAnimationFrame(caretFrame);
+      caretFrame = window.requestAnimationFrame(ensureFocusedEditorVisible);
+    };
+
+    const applyViewport = () => {
+      layoutFrame = 0;
+      if (!mobile.matches) {
+        container.style.removeProperty("--continuous-visible-height");
+        container.style.removeProperty("--continuous-keyboard-gap");
+        delete container.dataset.visualViewportHeight;
+        delete container.dataset.keyboardInset;
+        return;
+      }
+      const viewport = viewportMetrics();
+      const containerTopWithinViewport = Math.max(0, container.getBoundingClientRect().top - viewport.top);
+      const visibleHeight = Math.max(120, viewport.height - containerTopWithinViewport);
+      const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+      const keyboardInset = Math.max(0, layoutHeight - viewport.bottom);
+      container.style.setProperty("--continuous-visible-height", `${visibleHeight}px`);
+      container.style.setProperty("--continuous-keyboard-gap", keyboardInset > 80 ? "28px" : "0px");
+      container.dataset.visualViewportHeight = `${Math.round(viewport.height)}`;
+      container.dataset.keyboardInset = `${Math.round(keyboardInset)}`;
+      scheduleCaretVisibility();
+    };
+
+    const scheduleViewport = () => {
+      if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
+      layoutFrame = window.requestAnimationFrame(applyViewport);
+    };
+
+    const settleFocusedEditor = () => {
+      scheduleViewport();
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(scheduleViewport, 360);
+    };
+
+    scheduleViewport();
+    visualViewport?.addEventListener("resize", scheduleViewport);
+    visualViewport?.addEventListener("scroll", scheduleViewport);
+    window.addEventListener("resize", scheduleViewport);
+    mobile.addEventListener("change", scheduleViewport);
+    container.addEventListener("focusin", settleFocusedEditor);
+    container.addEventListener("input", scheduleCaretVisibility);
+    container.addEventListener("keyup", scheduleCaretVisibility);
+    container.addEventListener("pointerup", scheduleCaretVisibility);
+    return () => {
+      visualViewport?.removeEventListener("resize", scheduleViewport);
+      visualViewport?.removeEventListener("scroll", scheduleViewport);
+      window.removeEventListener("resize", scheduleViewport);
+      mobile.removeEventListener("change", scheduleViewport);
+      container.removeEventListener("focusin", settleFocusedEditor);
+      container.removeEventListener("input", scheduleCaretVisibility);
+      container.removeEventListener("keyup", scheduleCaretVisibility);
+      container.removeEventListener("pointerup", scheduleCaretVisibility);
+      window.clearTimeout(settleTimer);
+      if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
+      if (caretFrame) window.cancelAnimationFrame(caretFrame);
+      container.style.removeProperty("--continuous-visible-height");
+      container.style.removeProperty("--continuous-keyboard-gap");
+      delete container.dataset.visualViewportHeight;
+      delete container.dataset.keyboardInset;
+    };
+  }, [scrollRef]);
+}
+
 function ContinuousChapterHeading({ chapterId, index, title }: { chapterId: string; index: number; title: string }) {
   const { isOver, setNodeRef } = useDroppable({ id: `continuous-chapter:${chapterId}`, data: { type: "chapter", chapterId } });
   return <header ref={setNodeRef} className={`continuous-chapter-heading ${isOver ? "chapter-drop-active" : ""}`}><span>第 {index + 1} 章</span><h2>{title}</h2></header>;
@@ -3594,6 +3804,8 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
     useSensor(TouchSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  useContinuousEditorViewport(scrollRef);
 
   useEffect(() => { contentDraftsRef.current = contentDrafts; }, [contentDrafts]);
   useEffect(() => { studioRef.current = studio; }, [studio]);
@@ -3988,7 +4200,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
   const contentWords = outlines.reduce((total, item) => total + wordCount(contentDrafts[item.id] ?? ""), 0);
   const status = mode === "content" && dirtyContentIds.size ? `${dirtyContentIds.size} 条编辑中` : saveStatusLabel(studio.saveStatus);
 
-  return <div ref={scrollRef} className="page-scroll"><div className={`continuous-document-editor ${mode}`}>
+  return <div ref={scrollRef} className="page-scroll keyboard-aware-page-scroll"><div className={`continuous-document-editor ${mode}`}>
     <PageHeader eyebrow={mode === "outline" ? "全大纲编辑" : "全文编辑"} title={studio.currentArticle.title} description={`${groups.length} 章 · ${outlines.length} 条大纲${mode === "content" ? ` · ${contentWords.toLocaleString("zh-CN")} 字` : ""} · ${status}`} actions={mode === "outline" ? <Button className="copy-all-outlines-button" variant="default" size="sm" type="button" leftSection={<Icon name="copy" />} onClick={() => void copyAllOutlines()}>复制</Button> : <><Button variant="default" type="button" onClick={() => void saveAllContentAsVersions()}>另存为</Button><Button type="button" loading={studio.saveStatus === "saving"} onClick={() => void saveAllContent()}>保存</Button><IconButton name="review" label="AI Review" variant="glass" size="large" className="full-content-review-button" onClick={() => setReviewOpen(true)} /></>} />
     <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={{ acceleration: 10, threshold: { x: 0.12, y: 0.12 } }} onDragStart={(event) => setDraggingId(String(event.active.id))} onDragOver={handleDragOver} onDragCancel={clearDragState} onDragEnd={finishDrag}>
       <div className="continuous-document-body">
