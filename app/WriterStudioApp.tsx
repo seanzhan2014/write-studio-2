@@ -3403,10 +3403,30 @@ function AutoGrowTextarea({ value, onChange, onFocus, onBlur, className, label, 
   const ref = useRef<HTMLTextAreaElement>(null);
   const resize = useCallback((node: HTMLTextAreaElement | null) => {
     if (!node) return;
-    node.style.height = "0px";
-    node.style.height = `${Math.max(node.scrollHeight, 34)}px`;
+    const bounds = node.getBoundingClientRect();
+    const mirror = node.cloneNode(false) as HTMLTextAreaElement;
+    mirror.setAttribute("aria-hidden", "true");
+    mirror.tabIndex = -1;
+    mirror.rows = 1;
+    mirror.value = node.value || " ";
+    mirror.style.position = "fixed";
+    mirror.style.left = "-100000px";
+    mirror.style.top = "0";
+    mirror.style.visibility = "hidden";
+    mirror.style.pointerEvents = "none";
+    mirror.style.width = `${bounds.width}px`;
+    mirror.style.height = "0px";
+    mirror.style.minHeight = "0";
+    mirror.style.maxHeight = "none";
+    mirror.style.overflow = "hidden";
+    mirror.style.setProperty("field-sizing", "fixed");
+    document.body.append(mirror);
+    const nextHeight = Math.max(mirror.scrollHeight, 34);
+    mirror.remove();
+    node.style.height = `${nextHeight}px`;
+    node.scrollTop = 0;
   }, []);
-  useEffect(() => { resize(ref.current); }, [value, resize]);
+  useLayoutEffect(() => { resize(ref.current); }, [value, resize]);
   return <textarea
     ref={(node) => { ref.current = node; resize(node); }}
     className={className}

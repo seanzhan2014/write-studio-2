@@ -1567,6 +1567,12 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
   await expect.poll(() => scroll.evaluate((element) => Number((element as HTMLElement).dataset.visualViewportHeight))).toBe(430);
   await expect.poll(() => plan.evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(404);
 
+  await plan.press("x");
+  await expect(plan).toHaveValue(/x$/);
+  await expect.poll(() => plan.evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(404);
+  await expect.poll(() => plan.evaluate((element) => element.getBoundingClientRect().top)).toBeLessThan(24);
+  await expect.poll(() => plan.evaluate((element) => (element as HTMLTextAreaElement).scrollTop)).toBeLessThanOrEqual(1);
+
   await page.evaluate(() => (window as Window & { setVisualViewportForTest?: (height: number) => void }).setVisualViewportForTest?.(844));
   await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(700);
 });
