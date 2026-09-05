@@ -6186,6 +6186,7 @@ kbd {
 .persistence-banner { position: fixed; z-index: 90; left: 50%; top: 12px; transform: translateX(-50%); max-width: min(720px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 10px; box-shadow: 0 10px 35px #2a241522; background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--text-primary); }
 .persistence-banner span { flex: 1; font-size: 13px; }.persistence-banner .ui-label { display: block; font-size: 14px; }
 .persistence-banner button { border: 1px solid currentColor; background: transparent; border-radius: 7px; padding: 6px 9px; color: inherit; white-space: nowrap; }
+.persistence-banner.local { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
 .persistence-banner.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); color: var(--text-primary); }
 .conflict-modal { display: flex; flex-direction: column; max-height: min(90dvh, 760px); overflow: hidden; }
 .conflict-modal-body { display: flex; flex: 1; min-height: 0; overflow: hidden; padding: 0 22px 20px; }
@@ -6198,7 +6199,7 @@ kbd {
 .conflict-copy-state { font-size: 12px; margin-top: 10px; }.conflict-copy-state.success { color: var(--accent); }.conflict-copy-state.error { color: var(--danger); }
 .conflict-actions { align-items: center; border-top: 1px solid var(--border-soft); display: flex; gap: 9px; justify-content: flex-end; margin-top: 16px; padding-top: 14px; }
 .conflict-actions button { min-height: 40px; }
-.save-state.unsaved, .save-state.saving { color: var(--warning); }.save-state.failed, .save-state.conflict { color: var(--danger); }
+.save-state.unsaved, .save-state.saving { color: var(--warning); }.save-state.local { color: var(--accent); }.save-state.failed, .save-state.conflict { color: var(--danger); }
 @media (max-width: 767px) {
   .persistence-banner { top: 6px; align-items: flex-start; flex-wrap: wrap; }
   .persistence-banner span { flex-basis: 100%; }

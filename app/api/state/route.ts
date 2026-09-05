@@ -1,23 +1,26 @@
-import { readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
+import { readStudioState, readStudioStateIdentity, writeStudioState } from "@/db/runtime";
 import type { StudioData } from "@/app/studio-state";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
+import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";
 
 export const dynamic = "force-dynamic";
 
-function stateEtag(revision: number) {
-  return `"writer-studio-state-${revision}"`;
-}
-
-function stateHeaders(etag?: string) {
+function stateHeaders(identity?: StudioStateIdentity, etag?: string) {
   return {
     "Cache-Control": "private, no-cache",
     ...(etag ? { ETag: etag } : {}),
+    ...(identity ? {
+      "X-Writer-Studio-Database-Id": identity.databaseId,
+      "X-Writer-Studio-Schema-Version": String(identity.schemaVersion),
+      "X-Writer-Studio-Database-Version": String(identity.databaseVersion),
+      "X-Writer-Studio-State-Revision": String(identity.revision),
+    } : {}),
   };
 }
 
-function json(value: unknown, status = 200, etag?: string) {
-  return Response.json(value, { status, headers: stateHeaders(etag) });
+function json(value: unknown, status = 200, identity?: StudioStateIdentity, etag?: string) {
+  return Response.json(value, { status, headers: stateHeaders(identity, etag) });
 }
 
 function matchesEtag(request: Request, etag: string) {
@@ -27,12 +30,13 @@ function matchesEtag(request: Request, etag: string) {
 export async function GET(request: Request) {
   try {
     if (request.headers.has("if-none-match")) {
-      const revision = await readStudioRevision();
-      const etag = stateEtag(revision);
-      if (matchesEtag(request, etag)) return new Response(null, { status: 304, headers: stateHeaders(etag) });
+      const identity = await readStudioStateIdentity();
+      const etag = studioStateEtag(identity);
+      if (matchesEtag(request, etag)) return new Response(null, { status: 304, headers: stateHeaders(identity, etag) });
     }
-    const state = await readStudioState();
-    return json({ ...state, executionOrigin: currentTaskExecutionOrigin() }, 200, stateEtag(state.revision));
+    const [state, storedIdentity] = await Promise.all([readStudioState(), readStudioStateIdentity()]);
+    const identity = { ...storedIdentity, revision: state.revision, databaseVersion: state.databaseVersion };
+    return json({ ...state, databaseId: identity.databaseId, schemaVersion: identity.schemaVersion, executionOrigin: currentTaskExecutionOrigin() }, 200, identity, studioStateEtag(identity));
   } catch (error) {
     return json({ error: "database_unavailable", message: error instanceof Error ? error.message : "数据库不可用" }, 503);
   }

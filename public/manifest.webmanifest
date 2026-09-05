@@ -1,0 +1,19 @@
+{
+  "name": "Writer Studio",
+  "short_name": "Writer Studio",
+  "description": "结构化长篇写作工作台",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#faf8f5",
+  "theme_color": "#536d5c",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

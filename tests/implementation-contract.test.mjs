@@ -87,15 +87,23 @@ test("database initialization persists a schema marker and batches cold-start DD
   assert.match(migration, /ON CONFLICT\(`key`\) DO UPDATE/);
 });
 
-test("unchanged state refreshes use revision etags instead of reloading the full library", async () => {
+test("device snapshots revalidate by database identity and revision without reloading the full library", async () => {
   const route = await read("app/api/state/route.ts");
   const state = await read("app/studio-state.tsx");
   const runtime = await read("db/runtime.ts");
-  assert.match(runtime, /export async function readStudioRevision\(\)/);
+  const offline = await read("lib/offline-store.ts");
+  const serviceWorker = await read("public/sw.js");
+  assert.match(runtime, /export async function readStudioStateIdentity\(\)/);
   assert.match(route, /if \(matchesEtag\(request, etag\)\) return new Response\(null, \{ status: 304/);
-  assert.match(route, /writer-studio-state-\$\{revision\}/);
-  assert.match(state, /"If-None-Match": `"writer-studio-state-\$\{revisionRef\.current\}"`/);
+  assert.match(route, /X-Writer-Studio-Database-Id/);
+  assert.match(state, /readOfflineStudioSnapshot\(\)/);
+  assert.match(state, /"If-None-Match": studioStateEtag\(stateIdentityRef\.current\)/);
   assert.match(state, /if \(response\.status === 304\) return true/);
+  assert.match(offline, /const databaseName = "writer-studio-offline-v1"/);
+  assert.match(offline, /baseData: StudioData/);
+  assert.match(offline, /localData: StudioData/);
+  assert.match(serviceWorker, /request\.mode === "navigate"/);
+  assert.match(serviceWorker, /caches\.match\("\/", \{ ignoreVary: true \}\)/);
 });
 
 test("ordinary saves and automatic cloud uploads use bounded change sets", async () => {

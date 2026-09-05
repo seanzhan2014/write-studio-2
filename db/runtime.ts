@@ -461,6 +461,19 @@ export async function readStudioRevision() {
   return Number(value ?? 0);
 }
 
+export async function readStudioStateIdentity() {
+  await ensureDatabase();
+  const result = await getDatabase().prepare("SELECT key,value_json FROM app_settings WHERE key IN ('state_revision','database_version','sync_schema_version','sync_database_id')").all<Record<string, unknown>>();
+  const values = new Map((result.results ?? []).map((row) => [String(row.key), String(row.value_json ?? "")]));
+  const revision = Number(values.get("state_revision") ?? 0);
+  return {
+    databaseId: values.get("sync_database_id") ?? "",
+    schemaVersion: Number(values.get("sync_schema_version") ?? 0),
+    databaseVersion: Number(values.get("database_version") ?? revision),
+    revision,
+  };
+}
+
 export async function readStudioState(): Promise<{ data: StudioData | null; revision: number; databaseVersion: number }> {
   await ensureDatabase();
   const db = getDatabase();

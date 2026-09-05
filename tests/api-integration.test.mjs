@@ -270,11 +270,14 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
   await t.test("revalidates unchanged state without returning the full snapshot", async () => {
     const loaded = await api("/api/state");
     const etag = loaded.response.headers.get("etag");
-    assert.equal(etag, `"writer-studio-state-${loaded.data.revision}"`);
+    assert.equal(etag, `"writer-studio-state-v2-${loaded.data.databaseId}-${loaded.data.schemaVersion}-${loaded.data.revision}"`);
+    assert.equal(loaded.response.headers.get("x-writer-studio-database-id"), loaded.data.databaseId);
+    assert.equal(Number(loaded.response.headers.get("x-writer-studio-database-version")), loaded.data.databaseVersion);
     const unchanged = await api("/api/state", { headers: { "If-None-Match": etag } });
     assert.equal(unchanged.response.status, 304, unchanged.text);
     assert.equal(unchanged.text, "");
     assert.equal(unchanged.response.headers.get("etag"), etag);
+    assert.equal(unchanged.response.headers.get("x-writer-studio-database-id"), loaded.data.databaseId);
   });
 
   await t.test("persists interrupted editor drafts as unsaved-content candidates", async () => {

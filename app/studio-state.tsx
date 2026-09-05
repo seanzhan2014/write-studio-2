@@ -12,6 +12,8 @@ import type { SelectedAiContext } from "@/lib/ai-context";
 import type { NamingArticleContext } from "@/db/ai";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
+import { deleteOfflineContentDraft, readOfflineContentDrafts, readOfflineStudioSnapshot, writeOfflineContentDraft, writeOfflineStudioSnapshot, type OfflineContentDraft } from "@/lib/offline-store";
+import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
 import { duplicateArticleForCopy, duplicateArticlesForImport, duplicateOutlineForImport, type ArticleCopyOptions } from "@/lib/data-transfer";
@@ -371,7 +373,7 @@ type StudioContextValue = {
   data: StudioData;
   executionOrigin: TaskExecutionOrigin;
   hydrated: boolean;
-  saveStatus: "loading" | "saved" | "unsaved" | "saving" | "failed" | "conflict";
+  saveStatus: "loading" | "saved" | "local" | "unsaved" | "saving" | "failed" | "conflict";
   saveError: string;
   conflict: { base: StudioData; local: StudioData; server: StudioData; serverRevision: number; details: StudioConflictDetail[] } | null;
   currentArticle: Article;
@@ -596,6 +598,66 @@ function serializeDurable(data: StudioData) {
   return stableStudioStringify(durableSnapshot(data));
 }
 
+type StudioStatePayload = StudioStateIdentity & {
+  data: StudioData | null;
+  executionOrigin?: TaskExecutionOrigin;
+};
+
+function stateIdentityFromPayload(payload: Partial<StudioStatePayload>): StudioStateIdentity | null {
+  if (
+    typeof payload.databaseId !== "string" || !payload.databaseId ||
+    !Number.isSafeInteger(payload.schemaVersion) || Number(payload.schemaVersion) < 0 ||
+    !Number.isSafeInteger(payload.databaseVersion) || Number(payload.databaseVersion) < 0 ||
+    !Number.isSafeInteger(payload.revision) || Number(payload.revision) < 0
+  ) return null;
+  return {
+    databaseId: payload.databaseId,
+    schemaVersion: Number(payload.schemaVersion),
+    databaseVersion: Number(payload.databaseVersion),
+    revision: Number(payload.revision),
+  };
+}
+
+function recoverStoredDrafts(source: StudioData, indexedDrafts: OfflineContentDraft[] = []) {
+  let loaded = source;
+  const recoveredDraftKeys: string[] = [];
+  const recoveredOfflineDraftIds: string[] = [];
+  const candidates = new Map<string, { outlineId: string; text: string; savedAt: string; sessionKeys: string[]; storedOffline: boolean }>();
+  for (const draft of indexedDrafts) candidates.set(draft.outlineId, { outlineId: draft.outlineId, text: draft.text, savedAt: draft.savedAt, sessionKeys: [], storedOffline: true });
+  const storedDraftKeys = Array.from({ length: window.sessionStorage.length }, (_, index) => window.sessionStorage.key(index)).filter((key): key is string => Boolean(key?.startsWith(draftPrefix)));
+  for (const key of storedDraftKeys) {
+    try {
+      const draft = JSON.parse(window.sessionStorage.getItem(key) ?? "") as { outlineId: string; text: string; savedAt?: string };
+      if (typeof draft.outlineId !== "string" || typeof draft.text !== "string") throw new Error("invalid editor draft");
+      const savedAt = draft.savedAt && !Number.isNaN(new Date(draft.savedAt).getTime()) ? draft.savedAt : new Date().toISOString();
+      const existing = candidates.get(draft.outlineId);
+      const sessionKeys = [...(existing?.sessionKeys ?? []), key];
+      candidates.set(draft.outlineId, !existing || new Date(savedAt).getTime() >= new Date(existing.savedAt).getTime()
+        ? { outlineId: draft.outlineId, text: draft.text, savedAt, sessionKeys, storedOffline: existing?.storedOffline === true }
+        : { ...existing, sessionKeys });
+    } catch {
+      window.sessionStorage.removeItem(key);
+    }
+  }
+  for (const draft of candidates.values()) {
+    let recovered = false;
+    loaded = { ...loaded, articles: loaded.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => {
+      if (outline.id !== draft.outlineId || outline.content === draft.text || outline.versions.some((version) => version.source === "未保存内容" && version.content === draft.text)) return outline;
+      recovered = true;
+      const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(draft.savedAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt: draft.savedAt, outlineSnapshot: { title: outline.title, plan: outline.plan }, manualExcellent: activeManualExcellent(outline), excellentFragments: cloneExcellentFragments(draft.text, reanchorExcellentFragments(resolvedOutlineContent(outline), draft.text, activeExcellentFragments(outline))) };
+      return { ...outline, versions: [version, ...outline.versions] };
+    }) })) })) };
+    if (recovered) {
+      recoveredDraftKeys.push(...draft.sessionKeys);
+      if (draft.storedOffline) recoveredOfflineDraftIds.push(draft.outlineId);
+    } else {
+      draft.sessionKeys.forEach((key) => window.sessionStorage.removeItem(key));
+      if (draft.storedOffline) void deleteOfflineContentDraft(draft.outlineId);
+    }
+  }
+  return { loaded, recoveredDraftKeys, recoveredOfflineDraftIds };
+}
+
 function activeExcellentFragments(outline: Outline) {
   const version = currentOutlineVersion(outline);
   return version
@@ -734,6 +796,7 @@ function normalizeStudioData(source: StudioData): StudioData {
 export function StudioProvider({ children }: { children: React.ReactNode }) {
   const [data, setDataState] = useState<StudioData>(() => normalizeStudioData(seedData));
   const [executionOrigin, setExecutionOrigin] = useState<TaskExecutionOrigin>("local");
+  const executionOriginRef = useRef<TaskExecutionOrigin>("local");
   const [hydrated, setHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState<StudioContextValue["saveStatus"]>("loading");
   const [saveError, setSaveError] = useState("");
@@ -744,8 +807,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const saveEpochRef = useRef(0);
   const pendingRecoveredDraftKeysRef = useRef<string[]>([]);
+  const pendingRecoveredOfflineDraftIdsRef = useRef<string[]>([]);
   const pendingLegacyMigrationRef = useRef(false);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+  const stateIdentityRef = useRef<StudioStateIdentity | null>(null);
+  const offlineCacheReadyRef = useRef(false);
+  const refreshCachedStateOnHydrateRef = useRef(false);
 
   const setData = useCallback((update: StudioData | ((current: StudioData) => StudioData)) => {
     const next = typeof update === "function" ? update(dataRef.current) : update;
@@ -755,18 +822,76 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     setDataState(next);
   }, []);
 
+  const persistOfflineCache = useCallback(async (localSnapshot = dataRef.current) => {
+    if (!offlineCacheReadyRef.current || !stateIdentityRef.current || !lastSavedRef.current) return false;
+    try {
+      const baseData = durableSnapshot(normalizeStudioData(JSON.parse(lastSavedRef.current) as StudioData));
+      const localData = durableSnapshot(normalizeStudioData(localSnapshot));
+      return writeOfflineStudioSnapshot({
+        ...stateIdentityRef.current,
+        etag: studioStateEtag(stateIdentityRef.current),
+        baseData,
+        localData,
+        executionOrigin: executionOriginRef.current,
+      });
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const advanceStateIdentity = useCallback((revision: number, databaseVersion?: number) => {
+    const current = stateIdentityRef.current;
+    if (!current) return;
+    stateIdentityRef.current = {
+      ...current,
+      revision,
+      databaseVersion: Number.isSafeInteger(databaseVersion) && Number(databaseVersion) >= 0 ? Number(databaseVersion) : current.databaseVersion,
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     async function load() {
+      const [cached, indexedDrafts] = await Promise.all([readOfflineStudioSnapshot(), readOfflineContentDrafts()]);
+      if (cached && active) {
+        try {
+          const base = durableSnapshot(normalizeStudioData(cached.baseData));
+          const local = durableSnapshot(normalizeStudioData(cached.localData));
+          const deviceUi = deviceUiForCurrentPath(readDeviceUi(), local);
+          const recovered = recoverStoredDrafts(applyDeviceUi(local, deviceUi), indexedDrafts);
+          stateIdentityRef.current = {
+            databaseId: cached.databaseId,
+            schemaVersion: cached.schemaVersion,
+            databaseVersion: cached.databaseVersion,
+            revision: cached.revision,
+          };
+          revisionRef.current = cached.revision;
+          lastSavedRef.current = stableStudioStringify(base);
+          pendingRecoveredDraftKeysRef.current = recovered.recoveredDraftKeys;
+          pendingRecoveredOfflineDraftIdsRef.current = recovered.recoveredOfflineDraftIds;
+          offlineCacheReadyRef.current = true;
+          refreshCachedStateOnHydrateRef.current = true;
+          executionOriginRef.current = cached.executionOrigin;
+          setExecutionOrigin(cached.executionOrigin);
+          setData(recovered.loaded);
+          setSaveStatus(serializeDurable(recovered.loaded) === lastSavedRef.current ? "saved" : "local");
+          setHydrated(true);
+          return;
+        } catch { /* An invalid cache falls through to the authoritative server. */ }
+      }
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
         if (!response.ok) throw new Error(`数据库加载失败（${response.status}）`);
-        const payload = await response.json() as { data: StudioData | null; revision: number; executionOrigin?: TaskExecutionOrigin };
+        const payload = await response.json() as StudioStatePayload;
+        const identity = stateIdentityFromPayload(payload);
+        if (!identity) throw new Error("数据库版本信息无效");
         const databaseData = normalizeStudioData(payload.data ?? emptyStudioData(seedData.settings));
         let loaded = databaseData;
         let migratedLegacy = false;
         revisionRef.current = payload.revision;
-        setExecutionOrigin(payload.executionOrigin === "cloud" ? "cloud" : "local");
+        stateIdentityRef.current = identity;
+        executionOriginRef.current = payload.executionOrigin === "cloud" ? "cloud" : "local";
+        setExecutionOrigin(executionOriginRef.current);
         if (loaded.articles.length === 0 && payload.revision === 0) {
           const legacy = window.localStorage.getItem(legacyStorageKey);
           if (legacy) {
@@ -782,33 +907,18 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         const databaseSnapshot = serializeDurable(databaseData);
         const deviceUi = deviceUiForCurrentPath(migratedLegacy ? deviceUiFromData(loaded) : readDeviceUi(), loaded);
         loaded = applyDeviceUi(loaded, deviceUi);
-        const recoveredDraftKeys: string[] = [];
-        const storedDraftKeys = Array.from({ length: window.sessionStorage.length }, (_, index) => window.sessionStorage.key(index)).filter((key): key is string => Boolean(key?.startsWith(draftPrefix)));
-        for (const key of storedDraftKeys) {
-          try {
-            const draft = JSON.parse(window.sessionStorage.getItem(key) ?? "") as { outlineId: string; text: string; savedAt?: string };
-            if (typeof draft.outlineId !== "string" || typeof draft.text !== "string") throw new Error("invalid editor draft");
-            const createdAt = draft.savedAt && !Number.isNaN(new Date(draft.savedAt).getTime()) ? draft.savedAt : new Date().toISOString();
-            let recovered = false;
-            loaded = { ...loaded, articles: loaded.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => {
-              if (outline.id !== draft.outlineId || outline.content === draft.text || outline.versions.some((version) => version.source === "未保存内容" && version.content === draft.text)) return outline;
-              recovered = true;
-              const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(createdAt).toLocaleString("zh-CN")}`, content: draft.text, source: "未保存内容", createdAt, outlineSnapshot: { title: outline.title, plan: outline.plan }, manualExcellent: activeManualExcellent(outline), excellentFragments: cloneExcellentFragments(draft.text, reanchorExcellentFragments(resolvedOutlineContent(outline), draft.text, activeExcellentFragments(outline))) };
-              return { ...outline, versions: [version, ...outline.versions] };
-            }) })) })) };
-            if (recovered) recoveredDraftKeys.push(key);
-            else window.sessionStorage.removeItem(key);
-          } catch {
-            window.sessionStorage.removeItem(key);
-          }
-        }
+        const recovered = recoverStoredDrafts(loaded, indexedDrafts);
+        loaded = recovered.loaded;
         if (!active) return;
         setData(loaded);
         dataRef.current = loaded;
         lastSavedRef.current = databaseSnapshot;
-        pendingRecoveredDraftKeysRef.current = recoveredDraftKeys;
+        pendingRecoveredDraftKeysRef.current = recovered.recoveredDraftKeys;
+        pendingRecoveredOfflineDraftIdsRef.current = recovered.recoveredOfflineDraftIds;
         pendingLegacyMigrationRef.current = migratedLegacy;
+        offlineCacheReadyRef.current = true;
         setSaveStatus("saved");
+        await persistOfflineCache(loaded);
       } catch (error) {
         if (!active) return;
         setSaveError(error instanceof Error ? error.message : "数据库加载失败");
@@ -819,7 +929,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     }
     void load();
     return () => { active = false; };
-  }, [setData]);
+  }, [persistOfflineCache, setData]);
 
   const persist = useCallback(async function persistSnapshot(snapshot: StudioData, epoch = saveEpochRef.current, rebaseAttempt = 0): Promise<boolean> {
     if (epoch !== saveEpochRef.current) return false;
@@ -850,7 +960,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         headers: { "Content-Type": "application/json", "If-Match": String(revisionRef.current) },
         body: JSON.stringify({ changes }),
       });
-      const payload = await response.json() as { revision?: number; data?: StudioData; message?: string };
+      const payload = await response.json() as { revision?: number; databaseVersion?: number; data?: StudioData; message?: string };
       // An authoritative API response may have advanced the shared revision
       // while this request was in flight. Never let this older response roll
       // the accepted revision and save baseline backward.
@@ -858,10 +968,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (response.status === 409) {
         if (!payload.data) {
           const currentResponse = await fetch("/api/state", { cache: "no-store" });
-          const currentPayload = await currentResponse.json() as { revision?: number; data?: StudioData | null };
+          const currentPayload = await currentResponse.json() as Partial<StudioStatePayload>;
           if (currentResponse.ok && currentPayload.data && currentPayload.revision !== undefined) {
             payload.data = currentPayload.data;
             payload.revision = currentPayload.revision;
+            payload.databaseVersion = currentPayload.databaseVersion;
           }
         }
         if (!payload.data) throw new Error(payload.message || "保存冲突，无法读取服务端状态");
@@ -875,6 +986,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
               saveEpochRef.current += 1;
               const rebasedEpoch = saveEpochRef.current;
               revisionRef.current = Number(payload.revision ?? revisionRef.current);
+              advanceStateIdentity(revisionRef.current, payload.databaseVersion);
               lastSavedRef.current = stableStudioStringify(server);
               const merged = applyDeviceUi(result.merged, latestUi);
               dataRef.current = merged;
@@ -889,34 +1001,44 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         }
         saveEpochRef.current += 1;
         const server = durableSnapshot(normalizeStudioData(payload.data));
-        const base = lastSavedRef.current ? JSON.parse(lastSavedRef.current) as StudioData : server;
+        const resolutionBase = lastSavedRef.current ? JSON.parse(lastSavedRef.current) as StudioData : server;
         const latestLocal = durableSnapshot(dataRef.current);
-        const result = mergeStudioConflict(base, latestLocal, server);
-        setConflict({ base, local: latestLocal, server, serverRevision: Number(payload.revision ?? revisionRef.current), details: result.conflicts });
+        const result = mergeStudioConflict(resolutionBase, latestLocal, server);
+        setConflict({ base: resolutionBase, local: latestLocal, server, serverRevision: Number(payload.revision ?? revisionRef.current), details: result.conflicts });
         setSaveStatus("conflict");
         return false;
       }
       if (!response.ok || payload.revision === undefined) throw new Error(payload.message || `保存失败（${response.status}）`);
       revisionRef.current = payload.revision;
+      advanceStateIdentity(payload.revision, payload.databaseVersion);
       lastSavedRef.current = serialized;
       setConflict(null);
-      setSaveStatus("saved");
+      setSaveStatus(serializeDurable(dataRef.current) === serialized ? "saved" : "unsaved");
       pendingRecoveredDraftKeysRef.current.forEach((key) => window.sessionStorage.removeItem(key));
       pendingRecoveredDraftKeysRef.current = [];
+      await Promise.all(pendingRecoveredOfflineDraftIdsRef.current.map((outlineId) => deleteOfflineContentDraft(outlineId)));
+      pendingRecoveredOfflineDraftIdsRef.current = [];
       if (pendingLegacyMigrationRef.current) {
         window.localStorage.removeItem(legacyStorageKey);
         pendingLegacyMigrationRef.current = false;
       }
+      await persistOfflineCache(dataRef.current);
       return true;
     } catch (error) {
       if (epoch !== saveEpochRef.current) return false;
+      const cached = await persistOfflineCache(snapshot);
+      if (cached) {
+        setSaveError("修改已保存在本设备，连接服务后会自动同步。");
+        setSaveStatus("local");
+        return true;
+      }
       setSaveError(controller.signal.reason === "save-timeout" ? "保存超时，请检查网络后重试" : error instanceof Error ? error.message : "保存失败");
       setSaveStatus("failed");
       return false;
     } finally {
       globalThis.clearTimeout(timeout);
     }
-  }, [setData]);
+  }, [advanceStateIdentity, persistOfflineCache, setData]);
 
   const enqueueSave = useCallback((snapshot: StudioData) => {
     const epoch = saveEpochRef.current;
@@ -932,22 +1054,29 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       try {
         const response = await fetch("/api/state", {
           cache: "no-store",
-          headers: { "If-None-Match": `"writer-studio-state-${revisionRef.current}"` },
+          headers: stateIdentityRef.current ? { "If-None-Match": studioStateEtag(stateIdentityRef.current) } : undefined,
         });
         if (response.status === 304) return true;
-        const payload = await response.json() as { data?: StudioData | null; revision?: number; executionOrigin?: TaskExecutionOrigin };
-        if (!response.ok || !payload.data || payload.revision === undefined) return false;
-        setExecutionOrigin(payload.executionOrigin === "cloud" ? "cloud" : "local");
+        const payload = await response.json() as Partial<StudioStatePayload>;
+        const identity = stateIdentityFromPayload(payload);
+        if (!response.ok || !payload.data || !identity) return false;
+        executionOriginRef.current = payload.executionOrigin === "cloud" ? "cloud" : "local";
+        setExecutionOrigin(executionOriginRef.current);
         if (serializeDurable(dataRef.current) !== requestedSnapshot || lastSavedRef.current !== requestedSnapshot) return false;
         const server = durableSnapshot(normalizeStudioData(payload.data));
         const serialized = stableStudioStringify(server);
-        revisionRef.current = payload.revision;
+        revisionRef.current = identity.revision;
+        stateIdentityRef.current = identity;
         if (serialized !== lastSavedRef.current) {
           const withDeviceUi = applyDeviceUi(server, deviceUiFromData(dataRef.current));
           dataRef.current = withDeviceUi;
           lastSavedRef.current = serialized;
           setData(withDeviceUi);
         }
+        lastSavedRef.current = serialized;
+        setSaveError("");
+        setSaveStatus("saved");
+        await persistOfflineCache(dataRef.current);
         return true;
       } catch {
         return false;
@@ -957,7 +1086,19 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     })();
     refreshPromiseRef.current = request;
     return request;
-  }, [hydrated, conflict, setData]);
+  }, [hydrated, conflict, persistOfflineCache, setData]);
+
+  useEffect(() => {
+    if (!hydrated || !refreshCachedStateOnHydrateRef.current) return;
+    refreshCachedStateOnHydrateRef.current = false;
+    void refreshFromServer();
+  }, [hydrated, refreshFromServer]);
+
+  useEffect(() => {
+    if (!hydrated || !offlineCacheReadyRef.current) return;
+    const timer = window.setTimeout(() => { void persistOfflineCache(data); }, 120);
+    return () => window.clearTimeout(timer);
+  }, [data, hydrated, persistOfflineCache]);
 
   useEffect(() => {
     if (!hydrated || conflict) return;
@@ -977,12 +1118,35 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    const uploadWhenOnline = () => {
-      if (!dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void triggerBackgroundCloudUpload();
+    let syncing = false;
+    const synchronizeWhenOnline = async (refreshCleanState = false) => {
+      if (!navigator.onLine || syncing || conflict) return;
+      const dirty = serializeDurable(dataRef.current) !== lastSavedRef.current;
+      if (!dirty && !refreshCleanState) return;
+      syncing = true;
+      try {
+        const synchronized = dirty ? await enqueueSave(dataRef.current) : await refreshFromServer();
+        if (synchronized && !dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void triggerBackgroundCloudUpload();
+      } finally {
+        syncing = false;
+      }
     };
-    window.addEventListener("online", uploadWhenOnline);
-    return () => window.removeEventListener("online", uploadWhenOnline);
-  }, [hydrated]);
+    const synchronizeAfterReconnect = () => { void synchronizeWhenOnline(true); };
+    const synchronizeWhenVisible = () => { if (document.visibilityState === "visible") synchronizeAfterReconnect(); };
+    window.addEventListener("online", synchronizeAfterReconnect);
+    window.addEventListener("focus", synchronizeAfterReconnect);
+    window.addEventListener("pageshow", synchronizeAfterReconnect);
+    document.addEventListener("visibilitychange", synchronizeWhenVisible);
+    const timer = window.setInterval(() => { void synchronizeWhenOnline(); }, 2_000);
+    void synchronizeWhenOnline();
+    return () => {
+      window.removeEventListener("online", synchronizeAfterReconnect);
+      window.removeEventListener("focus", synchronizeAfterReconnect);
+      window.removeEventListener("pageshow", synchronizeAfterReconnect);
+      document.removeEventListener("visibilitychange", synchronizeWhenVisible);
+      window.clearInterval(timer);
+    };
+  }, [hydrated, conflict, enqueueSave, refreshFromServer]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -993,12 +1157,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
-    const onHidden = () => { if (document.visibilityState === "hidden") void enqueueSave(dataRef.current); };
-    const onPageHide = () => { void enqueueSave(dataRef.current); };
+    const onHidden = () => { if (document.visibilityState === "hidden") { void persistOfflineCache(dataRef.current); void enqueueSave(dataRef.current); } };
+    const onPageHide = () => { void persistOfflineCache(dataRef.current); void enqueueSave(dataRef.current); };
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", onPageHide);
     return () => { document.removeEventListener("visibilitychange", onHidden); window.removeEventListener("pagehide", onPageHide); };
-  }, [hydrated, enqueueSave]);
+  }, [hydrated, enqueueSave, persistOfflineCache]);
 
   const currentArticle = data.articles.find((article) => article.id === data.currentArticleId) ?? data.articles[0] ?? emptyArticle;
   const currentPair = currentArticle.id ? findOutlineInArticle(currentArticle, data.currentOutlineId) ?? findOutlineInArticle(currentArticle, firstOutline(currentArticle)) : null;
@@ -1024,13 +1188,15 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     if (coverage === "complete") {
       saveEpochRef.current += 1;
       revisionRef.current = revision;
+      advanceStateIdentity(revision);
     }
     lastSavedRef.current = stableStudioStringify(nextBase);
     dataRef.current = nextLocal;
     setData(nextLocal);
     setConflict(null);
     setSaveStatus(serializeDurable(nextLocal) === lastSavedRef.current ? "saved" : "unsaved");
-  }, [setData]);
+    void persistOfflineCache(nextLocal);
+  }, [advanceStateIdentity, persistOfflineCache, setData]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1380,10 +1546,13 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       return enqueueSave(snapshot);
     },
     stageContentDraft(outlineId, text) {
-      window.sessionStorage.setItem(`${draftPrefix}${outlineId}`, JSON.stringify({ outlineId, text, savedAt: new Date().toISOString() }));
+      const savedAt = new Date().toISOString();
+      window.sessionStorage.setItem(`${draftPrefix}${outlineId}`, JSON.stringify({ outlineId, text, savedAt }));
+      void writeOfflineContentDraft(outlineId, text, savedAt);
     },
     clearContentDraft(outlineId) {
       window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
+      void deleteOfflineContentDraft(outlineId);
     },
     saveCurrentContent(outlineId, text, sourceVersionId) {
       const updatedAt = new Date().toISOString();
@@ -1421,6 +1590,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const existing = dataRef.current.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
       if (!existing || resolvedOutlineContent(existing) === text || existing.versions.some((version) => version.source === "未保存内容" && version.content === text)) {
         window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
+        await deleteOfflineContentDraft(outlineId);
         return true;
       }
       const version: Version = { id: makeId("version"), name: `未保存内容 · ${new Date(savedAt).toLocaleString("zh-CN")}`, content: text, source: "未保存内容", createdAt: savedAt, outlineSnapshot: { title: existing.title, plan: existing.plan }, manualExcellent: activeManualExcellent(existing), excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) };
@@ -1428,7 +1598,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       dataRef.current = snapshot;
       setData(snapshot);
       const saved = await enqueueSave(snapshot);
-      if (saved) window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
+      if (saved) {
+        window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
+        await deleteOfflineContentDraft(outlineId);
+      }
       return saved;
     },
     moveOutline(sourceId, targetId, placement) {
@@ -1750,16 +1923,18 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     async clearBusinessData() {
       try {
         const response = await fetch("/api/database/business-data", { method: "DELETE" });
-        const payload = await response.json() as { revision?: number; error?: string };
+        const payload = await response.json() as { revision?: number; databaseVersion?: number; error?: string };
         if (!response.ok || payload.revision === undefined) throw new Error(payload.error || "清除失败");
         saveEpochRef.current += 1;
         revisionRef.current = payload.revision;
+        advanceStateIdentity(payload.revision, payload.databaseVersion);
         const cleared = emptyStudioData(dataRef.current.settings);
         dataRef.current = cleared;
         lastSavedRef.current = serializeDurable(cleared);
         setData(cleared);
         setConflict(null);
         setSaveStatus("saved");
+        await persistOfflineCache(cleared);
         for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
           const key = window.sessionStorage.key(index);
           if (key?.startsWith(draftPrefix)) window.sessionStorage.removeItem(key);
@@ -1783,18 +1958,22 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (!conflict) return;
       let server = conflict.server;
       let serverRevision = conflict.serverRevision;
+      let serverIdentity: StudioStateIdentity | null = null;
       try {
         const response = await fetch("/api/state", { cache: "no-store" });
-        const payload = await response.json() as { data?: StudioData | null; revision?: number };
+        const payload = await response.json() as Partial<StudioStatePayload>;
         if (response.ok && payload.data && payload.revision !== undefined) {
           server = durableSnapshot(normalizeStudioData(payload.data));
           serverRevision = payload.revision;
+          serverIdentity = stateIdentityFromPayload(payload);
         }
       } catch { /* The conflict response is still a valid database snapshot. */ }
       const resolved = resolveStudioConflict(conflict.base, conflict.local, server, choice === "keep-local" ? "local" : "server");
       const withDeviceUi = applyDeviceUi(resolved, deviceUiFromData(dataRef.current));
       saveEpochRef.current += 1;
       revisionRef.current = serverRevision;
+      if (serverIdentity) stateIdentityRef.current = serverIdentity;
+      else advanceStateIdentity(serverRevision);
       lastSavedRef.current = stableStudioStringify(server);
       dataRef.current = withDeviceUi;
       setData(withDeviceUi);
@@ -1802,7 +1981,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("unsaved");
       await enqueueSave(withDeviceUi);
     },
-  }), [data, executionOrigin, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, acceptServerMutation, enqueueSave, refreshFromServer, setData]);
+  }), [data, executionOrigin, hydrated, saveStatus, saveError, conflict, currentArticle, currentChapter, currentOutline, acceptServerMutation, advanceStateIdentity, enqueueSave, persistOfflineCache, refreshFromServer, setData]);
 
   return <StudioContext.Provider value={value}>{children}</StudioContext.Provider>;
 }

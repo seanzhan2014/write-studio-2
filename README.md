@@ -62,6 +62,7 @@ npm run dev
 - 手机：`http://<本机局域网 IP>:3002/`
 - 开发服务固定监听 `0.0.0.0:3002`。
 - Windows 防火墙需要允许 Node.js 接受“专用网络”入站连接。
+- 手机通过局域网 HTTP 可以联网使用，但浏览器只允许 HTTPS（或本机 `localhost`）启用 Service Worker；要在关闭浏览器后断网重开，需使用 HTTPS 部署或手机信任的本地 HTTPS 证书。
 
 生产模式不带 HMR，必须先构建：
 
@@ -87,15 +88,18 @@ Get-NetIPAddress -AddressFamily IPv4 | Where-Object IPAddress -NotLike '127.*'
 - AI Chat 支持每条大纲下的多会话、分支和消息级操作，只引用当前大纲及其之前的全部未归档大纲，不读取之后的大纲；
 - AI 回复可保存为候选版本、交给 AI Generate，或经确认并保护当前正文版本后追加到正文；
 - 正文 AI Generate 完成后创建不可变版本并自动设为当前正文；大纲内容和章节标题仍在大纲视图生成并预览；
-- 800ms 自动保存、`Ctrl/Cmd+S` 手动保存、`sessionStorage` 意外恢复、多窗口 revision 冲突处理；
+- 800ms 自动保存、`Ctrl/Cmd+S` 手动保存、IndexedDB 离线快照、关闭浏览器后离线恢复、多窗口 revision 冲突处理；
 - AI Generate 后台队列、取消、重试、自动更新当前正文及版本历史回退；
 - SQLite FTS5 派生搜索索引、数据库完整性检查；
 - 电脑侧栏支持 240–360px 调整及 56px 折叠，状态保存在轻量浏览器设置中。
 
 ## 数据与安全
 
-- 完整业务数据以服务端 SQLite 为事实源，不长期写入 `localStorage`。
-- 未成功保存的当前正文只进入当前标签页的 `sessionStorage` 恢复缓冲。
+- 完整业务数据以服务端 SQLite/D1 为最终事实源；浏览器在 IndexedDB 中保存最近一次服务端基线和本设备待同步副本，不把业务数据写入 `localStorage`。
+- 联网时客户端先用数据库 ID、结构版本和 revision 组成的 ETag 比较版本；一致时服务端返回 `304`，无需传输完整快照。
+- 断网时手动编辑会保存到本设备并显示“已保存到本设备”；恢复网络后自动提交。若服务端也修改过同一字段，沿用现有三方合并和冲突选择界面。
+- 当前正文编辑草稿同时保存在当前标签页的 `sessionStorage` 和 IndexedDB，用于标签页或浏览器意外关闭后的恢复。
+- 离线模式不执行 AI Chat、AI Generate 或其他依赖服务端/模型的任务。
 - OpenAI 兼容模型可以在“设置 → AI 模型”中配置。
 - API 密钥不写入浏览器持久化；它使用 `AI_SECRET_KEY` 派生的 AES-GCM 密钥加密后保存在 SQLite。生产环境必须设置稳定、随机的 `AI_SECRET_KEY`，更换该值后需要重新输入已有模型密钥。
 - 未配置远程模型时，AI Chat 和 AI Generate 使用本地 PoC 引擎，便于完整体验交互流程。

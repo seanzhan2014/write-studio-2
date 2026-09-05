@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { ColorSchemeScript, MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "./globals.css";
+import OfflineBootstrap from "./offline-bootstrap";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -18,7 +19,10 @@ export async function generateMetadata(): Promise<Metadata> {
     icons: {
       icon: "/favicon.svg",
       shortcut: "/favicon.svg",
+      apple: "/favicon.svg",
     },
+    manifest: "/manifest.webmanifest",
+    appleWebApp: { capable: true, title: "Writer Studio", statusBarStyle: "default" },
     openGraph: {
       title,
       description,
@@ -47,6 +51,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="zh-CN" suppressHydrationWarning>
       <head><ColorSchemeScript defaultColorScheme="auto" /></head>
       <body>
+        <OfflineBootstrap />
         <MantineProvider
           defaultColorScheme="auto"
           theme={{
