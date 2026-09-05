@@ -68,7 +68,7 @@ test("schema-extensible inserts name their columns explicitly", async () => {
 test("business data uses server SQLite with revision conflicts and interrupted-draft candidates", async () => {
   const state = await read("app/studio-state.tsx");
   const runtime = await read("db/runtime.ts");
-  assert.match(state, /fetch\("\/api\/state"/);
+  assert.match(state, /fetchFromServer\("\/api\/state"/);
   assert.match(state, /sessionStorage/);
   assert.doesNotMatch(state, /localStorage\.setItem\(legacyStorageKey,\s*JSON\.stringify\(data\)/);
   assert.match(runtime, /state_revision/);
@@ -106,6 +106,18 @@ test("device snapshots revalidate by database identity and revision without relo
   assert.match(serviceWorker, /caches\.match\("\/", \{ ignoreVary: true \}\)/);
 });
 
+test("offline server actions fail before issuing a network request", async () => {
+  const network = await read("lib/browser-network.ts");
+  const state = await read("app/studio-state.tsx");
+  const app = await read("app/WriterStudioApp.tsx");
+  assert.match(network, /navigator\.onLine === false/);
+  assert.match(network, /requireBrowserOnline\(\);[\s\S]*globalThis\.fetch/);
+  assert.match(network, /connectivityTimeoutMs[\s\S]*globalThis\.fetch\("\/api\/connectivity"/);
+  assert.match(state, /if \(browserIsOffline\(\)\) \{[\s\S]*persistOfflineCache\(snapshot\)/);
+  assert.match(app, /fetchServerAction\("\/api\/ai\/tasks"/);
+  assert.match(app, /if \(browserIsOffline\(\)\) \{ onNotice\(OFFLINE_OPERATION_MESSAGE\); return; \}/);
+});
+
 test("ordinary saves and automatic cloud uploads use bounded change sets", async () => {
   const state = await read("app/studio-state.tsx");
   const mutations = await read("app/api/state/mutations/route.ts");
@@ -113,7 +125,7 @@ test("ordinary saves and automatic cloud uploads use bounded change sets", async
   const sync = await read("db/sync.ts");
   const changes = await read("lib/studio-changes.ts");
   assert.match(state, /diffStudioData\(base, durable\)/);
-  assert.match(state, /fetch\("\/api\/state\/mutations"/);
+  assert.match(state, /fetchFromServer\("\/api\/state\/mutations"/);
   assert.match(mutations, /applyStudioChanges/);
   assert.match(changes, /from "fast-deep-equal"/);
   assert.match(changes, /version: 2/);
@@ -671,7 +683,7 @@ test("AI entry points use bounded server transactions instead of full-state save
   assert.match(taskRoute, /UPDATE outlines SET summary=COALESCE/);
   assert.match(chatRoute, /INSERT INTO chat_messages/);
   assert.match(chatRoute, /UPDATE ai_tasks SET status=/);
-  assert.match(state, /fetch\("\/api\/ai\/tasks"/);
+  assert.match(state, /fetchFromServer\("\/api\/ai\/tasks"/);
   assert.match(state, /\}\), "partial"\);/, "task polling must not treat a partial task snapshot as a complete global revision");
   assert.match(state, /epoch !== saveEpochRef\.current/, "stale save responses must not roll the accepted server baseline backward");
   assert.doesNotMatch(state, /setInterval\([\s\S]{0,500}refreshFromServer\(\)[\s\S]{0,100}3000/);

@@ -47,6 +47,21 @@ test("mobile reopens the cached library offline and syncs its local edit after r
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.offlineReady)).toBe("true");
 
   await context.setOffline(true);
+  let offlineAiRequests = 0;
+  page.on("request", (requested) => { if (requested.url().includes("/api/ai/")) offlineAiRequests += 1; });
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/articles/article-main/outlines/outline-current/generate?offline-test=1");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+  const offlineClickStartedAt = Date.now();
+  await page.getByRole("button", { name: "开始生成" }).click();
+  await expect(page.getByText("当前处于离线模式，此操作需要连接服务端。", { exact: true })).toBeVisible();
+  expect(Date.now() - offlineClickStartedAt).toBeLessThan(1_000);
+  expect(offlineAiRequests).toBe(0);
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/articles/article-main/info/basic?offline-test=1");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
   await page.getByLabel("文章标题").fill("手机离线标题");
   await expect(page.getByText("已保存到本设备", { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(async () => {

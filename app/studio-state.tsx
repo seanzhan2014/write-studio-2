@@ -12,6 +12,7 @@ import type { SelectedAiContext } from "@/lib/ai-context";
 import type { NamingArticleContext } from "@/db/ai";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
+import { browserIsOffline, fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { deleteOfflineContentDraft, readOfflineContentDrafts, readOfflineStudioSnapshot, writeOfflineContentDraft, writeOfflineStudioSnapshot, type OfflineContentDraft } from "@/lib/offline-store";
 import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
@@ -456,7 +457,7 @@ const saveRequestTimeoutMs = 45_000;
 
 async function triggerBackgroundCloudUpload() {
   try {
-    await fetch("/api/sync/upload", { method: "POST", keepalive: true });
+    await fetchFromServer("/api/sync/upload", { method: "POST", keepalive: true });
   } catch { /* Local saves remain authoritative while the cloud is unavailable. */ }
   window.dispatchEvent(new Event("writer-studio-sync-status"));
 }
@@ -880,7 +881,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         } catch { /* An invalid cache falls through to the authoritative server. */ }
       }
       try {
-        const response = await fetch("/api/state", { cache: "no-store" });
+        const response = await fetchFromServer("/api/state", { cache: "no-store" });
         if (!response.ok) throw new Error(`数据库加载失败（${response.status}）`);
         const payload = await response.json() as StudioStatePayload;
         const identity = stateIdentityFromPayload(payload);
@@ -949,12 +950,24 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       lastSavedRef.current = serialized;
       return true;
     }
+    if (browserIsOffline()) {
+      const cached = await persistOfflineCache(snapshot);
+      if (epoch !== saveEpochRef.current) return false;
+      if (cached) {
+        setSaveError("修改已保存在本设备，连接服务后会自动同步。");
+        setSaveStatus("local");
+        return true;
+      }
+      setSaveError("当前处于离线模式，且无法写入本设备缓存。");
+      setSaveStatus("failed");
+      return false;
+    }
     setSaveStatus("saving");
     setSaveError("");
     const controller = new AbortController();
     const timeout = globalThis.setTimeout(() => controller.abort("save-timeout"), saveRequestTimeoutMs);
     try {
-      const response = await fetch("/api/state/mutations", {
+      const response = await fetchFromServer("/api/state/mutations", {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json", "If-Match": String(revisionRef.current) },
@@ -967,7 +980,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (epoch !== saveEpochRef.current) return response.ok && payload.revision !== undefined;
       if (response.status === 409) {
         if (!payload.data) {
-          const currentResponse = await fetch("/api/state", { cache: "no-store" });
+          const currentResponse = await fetchFromServer("/api/state", { cache: "no-store" });
           const currentPayload = await currentResponse.json() as Partial<StudioStatePayload>;
           if (currentResponse.ok && currentPayload.data && currentPayload.revision !== undefined) {
             payload.data = currentPayload.data;
@@ -1052,7 +1065,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     const requestedSnapshot = lastSavedRef.current;
     const request = (async () => {
       try {
-        const response = await fetch("/api/state", {
+        const response = await fetchFromServer("/api/state", {
           cache: "no-store",
           headers: stateIdentityRef.current ? { "If-None-Match": studioStateEtag(stateIdentityRef.current) } : undefined,
         });
@@ -1203,9 +1216,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     let polling = false;
     const refreshVisible = () => { if (document.visibilityState === "visible") void refreshFromServer(); };
     const timer = window.setInterval(() => {
-      if (polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.executionOrigin === executionOrigin && (task.state === "waiting" || task.state === "running"))) return;
+      if (browserIsOffline() || polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.executionOrigin === executionOrigin && (task.state === "waiting" || task.state === "running"))) return;
       polling = true;
-      void fetch("/api/ai/tasks", { cache: "no-store" })
+      void fetchFromServer("/api/ai/tasks", { cache: "no-store" })
         .then(async (response) => {
           const payload = await response.json() as { tasks?: AiTask[]; runningOutlineIds?: string[]; revision?: number };
           if (!response.ok || !payload.tasks || payload.revision === undefined) return;
@@ -1922,7 +1935,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     async clearBusinessData() {
       try {
-        const response = await fetch("/api/database/business-data", { method: "DELETE" });
+        const response = await fetchServerAction("/api/database/business-data", { method: "DELETE" });
         const payload = await response.json() as { revision?: number; databaseVersion?: number; error?: string };
         if (!response.ok || payload.revision === undefined) throw new Error(payload.error || "清除失败");
         saveEpochRef.current += 1;
@@ -1960,7 +1973,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       let serverRevision = conflict.serverRevision;
       let serverIdentity: StudioStateIdentity | null = null;
       try {
-        const response = await fetch("/api/state", { cache: "no-store" });
+        const response = await fetchFromServer("/api/state", { cache: "no-store" });
         const payload = await response.json() as Partial<StudioStatePayload>;
         if (response.ok && payload.data && payload.revision !== undefined) {
           server = durableSnapshot(normalizeStudioData(payload.data));

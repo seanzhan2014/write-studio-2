@@ -50,6 +50,7 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { DEFAULT_ARTICLE_COPY_OPTIONS, suggestArticleCopyTitle, type ArticleCopyOptions } from "@/lib/data-transfer";
+import { browserIsOffline, fetchFromServer, fetchServerAction, OFFLINE_OPERATION_MESSAGE } from "@/lib/browser-network";
 import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
 import { DataTransferProvider, useDataTransfer } from "./data-transfer";
 import { MobileActionSheet, ResponsiveModal, ScrollableDrawer, type ActionSheetItem } from "./ui/overlays";
@@ -186,7 +187,7 @@ type ServerTaskInput = {
 
 async function createServerTask(studio: ReturnType<typeof useStudio>, input: ServerTaskInput) {
   const taskId = clientId("task");
-  const response = await fetch("/api/ai/tasks", {
+  const response = await fetchServerAction("/api/ai/tasks", {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
@@ -368,7 +369,7 @@ function useConfiguredModels() {
   const [models, setModels] = useState<ConfiguredModel[]>([]);
   useEffect(() => {
     let active = true;
-    void fetch("/api/models", { cache: "no-store" })
+    void fetchFromServer("/api/models", { cache: "no-store" })
       .then((response) => response.json() as Promise<{ models?: ConfiguredModel[] }>)
       .then((payload) => { if (active) setModels(payload.models ?? []); })
       .catch(() => { if (active) setModels([]); });
@@ -588,7 +589,7 @@ function WriterStudioInner() {
   }, [studio.data.tasks, studio.executionOrigin]);
 
   useEffect(() => {
-    if (!studio.hydrated || studio.saveStatus === "failed" || studio.saveStatus === "conflict" || studio.saveStatus === "local") return;
+    if (!studio.hydrated || browserIsOffline() || studio.saveStatus === "failed" || studio.saveStatus === "conflict" || studio.saveStatus === "local") return;
     const currentStudio = studioRef.current;
     const currentTime = Date.now();
     const leaseExpired = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= currentTime);
@@ -609,7 +610,9 @@ function WriterStudioInner() {
       taskDispatches.current.add(task.id);
       void (async () => {
         try {
-          await fetch(`/api/ai/tasks/${encodeURIComponent(task.id)}/execute`, { method: "POST", cache: "no-store" });
+          await fetchFromServer(`/api/ai/tasks/${encodeURIComponent(task.id)}/execute`, { method: "POST", cache: "no-store" });
+        } catch {
+          // A queued task remains available and will be retried after reconnecting.
         } finally {
           taskDispatches.current.delete(task.id);
           await studioRef.current.refreshFromServer();
@@ -1793,7 +1796,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     setLoading(true); setError("");
     try {
       const context = selectAiContext({ articles: [studio.currentArticle] }, outlineId, isChapter ? "chapter-title" : "outline", { includePrevious: true, includeCharacters: true, instruction: prompt });
-      const response = await fetch("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
+      const response = await fetchServerAction("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
       const payload = await response.json() as { text?: string; outlineTitle?: string; error?: string };
       if (!response.ok || !payload.text) throw new Error(payload.error || "生成失败");
       setResult(payload.text);
@@ -2874,7 +2877,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   }
 
   async function finalizeChat(stream: ChatStreamState, status: "success" | "failed" | "cancelled", error = "", stopped = false) {
-    const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
+    const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -2906,6 +2909,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
 
   async function requestAnswer(question: string, addUser: boolean, targetSessionId = session?.id, targetSession = session) {
     if (!targetSessionId || !targetSession || isStreaming || submissionLock.current || currentStream.current) return;
+    if (browserIsOffline()) { onNotice(OFFLINE_OPERATION_MESSAGE); return; }
     const submissionToken = clientId("chat-submit");
     submissionLock.current = submissionToken;
     setSubmittingTaskId("pending");
@@ -2922,7 +2926,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       const submittedTitle = addUser && targetSession.title === "新对话" ? question.slice(0, 24) : targetSession.title;
       let promptContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, sessionId: targetSessionId });
       promptContext = { ...promptContext, recentMessages: submittedMessages.slice(-20).map((item) => ({ role: item.role, text: item.text })) };
-      const submitResponse = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
+      const submitResponse = await fetchServerAction(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
         method: "POST",
         cache: "no-store",
         headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
@@ -2938,7 +2942,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       registerActiveChatStream(taskId, { controller, cancel: () => stopStream(stream, true) });
       try {
         if (controller.signal.aborted) return;
-        const response = await fetch(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
+        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -3268,7 +3272,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
   }
 
   async function requestNames(chapter: Chapter, body: Record<string, unknown>) {
-    const response = await fetch("/api/ai/names", {
+    const response = await fetchServerAction("/api/ai/names", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -4257,7 +4261,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
       baseText: resolvedOutlineContent(item),
       sourceVersionId: editSourceVersionIdsRef.current[item.id],
     })).filter((item) => item.text.trim());
-    const response = await fetch("/api/ai/review", {
+    const response = await fetchServerAction("/api/ai/review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ articleId: studio.currentArticle.id, ...input, source: {
@@ -4632,7 +4636,7 @@ function ModelSettings() {
   const requestedModelIds = selectedModelIds.length ? selectedModelIds : parseModelIds(modelForm.modelId);
 
   const load = useCallback(async () => {
-    const [providerResponse, modelResponse] = await Promise.all([fetch("/api/providers", { cache: "no-store" }), fetch("/api/models", { cache: "no-store" })]);
+    const [providerResponse, modelResponse] = await Promise.all([fetchFromServer("/api/providers", { cache: "no-store" }), fetchFromServer("/api/models", { cache: "no-store" })]);
     const providerPayload = await providerResponse.json() as { providers?: Provider[]; error?: string };
     const modelPayload = await modelResponse.json() as { models?: Model[]; error?: string };
     if (!providerResponse.ok || !providerPayload.providers) throw new Error(providerPayload.error || "Provider 加载失败");
@@ -4651,14 +4655,14 @@ function ModelSettings() {
   async function saveProvider() {
     setBusy("save-provider"); setError("");
     try {
-      const response = await fetch(editingProviderId ? `/api/providers/${editingProviderId}` : "/api/providers", {
+      const response = await fetchServerAction(editingProviderId ? `/api/providers/${editingProviderId}` : "/api/providers", {
         method: editingProviderId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: providerForm.name, adapterKind: providerForm.adapterKind, baseUrl: providerForm.baseUrl, timeoutMs: Math.round(providerTimeoutMinutes * 60_000), ...(!editingProviderId ? { secret: providerForm.secret } : {}) }),
       });
       const provider = await response.json() as Provider & { error?: string };
       if (!response.ok) throw new Error(provider.error || "Provider 保存失败");
       if (editingProviderId && providerForm.secret.trim()) {
-        const secretResponse = await fetch(`/api/providers/${editingProviderId}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: providerForm.secret }) });
+        const secretResponse = await fetchServerAction(`/api/providers/${editingProviderId}/secret`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ secret: providerForm.secret }) });
         if (!secretResponse.ok) throw new Error("Provider 已保存，但 API Key 更新失败");
       }
       closeProviderForm(); await load();
@@ -4668,7 +4672,7 @@ function ModelSettings() {
   async function testProviderConnection(provider: Provider) {
     setBusy(`test-${provider.id}`); setError("");
     try {
-      const response = await fetch(`/api/providers/${provider.id}/test`, { method: "POST" });
+      const response = await fetchServerAction(`/api/providers/${provider.id}/test`, { method: "POST" });
       const payload = await response.json() as { latencyMs?: number; modelCount?: number; error?: string };
       if (!response.ok) throw new Error(payload.error || "连接失败");
       window.alert(`连接正常，耗时 ${payload.latencyMs}ms，发现 ${payload.modelCount ?? 0} 个模型`);
@@ -4677,15 +4681,19 @@ function ModelSettings() {
   }
   async function removeProvider(provider: Provider) {
     if (!window.confirm(`删除 Provider「${provider.name}」？`)) return;
-    const response = await fetch(`/api/providers/${provider.id}`, { method: "DELETE" });
-    if (!response.ok) { const payload = await response.json() as { error?: string }; setError(payload.error || "Provider 删除失败"); return; }
-    await load();
+    try {
+      const response = await fetchServerAction(`/api/providers/${provider.id}`, { method: "DELETE" });
+      if (!response.ok) { const payload = await response.json() as { error?: string }; throw new Error(payload.error || "Provider 删除失败"); }
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Provider 删除失败"); }
   }
   async function clearProviderKey(provider: Provider) {
     if (!window.confirm(`移除 Provider「${provider.name}」的 API Key？其下所有模型将不可用。`)) return;
-    const response = await fetch(`/api/providers/${provider.id}/secret`, { method: "DELETE" });
-    if (!response.ok) { const payload = await response.json() as { error?: string }; setError(payload.error || "API Key 移除失败"); return; }
-    await load();
+    try {
+      const response = await fetchServerAction(`/api/providers/${provider.id}/secret`, { method: "DELETE" });
+      if (!response.ok) { const payload = await response.json() as { error?: string }; throw new Error(payload.error || "API Key 移除失败"); }
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "API Key 移除失败"); }
   }
 
   function closeModelForm() { setModelFormOpen(false); setEditingModelId(null); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: "", name: "", modelId: "", systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); }
@@ -4699,7 +4707,7 @@ function ModelSettings() {
   async function fetchProviderModels(provider: Provider) {
     setBusy(`discover-${provider.id}`); setError("");
     try {
-      const response = await fetch(`/api/providers/${provider.id}/discover`, { method: "POST" });
+      const response = await fetchServerAction(`/api/providers/${provider.id}/discover`, { method: "POST" });
       const payload = await response.json() as { models?: string[]; error?: string };
       if (!response.ok || !payload.models?.length) throw new Error(payload.error || "没有获取到模型");
       openCreateModel(provider.id, payload.models);
@@ -4711,12 +4719,12 @@ function ModelSettings() {
     const previous = editingModelId ? models.find((model) => model.id === editingModelId) : null;
     try {
       if (!editingModelId) {
-        const response = await fetch("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: requestedModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        const response = await fetchServerAction("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: requestedModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const payload = await response.json() as { models?: Model[]; error?: string };
         if (!response.ok) throw new Error(payload.error || "模型创建失败");
         if (!payload.models?.length) throw new Error("所选模型已存在，无需重复保存");
       } else {
-        const response = await fetch(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        const response = await fetchServerAction(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const model = await response.json() as Model & { error?: string };
         if (!response.ok) throw new Error(model.error || "模型更新失败");
         if (previous && (previous.name !== model.name || previous.providerName !== model.providerName)) {
@@ -4732,12 +4740,15 @@ function ModelSettings() {
   }
   async function removeModel(model: Model) {
     if (!window.confirm(`删除模型「${model.name}」？`)) return;
-    await fetch(`/api/models/${model.id}`, { method: "DELETE" });
-    if (modelMatchesReference(model, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
-    if (modelMatchesReference(model, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
-    if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
-    if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
-    await load();
+    try {
+      const response = await fetchServerAction(`/api/models/${model.id}`, { method: "DELETE" });
+      if (!response.ok) { const payload = await response.json() as { error?: string }; throw new Error(payload.error || "模型删除失败"); }
+      if (modelMatchesReference(model, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
+      if (modelMatchesReference(model, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
+      if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
+      if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
+      await load();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "模型删除失败"); }
   }
 
   const namingSelection = studio.data.settings.namingModelMode === "inherit" ? "__inherit__" : studio.data.settings.namingModel || "__local__";
@@ -4816,10 +4827,10 @@ function DatabaseSettings() {
   const [overwriteModels, setOverwriteModels] = useState(false);
   const [overwriteSecrets, setOverwriteSecrets] = useState(false);
   const [checking, setChecking] = useState(false);
-  useEffect(() => { void fetch("/api/database/status", { cache: "no-store" }).then((response) => response.json()).then(setStatus); }, [studio.saveStatus]);
+  useEffect(() => { void fetchFromServer("/api/database/status", { cache: "no-store" }).then((response) => response.json()).then(setStatus).catch(() => setStatus({ connected: false })); }, [studio.saveStatus]);
   const loadSyncStatus = useCallback(async () => {
     try {
-      const response = await fetch("/api/sync/status", { cache: "no-store" });
+      const response = await fetchFromServer("/api/sync/status", { cache: "no-store" });
       setSyncStatus(await response.json() as SyncStatus);
     } catch (reason) {
       setSyncStatus({ state: "offline", message: reason instanceof Error ? reason.message : "同步状态读取失败" });
@@ -4832,15 +4843,15 @@ function DatabaseSettings() {
     window.addEventListener("writer-studio-sync-status", refresh);
     return () => { window.clearTimeout(initial); window.clearInterval(timer); window.removeEventListener("writer-studio-sync-status", refresh); };
   }, [loadSyncStatus]);
-  async function check() { setChecking(true); const response = await fetch("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; setChecking(false); window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); }
+  async function check() { setChecking(true); try { const response = await fetchServerAction("/api/database/integrity-check", { method: "POST" }); const result = await response.json() as { ok?: boolean; issues?: unknown[]; message?: string }; window.alert(result.ok ? "完整性检查通过：未发现孤立记录或外键错误。" : `检查发现问题：${result.message || JSON.stringify(result.issues)}`); } catch (reason) { window.alert(reason instanceof Error ? reason.message : "完整性检查失败"); } finally { setChecking(false); } }
   async function setAutoUpload(enabled: boolean) {
     setSyncToggleBusy(true); setSyncNotice("");
     try {
-      const response = await fetch("/api/sync/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoUploadEnabled: enabled }) });
+      const response = await fetchServerAction("/api/sync/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoUploadEnabled: enabled }) });
       const payload = await response.json() as SyncStatus & { message?: string };
       if (!response.ok) throw new Error(payload.message || "自动上传设置保存失败");
       setSyncStatus(payload);
-      if (enabled) void fetch("/api/sync/upload", { method: "POST" }).finally(() => void loadSyncStatus());
+      if (enabled) void fetchFromServer("/api/sync/upload", { method: "POST" }).catch(() => undefined).finally(() => void loadSyncStatus());
     } catch (reason) {
       setSyncNotice(reason instanceof Error ? reason.message : "自动上传设置保存失败");
     } finally {
@@ -4848,6 +4859,7 @@ function DatabaseSettings() {
     }
   }
   async function replaceDatabase(direction: "pull" | "push") {
+    if (browserIsOffline()) { setSyncNotice(OFFLINE_OPERATION_MESSAGE); return; }
     const phrase = direction === "pull" ? "从云端取回" : "复制到云端";
     const target = direction === "pull" ? "本地" : "云端";
     const scope = ["创作数据库", overwriteModels ? "大模型配置" : "", overwriteSecrets ? "API Key/Secret" : ""].filter(Boolean).join("、");
@@ -4857,7 +4869,7 @@ function DatabaseSettings() {
     setSyncBusy(direction); setSyncNotice("");
     try {
       if (!await studio.saveNow()) throw new Error("本地内容尚未保存，已取消覆盖");
-      const response = await fetch(`/api/sync/${direction}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ includeModels: overwriteModels, includeSecrets: overwriteSecrets }) });
+      const response = await fetchServerAction(`/api/sync/${direction}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ includeModels: overwriteModels, includeSecrets: overwriteSecrets }) });
       const payload = await response.json() as { message?: string; backupPath?: string; code?: string };
       if (!response.ok) throw new Error(payload.message || `覆盖失败（${response.status}）`);
       if (direction === "pull") {
@@ -4924,7 +4936,7 @@ type ManagedServiceStatusResponse = ManagedServiceStatus & {
 };
 
 async function fetchManagedServiceStatus() {
-  const response = await fetch("/api/system/service", { cache: "no-store" });
+  const response = await fetchFromServer("/api/system/service", { cache: "no-store" });
   const payload = await response.json().catch(() => ({})) as Partial<ManagedServiceStatusResponse> & { message?: string };
   if (!response.ok || payload.ok !== true || !payload.service) {
     throw new Error(payload.message || "无法读取服务管理状态");
@@ -4990,7 +5002,7 @@ function SystemSettings() {
     setRestartPhase("requesting");
     setRestartNotice("正在提交重启请求…");
     try {
-      const response = await fetch("/api/system/service", {
+      const response = await fetchServerAction("/api/system/service", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -5155,7 +5167,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     onClose();
   }
   async function updateTaskState(task: AiTask, action: "cancel" | "retry" | "transfer") {
-    const response = await fetch(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    const response = await fetchServerAction(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
     const payload = await response.json() as { task?: Partial<AiTask>; revision?: number; error?: string };
     if (!response.ok || !payload.task || payload.revision === undefined) throw new Error(payload.error || "任务状态更新失败");
     studio.acceptServerMutation(payload.revision, (current) => ({
