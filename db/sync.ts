@@ -7,9 +7,9 @@ import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
-export const SYNC_SCHEMA_VERSION = 6;
+export const SYNC_SCHEMA_VERSION = 7;
 const syncFormat = "writer-studio-sync-v1";
-const syncChangesFormat = "writer-studio-changes-v1";
+const syncChangesFormat = "writer-studio-changes-v2";
 const remoteTimeoutMs = 30_000;
 const remoteRevisionRetryLimit = 3;
 

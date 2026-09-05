@@ -404,12 +404,6 @@ function generateTargetWordsLabel(targetWords?: number) {
   return targetWords && targetWords > 0 ? `${targetWords.toLocaleString("zh-CN")} 字` : "不限字数";
 }
 
-function latestGeneratePromptForOutline(tasks: AiTask[], outlineId: string) {
-  return tasks
-    .filter((task) => task.outlineId === outlineId && task.target === "正文")
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]?.prompt ?? "";
-}
-
 function activeChatSession(outline: Outline) {
   return outline.chat.sessions.find((session) => session.id === outline.chat.activeSessionId) ?? outline.chat.sessions[0];
 }
@@ -540,6 +534,7 @@ function WriterStudioInner() {
   const [previewSelection, setPreviewSelection] = useState<{ outlineId: string; versionId: string } | null>(null);
   const [newArticle, setNewArticle] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [mobileWritingEditing, setMobileWritingEditing] = useState(false);
   const [toast, setToast] = useState("");
   const [mobileLayout, setMobileLayout] = useState(false);
   const [taskLeaseTick, setTaskLeaseTick] = useState(0);
@@ -702,7 +697,7 @@ function WriterStudioInner() {
   }
 
   return (
-    <div className={`studio-shell ${focusMode ? "focus-mode" : ""} theme-${studio.data.settings.theme}`}>
+    <div className={`studio-shell ${focusMode ? "focus-mode" : ""} ${mobileWritingEditing ? "mobile-writing-editing" : ""} theme-${studio.data.settings.theme}`}>
       <PersistenceNotices />
       {!focusMode && !mobileLayout && (
         <Sidebar
@@ -745,6 +740,7 @@ function WriterStudioInner() {
             onNotice={setToast}
             previewVersion={previewVersion}
             onClearPreview={() => setPreviewSelection(null)}
+            onWritingEditingChange={setMobileWritingEditing}
           /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />
         )}
         {view === "chapter" && (studio.currentChapter.id ? <ChapterReader onOutline={openOutline} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
@@ -1429,8 +1425,11 @@ function useHorizontalSwipe({
   const suppressionTimer = useRef<number | null>(null);
   const onSwipeLeftRef = useRef(onSwipeLeft);
   const onSwipeRightRef = useRef(onSwipeRight);
-  onSwipeLeftRef.current = onSwipeLeft;
-  onSwipeRightRef.current = onSwipeRight;
+
+  useEffect(() => {
+    onSwipeLeftRef.current = onSwipeLeft;
+    onSwipeRightRef.current = onSwipeRight;
+  }, [onSwipeLeft, onSwipeRight]);
 
   const clearSuppressionTimer = useCallback(() => {
     if (suppressionTimer.current === null) return;
@@ -1856,6 +1855,7 @@ function OutlineWorkspace({
   onNotice,
   previewVersion,
   onClearPreview,
+  onWritingEditingChange,
 }: {
   mode: "write" | "chat" | "generate";
   outline: { chapter: string; title: string; plan: string; content: string };
@@ -1868,6 +1868,7 @@ function OutlineWorkspace({
   onNotice: (message: string) => void;
   previewVersion?: Version;
   onClearPreview: () => void;
+  onWritingEditingChange: (editing: boolean) => void;
 }) {
   const studio = useStudio();
   const models = useConfiguredModels();
@@ -1910,7 +1911,7 @@ function OutlineWorkspace({
         </div>
       )}
 
-      {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onClearPreview={onClearPreview} onNotice={onNotice} />}
+      {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onClearPreview={onClearPreview} onNotice={onNotice} onEditingChange={onWritingEditingChange} />}
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView models={models} outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
       {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
@@ -1918,7 +1919,7 @@ function OutlineWorkspace({
   );
 }
 
-function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { focusMode: boolean; previewVersion?: Version; onClearPreview: () => void; onNotice: (message: string) => void }) {
+function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEditingChange }: { focusMode: boolean; previewVersion?: Version; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void }) {
   const studio = useStudio();
   const [planOpen, setPlanOpen] = useState(studio.data.settings.outlineExpanded);
   const [planPeek, setPlanPeek] = useState(false);
@@ -1928,12 +1929,14 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [matchIndex, setMatchIndex] = useState(0);
   const [editing, setEditing] = useState(false);
+  const [editToolsOpen, setEditToolsOpen] = useState(false);
   const [draftContent, setDraftContent] = useState("");
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
   const [settingExcellent, setSettingExcellent] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null);
+  const writingScrollRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
   const pendingContentScrollRef = useRef<{ top: number; max: number; ratio: number } | null>(null);
@@ -1970,6 +1973,10 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   const selectedFragmentIsExcellent = Boolean(selectionMenu && displayedFragments.some((fragment) => selectionMenu.start >= fragment.start && selectionMenu.end <= fragment.end));
 
   useDismissOnOutside(Boolean(selectionMenu), () => setSelectionMenu(null), ".content-selection-menu");
+  useDismissOnOutside(editToolsOpen, () => setEditToolsOpen(false), ".mobile-edit-more, .mobile-edit-overflow-menu");
+  useWritingEditorViewport(writingScrollRef, editorRef, editing);
+
+  useEffect(() => () => onEditingChange(false), [onEditingChange]);
 
   const showSelectionMenu = useCallback((point?: { x: number; y: number }) => {
     const reader = readerRef.current;
@@ -2102,6 +2109,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
     draftSavedAtRef.current = new Date().toISOString();
     preservingRef.current = false;
     editingRef.current = true;
+    onEditingChange(true);
     setDraftContent(displayedContent);
     setEditing(true);
   }
@@ -2126,7 +2134,9 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
     preservingRef.current = false;
     studio.clearContentDraft(studio.currentOutline.id);
     setFindOpen(false);
+    setEditToolsOpen(false);
     setExitPromptOpen(false);
+    onEditingChange(false);
     setEditing(false);
   }
 
@@ -2155,7 +2165,9 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
     preservingRef.current = false;
     studio.clearContentDraft(studio.currentOutline.id);
     setFindOpen(false);
+    setEditToolsOpen(false);
     setExitPromptOpen(false);
+    onEditingChange(false);
     setEditing(false);
     onClearPreview();
     onNotice("正文已保存");
@@ -2265,7 +2277,8 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   }
 
   function openSelectionMenu(event: React.MouseEvent<HTMLDivElement>) {
-    if (showSelectionMenu({ x: event.clientX, y: event.clientY })) event.preventDefault();
+    const opened = showSelectionMenu({ x: event.clientX, y: event.clientY });
+    if (opened || window.matchMedia("(max-width: 767px)").matches) event.preventDefault();
   }
 
   function isTouchDoubleTap(event: React.PointerEvent<HTMLElement>, ref: typeof lastReaderTouchRef) {
@@ -2280,7 +2293,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
   }
 
   return (
-    <div className="writing-scroll">
+    <div ref={writingScrollRef} className={`writing-scroll ${editing ? "editing" : ""}`}>
       <div className="writing-canvas">
         {!focusMode && <button className="mobile-plan-peek" type="button" onClick={() => setPlanPeek(true)}>此正文大纲 <span><Icon name="chevron" /></span></button>}
         {!focusMode && (
@@ -2299,11 +2312,15 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice }: { 
               {displayedIsCurrent
                 ? <span className="body-current-label">当前</span>
                 : <button className="body-set-current-button" type="button" onClick={() => void setDisplayedAsCurrent()}>设为当前</button>}
+              {editing && <span className={`mobile-edit-save-state ${draftContent === baselineRef.current ? "saved" : "unsaved"}`}>{savingEdit ? "正在保存…" : draftContent === baselineRef.current ? "未修改" : "未保存"}</span>}
             </div>
-            <div className="editor-tools">{editing ? <><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
+            <div className="editor-tools">{editing ? <>
+              <div className="desktop-edit-tools"><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></div>
+              <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button></div>}</div>
+            </> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
           </div>
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
-          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-description="选中文字可欣赏；双击或按 Enter 进入编辑" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div>}
+          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
       </div>
       {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" style={{ left: selectionMenu.left, top: selectionMenu.top }}><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button></div>}
@@ -2330,7 +2347,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const studio = useStudio();
   const displayTitle = outlineDisplayTitle(outline);
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
-  const [prompt, setPrompt] = useState(() => initialPrompt || studio.currentOutline.generateInstruction || latestGeneratePromptForOutline(studio.data.tasks, studio.currentOutline.id));
+  const storedPromptAtOpen = studio.currentOutline.generateInstruction;
+  const [prompt, setPrompt] = useState(() => initialPrompt || storedPromptAtOpen);
+  const [savedPrompt, setSavedPrompt] = useState(storedPromptAtOpen);
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptSaveFailed, setPromptSaveFailed] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [appearanceEditorOpen, setAppearanceEditorOpen] = useState(false);
   const [appearanceOverrides, setAppearanceOverrides] = useState<Record<string, boolean>>({});
@@ -2356,6 +2377,8 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const rewriteRetentionOption = rewriteRetentionOptions[rewriteRetentionIndex] ?? rewriteRetentionOptions[1];
   const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
   const outlinePlanDirty = outlinePlanDraft !== outline.plan;
+  const normalizedPrompt = prompt.trim().slice(0, 20_000);
+  const promptDirty = normalizedPrompt !== savedPrompt;
   useEffect(() => {
     const previous = lastSyncedOutlineRef.current;
     if (previous.id !== studio.currentOutline.id || outlinePlanDraftRef.current === previous.plan) {
@@ -2415,6 +2438,24 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     return saved;
   }, [outlinePlanDraft, studio]);
 
+  const saveGenerateInstruction = useCallback(async () => {
+    if (!promptDirty) return true;
+    setPromptSaving(true);
+    setPromptSaveFailed(false);
+    studio.updateOutline(studio.currentOutline.id, { generateInstruction: normalizedPrompt });
+    const saved = await studio.saveNow();
+    if (saved) {
+      setPrompt(normalizedPrompt);
+      setSavedPrompt(normalizedPrompt);
+      setNotice("补充指令已保存。");
+    } else {
+      setPromptSaveFailed(true);
+      setNotice("补充指令保存失败，请重试。");
+    }
+    setPromptSaving(false);
+    return saved;
+  }, [normalizedPrompt, promptDirty, studio]);
+
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
@@ -2457,13 +2498,16 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         outlineTitleSnapshot: studio.currentOutline.title,
       });
       lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outlinePlanDraft };
+      setPrompt(normalizedPrompt);
+      setSavedPrompt(normalizedPrompt);
+      setPromptSaveFailed(false);
       setIncludeOutlineTitle(false);
       setNotice("");
       onTaskCreated();
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -2556,7 +2600,14 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               : <p>未推测到首次出场人物，可点击“编辑”手动指定。</p>
               : <p>人物上下文已关闭，本次生成不会发送首次出场信息。</p>}
           </section>
-          <div className="generate-prompt-label"><span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span><Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} /></div>
+          <div className="generate-prompt-label">
+            <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
+            <Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
+            <div className="generate-instruction-save-row">
+              <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
+              <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
+            </div>
+          </div>
           <div className="generate-submit-row">
             <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 优秀片段 {summary.excellentFragmentCount} 个 · 人物 {summary.characterCount} 位</small></span><Icon name="chevron" /></button>
             <div className="generate-model-control"><Select label="本次模型" description={compact ? `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符` : `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符；选择后保存为默认模型`} data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} /><small>{selectedModelReference ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
@@ -3487,6 +3538,102 @@ function textareaCaretBounds(textarea: HTMLTextAreaElement) {
   const top = textareaBounds.top + marker.offsetTop - textarea.scrollTop;
   mirror.remove();
   return { top, bottom: top + lineHeight };
+}
+
+function useWritingEditorViewport(scrollRef: { current: HTMLDivElement | null }, editorRef: { current: HTMLTextAreaElement | null }, editing: boolean) {
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container || !editing) return;
+    const mobile = window.matchMedia("(max-width: 767px)");
+    const visualViewport = window.visualViewport;
+    let layoutFrame = 0;
+    let caretFrame = 0;
+    let settleTimer = 0;
+
+    const viewportMetrics = () => {
+      const height = Math.max(0, visualViewport?.height ?? window.innerHeight);
+      const top = Math.max(0, visualViewport?.offsetTop ?? 0);
+      return { height, top, bottom: top + height };
+    };
+
+    const ensureCaretVisible = () => {
+      caretFrame = 0;
+      const editor = editorRef.current;
+      if (!mobile.matches || !editor || document.activeElement !== editor) return;
+      const viewport = viewportMetrics();
+      const editorBounds = editor.getBoundingClientRect();
+      const safeTop = Math.max(viewport.top, editorBounds.top) + 16;
+      const safeBottom = Math.min(viewport.bottom, editorBounds.bottom) - 24;
+      if (safeBottom <= safeTop) return;
+      const caret = textareaCaretBounds(editor);
+      if (caret.bottom > safeBottom) editor.scrollTop += caret.bottom - safeBottom;
+      else if (caret.top < safeTop) editor.scrollTop += caret.top - safeTop;
+    };
+
+    const scheduleCaretVisibility = () => {
+      if (caretFrame) window.cancelAnimationFrame(caretFrame);
+      caretFrame = window.requestAnimationFrame(ensureCaretVisible);
+    };
+
+    const applyViewport = () => {
+      layoutFrame = 0;
+      if (!mobile.matches) {
+        container.style.removeProperty("--writing-visible-height");
+        delete container.dataset.visualViewportHeight;
+        delete container.dataset.keyboardInset;
+        return;
+      }
+      const viewport = viewportMetrics();
+      const containerTopWithinViewport = Math.max(0, container.getBoundingClientRect().top - viewport.top);
+      const visibleHeight = Math.max(180, viewport.height - containerTopWithinViewport);
+      const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+      const keyboardInset = Math.max(0, layoutHeight - viewport.bottom);
+      container.style.setProperty("--writing-visible-height", `${visibleHeight}px`);
+      container.dataset.visualViewportHeight = `${Math.round(viewport.height)}`;
+      container.dataset.keyboardInset = `${Math.round(keyboardInset)}`;
+      scheduleCaretVisibility();
+    };
+
+    const scheduleViewport = () => {
+      if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
+      layoutFrame = window.requestAnimationFrame(applyViewport);
+    };
+
+    const settleEditor = () => {
+      scheduleViewport();
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(scheduleViewport, 360);
+    };
+
+    scheduleViewport();
+    settleTimer = window.setTimeout(scheduleViewport, 60);
+    visualViewport?.addEventListener("resize", settleEditor);
+    visualViewport?.addEventListener("scroll", scheduleViewport);
+    window.addEventListener("resize", settleEditor);
+    mobile.addEventListener("change", scheduleViewport);
+    container.addEventListener("focusin", settleEditor);
+    container.addEventListener("input", scheduleCaretVisibility);
+    container.addEventListener("keyup", scheduleCaretVisibility);
+    container.addEventListener("pointerup", scheduleCaretVisibility);
+    document.addEventListener("selectionchange", scheduleCaretVisibility);
+    return () => {
+      visualViewport?.removeEventListener("resize", settleEditor);
+      visualViewport?.removeEventListener("scroll", scheduleViewport);
+      window.removeEventListener("resize", settleEditor);
+      mobile.removeEventListener("change", scheduleViewport);
+      container.removeEventListener("focusin", settleEditor);
+      container.removeEventListener("input", scheduleCaretVisibility);
+      container.removeEventListener("keyup", scheduleCaretVisibility);
+      container.removeEventListener("pointerup", scheduleCaretVisibility);
+      document.removeEventListener("selectionchange", scheduleCaretVisibility);
+      window.clearTimeout(settleTimer);
+      if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
+      if (caretFrame) window.cancelAnimationFrame(caretFrame);
+      container.style.removeProperty("--writing-visible-height");
+      delete container.dataset.visualViewportHeight;
+      delete container.dataset.keyboardInset;
+    };
+  }, [editing, editorRef, scrollRef]);
 }
 
 function useContinuousEditorViewport(scrollRef: { current: HTMLDivElement | null }) {

@@ -224,6 +224,49 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     revision = restored.data.revision;
   });
 
+  await t.test("applies compact outline field patches without changing versions, content or chat", async () => {
+    const current = await api("/api/state");
+    const article = current.data.data.articles[0];
+    const chapter = article.chapters[0];
+    const before = chapter.outlines.find((item) => item.id === "outline-current");
+    const instruction = "只保存这一条补充指令";
+    const changes = {
+      version: 2,
+      articles: { upsert: [], delete: [] },
+      chapters: { upsert: [], delete: [] },
+      outlines: {
+        upsert: [],
+        patch: [{
+          id: before.id,
+          articleId: article.id,
+          chapterId: chapter.id,
+          outline: { generateInstruction: instruction, updatedAt: "2026-07-28T16:01:00.000Z" },
+        }],
+        delete: [],
+      },
+      characters: { upsert: [], delete: [] },
+      relationships: { upsert: [], delete: [] },
+      tasks: { upsert: [], delete: [] },
+    };
+    assert.ok(JSON.stringify(changes).length < 1_000, "an instruction save should remain a small mutation payload");
+    const saved = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(current.data.revision) }, body: { changes } });
+    assert.equal(saved.response.status, 200, saved.text);
+    revision = saved.data.revision;
+
+    const loaded = await api("/api/state");
+    const after = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === before.id);
+    assert.equal(after.generateInstruction, instruction);
+    assert.equal(after.content, before.content);
+    assert.equal(after.currentVersionId, before.currentVersionId);
+    assert.deepEqual(after.versions, before.versions);
+    assert.deepEqual(after.chat, before.chat);
+
+    const malformed = structuredClone(changes);
+    malformed.outlines.patch[0].outline = { unknownField: "must be rejected" };
+    const rejected = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(revision) }, body: { changes: malformed } });
+    assert.equal(rejected.response.status, 400, rejected.text);
+  });
+
   await t.test("revalidates unchanged state without returning the full snapshot", async () => {
     const loaded = await api("/api/state");
     const etag = loaded.response.headers.get("etag");

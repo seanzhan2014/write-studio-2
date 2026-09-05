@@ -137,7 +137,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "3";
+const RUNTIME_SCHEMA_VERSION = "4";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -206,7 +206,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '6', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '7', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -786,6 +786,15 @@ function taskStatusValue(task: StudioData["tasks"][number]) {
   return task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state;
 }
 
+function owns(value: object | undefined, key: string) {
+  return Boolean(value && Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function updateByKey(db: SqliteDatabase, table: string, key: string, id: string, assignments: Array<[string, unknown]>) {
+  const sql = `UPDATE ${table} SET ${assignments.map(([column]) => `${column}=?`).join(",")} WHERE ${key}=?`;
+  return db.prepare(sql).bind(...assignments.map(([, value]) => value), id);
+}
+
 export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string }) {
   await ensureDatabase();
   const db = getDatabase();
@@ -840,6 +849,9 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
 
   changes.chapters.upsert.forEach((item, index) => statements.push(db.prepare("UPDATE chapters SET position=? WHERE id=?").bind(-1_000_000_000 - index, item.chapter.id)));
   changes.outlines.upsert.forEach((item, index) => statements.push(db.prepare("UPDATE outlines SET position=? WHERE id=?").bind(-1_000_000_000 - index, item.outline.id)));
+  (changes.outlines.patch ?? []).filter((item) => item.location && (owns(item.location, "chapterId") || owns(item.location, "position"))).forEach((item, index) => {
+    statements.push(db.prepare("UPDATE outlines SET position=? WHERE id=?").bind(-1_000_000_000 - changes.outlines.upsert.length - index, item.id));
+  });
 
   for (const article of changes.articles.upsert) {
     statements.push(insert(db, `INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision)
@@ -887,6 +899,90 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     }
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='outline' AND entity_id=?").bind(outline.id));
     statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, item.chapterId, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${resolvedOutlineContent(outline)}`]));
+  }
+
+  for (const item of changes.outlines.patch ?? []) {
+    const outlineFields = item.outline;
+    const outlineAssignments: Array<[string, unknown]> = [];
+    if (owns(item.location, "articleId")) outlineAssignments.push(["article_id", String(item.location?.articleId ?? item.articleId)]);
+    if (owns(item.location, "chapterId")) outlineAssignments.push(["chapter_id", String(item.location?.chapterId ?? item.chapterId)]);
+    if (owns(item.location, "position")) outlineAssignments.push(["position", Number(item.location?.position)]);
+    if (owns(outlineFields, "title")) outlineAssignments.push(["title", normalizeOutlineTitle(outlineFields?.title)]);
+    if (owns(outlineFields, "nameVersions")) outlineAssignments.push(["name_versions_json", JSON.stringify(outlineFields?.nameVersions ?? [])]);
+    if (owns(outlineFields, "defaultNameVersionId")) outlineAssignments.push(["default_name_version_id", outlineFields?.defaultNameVersionId ?? null]);
+    if (owns(outlineFields, "plan")) outlineAssignments.push(["summary", String(outlineFields?.plan ?? "").slice(0, 10_000)]);
+    if (owns(outlineFields, "generateInstruction")) outlineAssignments.push(["generate_instruction", String(outlineFields?.generateInstruction ?? "").slice(0, 20_000)]);
+    if (owns(outlineFields, "archived")) outlineAssignments.push(["archived", outlineFields?.archived ? 1 : 0]);
+    if (owns(outlineFields, "state")) outlineAssignments.push(["state", ["saved", "running", "failed"].includes(String(outlineFields?.state)) ? outlineFields?.state : "saved"]);
+    if (owns(outlineFields, "titleGenerationPending")) outlineAssignments.push(["title_generation_pending", outlineFields?.titleGenerationPending ? 1 : 0]);
+    if (owns(outlineFields, "updatedAt")) outlineAssignments.push(["updated_at", String(outlineFields?.updatedAt)]);
+    outlineAssignments.push(["revision", nextRevision]);
+    statements.push(updateByKey(db, "outlines", "id", item.id, outlineAssignments));
+
+    const contentFields = item.content;
+    const contentAssignments: Array<[string, unknown]> = [];
+    if (owns(contentFields, "content")) contentAssignments.push(["text", String(contentFields?.content ?? "")]);
+    if (owns(contentFields, "contentName")) contentAssignments.push(["content_name", String(contentFields?.contentName ?? "").trim() || timestampContentName(outlineFields?.updatedAt ?? now)]);
+    if (owns(contentFields, "currentVersionId")) {
+      contentAssignments.push(["current_version_id", contentFields?.currentVersionId ?? null]);
+      contentAssignments.push(["content_override", contentFields?.currentVersionId ? 0 : 1]);
+    }
+    if (owns(contentFields, "defaultVersionId")) {
+      contentAssignments.push(["default_version_id", contentFields?.defaultVersionId ?? null]);
+      contentAssignments.push(["source_version_id", contentFields?.defaultVersionId ?? null]);
+    }
+    if (owns(contentFields, "contentOutlineSnapshot")) contentAssignments.push(["outline_snapshot_json", JSON.stringify(contentFields?.contentOutlineSnapshot ?? null)]);
+    if (owns(contentFields, "manualExcellent")) contentAssignments.push(["manual_excellent", contentFields?.manualExcellent ? 1 : 0]);
+    if (contentAssignments.length || Object.prototype.hasOwnProperty.call(item, "excellentFragments")) {
+      contentAssignments.push(["updated_at", String(outlineFields?.updatedAt ?? now)]);
+      contentAssignments.push(["revision", nextRevision]);
+      statements.push(updateByKey(db, "contents", "outline_id", item.id, contentAssignments));
+    }
+
+    const versionsChanged = Object.prototype.hasOwnProperty.call(item, "versions");
+    const bodyFragmentsChanged = Object.prototype.hasOwnProperty.call(item, "excellentFragments");
+    const usedFragmentIds = new Set<string>();
+    if (versionsChanged && !bodyFragmentsChanged) {
+      const existing = await db.prepare("SELECT id FROM excellent_fragments WHERE outline_id=? AND version_id IS NULL").bind(item.id).all<Record<string, unknown>>();
+      rows(existing).forEach((row) => usedFragmentIds.add(String(row.id)));
+    } else if (!versionsChanged && bodyFragmentsChanged) {
+      const existing = await db.prepare("SELECT id FROM excellent_fragments WHERE outline_id=? AND version_id IS NOT NULL").bind(item.id).all<Record<string, unknown>>();
+      rows(existing).forEach((row) => usedFragmentIds.add(String(row.id)));
+    }
+
+    if (versionsChanged) {
+      statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=? AND version_id IS NOT NULL").bind(item.id));
+      statements.push(db.prepare("DELETE FROM versions WHERE outline_id=?").bind(item.id));
+      for (const version of item.versions ?? []) {
+        statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, item.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
+        uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, item.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
+      }
+    }
+
+    if (bodyFragmentsChanged) {
+      const fragmentContent = owns(contentFields, "content")
+        ? String(contentFields?.content ?? "")
+        : String(await db.prepare("SELECT text FROM contents WHERE outline_id=?").bind(item.id).first<string>("text") ?? "");
+      statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=? AND version_id IS NULL").bind(item.id));
+      uniqueExcellentFragments(fragmentContent, item.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, item.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
+    }
+
+    if (item.chat) {
+      statements.push(db.prepare("DELETE FROM chat_sessions WHERE outline_id=?").bind(item.id));
+      for (const session of item.chat.sessions) {
+        statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, item.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === item.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+        session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
+      }
+    }
+
+    if (item.refreshSearch) {
+      statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='outline' AND entity_id=?").bind(item.id));
+      statements.push(db.prepare(`INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body)
+        SELECT outlines.article_id,outlines.chapter_id,outlines.id,'outline',outlines.id,?,outlines.summary || CHAR(10) || COALESCE(versions.text,contents.text,'')
+        FROM outlines JOIN contents ON contents.outline_id=outlines.id
+        LEFT JOIN versions ON versions.id=contents.current_version_id AND versions.outline_id=outlines.id
+        WHERE outlines.id=?`).bind(item.refreshSearch.title, item.id));
+    }
   }
 
   for (const item of changes.characters.upsert) {

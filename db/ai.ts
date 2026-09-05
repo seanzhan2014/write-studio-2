@@ -178,18 +178,27 @@ export async function clearProviderSecret(id: string) {
 
 export async function exportModelsForSync(includeSecrets: boolean): Promise<AiModelSyncRecord[]> {
   const models = await listModels();
-  return Promise.all(models.map(async ({ hasSecret: _hasSecret, ...model }) => ({
-    ...model,
-    ...(includeSecrets ? { secret: await readProviderSecret(model.providerId) } : {}),
-  })));
+  return Promise.all(models.map(async (record) => {
+    const model = { ...record };
+    Reflect.deleteProperty(model, "hasSecret");
+    return {
+      ...model,
+      ...(includeSecrets ? { secret: await readProviderSecret(model.providerId) } : {}),
+    };
+  }));
 }
 
 export async function exportProvidersForSync(includeSecrets: boolean): Promise<AiProviderSyncRecord[]> {
   const providers = await listProviders();
-  return Promise.all(providers.map(async ({ hasSecret: _hasSecret, modelCount: _modelCount, ...provider }) => ({
-    ...provider,
-    ...(includeSecrets ? { secret: await readProviderSecret(provider.id) } : {}),
-  })));
+  return Promise.all(providers.map(async (record) => {
+    const provider = { ...record };
+    Reflect.deleteProperty(provider, "hasSecret");
+    Reflect.deleteProperty(provider, "modelCount");
+    return {
+      ...provider,
+      ...(includeSecrets ? { secret: await readProviderSecret(provider.id) } : {}),
+    };
+  }));
 }
 
 export async function replaceModelsFromSync(records: AiModelSyncRecord[], includeSecrets: boolean, providerRecords?: AiProviderSyncRecord[]) {

@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
-import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
+import { timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
@@ -393,7 +393,7 @@ type StudioContextValue = {
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
-  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
+  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
@@ -693,7 +693,9 @@ function normalizeStudioData(source: StudioData): StudioData {
           const legacySourceSnapshot = item.contentOverride === true && legacyDefaultVersionId
             ? versions.find((version) => version.id === legacyDefaultVersionId)?.outlineSnapshot
             : undefined;
-          const { contentOverride: _legacyContentOverride, sourceVersionId: _legacySourceVersionId, ...currentItem } = item;
+          const currentItem = { ...item };
+          Reflect.deleteProperty(currentItem, "contentOverride");
+          Reflect.deleteProperty(currentItem, "sourceVersionId");
           const normalizedItem = {
             ...currentItem,
             ...outlineNameState,
@@ -826,7 +828,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     if (serialized === lastSavedRef.current) return true;
     let base: StudioData;
     try {
-      base = lastSavedRef.current ? normalizeStudioData(JSON.parse(lastSavedRef.current) as StudioData) : durable;
+      // Normalization restores valid active chat/session defaults. Strip those
+      // device-only values again before diffing against the durable snapshot.
+      base = lastSavedRef.current ? durableSnapshot(normalizeStudioData(JSON.parse(lastSavedRef.current) as StudioData)) : durable;
     } catch {
       base = durable;
     }

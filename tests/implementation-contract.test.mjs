@@ -103,9 +103,15 @@ test("ordinary saves and automatic cloud uploads use bounded change sets", async
   const mutations = await read("app/api/state/mutations/route.ts");
   const runtime = await read("db/runtime.ts");
   const sync = await read("db/sync.ts");
+  const changes = await read("lib/studio-changes.ts");
   assert.match(state, /diffStudioData\(base, durable\)/);
   assert.match(state, /fetch\("\/api\/state\/mutations"/);
   assert.match(mutations, /applyStudioChanges/);
+  assert.match(changes, /from "fast-deep-equal"/);
+  assert.match(changes, /version: 2/);
+  assert.match(changes, /outlines: changedOutlines/);
+  assert.match(runtime, /for \(const item of changes\.outlines\.patch \?\? \[\]\)/);
+  assert.match(runtime, /generate_instruction/);
   assert.match(runtime, /INSERT INTO sync_change_log/);
   assert.match(sync, /remoteApplyChanges/);
   assert.match(sync, /createPendingChanges/);
@@ -211,7 +217,7 @@ test("desktop and mobile outline sorting share touch-safe cross-chapter behavior
   assert.match(app, /label="设置"[^>]+className="mobile-header-action"/);
   assert.match(app, /aria-label="文章功能"[\s\S]*全章节编辑[\s\S]*全大纲编辑[\s\S]*全文编辑[\s\S]*搜索[\s\S]*文章资料/);
   assert.match(app, /aria-label=\{`切换文章，当前 \$\{articleTitle\}`\}/);
-  assert.match(app, /addEventListener\("touchmove", touchMove, \{ passive: false \}\)/);
+  assert.match(app, /useSensor\(TouchSensor, \{ activationConstraint: \{ delay: 420, tolerance: 10 \} \}\)/);
   assert.match(app, /<DndContext[\s\S]*sensors=\{sensors\}/);
   assert.match(app, /useSortable\(\{ id: item\.id, data: \{ type: "outline", outlineId: item\.id \} \}\)/);
   assert.match(app, /className="outline-drag-handle"/);
@@ -235,7 +241,9 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /read: `\$\{base\}\/edit`/);
   assert.match(app, /function ContinuousDocumentEditor/);
   assert.match(app, /function AutoGrowTextarea/);
-  assert.match(app, /node\.style\.height = `\$\{Math\.max\(node\.scrollHeight, 34\)\}px`/);
+  assert.match(app, /const mirror = node\.cloneNode\(false\) as HTMLTextAreaElement/);
+  assert.match(app, /const nextHeight = Math\.max\(mirror\.scrollHeight, 34\)/);
+  assert.match(app, /node\.style\.height = `\$\{nextHeight\}px`/);
   assert.match(app, /mode === "outline" \? studio\.updateOutline/);
   assert.match(app, /onContentBlur=\{mode === "content" \? \(\) => commitContent\(item\.id\)/);
   assert.match(app, /studio\.stageContentDraft\(outlineId, text\)/);
@@ -400,9 +408,8 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /contentMode: generationMode/);
   assert.match(app, /rewriteRetention/);
   assert.match(app, /补充指令（可选）/);
-  assert.match(app, /latestGeneratePromptForOutline/);
-  assert.match(app, /task\.outlineId === outlineId && task\.target === "正文"/);
-  assert.match(app, /studio\.currentOutline\.generateInstruction \|\| latestGeneratePromptForOutline/);
+  assert.match(app, /const storedPromptAtOpen = studio\.currentOutline\.generateInstruction/);
+  assert.match(app, />保存指令<\/Button>/);
   assert.match(state, /generateInstruction: task\.prompt\.slice\(0, 20000\)/);
   assert.match(runtime, /generate_instruction TEXT NOT NULL DEFAULT ''/);
   assert.doesNotMatch(app, /if \(!taskId\)[^\n]+\n\s*setPrompt\(""\)/);
@@ -704,6 +711,7 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.match(styles, /\.content-editor-section \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
   assert.match(styles, /\.content-editor \{[\s\S]*flex: 1 1 auto;[\s\S]*min-height: 0;/);
   assert.match(styles, /\.content-reader \{[\s\S]*touch-action: manipulation/);
+  assert.match(styles, /@media \(max-width: 767px\) \{[\s\S]*\.content-reader \{ -webkit-touch-callout: none; \}/);
   assert.match(styles, /\.content-selection-menu \{/);
 });
 

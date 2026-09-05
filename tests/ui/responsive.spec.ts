@@ -579,6 +579,12 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(submitBounds!.width).toBeGreaterThanOrEqual(250);
   expect(submitBounds!.height).toBeGreaterThanOrEqual(48);
 
+  const saveInstruction = page.getByRole("button", { name: "保存指令" });
+  await saveInstruction.scrollIntoViewIfNeeded();
+  const saveInstructionBounds = await saveInstruction.boundingBox();
+  expect(saveInstructionBounds).not.toBeNull();
+  expect(saveInstructionBounds!.height).toBeGreaterThanOrEqual(40);
+
   const singleLineText = page.locator([
     ".generate-mode-options button > span:not(.ui-title)",
     ".generate-excellent-fragments-toggle .ui-label",
@@ -625,6 +631,23 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   }).toBe(0);
 });
 
+test("mobile supplementary instruction save sends one compact outline patch", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile save path");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await page.locator(".generate-prompt-label textarea").fill("手机端小型增量保存");
+  const pendingRequest = page.waitForRequest((request) => request.url().endsWith("/api/state/mutations") && request.method() === "POST");
+  await page.getByRole("button", { name: "保存指令" }).click();
+  const request = await pendingRequest;
+  const body = request.postDataJSON() as { changes: { version: number; outlines: { upsert: unknown[]; patch: Array<Record<string, unknown>> } } };
+  expect(body.changes.version).toBe(2);
+  expect(body.changes.outlines.upsert).toHaveLength(0);
+  expect(body.changes.outlines.patch).toHaveLength(1);
+  expect(body.changes.outlines.patch[0]).not.toHaveProperty("versions");
+  expect(body.changes.outlines.patch[0]).not.toHaveProperty("chat");
+  expect(JSON.stringify(body).length).toBeLessThan(2_000);
+  await expect(page.locator(".generate-instruction-save-state")).toHaveText("已保存");
+});
+
 test("AI Generate reuses supplementary instructions only within the same outline", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop state behavior");
   const current = await request.get("/api/state");
@@ -643,11 +666,34 @@ test("AI Generate reuses supplementary instructions only within the same outline
   const instruction = page.locator(".generate-prompt-label textarea");
   await expect(instruction).toHaveValue("当前码头沿用的补充指令");
   await instruction.fill("当前码头下一次仍要沿用");
-  await page.getByRole("button", { name: "开始生成" }).click();
+  await expect(page.getByText("有未保存修改", { exact: true })).toBeVisible();
+  const saveInstruction = page.getByRole("button", { name: "保存指令" });
+  await expect(saveInstruction).toBeEnabled();
+  const compactSave = page.waitForRequest((request) => request.url().endsWith("/api/state/mutations") && request.method() === "POST");
+  await saveInstruction.click();
+  const compactRequest = await compactSave;
+  const compactBody = compactRequest.postDataJSON() as { changes: { version: number; outlines: { upsert: unknown[]; patch: Array<Record<string, unknown>> } } };
+  expect(compactBody.changes.version).toBe(2);
+  expect(compactBody.changes.outlines.upsert).toHaveLength(0);
+  expect(compactBody.changes.outlines.patch).toHaveLength(1);
+  expect(compactBody.changes.outlines.patch[0]).not.toHaveProperty("versions");
+  expect(compactBody.changes.outlines.patch[0]).not.toHaveProperty("chat");
+  expect(JSON.stringify(compactBody).length).toBeLessThan(2_000);
+  await expect(saveInstruction).toBeDisabled();
+  await expect(page.locator(".generate-instruction-save-state")).toHaveText("已保存");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: { articles: Array<{ chapters: Array<{ outlines: Array<{ id: string; generateInstruction: string }> }> }> } };
+    return state.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === "outline-current")?.generateInstruction;
+  }).toBe("当前码头下一次仍要沿用");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await page.getByRole("tab", { name: "AI Chat" }).click();
   await page.getByRole("tab", { name: "AI Generate" }).click();
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
+  await instruction.fill("");
+  await page.getByRole("button", { name: "保存指令" }).click();
+  await page.reload();
+  await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("");
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("前序灯塔自己的补充指令");
@@ -1116,6 +1162,12 @@ test("selecting body text automatically opens the appreciation menu on desktop a
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
   const reader = page.getByLabel("正文内容");
+  const nativeContextMenuPrevented = await reader.evaluate((element) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    element.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(nativeContextMenuPrevented).toBe(testInfo.project.name === "mobile-chromium");
   await selectReaderText(reader, "应用内欣赏菜单");
   const menu = page.getByRole("menu", { name: "正文选择菜单" });
   await expect(menu).toBeVisible();
@@ -1359,8 +1411,8 @@ test("article copy choices preserve selected defaults or complete histories with
   await page.getByRole("button", { name: "复制这篇文章" }).click();
   const defaultsDialog = page.getByRole("dialog", { name: "复制文章" });
   await expect(defaultsDialog).toBeVisible();
-  for (const label of ["章节与大纲", "正文", "人物资料", "写作风格"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(label) })).toBeChecked();
-  for (const label of ["简介与文章类型", "AI 对话记录"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(label) })).not.toBeChecked();
+  for (const label of ["章节与大纲", "正文", "人物资料", "写作风格"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(`^${label}`) })).toBeChecked();
+  for (const label of ["简介与文章类型", "AI 对话记录"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(`^${label}`) })).not.toBeChecked();
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认名称" })).toBeChecked();
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认正文" })).toBeChecked();
   await defaultsDialog.getByRole("button", { name: "创建副本" }).click();
@@ -1577,6 +1629,83 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
   await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(700);
 });
 
+test("mobile body editor keeps the caret above a visual-viewport keyboard", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium" && testInfo.project.name !== "mobile-webkit-keyboard", "mobile keyboard layout");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.content = Array.from({ length: 70 }, (_, index) => `正文键盘可见性测试第 ${index + 1} 行。`).join("\n");
+  target.currentVersionId = null;
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  await page.addInitScript(() => {
+    class MockVisualViewport extends EventTarget {
+      width = 390;
+      height = 844;
+      offsetLeft = 0;
+      offsetTop = 0;
+      pageLeft = 0;
+      pageTop = 0;
+      scale = 1;
+    }
+    const viewport = new MockVisualViewport();
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    (window as Window & { setWritingVisualViewportForTest?: (height: number, offsetTop?: number) => void }).setWritingVisualViewportForTest = (height, offsetTop = 0) => {
+      viewport.height = height;
+      viewport.offsetTop = offsetTop;
+      viewport.dispatchEvent(new Event("resize"));
+    };
+  });
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await doubleTouch(page.getByLabel("正文内容"));
+  const shell = page.locator(".studio-shell");
+  const scroll = page.locator(".writing-scroll");
+  const editor = page.getByLabel("正文编辑器");
+  await expect(shell).toHaveClass(/mobile-writing-editing/);
+  await expect(page.locator(".mobile-header")).toBeHidden();
+  await expect(page.getByRole("tablist", { name: "工作模式" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "此正文大纲" })).toBeHidden();
+  const toolbar = page.locator(".editor-heading");
+  await expect.poll(async () => (await toolbar.boundingBox())?.height ?? 999).toBeLessThanOrEqual(48);
+  await expect(page.getByRole("button", { name: "退出编辑" })).toContainText("完成");
+
+  await page.getByRole("button", { name: "更多编辑操作" }).click();
+  const menu = page.getByRole("menu", { name: "编辑操作" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("menuitem")).toHaveCount(5);
+  await expectInsideViewport(page, menu);
+  await page.getByRole("button", { name: "更多编辑操作" }).click();
+
+  await editor.focus();
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.dispatchEvent(new Event("select", { bubbles: true }));
+  });
+  await page.evaluate(() => (window as Window & { setWritingVisualViewportForTest?: (height: number) => void }).setWritingVisualViewportForTest?.(430));
+
+  await expect.poll(() => scroll.evaluate((element) => Number((element as HTMLElement).dataset.visualViewportHeight))).toBe(430);
+  await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(430);
+  await expect.poll(() => editor.evaluate((element) => element.clientHeight)).toBeGreaterThan(330);
+  await editor.press("x");
+  await expect(editor).toHaveValue(/x$/);
+  await expect.poll(() => editor.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(async () => (await editor.boundingBox())?.y ?? 999).toBeLessThan(60);
+  await expect.poll(async () => {
+    const bounds = await editor.boundingBox();
+    return bounds ? bounds.y + bounds.height : 999;
+  }).toBeLessThanOrEqual(430);
+
+  await page.evaluate(() => (window as Window & { setWritingVisualViewportForTest?: (height: number) => void }).setWritingVisualViewportForTest?.(844));
+  await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(700);
+});
+
 test("full outline editor copies every visible chapter and plan in document order", async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   await page.addInitScript(() => {
@@ -1648,8 +1777,12 @@ test("full outline editor offers inline create, delete, and archive controls", a
   await removeClick;
   await expect(current).toBeVisible();
 
+  const archiveMutation = page.waitForRequest((request) => request.url().endsWith("/api/state/mutations") && request.method() === "POST");
   await archive.click();
   await expect(current).toHaveCount(0);
+  const archiveBody = (await archiveMutation).postDataJSON() as { changes: { outlines: { patch: Array<Record<string, unknown>> } } };
+  expect(archiveBody.changes.outlines.patch).toHaveLength(1);
+  expect(archiveBody.changes.outlines.patch[0]).toMatchObject({ id: "outline-current", outline: { archived: true } });
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };

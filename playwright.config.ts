@@ -52,7 +52,7 @@ export default defineConfig({
     },
     {
       name: "mobile-webkit-keyboard",
-      grep: /mobile full outline editor keeps the caret above a visual-viewport keyboard/,
+      grep: /mobile (?:full outline|body) editor keeps the caret above a visual-viewport keyboard/,
       use: {
         browserName: "webkit",
         viewport: { width: 390, height: 844 },
