@@ -139,6 +139,20 @@ function displayValue(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function displayConflictValue(value, field, entityPart, root) {
+  if (!entityPart || entityPart.collection !== "outlines" || !["currentVersionId", "defaultVersionId"].includes(field)) return displayValue(value);
+  const outline = findEntity(root, "outlines", entityPart.id);
+  if (!outline) return displayValue(value);
+  if (value === null || value === undefined || value === "") {
+    if (field === "defaultVersionId") return "（未设置默认正文）";
+    return outline.content ? `【直接编辑的正文】\n${outline.content}` : "（正文为空）";
+  }
+  const version = (outline.versions ?? []).find((item) => item.id === value);
+  if (!version) return displayValue(value);
+  const name = String(version.name ?? "").trim() || "未命名正文版本";
+  return `【${name}】\n${version.content || "（正文为空）"}`;
+}
+
 function describeConflict(path, localValue, serverValue, localRoot, serverRoot) {
   const entityPart = [...path].reverse().find((part) => typeof part !== "string" && entityNames[part.collection]);
   const field = typeof path.at(-1) === "string" ? path.at(-1) : "$order";
@@ -153,8 +167,8 @@ function describeConflict(path, localValue, serverValue, localRoot, serverRoot) 
     entityId: entityPart?.id ?? "",
     title,
     label: `${entityName}${title ? `“${title}”` : ""}的${fieldName}`,
-    localText: displayValue(localValue),
-    serverText: displayValue(serverValue),
+    localText: displayConflictValue(localValue, field, entityPart, localRoot),
+    serverText: displayConflictValue(serverValue, field, entityPart, serverRoot),
   };
 }
 
@@ -182,6 +196,43 @@ function serverOwnsField(path) {
   // Outline.state only mirrors the durable AI worker lifecycle. User-authored
   // outline and body fields continue through the normal three-way merge.
   return entityPart?.collection === "outlines" && field === "state";
+}
+
+const aiManagedVersionSources = new Set(["AI Generate", "AI Review"]);
+
+function aiManagedCurrentVersion(root, outlineId, versionId) {
+  if (typeof versionId !== "string") return null;
+  const outline = findEntity(root, "outlines", outlineId);
+  const version = (outline?.versions ?? []).find((item) => item.id === versionId);
+  return version?.taskId && aiManagedVersionSources.has(version.source) ? version : null;
+}
+
+function mergeAiManagedCurrentReference(local, server, path, context) {
+  const field = typeof path.at(-1) === "string" ? path.at(-1) : "";
+  const outlinePart = [...path].reverse().find((part) => typeof part !== "string" && part.collection === "outlines");
+  if (field !== "currentVersionId" || !outlinePart) return { handled: false };
+
+  const localVersion = aiManagedCurrentVersion(context.localRoot, outlinePart.id, local);
+  const serverVersion = aiManagedCurrentVersion(context.serverRoot, outlinePart.id, server);
+  if (!localVersion && !serverVersion) return { handled: false };
+
+  // AI completion changes the current-version pointer as system-managed state.
+  // If the other side points at a direct or manual body, that is an explicit
+  // user choice and wins without forcing the user through a conflict dialog.
+  if (!localVersion) return { handled: true, value: clone(local) };
+  if (!serverVersion) return { handled: true, value: clone(server) };
+
+  const localOutline = findEntity(context.localRoot, "outlines", outlinePart.id);
+  const serverOutline = findEntity(context.serverRoot, "outlines", outlinePart.id);
+  const localKnowsServerVersion = (localOutline?.versions ?? []).some((version) => version.id === server);
+  const serverKnowsLocalVersion = (serverOutline?.versions ?? []).some((version) => version.id === local);
+
+  // A server snapshot that contains the phone's AI version plus a newer AI
+  // version is a monotonic task progression, not two user edits. Conversely,
+  // if the local snapshot contains the server's selection but points elsewhere,
+  // the user deliberately selected a version and the normal conflict applies.
+  if (!localKnowsServerVersion && serverKnowsLocalVersion) return { handled: true, value: clone(server) };
+  return { handled: false };
 }
 
 function mergeKeyedArray(base, local, server, path, context) {
@@ -254,6 +305,9 @@ function mergeValue(base, local, server, path, context) {
 
   if (same(local, base)) return clone(server);
   if (same(server, base)) return clone(local);
+
+  const aiManagedCurrent = mergeAiManagedCurrentReference(local, server, path, context);
+  if (aiManagedCurrent.handled) return aiManagedCurrent.value;
 
   if (field === "updatedAt" && typeof local === "string" && typeof server === "string") {
     return new Date(local).getTime() >= new Date(server).getTime() ? local : server;

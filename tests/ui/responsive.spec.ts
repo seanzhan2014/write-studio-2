@@ -1610,7 +1610,7 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
   await plan.focus();
   await plan.evaluate((element) => {
     const textarea = element as HTMLTextAreaElement;
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.setSelectionRange(0, textarea.value.length, "forward");
     textarea.dispatchEvent(new Event("select", { bubbles: true }));
   });
   await page.evaluate(() => (window as Window & { setVisualViewportForTest?: (height: number) => void }).setVisualViewportForTest?.(430));
@@ -1618,6 +1618,12 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
   await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeLessThan(430);
   await expect.poll(() => scroll.evaluate((element) => Number((element as HTMLElement).dataset.visualViewportHeight))).toBe(430);
   await expect.poll(() => plan.evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(404);
+
+  await plan.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
 
   await plan.press("x");
   await expect(plan).toHaveValue(/x$/);
@@ -1701,6 +1707,22 @@ test("mobile body editor keeps the caret above a visual-viewport keyboard", asyn
     const bounds = await editor.boundingBox();
     return bounds ? bounds.y + bounds.height : 999;
   }).toBeLessThanOrEqual(430);
+
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.scrollTop = 0;
+    textarea.setSelectionRange(0, textarea.value.length, "forward");
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await expect.poll(() => editor.evaluate((element) => (element as HTMLTextAreaElement).scrollTop)).toBeGreaterThan(0);
+
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.scrollTop = textarea.scrollHeight;
+    textarea.setSelectionRange(0, textarea.value.length, "backward");
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await expect.poll(() => editor.evaluate((element) => (element as HTMLTextAreaElement).scrollTop)).toBeLessThanOrEqual(1);
 
   await page.evaluate(() => (window as Window & { setWritingVisualViewportForTest?: (height: number) => void }).setWritingVisualViewportForTest?.(844));
   await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(700);
@@ -2114,6 +2136,34 @@ test("AI Chat releases its short submission lock after a save failure", async ({
   const composer = page.getByLabel("AI Chat 消息");
   await composer.fill("保存失败后仍可继续提交");
   await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
+});
+
+test("AI Chat distinguishes requesting the model from waiting for its first text", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  await page.goto("/articles/article-main/outlines/outline-current/chat");
+  await page.evaluate(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/api/outlines/outline-current/chat/stream")) return originalFetch(input, init);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        start(controller) {
+          window.setTimeout(() => {
+            controller.enqueue(encoder.encode("分阶段返回的聊天回复\u001e"));
+            controller.close();
+          }, 700);
+        },
+      }), { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    };
+  });
+
+  await page.getByLabel("AI Chat 消息").fill("检查模型响应阶段");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByText("正在请求模型", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("等待首字", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".message.assistant").last()).toContainText("分阶段返回的聊天回复", { timeout: 10_000 });
 });
 
 test("AI Chat finishes after leaving and clears its unread marker when opened", async ({ page, request }, testInfo) => {

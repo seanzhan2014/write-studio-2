@@ -103,6 +103,87 @@ test("automatically merges the server backup created for a direct current body",
   assert.deepEqual(outline.versions.map((version) => version.id), ["version-ai", "version-backup"]);
 });
 
+test("accepts a newer server AI version when the local snapshot only knows the preceding AI result", () => {
+  const base = fixture();
+  base.tasks = [];
+
+  const firstVersion = { id: "version-first", name: "15:51 · Kimi", source: "AI Generate", taskId: "task-first", createdAt: "2026-09-05T07:51:47.995Z", content: "第一份生成正文" };
+  const secondVersion = { id: "version-second", name: "15:55 · Kimi", source: "AI Generate", taskId: "task-second", createdAt: "2026-09-05T07:55:42.131Z", content: "第二份生成正文" };
+  const firstTask = { id: "task-first", outlineId: "outline", state: "success", resultVersionId: firstVersion.id };
+  const secondTask = { id: "task-second", outlineId: "outline", state: "success", resultVersionId: secondVersion.id };
+
+  const local = structuredClone(base);
+  const localOutline = local.articles[0].chapters[0].outlines[0];
+  localOutline.currentVersionId = firstVersion.id;
+  localOutline.updatedAt = firstVersion.createdAt;
+  localOutline.versions = [firstVersion];
+  local.tasks = [firstTask];
+
+  const server = structuredClone(base);
+  const serverOutline = server.articles[0].chapters[0].outlines[0];
+  serverOutline.currentVersionId = secondVersion.id;
+  serverOutline.updatedAt = secondVersion.createdAt;
+  serverOutline.versions = [secondVersion, firstVersion];
+  server.tasks = [secondTask, firstTask];
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(result.merged.articles[0].chapters[0].outlines[0].currentVersionId, secondVersion.id);
+  assert.deepEqual(result.merged.articles[0].chapters[0].outlines[0].versions.map((version) => version.id), [secondVersion.id, firstVersion.id]);
+});
+
+test("preserves a local direct edit while merging a concurrently generated AI version", () => {
+  const base = fixture();
+  const baseOutline = base.articles[0].chapters[0].outlines[0];
+  const baseVersion = { id: "version-base", name: "原正文", source: "手动", createdAt: "2026-09-05T07:40:00.000Z", content: "原正文" };
+  baseOutline.currentVersionId = baseVersion.id;
+  baseOutline.versions = [baseVersion];
+
+  const local = structuredClone(base);
+  const localOutline = local.articles[0].chapters[0].outlines[0];
+  localOutline.content = "本设备刚保存的直接正文";
+  localOutline.contentName = "本设备正文";
+  localOutline.currentVersionId = null;
+  localOutline.updatedAt = "2026-09-05T07:56:00.000Z";
+
+  const server = structuredClone(base);
+  const serverOutline = server.articles[0].chapters[0].outlines[0];
+  const generated = { id: "version-ai", name: "15:55 · Kimi", source: "AI Generate", taskId: "task-ai", createdAt: "2026-09-05T07:55:42.131Z", content: "新生成正文" };
+  serverOutline.currentVersionId = generated.id;
+  serverOutline.updatedAt = generated.createdAt;
+  serverOutline.versions = [generated, baseVersion];
+
+  const result = mergeStudioConflict(base, local, server);
+  const outline = result.merged.articles[0].chapters[0].outlines[0];
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(outline.currentVersionId, null);
+  assert.equal(outline.content, "本设备刚保存的直接正文");
+  assert.ok(outline.versions.some((version) => version.id === generated.id));
+});
+
+test("keeps a genuine conflict when both snapshots know both AI versions and select different ones", () => {
+  const base = fixture();
+  const versions = [
+    { id: "version-first", name: "第一版", source: "AI Generate", taskId: "task-first", createdAt: "2026-09-05T07:51:47.995Z", content: "第一份生成正文" },
+    { id: "version-second", name: "第二版", source: "AI Generate", taskId: "task-second", createdAt: "2026-09-05T07:55:42.131Z", content: "第二份生成正文" },
+    { id: "version-base", name: "原版", source: "AI Generate", taskId: "task-base", createdAt: "2026-09-05T07:40:00.000Z", content: "原生成正文" },
+  ];
+  const baseOutline = base.articles[0].chapters[0].outlines[0];
+  baseOutline.currentVersionId = "version-base";
+  baseOutline.versions = versions;
+  const local = structuredClone(base);
+  local.articles[0].chapters[0].outlines[0].currentVersionId = "version-first";
+  const server = structuredClone(base);
+  server.articles[0].chapters[0].outlines[0].currentVersionId = "version-second";
+
+  const result = mergeStudioConflict(base, local, server);
+  assert.equal(result.conflicts.length, 1);
+  assert.match(result.conflicts[0].label, /当前正文/);
+  assert.match(result.conflicts[0].localText, /【第一版】\n第一份生成正文/);
+  assert.match(result.conflicts[0].serverText, /【第二版】\n第二份生成正文/);
+  assert.doesNotMatch(result.conflicts[0].localText, /version-first/);
+});
+
 test("keeps a genuine same-data conflict for explicit user resolution", () => {
   const base = fixture();
   const local = structuredClone(base);

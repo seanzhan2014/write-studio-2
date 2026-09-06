@@ -37,6 +37,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import getCaretCoordinates from "textarea-caret";
 import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, type AiContextSummary, type FirstAppearanceSuggestion, type SelectedAiContext } from "@/lib/ai-context";
 import type { NamingArticleContext } from "@/db/ai";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
@@ -237,6 +238,7 @@ function namingArticleContext(article: Article): NamingArticleContext {
 
 type ActiveChatStream = { controller: AbortController; cancel: () => void };
 type ChatStreamState = { taskId: string; sessionId: string; submissionToken: string; controller: AbortController; result: string; finalized: boolean };
+type ChatResponseStage = { taskId: string; stage: "requesting-model" | "waiting-first-token" };
 const activeChatStreams = new Map<string, ActiveChatStream>();
 
 function registerActiveChatStream(taskId: string, stream: ActiveChatStream) {
@@ -2815,10 +2817,22 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const currentStream = useRef<ChatStreamState | null>(null);
   const submissionLock = useRef("");
   const [submittingTaskId, setSubmittingTaskId] = useState("");
+  const [chatResponseStage, setChatResponseStage] = useState<ChatResponseStage | null>(null);
   const isSubmitting = Boolean(submittingTaskId);
   const chatBusy = isStreaming || isSubmitting;
-  const chatProgressLabel = isSubmitting ? "正在提交" : streaming ? "正在回复" : activeChatTask?.phase === "connecting" ? "正在连接" : "正在回复";
-  const chatProgressText = streaming || (isSubmitting ? "正在保存消息并创建任务…" : activeChatTask?.phase === "connecting" ? "正在连接模型…" : "正在思考…");
+  const currentResponseStage = chatResponseStage && chatResponseStage.taskId === sessionChatTask?.id ? chatResponseStage.stage : null;
+  const chatProgressLabel = isSubmitting
+    ? "正在提交"
+    : streaming
+      ? "正在回复"
+      : currentResponseStage === "waiting-first-token"
+        ? "等待首字"
+        : activeChatTask ? "正在请求模型" : "正在回复";
+  const chatProgressText = streaming || (isSubmitting
+    ? "正在保存消息并创建任务…"
+    : currentResponseStage === "waiting-first-token"
+      ? "模型已响应，正在等待首字…"
+      : activeChatTask ? "正在向模型发送请求…" : "正在思考…");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
   try {
     chatContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: session?.includePrevious, includeCharacters: session?.includeCharacters, sessionId: session?.id });
@@ -2887,6 +2901,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
     if (!response.ok || payload.revision === undefined || !payload.task) throw new Error(payload.error || "聊天结果保存失败");
     applyChatTransaction({ revision: payload.revision, task: payload.task, message: payload.message, sessionUpdatedAt: payload.sessionUpdatedAt }, stream.taskId, stream.sessionId);
     setLocalStreaming((current) => current?.taskId === stream.taskId ? null : current);
+    setChatResponseStage((current) => current?.taskId === stream.taskId ? null : current);
   }
 
   function stopStream(stream: ChatStreamState, stopped = true) {
@@ -2895,6 +2910,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
     stream.controller.abort();
     releaseActiveChatStream(stream.taskId, stream.controller);
     if (currentStream.current === stream) currentStream.current = null;
+    setChatResponseStage((current) => current?.taskId === stream.taskId ? null : current);
     if (submissionLock.current === stream.submissionToken) {
       submissionLock.current = "";
       setSubmittingTaskId("");
@@ -2940,10 +2956,12 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       const stream: ChatStreamState = { taskId, sessionId: targetSessionId, submissionToken, controller, result: "", finalized: false };
       currentStream.current = stream;
       registerActiveChatStream(taskId, { controller, cancel: () => stopStream(stream, true) });
+      setChatResponseStage({ taskId, stage: "requesting-model" });
       try {
         if (controller.signal.aborted) return;
         const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
+        setChatResponseStage({ taskId, stage: "waiting-first-token" });
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         while (true) {
@@ -2957,6 +2975,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
           // a development proxy delays the response close or strips custom headers.
           const terminatorIndex = decoded.indexOf("\u001e");
           stream.result += terminatorIndex >= 0 ? decoded.slice(0, terminatorIndex) : decoded;
+          if (stream.result) setChatResponseStage((current) => current?.taskId === taskId ? null : current);
           setLocalStreaming({ taskId, text: stream.result });
           if (terminatorIndex >= 0) {
             void reader.cancel();
@@ -2976,6 +2995,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       } finally {
         releaseActiveChatStream(taskId, controller);
         if (currentStream.current === stream) currentStream.current = null;
+        setChatResponseStage((current) => current?.taskId === taskId ? null : current);
         stream.finalized = true;
       }
     } catch (reason) {
@@ -3502,47 +3522,12 @@ function AutoGrowTextarea({ value, onChange, onFocus, onBlur, className, label, 
 function textareaCaretBounds(textarea: HTMLTextAreaElement) {
   const computed = window.getComputedStyle(textarea);
   const textareaBounds = textarea.getBoundingClientRect();
-  const lineHeight = Number.parseFloat(computed.lineHeight) || Number.parseFloat(computed.fontSize) * 1.4 || 22;
-  const mirror = document.createElement("div");
-  mirror.setAttribute("aria-hidden", "true");
-  mirror.style.position = "fixed";
-  mirror.style.left = "-100000px";
-  mirror.style.top = "0";
-  mirror.style.visibility = "hidden";
-  mirror.style.pointerEvents = "none";
-  mirror.style.boxSizing = computed.boxSizing;
-  mirror.style.width = `${textareaBounds.width}px`;
-  mirror.style.minHeight = "0";
-  mirror.style.maxHeight = "none";
-  mirror.style.overflow = "visible";
-  mirror.style.whiteSpace = "pre-wrap";
-  mirror.style.overflowWrap = computed.overflowWrap || "break-word";
-  mirror.style.wordBreak = computed.wordBreak;
-  mirror.style.fontFamily = computed.fontFamily;
-  mirror.style.fontSize = computed.fontSize;
-  mirror.style.fontStyle = computed.fontStyle;
-  mirror.style.fontWeight = computed.fontWeight;
-  mirror.style.fontVariant = computed.fontVariant;
-  mirror.style.lineHeight = computed.lineHeight;
-  mirror.style.letterSpacing = computed.letterSpacing;
-  mirror.style.textAlign = computed.textAlign;
-  mirror.style.textIndent = computed.textIndent;
-  mirror.style.textTransform = computed.textTransform;
-  mirror.style.tabSize = computed.tabSize;
-  mirror.style.padding = computed.padding;
-  mirror.style.border = computed.border;
-  mirror.append(document.createTextNode(textarea.value.slice(0, textarea.selectionStart ?? 0).replace(/\r\n/g, "\n")));
-  const marker = document.createElement("span");
-  marker.textContent = "\u200b";
-  marker.style.display = "inline-block";
-  marker.style.height = `${lineHeight}px`;
-  marker.style.width = "1px";
-  marker.style.verticalAlign = "top";
-  mirror.append(marker);
-  document.body.append(mirror);
-  const top = textareaBounds.top + marker.offsetTop - textarea.scrollTop;
-  mirror.remove();
-  return { top, bottom: top + lineHeight };
+  const caretOffset = textarea.selectionDirection === "backward" ? textarea.selectionStart : textarea.selectionEnd;
+  const caret = getCaretCoordinates(textarea, caretOffset);
+  const fallbackLineHeight = Number.parseFloat(computed.lineHeight) || Number.parseFloat(computed.fontSize) * 1.4 || 22;
+  const caretHeight = Number.isFinite(caret.height) && caret.height > 0 ? caret.height : fallbackLineHeight;
+  const top = textareaBounds.top + caret.top - textarea.scrollTop;
+  return { top, bottom: top + caretHeight };
 }
 
 function useWritingEditorViewport(scrollRef: { current: HTMLDivElement | null }, editorRef: { current: HTMLTextAreaElement | null }, editing: boolean) {
@@ -4628,12 +4613,15 @@ function ModelSettings() {
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [modelCheck, setModelCheck] = useState<{ providerId: string; completed: number; total: number } | null>(null);
+  const [modelCheckNotice, setModelCheckNotice] = useState("");
   const [collapsedProviderIds, setCollapsedProviderIds] = useState<string[]>([]);
   const providerTimeoutMinutes = Number(providerForm.timeoutMinutes);
   const providerTimeoutValid = Number.isFinite(providerTimeoutMinutes) && providerTimeoutMinutes >= 0.1 && providerTimeoutMinutes <= 10;
   const maxInputCharacters = Number(modelForm.maxInputCharacters);
   const maxInputValid = Number.isInteger(maxInputCharacters) && maxInputCharacters >= MIN_MAX_INPUT_CHARACTERS && maxInputCharacters <= MAX_MAX_INPUT_CHARACTERS;
-  const requestedModelIds = selectedModelIds.length ? selectedModelIds : parseModelIds(modelForm.modelId);
+  const requestedModelIds = parseModelIds(modelForm.modelId);
+  const newModelIds = requestedModelIds.filter((id) => !models.some((model) => model.providerId === modelForm.providerId && model.modelId === id));
 
   const load = useCallback(async () => {
     const [providerResponse, modelResponse] = await Promise.all([fetchFromServer("/api/providers", { cache: "no-store" }), fetchFromServer("/api/models", { cache: "no-store" })]);
@@ -4700,7 +4688,8 @@ function ModelSettings() {
   function openCreateModel(providerId = providers[0]?.id ?? "", candidates: string[] = []) {
     setError(""); setEditingModelId(null); setDiscoveredModels(candidates);
     const saved = new Set(models.filter((model) => model.providerId === providerId).map((model) => model.modelId));
-    const initial = candidates.filter((modelId) => !saved.has(modelId)).slice(0, 1);
+    const existing = candidates.filter((modelId) => saved.has(modelId));
+    const initial = existing.length ? existing : candidates.slice(0, 1);
     setSelectedModelIds(initial); setModelForm({ providerId, name: "", modelId: initial.join(", "), systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true);
   }
   function openEditModel(model: Model) { setError(""); setEditingModelId(model.id); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: model.providerId, name: model.name, modelId: model.modelId, systemPrompt: model.systemPrompt, maxInputCharacters: String(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true); }
@@ -4719,10 +4708,11 @@ function ModelSettings() {
     const previous = editingModelId ? models.find((model) => model.id === editingModelId) : null;
     try {
       if (!editingModelId) {
-        const response = await fetchServerAction("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: requestedModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        if (!newModelIds.length) { closeModelForm(); return; }
+        const response = await fetchServerAction("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: newModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const payload = await response.json() as { models?: Model[]; error?: string };
         if (!response.ok) throw new Error(payload.error || "模型创建失败");
-        if (!payload.models?.length) throw new Error("所选模型已存在，无需重复保存");
+        // The server also skips models created by another session.
       } else {
         const response = await fetchServerAction(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
         const model = await response.json() as Model & { error?: string };
@@ -4738,17 +4728,54 @@ function ModelSettings() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "模型保存失败"); }
     finally { setBusy(""); }
   }
-  async function removeModel(model: Model) {
-    if (!window.confirm(`删除模型「${model.name}」？`)) return;
-    try {
-      const response = await fetchServerAction(`/api/models/${model.id}`, { method: "DELETE" });
-      if (!response.ok) { const payload = await response.json() as { error?: string }; throw new Error(payload.error || "模型删除失败"); }
+  async function deleteModel(model: Model) {
+    const response = await fetchServerAction(`/api/models/${model.id}`, { method: "DELETE" });
+    if (!response.ok) { const payload = await response.json() as { error?: string }; throw new Error(payload.error || "模型删除失败"); }
       if (modelMatchesReference(model, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
       if (modelMatchesReference(model, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
       if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
       if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
-      await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "模型删除失败"); }
+  }
+  async function removeModel(model: Model) {
+    if (!window.confirm(`删除模型「${model.name}」？`)) return;
+    try { await deleteModel(model); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "模型删除失败"); }
+  }
+  async function checkProviderModels(provider: Provider) {
+    if (modelCheck) return;
+    const targets = models.filter((model) => model.providerId === provider.id);
+    if (!targets.length) return;
+    setError(""); setModelCheckNotice("");
+    setModelCheck({ providerId: provider.id, completed: 0, total: targets.length });
+    const failed: { model: Model; error: string }[] = [];
+    try {
+      for (const model of targets) {
+        try {
+          const response = await fetchServerAction(`/api/models/${model.id}/test`, { method: "POST" });
+          const payload = await response.json() as { ok?: boolean; error?: string };
+          if (!response.ok || !payload.ok) throw new Error(payload.error || "模型检测失败");
+        } catch (reason) {
+          failed.push({ model, error: reason instanceof Error ? reason.message : "请求失败" });
+        }
+        setModelCheck((current) => current ? { ...current, completed: current.completed + 1 } : null);
+      }
+      setModelCheckNotice(`${provider.name}：检测完成，${targets.length - failed.length} 个可用，${failed.length} 个未通过。`);
+      if (failed.length && window.confirm(`以下 ${failed.length} 个模型未通过检测：
+
+${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${error}`).join("\n")}
+
+检测失败也可能由网络、限流或密钥问题导致，不一定代表永久失效。是否删除这些模型？取消可保留全部模型。`)) {
+        const errors: string[] = [];
+        for (const { model } of failed) {
+          try { await deleteModel(model); }
+          catch (reason) { errors.push(`${model.name}：${reason instanceof Error ? reason.message : "删除失败"}`); }
+        }
+        await load();
+        setModelCheckNotice(`检测完成，已删除 ${failed.length - errors.length} 个未通过检测的模型。`);
+        if (errors.length) setError(errors.join("；"));
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "批量检测失败"); }
+    finally { setModelCheck(null); }
   }
 
   const namingSelection = studio.data.settings.namingModelMode === "inherit" ? "__inherit__" : studio.data.settings.namingModel || "__local__";
@@ -4761,6 +4788,7 @@ function ModelSettings() {
       <Text c="dimmed" size="sm">{providers.length} 个 Provider · {models.length} 个模型</Text>
       <Button size="sm" leftSection={<Icon name="plus" />} onClick={openCreateProvider}>新建 Provider</Button>
     </Group>
+    {modelCheckNotice && <Alert color="blue" role="status">{modelCheckNotice}</Alert>}
     {!providerFormOpen && !modelFormOpen && error && <Alert className="settings-error" color="red" role="alert">{error}</Alert>}
     <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !configuredModelForReference(models, studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
     <SettingSection title="Providers">
@@ -4776,6 +4804,7 @@ function ModelSettings() {
               </div>
               <div className="provider-group-actions">
                 <Button variant="default" size="xs" loading={busy === `test-${provider.id}`} onClick={() => void testProviderConnection(provider)}>测试连接</Button>
+                <Button variant="default" size="xs" disabled={Boolean(modelCheck) || !providerModels.length} onClick={() => void checkProviderModels(provider)}>{modelCheck?.providerId === provider.id ? `检测中 ${modelCheck.completed}/${modelCheck.total}` : "检测全部模型"}</Button>
                 <Button variant="light" size="xs" loading={busy === `discover-${provider.id}`} onClick={() => void fetchProviderModels(provider)}>Fetch 模型</Button>
                 <Button variant="default" size="xs" onClick={() => openEditProvider(provider)}>编辑</Button>
                 <Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={!provider.hasSecret} onClick={() => void clearProviderKey(provider)}>移除 API Key</Menu.Item><Menu.Divider /><Menu.Item color="red" disabled={providerModels.length > 0 || provider.modelCount > 0} onClick={() => void removeProvider(provider)}>删除 Provider</Menu.Item></Menu.Dropdown></Menu>
@@ -4808,7 +4837,7 @@ function ModelSettings() {
       <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><TextInput label="Provider 名称" value={providerForm.name} onChange={(event) => setProviderForm({ ...providerForm, name: event.target.value })} /><Select label="协议" value={providerForm.adapterKind} data={[{ value: "openai-compatible", label: "OpenAI Compatible" }]} disabled /><TextInput label="接口地址" value={providerForm.baseUrl} onChange={(event) => setProviderForm({ ...providerForm, baseUrl: event.target.value })} /><NumberInput label="请求超时" aria-label="Provider 超时（分钟）" min={0.1} max={10} step={0.1} decimalScale={2} suffix=" 分钟" value={providerForm.timeoutMinutes} error={!providerTimeoutValid ? "请输入 0.1–10 分钟" : undefined} onChange={(value) => setProviderForm({ ...providerForm, timeoutMinutes: String(value) })} /><PasswordInput label="API Key" description={editingProviderId ? "留空会保留现有 API Key" : undefined} autoComplete="new-password" value={providerForm.secret} onChange={(event) => setProviderForm({ ...providerForm, secret: event.target.value })} /></SimpleGrid><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeProviderForm}>取消</Button><Button disabled={!providerForm.name.trim() || !providerForm.baseUrl.trim() || !providerTimeoutValid} loading={busy === "save-provider"} onClick={() => void saveProvider()}>保存 Provider</Button></Group></Stack>
     </ResponsiveModal>
     <ResponsiveModal opened={modelFormOpen} onClose={closeModelForm} closeButtonProps={{ "aria-label": "关闭模型编辑" }} title={editingModelId ? "编辑模型" : "新建模型"} size="lg" fullScreen={compact} centered={!compact} classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "model-form-modal" }} overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}>
-      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><Select label="Provider" value={modelForm.providerId} data={providers.map((provider) => ({ value: provider.id, label: provider.name }))} onChange={(value) => { const providerId = value ?? ""; const providerChanged = providerId !== modelForm.providerId; setModelForm({ ...modelForm, providerId, modelId: providerChanged && discoveredModels.length > 0 ? "" : modelForm.modelId }); if (providerChanged) { setDiscoveredModels([]); setSelectedModelIds([]); } }} /><TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增模型会自动附加自己的模型 ID" : undefined} value={modelForm.name} onChange={(event) => setModelForm({ ...modelForm, name: event.target.value })} /><NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={modelForm.maxInputCharacters} error={!maxInputValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setModelForm({ ...modelForm, maxInputCharacters: String(value) })} /></SimpleGrid><div className="model-id-field"><TextInput id="model-id-input" label="模型 ID" aria-label="模型 ID" placeholder={editingModelId ? "输入模型 ID" : "多个模型 ID 使用逗号分隔"} value={modelForm.modelId} onChange={(event) => { const modelId = event.target.value; setModelForm({ ...modelForm, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />{discoveredModels.length > 0 && <MultiSelect className="discovered-model-select" label={`Provider 返回 ${discoveredModels.length} 个模型`} description="勾选并保存的模型才会加入 Writer Studio。" aria-label="选择获取到的大模型" placeholder="选择一个或多个模型" searchable withCheckIcon checkIconPosition="right" data={discoveredModels} value={selectedModelIds} onChange={(values) => { setSelectedModelIds(values); setModelForm((current) => ({ ...current, modelId: values.join(", ") })); }} />}</div><Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={modelForm.systemPrompt} onChange={(event) => setModelForm({ ...modelForm, systemPrompt: event.target.value })} /><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeModelForm}>取消</Button><Button disabled={!modelForm.providerId || !requestedModelIds.length || (Boolean(editingModelId) && !modelForm.name.trim()) || !maxInputValid} loading={busy === "save-model"} onClick={() => void saveModel()}>{!editingModelId && requestedModelIds.length > 1 ? `保存 ${requestedModelIds.length} 个模型` : "保存模型"}</Button></Group></Stack>
+      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><Select label="Provider" value={modelForm.providerId} data={providers.map((provider) => ({ value: provider.id, label: provider.name }))} onChange={(value) => { const providerId = value ?? ""; const providerChanged = providerId !== modelForm.providerId; setModelForm({ ...modelForm, providerId, modelId: providerChanged && discoveredModels.length > 0 ? "" : modelForm.modelId }); if (providerChanged) { setDiscoveredModels([]); setSelectedModelIds([]); } }} /><TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增模型会自动附加自己的模型 ID" : undefined} value={modelForm.name} onChange={(event) => setModelForm({ ...modelForm, name: event.target.value })} /><NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={modelForm.maxInputCharacters} error={!maxInputValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setModelForm({ ...modelForm, maxInputCharacters: String(value) })} /></SimpleGrid><div className="model-id-field"><TextInput id="model-id-input" label="模型 ID" aria-label="模型 ID" placeholder={editingModelId ? "输入模型 ID" : "多个模型 ID 使用逗号分隔"} value={modelForm.modelId} onChange={(event) => { const modelId = event.target.value; setModelForm({ ...modelForm, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />{discoveredModels.length > 0 && <MultiSelect className="discovered-model-select" label={`Provider 返回 ${discoveredModels.length} 个模型`} description="已有模型已自动勾选；保存仅添加新模型，取消勾选不会删除已有模型。" aria-label="选择获取到的大模型" placeholder="选择一个或多个模型" searchable withCheckIcon checkIconPosition="right" data={discoveredModels.map((id) => ({ value: id, label: models.some((model) => model.providerId === modelForm.providerId && model.modelId === id) ? `${id}（已添加）` : id }))} value={selectedModelIds} onChange={(values) => { setSelectedModelIds(values); setModelForm((current) => ({ ...current, modelId: values.join(", ") })); }} />}</div><Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={modelForm.systemPrompt} onChange={(event) => setModelForm({ ...modelForm, systemPrompt: event.target.value })} /><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeModelForm}>取消</Button><Button disabled={!modelForm.providerId || !requestedModelIds.length || (Boolean(editingModelId) && !modelForm.name.trim()) || !maxInputValid} loading={busy === "save-model"} onClick={() => void saveModel()}>{!editingModelId ? (newModelIds.length ? `添加 ${newModelIds.length} 个模型` : "完成") : "保存模型"}</Button></Group></Stack>
     </ResponsiveModal>
   </>;
 }
@@ -5196,7 +5225,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     else if (task.target === "章节标题" && task.resultText) studio.updateChapter(task.chapterId, { title: task.resultText });
   }
   const labels: Record<AiTask["state"], string> = { waiting: "等待中", running: "运行中", success: "已完成", failed: "失败", cancelled: "已取消" };
-  const phaseLabels: Record<NonNullable<AiTask["phase"]>, string> = { queued: "等待调度", preparing: "准备上下文", connecting: "连接模型", generating: "模型生成中", receiving: "接收结果", saving: "保存结果", retrying: "准备重试", completed: "已保存", failed: "执行失败", cancelled: "已取消" };
+  const phaseLabels: Record<NonNullable<AiTask["phase"]>, string> = { queued: "等待调度", preparing: "准备上下文", connecting: "等待模型响应", generating: "模型生成中", receiving: "接收结果", saving: "保存结果", retrying: "准备重试", completed: "已保存", failed: "执行失败", cancelled: "已取消" };
   const taskTime = (value: string) => {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
