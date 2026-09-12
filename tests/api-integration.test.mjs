@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 import { fullStudioFixture } from "./fixtures.mjs";
+import { diffStudioData, durableSnapshot } from "./studio-test-runtime.mjs";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 
@@ -879,7 +880,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(partialLength.response.status, 502, partialLength.text);
     assert.match(partialLength.data.error, /输出长度上限/);
     assert.match(partialLength.data.error, /丢弃/);
-    assert.equal(modelServer.received.at(-1).body.max_tokens, 18000, "正文应根据目标字数显式预留输出 tokens");
+    assert.equal(modelServer.received.at(-1).body.max_tokens, 65536, "目标字数约束正文篇幅，不能压缩模型推理和正文共用的输出预算");
 
     const partialError = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "PARTIAL_ERROR", model: "捕获模型", target: "content" } });
     assert.equal(partialError.response.status, 502, partialError.text);
@@ -996,6 +997,33 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     revision = cancelledUnlimited.data.revision;
   });
 
+  await t.test("keeps server-managed Generate state authoritative over a stale browser snapshot", async () => {
+    const taskId = "server-managed-stale-browser-task";
+    const created = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "SERVER_MANAGED", model: "捕获模型" },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    assert.equal(created.data.data.contextOptions.serverManaged, true);
+
+    const current = await api("/api/state");
+    const staleBrowser = structuredClone(current.data.data);
+    const staleTask = staleBrowser.tasks.find((task) => task.id === taskId);
+    staleTask.state = "cancelled";
+    staleTask.phase = "cancelled";
+    staleTask.contextOptions.serverManaged = false;
+    const changes = diffStudioData(durableSnapshot(current.data.data), durableSnapshot(staleBrowser));
+    const staleSave = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(current.data.revision) }, body: { changes } });
+    assert.equal(staleSave.response.status, 200, staleSave.text);
+
+    const protectedTask = (await api("/api/ai/tasks")).data.tasks.find((task) => task.id === taskId);
+    assert.equal(protectedTask.state, "waiting");
+    assert.equal(protectedTask.contextOptions.serverManaged, true);
+    const cancelled = await api(`/api/ai/tasks/${taskId}/state`, { method: "POST", body: { action: "cancel" } });
+    assert.equal(cancelled.response.status, 200, cancelled.text);
+    revision = cancelled.data.revision;
+  });
+
   await t.test("executes Generate on the local service and persists the result without a browser runner", async () => {
     const selectedDefault = await api("/api/versions/version-manual/default", { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
     assert.equal(selectedDefault.response.status, 200, selectedDefault.text);
@@ -1086,9 +1114,11 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const taskId = "server-executor-backup-task";
     const created = await api("/api/ai/tasks", {
       method: "POST", headers: { "Idempotency-Key": taskId },
-      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "BACKUP_CURRENT_BODY", targetWords: 5000, model: "捕获模型" },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "BACKUP_CURRENT_BODY", targetWords: 5000, contentMode: "rewrite", model: "捕获模型" },
     });
     assert.equal(created.response.status, 200, created.text);
+    assert.equal(created.data.data.contextOptions.rewriteSourceId, "content:outline-current");
+    assert.equal(created.data.data.contextOptions.rewriteSourceName, "直接正文");
     const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
     assert.equal(executed.response.status, 200, executed.text);
 
@@ -1098,6 +1128,8 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const generated = persisted.versions.find((version) => version.taskId === taskId);
     const backup = persisted.versions.find((version) => version.name.startsWith("AI Generate 前 · "));
     assert.ok(generated);
+    assert.equal(generated.rewriteSourceId, "content:outline-current");
+    assert.equal(generated.rewriteSourceName, "直接正文");
     assert.equal(persisted.defaultVersionId, "version-manual", "Generate must retain the existing default selection");
     assert.equal(persisted.currentVersionId, generated.id);
     assert.equal(persisted.content, "生成任务完成前的直接正文", "Generate must not duplicate its result into the working body");
@@ -1184,6 +1216,37 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const generated = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "检查当前正文覆盖", model: "捕获模型", target: "content", contentMode: "rewrite" } });
     assert.equal(generated.response.status, 200, generated.text);
     assert.match(modelServer.received.at(-1).body.messages[1].content, /全文编辑直接正文唯一标记/);
+  });
+
+  await t.test("stores an automatically titled Generate result on the task's original outline", async () => {
+    const current = await api("/api/state");
+    const changed = structuredClone(current.data.data);
+    const original = changed.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current");
+    original.title = "";
+    original.titleGenerationPending = true;
+    const outlineIds = changed.articles[0].chapters[0].outlines.map((outline) => outline.id);
+    const prepared = await api("/api/state", { method: "PUT", headers: { "If-Match": String(current.data.revision) }, body: { data: changed } });
+    assert.equal(prepared.response.status, 200, prepared.text);
+
+    const taskId = "server-executor-title-identity-task";
+    const created = await api("/api/ai/tasks", {
+      method: "POST", headers: { "Idempotency-Key": taskId },
+      body: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "GENERATE_WITH_TITLE", model: "捕获模型", includeOutlineTitle: true },
+    });
+    assert.equal(created.response.status, 200, created.text);
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 200, executed.text);
+
+    const loaded = await api("/api/state");
+    revision = loaded.data.revision;
+    const outlines = loaded.data.data.articles[0].chapters[0].outlines;
+    const persisted = outlines.find((outline) => outline.id === "outline-current");
+    assert.deepEqual(outlines.map((outline) => outline.id), outlineIds, "Generate must not create or replace an outline");
+    assert.equal(persisted.title, "七码头潮汐密钥");
+    assert.equal(persisted.titleGenerationPending, false);
+    assert.ok(persisted.versions.some((version) => version.taskId === taskId));
+    assert.equal(outlines.filter((outline) => outline.versions.some((version) => version.taskId === taskId)).length, 1);
+    assert.equal(loaded.data.data.tasks.find((task) => task.id === taskId).state, "success");
   });
 
   await t.test("updates and deletes model configurations without exposing secrets", async () => {

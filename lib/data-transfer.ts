@@ -1,5 +1,9 @@
+import type { ReasoningEffort } from "@/lib/reasoning-options";
 import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
 import type { NameVersion } from "@/lib/name-versions";
+
+import { articleReviewRules } from "./review-rules.mjs";
+import { EMPTY_ARTICLE_STORY_SETTINGS, normalizeChapterSettings, type ChapterSettings, type ResolvedChapterSettings } from "./story-settings.ts";
 
 export const TRANSFER_KIND = "writer-studio-transfer" as const;
 export const TRANSFER_VERSION = 2 as const;
@@ -21,6 +25,7 @@ export type PortableAiModel = {
   name: string;
   modelId: string;
   systemPrompt: string;
+  reasoningEffort?: ReasoningEffort | null;
   temperature: number | null;
   maxOutput: number | null;
   maxInputCharacters: number;
@@ -164,6 +169,7 @@ export function parseTransferEnvelope(value: unknown): TransferEnvelope {
         id: String(model.id ?? ""), providerId: provider.id, name: String(model.name ?? ""), modelId: String(model.modelId ?? ""),
         systemPrompt: String(model.systemPrompt ?? ""), temperature: model.temperature == null ? null : Number(model.temperature),
         maxOutput: model.maxOutput == null ? null : Number(model.maxOutput), maxInputCharacters: Number(model.maxInputCharacters),
+        reasoningEffort: (model.reasoningEffort ?? null) as PortableAiModel["reasoningEffort"],
         timeoutOverrideMs: timeoutMs === provider.timeoutMs ? null : timeoutMs,
       } satisfies PortableAiModel;
     });
@@ -237,6 +243,17 @@ function mapped(map: Map<string, string>, id: unknown) {
   return map.get(String(id ?? "")) ?? "";
 }
 
+function mappedRewriteSourceId(sourceId: string | undefined, ids: IdMaps) {
+  if (!sourceId) return undefined;
+  const versionId = mapped(ids.versions, sourceId);
+  if (versionId) return versionId;
+  if (sourceId.startsWith("content:")) {
+    const outlineId = mapped(ids.outlines, sourceId.slice("content:".length));
+    if (outlineId) return `content:${outlineId}`;
+  }
+  return sourceId;
+}
+
 function cloneFragments<T extends { id: string }>(items: T[] | undefined, ids: IdMaps): T[] {
   return (items ?? []).map((item) => ({ ...item, id: mapped(ids.fragments, item.id) || makeId("excellent") }));
 }
@@ -248,12 +265,39 @@ function cloneNameState(source: { nameVersions?: NameVersion[]; defaultNameVersi
   };
 }
 
+function cloneChapterSettings(value: unknown, ids: IdMaps): ChapterSettings {
+  const source = normalizeChapterSettings(value);
+  return {
+    story: structuredClone(source.story),
+    characters: Object.fromEntries(Object.entries(source.characters).map(([id, settings]) => [mapped(ids.characters, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
+    relationships: Object.fromEntries(Object.entries(source.relationships).map(([id, settings]) => [mapped(ids.relationships, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
+  };
+}
+
+function cloneSettingSnapshot(value: ResolvedChapterSettings | undefined, ids: IdMaps): ResolvedChapterSettings | undefined {
+  if (!value) return undefined;
+  return {
+    ...structuredClone(value),
+    chapterId: mapped(ids.chapters, value.chapterId) || value.chapterId,
+    inheritedFromChapter: value.inheritedFromChapter ? { ...value.inheritedFromChapter, id: mapped(ids.chapters, value.inheritedFromChapter.id) || value.inheritedFromChapter.id } : undefined,
+    characters: value.characters.map((item) => ({ ...item, id: mapped(ids.characters, item.id) || item.id })),
+    relationships: value.relationships.map((item) => ({
+      ...item,
+      id: mapped(ids.relationships, item.id) || item.id,
+      characterAId: mapped(ids.characters, item.characterAId) || item.characterAId,
+      characterBId: mapped(ids.characters, item.characterBId) || item.characterBId,
+    })),
+  };
+}
+
 function cloneOutline(source: Outline, ids: IdMaps): Outline {
   const id = mapped(ids.outlines, source.id) || makeId("outline");
   const versions = (source.versions ?? []).map((version) => ({
     ...version,
     id: mapped(ids.versions, version.id) || makeId("version"),
     taskId: version.taskId ? mapped(ids.tasks, version.taskId) || undefined : undefined,
+    rewriteSourceId: mappedRewriteSourceId(version.rewriteSourceId, ids),
+    settingSnapshot: cloneSettingSnapshot(version.settingSnapshot, ids),
     excellentFragments: cloneFragments(version.excellentFragments, ids),
   }));
   const sessions = (source.chat?.sessions ?? []).map((session) => ({
@@ -313,6 +357,7 @@ export function suggestArticleCopyTitle(title: string, existingTitles: string[] 
 function cloneArticleGraph(source: Article, ids: IdMaps, title = source.title): Article {
   const article: Article = {
     ...source,
+    reviewRuleItems: articleReviewRules(source).map((rule) => ({ ...rule, id: makeId("review-rule") })),
     id: mapped(ids.articles, source.id) || makeId("article"),
     title,
     lastOutlineId: mapped(ids.outlines, source.lastOutlineId),
@@ -327,6 +372,7 @@ function cloneArticleGraph(source: Article, ids: IdMaps, title = source.title): 
       ...chapter,
       id: mapped(ids.chapters, chapter.id) || makeId("chapter"),
       ...cloneNameState(chapter, ids),
+      settings: cloneChapterSettings(chapter.settings, ids),
       outlines: (chapter.outlines ?? []).map((outline) => cloneOutline(outline, ids)),
     })),
   };
@@ -379,6 +425,7 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
   article.updatedAt = createdAt;
   article.summary = options.includeMetadata ? source.summary : "";
   article.type = options.includeMetadata ? source.type : "";
+  article.storySettings = options.includeMetadata ? structuredClone(source.storySettings) : { ...EMPTY_ARTICLE_STORY_SETTINGS };
   article.style = options.includeStyle ? source.style : "";
   if (!options.includeCharacters) {
     article.characters = [];
@@ -389,10 +436,19 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
     article.lastOutlineId = "";
     return article;
   }
-  article.chapters = article.chapters.map((chapter) => ({
-    ...chapter,
-    ...(options.nameVersions === "default" ? { nameVersions: [], defaultNameVersionId: null } : {}),
-    outlines: chapter.outlines.map((outline) => {
+  article.chapters = article.chapters.map((chapter) => {
+    const settings = normalizeChapterSettings(chapter.settings);
+    if (!options.includeMetadata) settings.story = {};
+    else if (!options.includeStyle) delete settings.story.style;
+    if (!options.includeCharacters) {
+      settings.characters = {};
+      settings.relationships = {};
+    }
+    return {
+      ...chapter,
+      settings,
+      ...(options.nameVersions === "default" ? { nameVersions: [], defaultNameVersionId: null } : {}),
+      outlines: chapter.outlines.map((outline) => {
       let copied: Outline = {
         ...outline,
         updatedAt: createdAt,
@@ -425,9 +481,21 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
           versions: [],
         };
       } else if (options.contentVersions === "default") copied = keepDefaultContent(copied);
+      copied.versions = copied.versions.map((version) => version.settingSnapshot ? {
+        ...version,
+        settingSnapshot: {
+          ...version.settingSnapshot,
+          story: options.includeMetadata
+            ? { ...version.settingSnapshot.story, ...(!options.includeStyle ? { style: "" } : {}) }
+            : { type: "", era: "", location: "", tone: "", style: options.includeStyle ? version.settingSnapshot.story.style : "", worldRules: "", negativeConstraints: "" },
+          characters: options.includeCharacters ? version.settingSnapshot.characters : [],
+          relationships: options.includeCharacters ? version.settingSnapshot.relationships : [],
+        },
+      } : version);
       return copied;
-    }),
-  }));
+      }),
+    };
+  });
   return article;
 }
 
@@ -460,6 +528,7 @@ export function duplicateArticlesForImport(articles: Article[], tasks: AiTask[],
         sessionId: task.contextOptions.sessionId ? mapped(ids.sessions, task.contextOptions.sessionId) || undefined : undefined,
         firstAppearanceCharacterIds: task.contextOptions.firstAppearanceCharacterIds?.map((id) => mapped(ids.characters, id)).filter(Boolean),
         excellentFragmentIds: task.contextOptions.excellentFragmentIds?.map((id) => mapped(ids.fragments, id)).filter(Boolean),
+        rewriteSourceId: mappedRewriteSourceId(task.contextOptions.rewriteSourceId, ids),
       } : undefined,
     } satisfies AiTask;
   }).filter((task) => task.articleId && task.chapterId && task.outlineId);
@@ -483,6 +552,7 @@ export function portableModels(models: Array<PortableAiModel & { timeoutMs?: num
     temperature: model.temperature == null ? null : Number(model.temperature),
     maxOutput: model.maxOutput == null ? null : Number(model.maxOutput),
     maxInputCharacters: Number(model.maxInputCharacters),
+    reasoningEffort: model.reasoningEffort ?? null,
     timeoutOverrideMs: model.timeoutOverrideMs == null ? null : Number(model.timeoutOverrideMs),
   }));
 }

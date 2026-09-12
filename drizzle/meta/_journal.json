@@ -120,6 +120,48 @@
       "when": 1787384628720,
       "tag": "0016_wet_songbird",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1788700315908,
+      "tag": "0017_unusual_hairball",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1788743807602,
+      "tag": "0018_article_review_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1788764609315,
+      "tag": "0019_model_reasoning_effort",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789110903278,
+      "tag": "0020_ai_task_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1789178895222,
+      "tag": "0021_open_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1789208354098,
+      "tag": "0022_demonic_avengers",
+      "breakpoints": true
     }
   ]
 }

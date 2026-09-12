@@ -68,12 +68,17 @@ child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 let exitCode = 1;
 try {
   await waitForServer(baseUrl, child, output);
-  const files = (await readdir(path.join(workspace, "tests")))
-    .filter((file) => file.endsWith(".test.mjs"))
+  const requestedFiles = process.argv.slice(2);
+  const availableFiles = (await readdir(path.join(workspace, "tests"))).filter((file) => file.endsWith(".test.mjs"));
+  for (const file of requestedFiles) {
+    if (!availableFiles.includes(file)) throw new Error(`Unknown test file: ${file}`);
+  }
+  const files = availableFiles
+    .filter((file) => !requestedFiles.length || requestedFiles.includes(file))
     .map((file) => path.join("tests", file));
   const runner = spawn(process.execPath, ["--test", "--test-concurrency=1", ...files], {
     cwd: workspace,
-    env: { ...process.env, WRITER_STUDIO_TEST_BASE_URL: baseUrl },
+    env: { ...process.env, WRITER_STUDIO_TEST_BASE_URL: baseUrl, WRITER_STUDIO_TEST_DB_PATH: path.join(workspace, testDatabase) },
     stdio: "inherit",
   });
   [exitCode] = await once(runner, "exit");

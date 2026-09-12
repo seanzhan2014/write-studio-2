@@ -1,0 +1,14 @@
+export const MAX_REVIEW_RULES: number;
+export const MAX_REVIEW_RULE_CONTENT: number;
+export const MAX_REVIEW_RULE_TOTAL: number;
+export type ReviewRule = { id: string; title: string; content: string; archived: boolean; origin: "default" | "custom" | "legacy" | "preset"; revision: number; createdAt: string; updatedAt: string };
+export type ReviewRuleSnapshot = { version: 1; rules: Array<Pick<ReviewRule, "id" | "title" | "content" | "revision">>; instruction: string };
+export type ReviewRuleArticle = { id: string; createdAt?: string; reviewRules?: string; reviewRuleItems?: ReviewRule[] };
+export const DEFAULT_REVIEW_RULES: Array<{ key: string; title: string; content: string }>;
+export function createDefaultReviewRules(articleId: string, timestamp?: string): ReviewRule[];
+export function normalizeReviewRuleItems(value: unknown, articleId: string, legacyRules?: string, timestamp?: string): ReviewRule[];
+export function articleReviewRules(article: ReviewRuleArticle): ReviewRule[];
+export function createReviewRuleSnapshot(article: ReviewRuleArticle, instruction?: string, requirements?: string[]): ReviewRuleSnapshot;
+export function normalizeReviewRuleSnapshot(value: unknown): ReviewRuleSnapshot;
+export function reviewRulesText(snapshot: ReviewRuleSnapshot): string;
+export function hasReviewRules(snapshot: ReviewRuleSnapshot): boolean;

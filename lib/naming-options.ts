@@ -85,7 +85,7 @@ function isCipai(value: unknown): value is Cipai {
 }
 
 export function normalizeNamingProfile(value: unknown, fallback: NamingProfile): NamingProfile {
-  const source = value && typeof value === "object" ? value as Partial<NamingProfile> & { style?: unknown } : {};
+  const source = value && typeof value === "object" ? value as Omit<Partial<NamingProfile>, "style"> & { style?: unknown } : {};
   const minimum = Math.max(1, Math.min(80, Math.round(Number(source.minCharacters) || fallback.minCharacters)));
   const maximum = Math.max(minimum, Math.min(80, Math.round(Number(source.maxCharacters) || fallback.maxCharacters)));
   const legacySuspenseStyle = source.style === "suspense";

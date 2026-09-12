@@ -1,9 +1,11 @@
+import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import type { AiTask, Message } from "@/app/studio-state";
 import { findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { modelSelectionLabel } from "@/lib/model-label";
 import type { SelectedAiContext } from "@/lib/ai-context";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { chatOptions, chatSnapshot, completeChatTask, readChatTask, recoverChatTasks } from "@/db/chat-tasks";
 
 type SubmittedMessage = Pick<Message, "id" | "role" | "text" | "createdAt" | "stopped">;
 
@@ -25,15 +27,18 @@ async function revision() {
 export async function POST(request: Request, context: { params: Promise<{ outlineId: string }> }) {
   try {
     const { outlineId } = await context.params;
-    const body = await request.json() as Record<string, unknown>;
+    const body = await request.json() as Record<string, unknown> & ReasoningOptions;
     const action = String(body.action ?? "");
     const taskId = String(body.taskId ?? "").trim().slice(0, 200);
     const sessionId = String(body.sessionId ?? "").trim().slice(0, 200);
-    if (!taskId || !sessionId || !["submit", "finalize"].includes(action)) return json({ error: "聊天事务参数无效" }, 400);
+    if (!taskId || !sessionId || !["submit", "finalize", "status"].includes(action)) return json({ error: "聊天事务参数无效" }, 400);
     await ensureDatabase();
+    await recoverChatTasks();
     const db = getDatabase();
 
     if (action === "submit") {
+      const effortError = reasoningEffortError(body.reasoningEffort);
+      if (effortError) return json({ error: effortError }, 400);
       const messages = validMessages(body.messages);
       const question = String(body.message ?? "").trim().slice(0, 20_000);
       if (!messages || !question) return json({ error: "聊天消息无效或过大" }, 400);
@@ -72,7 +77,10 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
         receivedCharacters: 0,
         timeoutMs: model?.timeoutMs ?? Math.max(1_000, Math.min(900_000, Number(body.timeoutMs ?? 600_000))),
         runnerId: `chat-${taskId}`,
+        leaseUntil: new Date(Date.now() + 30_000).toISOString(),
         contextOptions: {
+          reasoningEffort: body.reasoningEffort,
+          resolvedReasoningEffort: resolveReasoningEffort(model, body.reasoningEffort),
           includePrevious: body.includePrevious !== false,
           includeCharacters: body.includeCharacters !== false,
           estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
@@ -87,38 +95,30 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
         db.prepare("INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET draft='',model_id=excluded.model_id,context_options_json=excluded.context_options_json,updated_at=excluded.updated_at,revision=chat_sessions.revision+1").bind(sessionId, task.articleId, outlineId, "", model?.id ?? null, sessionOptions, target.session_created_at ? String(target.session_created_at) : createdAt, createdAt),
         db.prepare("DELETE FROM chat_messages WHERE session_id=?").bind(sessionId),
         ...messages.map((message, index) => db.prepare("INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)").bind(message.id, sessionId, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt)),
-        db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,last_progress_at,received_characters,timeout_ms,runner_id,created_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, task.articleId, task.chapterId, outlineId, "chat", question, task.model, executionOrigin, JSON.stringify(task.contextOptions), task.id, "running", 1, "connecting", createdAt, 0, task.timeoutMs, task.runnerId, createdAt, createdAt),
+        db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, task.articleId, task.chapterId, outlineId, "chat", question, task.model, executionOrigin, JSON.stringify(task.contextOptions), task.id, "running", 1, "connecting", createdAt, 0, task.timeoutMs, task.runnerId, task.leaseUntil, createdAt, createdAt),
         db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt),
       ];
       await db.batch(statements);
       return json({ task, messages, sessionTitle: title, sessionUpdatedAt: createdAt, revision: await revision() }, 201);
     }
 
-    const taskRow = await db.prepare("SELECT * FROM ai_tasks WHERE id=? AND outline_id=? AND target='chat'").bind(taskId, outlineId).first<Record<string, unknown>>();
-    if (!taskRow) return json({ error: "聊天任务不存在" }, 404);
+    const taskRow = await readChatTask(taskId);
+    if (!taskRow || taskRow.outline_id !== outlineId) return json({ error: "聊天任务不存在" }, 404);
     if (normalizeTaskExecutionOrigin(taskRow.execution_origin) !== currentTaskExecutionOrigin()) return json({ error: "聊天任务属于另一端，不能在当前运行端完成" }, 409);
-    const result = String(body.result ?? "");
-    const error = String(body.error ?? "").slice(0, 5_000);
+    if (chatOptions(taskRow).sessionId !== sessionId) return json({ error: "聊天任务与会话不匹配" }, 409);
+    if (action === "status" || !["queued", "running"].includes(String(taskRow.status))) return json(await chatSnapshot(taskRow));
     const requestedStatus = String(body.status ?? "success");
-    const status = requestedStatus === "cancelled" ? "cancelled" : requestedStatus === "failed" ? "error" : "success";
-    const completedAt = new Date().toISOString();
-    const assistantText = result || (status === "error" && error ? `${String(body.chatbotName ?? "AI")} 错误：${error}` : "");
-    const message: Message | undefined = assistantText ? {
-      id: String(body.messageId ?? `message-${crypto.randomUUID()}`).slice(0, 200),
-      role: "assistant",
-      text: assistantText,
-      createdAt: completedAt,
-      stopped: body.stopped === true || undefined,
-    } : undefined;
-    const statements = [
-      db.prepare("UPDATE ai_tasks SET status=?,phase=?,completed_at=?,last_progress_at=?,received_characters=?,result_text=?,error_message=?,runner_id=NULL,lease_until=NULL WHERE id=?").bind(status, status === "success" ? "completed" : status === "cancelled" ? "cancelled" : "failed", completedAt, completedAt, result.length, result || null, error || null, taskId),
-      db.prepare("UPDATE chat_sessions SET updated_at=?,revision=revision+1 WHERE id=? AND outline_id=?").bind(completedAt, sessionId, outlineId),
-      db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(completedAt),
-    ];
-    if (message) statements.splice(1, 0, db.prepare("INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,(SELECT COALESCE(MAX(order_index),-1)+1 FROM chat_messages WHERE session_id=?),?)").bind(message.id, sessionId, message.role, message.text, message.stopped ? "stopped" : "complete", sessionId, completedAt));
-    await db.batch(statements);
-    const task: Partial<AiTask> = { state: status === "error" ? "failed" : status, phase: status === "error" ? "failed" : status === "success" ? "completed" : "cancelled", completedAt, lastProgressAt: completedAt, receivedCharacters: result.length, resultText: result || undefined, error: error || undefined, runnerId: undefined, leaseUntil: undefined };
-    return json({ task, message, sessionUpdatedAt: completedAt, revision: await revision() });
+    if (!["success", "failed", "cancelled"].includes(requestedStatus)) return json({ error: "聊天完成状态无效" }, 400);
+    // Managed workers own success/failure. Browser acknowledgements only read
+    // the authoritative result; a dropped HTTP connection is not a failed job.
+    if (chatOptions(taskRow).serverManaged && requestedStatus !== "cancelled") return json(await chatSnapshot(taskRow));
+    const completed = await completeChatTask(taskRow, {
+      status: requestedStatus === "failed" ? "error" : requestedStatus === "cancelled" ? "cancelled" : "success",
+      result: String(taskRow.result_text || body.result || "").slice(0, 2_000_000),
+      error: String(body.error ?? "").slice(0, 5000),
+      runnerId: requestedStatus === "cancelled" ? undefined : String(taskRow.runner_id),
+    });
+    return json(await chatSnapshot(completed));
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "聊天事务失败" }, 500);
   }

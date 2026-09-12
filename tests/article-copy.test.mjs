@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_ARTICLE_COPY_OPTIONS, duplicateArticleForCopy, suggestArticleCopyTitle } from "../lib/data-transfer.ts";
 import { fullStudioFixture } from "./fixtures.mjs";
+import { articleReviewRules, createReviewRuleSnapshot } from "../lib/review-rules.mjs";
 
 function sourceArticle() {
   const fixture = fullStudioFixture();
@@ -34,6 +35,24 @@ function outlineByTitle(article, title) {
 test("suggests incrementing article copy titles", () => {
   assert.equal(suggestArticleCopyTitle("潮汐", ["潮汐"]), "潮汐（副本）");
   assert.equal(suggestArticleCopyTitle("潮汐", ["潮汐", "潮汐（副本）"]), "潮汐（副本 2）");
+});
+
+test("article copies rekey rules, keep archives and retain historical rule snapshots", () => {
+  const source = sourceArticle();
+  source.reviewRuleItems = articleReviewRules(source);
+  source.reviewRuleItems[0].content = "保留英文对白";
+  source.reviewRuleItems[1].archived = true;
+  const snapshot = createReviewRuleSnapshot(source);
+  const original = source.chapters[0].outlines.find((outline) => outline.id === "outline-current");
+  original.versions.forEach((version) => { version.reviewRuleSnapshot = snapshot; });
+  const copied = duplicateArticleForCopy(source, { ...DEFAULT_ARTICLE_COPY_OPTIONS, contentVersions: "all" });
+  assert.equal(copied.reviewRuleItems[0].content, "保留英文对白");
+  assert.equal(copied.reviewRuleItems[1].archived, true);
+  assert.ok(copied.reviewRuleItems.every((rule) => !source.reviewRuleItems.some((item) => item.id === rule.id)));
+  assert.deepEqual(outlineByTitle(copied, original.title).versions[0].reviewRuleSnapshot, snapshot);
+  copied.reviewRuleItems[0].content = "副本独立修改";
+  assert.equal(source.reviewRuleItems[0].content, "保留英文对白");
+  assert.deepEqual(duplicateArticleForCopy({ ...source, reviewRuleItems: [] }, DEFAULT_ARTICLE_COPY_OPTIONS).reviewRuleItems, []);
 });
 
 test("default article copy keeps the selected default content and default names only", () => {
@@ -73,6 +92,9 @@ test("default article copy keeps the selected default content and default names 
 
 test("complete article copy keeps all selected histories while rekeying references", () => {
   const source = sourceArticle();
+  const sourceOutlineBeforeCopy = outlineByTitle(source, "当前码头");
+  sourceOutlineBeforeCopy.versions[1].rewriteSourceId = sourceOutlineBeforeCopy.versions[0].id;
+  sourceOutlineBeforeCopy.versions[1].rewriteSourceName = sourceOutlineBeforeCopy.versions[0].name;
   const copied = duplicateArticleForCopy(source, {
     ...DEFAULT_ARTICLE_COPY_OPTIONS,
     title: "完整副本",
@@ -90,6 +112,8 @@ test("complete article copy keeps all selected histories while rekeying referenc
   assert.notEqual(copiedOutline.currentVersionId, copiedOutline.defaultVersionId);
   assert.ok(copiedOutline.versions.every((version) => version.taskId === undefined));
   assert.ok(copiedOutline.versions.every((version) => !sourceOutline.versions.some((sourceVersion) => sourceVersion.id === version.id)));
+  assert.equal(copiedOutline.versions[1].rewriteSourceId, copiedOutline.versions[0].id);
+  assert.equal(copiedOutline.versions[1].rewriteSourceName, "当前正文");
   assert.equal(copiedOutline.nameVersions.length, 2);
   assert.ok(copiedOutline.nameVersions.every((version) => !sourceOutline.nameVersions.some((sourceVersion) => sourceVersion.id === version.id)));
   assert.equal(copiedOutline.chat.sessions.length, sourceOutline.chat.sessions.length);
@@ -115,4 +139,20 @@ test("copy options can omit article structures, people and style", () => {
   assert.deepEqual(copied.relationships, []);
   assert.equal(copied.style, "");
   assert.equal(copied.lastOutlineId, "");
+});
+
+test("copy options remove excluded story and character overrides from chapter settings", () => {
+  const source = sourceArticle();
+  const characterId = source.characters[0].id;
+  const relationshipId = source.relationships[0].id;
+  source.storySettings = { era: "近未来", location: "雾港", tone: "冷峻", worldRules: "潮汐倒流", negativeConstraints: "不能用梦解释" };
+  source.chapters[0].settings = {
+    story: { location: { value: "旧码头", scope: "ongoing" }, style: { value: "短句", scope: "chapter" } },
+    characters: { [characterId]: { start: { knownInformation: { value: "知道密钥所在", scope: "ongoing" } }, end: {} } },
+    relationships: { [relationshipId]: { start: { value: "暂时结盟", scope: "ongoing" } } },
+  };
+
+  const copied = duplicateArticleForCopy(source, { ...DEFAULT_ARTICLE_COPY_OPTIONS, includeCharacters: false, includeStyle: false, includeMetadata: false });
+  assert.deepEqual(copied.storySettings, { era: "", location: "", tone: "", worldRules: "", negativeConstraints: "" });
+  assert.deepEqual(copied.chapters[0].settings, { story: {}, characters: {}, relationships: {} });
 });

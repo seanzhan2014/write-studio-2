@@ -48,7 +48,12 @@ export default defineConfig(async ({ command }) => {
       // Writer Studio and its manager have fixed roles on 3002 and 3003.
       // Never let Vite silently move the application onto the manager port.
       strictPort: true,
-      ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
+      watch: {
+        // Playwright traces contain HTML snapshots. Watching those artifacts
+        // triggers page reloads in the middle of no-reload lifecycle tests.
+        ignored: ["**/.test-data/**", "**/test-results/**", "**/playwright-report/**"],
+        ...(isCodexSeatbeltSandbox ? { useFsEvents: false, usePolling: true } : {}),
+      },
     },
     plugins: [
       vinext(),

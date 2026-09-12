@@ -1,3 +1,4 @@
+import { reasoningEffortError } from "@/lib/reasoning-options";
 import { AiInputError, AiPromptTooLongError, generateNames } from "@/db/ai";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
@@ -7,6 +8,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Parameters<typeof generateNames>[0] & { persist?: boolean; modelLabel?: string };
+    const effortError = reasoningEffortError(body.reasoningEffort);
+    if (effortError) return Response.json({ error: effortError }, { status: 400 });
     if (body.target !== "outline" && body.target !== "chapter") return Response.json({ error: "命名目标无效" }, { status: 400 });
     body.articleId = String(body.articleId ?? "");
     body.chapterId = String(body.chapterId ?? "");

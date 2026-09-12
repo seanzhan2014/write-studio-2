@@ -1,3 +1,8 @@
+import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
+import { parseTaskHistory } from "@/lib/task-history";
+import { taskHistoryTriggers } from "./task-history-schema";
+import { normalizeReviewRounds, normalizeReviewRules, type GenerateReviewReport } from "@/lib/generate-review.mjs";
+import { startGenerateReviewRunner } from "@/db/generate-runner";
 import type { StudioData } from "@/app/studio-state";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "@/lib/generate-options";
@@ -11,6 +16,7 @@ import { normalizeReviewPresets } from "@/lib/review-options";
 import { decryptAiSecret } from "@/lib/ai-secret";
 import { diffStudioData, isStudioChangesEmpty, type StudioChanges } from "@/lib/studio-changes";
 import { normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings } from "@/lib/story-settings";
 import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
@@ -19,13 +25,13 @@ const schemaStatements = [
   "PRAGMA foreign_keys = ON",
   `CREATE TABLE IF NOT EXISTS articles (
     id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
-    article_type TEXT NOT NULL DEFAULT '', style TEXT NOT NULL DEFAULT '', chapter_naming_json TEXT NOT NULL DEFAULT '{}', outline_naming_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+    article_type TEXT NOT NULL DEFAULT '', style TEXT NOT NULL DEFAULT '', story_settings_json TEXT NOT NULL DEFAULT '{}', review_rules TEXT NOT NULL DEFAULT '', review_rule_items_json TEXT, chapter_naming_json TEXT NOT NULL DEFAULT '{}', outline_naming_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL, last_opened_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1
   )`,
   "CREATE INDEX IF NOT EXISTS articles_last_opened_idx ON articles(last_opened_at)",
   `CREATE TABLE IF NOT EXISTS chapters (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
-    title TEXT NOT NULL, name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT,
+    title TEXT NOT NULL, name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT, settings_json TEXT NOT NULL DEFAULT '{}',
     position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
     UNIQUE(article_id, position)
@@ -51,7 +57,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS versions (
     id TEXT PRIMARY KEY NOT NULL, outline_id TEXT NOT NULL REFERENCES outlines(id) ON DELETE CASCADE,
     name TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, model_id TEXT, model_name TEXT, prompt TEXT,
-    task_id TEXT, outline_snapshot_json TEXT, manual_excellent INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    task_id TEXT, rewrite_source_id TEXT, rewrite_source_name TEXT, review_report_json TEXT, outline_snapshot_json TEXT, setting_snapshot_json TEXT, manual_excellent INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS versions_outline_created_idx ON versions(outline_id, created_at DESC)",
   `CREATE TABLE IF NOT EXISTS excellent_fragments (
@@ -67,7 +73,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS characters (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     name TEXT NOT NULL COLLATE NOCASE, aliases_json TEXT NOT NULL DEFAULT '[]',
-    description TEXT NOT NULL DEFAULT '', archived INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '', profile_json TEXT NOT NULL DEFAULT '{}', archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1, UNIQUE(article_id, name)
   )`,
@@ -105,7 +111,7 @@ const schemaStatements = [
     execution_origin TEXT NOT NULL DEFAULT 'local',
     context_options_json TEXT NOT NULL DEFAULT '{}', idempotency_key TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, result_text TEXT, result_version_id TEXT,
-    error_code TEXT, error_message TEXT, input_tokens INTEGER, output_tokens INTEGER,
+    review_state_json TEXT, error_code TEXT, error_message TEXT, input_tokens INTEGER, output_tokens INTEGER,
     phase TEXT, last_progress_at TEXT, received_characters INTEGER, timeout_ms INTEGER,
     runner_id TEXT, lease_until TEXT,
     created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT
@@ -122,7 +128,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS ai_models (
     id TEXT PRIMARY KEY NOT NULL, provider_id TEXT REFERENCES ai_providers(id) ON DELETE RESTRICT,
     name TEXT NOT NULL, base_url TEXT NOT NULL, model_id TEXT NOT NULL,
-    system_prompt TEXT NOT NULL DEFAULT '', temperature REAL, max_output INTEGER, max_input_characters INTEGER NOT NULL DEFAULT 60000,
+    system_prompt TEXT NOT NULL DEFAULT '', reasoning_effort TEXT, temperature REAL, max_output INTEGER, max_input_characters INTEGER NOT NULL DEFAULT 60000,
     timeout_ms INTEGER NOT NULL, timeout_override_ms INTEGER, has_secret INTEGER NOT NULL DEFAULT 0, secret TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   )`,
@@ -137,7 +143,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "4";
+const RUNTIME_SCHEMA_VERSION = "10";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -190,6 +196,7 @@ export async function ensureDatabase() {
       await ensureAiProviderShape(db);
       await ensureArticleNamingColumns(db);
       await ensureCharacterDescriptionShape(db);
+      await ensureStorySettingColumns(db);
       await ensureMultipleChatSessions(db);
       await ensureOutlineTitleGenerationColumn(db);
       await ensureNameVersionColumns(db);
@@ -199,14 +206,18 @@ export async function ensureDatabase() {
       await ensureContentSelectionColumns(db);
       await ensureVersionOutlineSnapshotColumn(db);
       await ensureVersionModelNameColumn(db);
+      await ensureVersionRewriteSourceColumns(db);
       await ensureBodyExcellentColumns(db);
       await ensureAiTaskProgressColumns(db);
+      await ensureGenerateReviewColumns(db);
+      await db.batch(taskHistoryTriggers.map((statement) => db.prepare(statement)));
+      await migrateReviewRules(db);
       await createSearchIndex(db);
       const initializedAt = new Date().toISOString();
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '7', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '12', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -216,7 +227,8 @@ export async function ensureDatabase() {
       throw error;
     });
   }
-  return initialized;
+  await initialized;
+  startGenerateReviewRunner();
 }
 
 function rows<T>(result: SqliteResult<T>) {
@@ -260,6 +272,12 @@ async function ensureVersionOutlineSnapshotColumn(db: SqliteDatabase) {
 async function ensureVersionModelNameColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("model_name")) await db.prepare("ALTER TABLE versions ADD COLUMN model_name TEXT").run();
+}
+
+async function ensureVersionRewriteSourceColumns(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("rewrite_source_id")) await db.prepare("ALTER TABLE versions ADD COLUMN rewrite_source_id TEXT").run();
+  if (!columns.includes("rewrite_source_name")) await db.prepare("ALTER TABLE versions ADD COLUMN rewrite_source_name TEXT").run();
 }
 
 async function ensureNameVersionColumns(db: SqliteDatabase) {
@@ -364,10 +382,34 @@ async function ensureBodyExcellentColumns(db: SqliteDatabase) {
   if (!versionColumns.includes("manual_excellent")) await db.prepare("ALTER TABLE versions ADD COLUMN manual_excellent INTEGER NOT NULL DEFAULT 0").run();
 }
 
+async function ensureGenerateReviewColumns(db: SqliteDatabase) {
+  for (const [table, column, definition] of [["articles", "review_rules", "TEXT NOT NULL DEFAULT ''"], ["articles", "review_rule_items_json", "TEXT"], ["versions", "review_rule_snapshot_json", "TEXT"], ["versions", "review_report_json", "TEXT"], ["ai_tasks", "review_state_json", "TEXT"]]) {
+    const columns = rows(await db.prepare(`PRAGMA table_info('${table}')`).all<Record<string, unknown>>());
+    if (!columns.some((row) => row.name === column)) await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+  }
+}
+
+async function migrateReviewRules(db: SqliteDatabase) {
+  const articles = rows(await db.prepare("SELECT id,created_at,review_rules FROM articles WHERE review_rule_items_json IS NULL").all<Record<string, unknown>>());
+  for (const article of articles) {
+    const items = normalizeReviewRuleItems(undefined, String(article.id), normalizeReviewRules(article.review_rules), String(article.created_at));
+    await db.prepare("UPDATE articles SET review_rule_items_json=? WHERE id=? AND review_rule_items_json IS NULL").bind(JSON.stringify(items), article.id).run();
+  }
+  // Keep pre-upgrade resumable tasks independent of subsequently edited rules.
+  const tasks = rows(await db.prepare("SELECT id,article_id,context_options_json FROM ai_tasks WHERE status IN ('queued','running','error')").all<Record<string, unknown>>());
+  for (const task of tasks) {
+    const options = safeJson<Record<string, unknown>>(task.context_options_json, {});
+    if (!options.reviewMaxRounds || options.reviewRuleSnapshot) continue;
+    const snapshot = createReviewRuleSnapshot({ id: String(task.article_id), reviewRules: normalizeReviewRules(options.reviewRules) }, normalizeReviewRules(options.reviewInstruction));
+    await db.prepare("UPDATE ai_tasks SET context_options_json=json_set(context_options_json,'$.reviewRuleSnapshot',json(?)) WHERE id=?").bind(JSON.stringify(snapshot), task.id).run();
+  }
+}
+
 async function ensureAiTaskProgressColumns(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('ai_tasks')").all<Record<string, unknown>>()).map((row) => String(row.name));
   const additions = [
     ["phase", "TEXT"],
+    ["history_json", "TEXT NOT NULL DEFAULT '[]'"],
     ["last_progress_at", "TEXT"],
     ["received_characters", "INTEGER"],
     ["timeout_ms", "INTEGER"],
@@ -520,6 +562,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
     error: row.error_message ? String(row.error_message) : undefined,
     attempt: Number(row.attempt ?? 0),
     phase: row.phase ? String(row.phase) : undefined,
+    history: parseTaskHistory(row.history_json),
     startedAt: row.started_at ? String(row.started_at) : undefined,
     completedAt: row.completed_at ? String(row.completed_at) : undefined,
     lastProgressAt: row.last_progress_at ? String(row.last_progress_at) : undefined,
@@ -575,8 +618,13 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           id: String(row.id), name: String(row.name), content: String(row.text),
           source: row.source === "ai-generate" ? "AI Generate" as const : row.source === "ai-chat" ? "AI Chat" as const : row.source === "ai-review" ? "AI Review" as const : row.source === "unsaved" ? "未保存内容" as const : "手动" as const,
           createdAt: String(row.created_at), model: row.model_name ? String(row.model_name) : row.model_id ? String(row.model_id) : undefined, modelId: row.model_name && row.model_id ? String(row.model_id) : undefined,
+          reviewReport: row.review_report_json ? safeJson<GenerateReviewReport | undefined>(row.review_report_json, undefined) : undefined,
+          reviewRuleSnapshot: row.review_rule_snapshot_json ? safeJson<ReviewRuleSnapshot | undefined>(row.review_rule_snapshot_json, undefined) : undefined,
           prompt: row.prompt ? String(row.prompt) : undefined, taskId: row.task_id ? String(row.task_id) : undefined,
+          rewriteSourceId: row.rewrite_source_id ? String(row.rewrite_source_id) : undefined,
+          rewriteSourceName: row.rewrite_source_name ? String(row.rewrite_source_name) : undefined,
           outlineSnapshot: row.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(row.outline_snapshot_json, undefined) : undefined,
+          settingSnapshot: row.setting_snapshot_json ? safeJson(row.setting_snapshot_json, undefined) : undefined,
           manualExcellent: bool(row.manual_excellent),
           excellentFragments: mapExcellentFragments(String(row.text), String(row.id)),
         }));
@@ -616,17 +664,20 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         String(chapterRow.created_at),
         120,
       );
-      return { id: chapterId, title: String(chapterRow.title), ...chapterNameState, archived: bool(chapterRow.archived), outlines: chapterOutlines };
+      return { id: chapterId, title: String(chapterRow.title), ...chapterNameState, settings: normalizeChapterSettings(safeJson(chapterRow.settings_json, {})), archived: bool(chapterRow.archived), outlines: chapterOutlines };
     });
     return {
       id: articleId, title: String(articleRow.title), summary: String(articleRow.summary), type: String(articleRow.article_type),
+      storySettings: normalizeArticleStorySettings(safeJson(articleRow.story_settings_json, {})),
+      reviewRules: normalizeReviewRules(articleRow.review_rules),
+      reviewRuleItems: normalizeReviewRuleItems(articleRow.review_rule_items_json == null ? undefined : JSON.parse(String(articleRow.review_rule_items_json)), String(articleRow.id), normalizeReviewRules(articleRow.review_rules), String(articleRow.created_at)),
       style: String(articleRow.style), createdAt: String(articleRow.created_at), updatedAt: String(articleRow.updated_at),
       chapterNaming: normalizeNamingProfile(safeJson(articleRow.chapter_naming_json, {}), DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(safeJson(articleRow.outline_naming_json, {}), DEFAULT_OUTLINE_NAMING_PROFILE),
       lastOutlineId: "", chapters: articleChapters,
       characters: characters.filter((row) => row.article_id === articleId).map((row) => ({
         id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
-        description: String(row.description), archived: bool(row.archived),
+        description: String(row.description), profile: normalizeCharacterProfile(safeJson(row.profile_json, {})), archived: bool(row.archived),
       })),
       relationships: relationships.filter((row) => row.article_id === articleId).map((row) => ({
         id: String(row.id), characterAId: String(row.character_low_id), characterBId: String(row.character_high_id), description: String(row.description),
@@ -668,6 +719,7 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
+    generateReviewMaxRounds: normalizeReviewRounds(settings.generateReviewMaxRounds),
   };
 }
 
@@ -684,6 +736,7 @@ function uniqueExcellentFragments(content: string, fragments: unknown, usedIds: 
 
 async function ensureAiModelMaxInputCharactersColumn(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('ai_models')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("reasoning_effort")) await db.prepare("ALTER TABLE ai_models ADD COLUMN reasoning_effort TEXT").run();
   if (!columns.includes("max_input_characters")) await db.prepare(`ALTER TABLE ai_models ADD COLUMN max_input_characters INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_INPUT_CHARACTERS}`).run();
 }
 
@@ -691,6 +744,18 @@ async function ensureArticleNamingColumns(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('articles')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("chapter_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN chapter_naming_json TEXT NOT NULL DEFAULT '{}'").run();
   if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
+}
+
+async function ensureStorySettingColumns(db: SqliteDatabase) {
+  const tableColumns = async (table: string) => rows(await db.prepare(`PRAGMA table_info('${table}')`).all<Record<string, unknown>>()).map((row) => String(row.name));
+  const articleColumns = await tableColumns("articles");
+  if (!articleColumns.includes("story_settings_json")) await db.prepare("ALTER TABLE articles ADD COLUMN story_settings_json TEXT NOT NULL DEFAULT '{}'").run();
+  const chapterColumns = await tableColumns("chapters");
+  if (!chapterColumns.includes("settings_json")) await db.prepare("ALTER TABLE chapters ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'").run();
+  const characterColumns = await tableColumns("characters");
+  if (!characterColumns.includes("profile_json")) await db.prepare("ALTER TABLE characters ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'").run();
+  const versionColumns = await tableColumns("versions");
+  if (!versionColumns.includes("setting_snapshot_json")) await db.prepare("ALTER TABLE versions ADD COLUMN setting_snapshot_json TEXT").run();
 }
 
 type StudioWriteOptions = { syncOperationId?: string };
@@ -737,10 +802,10 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   ];
   const writtenExcellentFragmentIds = new Set<string>();
   for (const article of data.articles) {
-    statements.push(insert(db, "INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
+    statements.push(insert(db, "INSERT INTO articles(id,title,summary,article_type,style,story_settings_json,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision,review_rules,review_rule_items_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [article.id, article.title.slice(0, 120), article.summary, article.type, article.style, JSON.stringify(normalizeArticleStorySettings(article.storySettings)), JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision, normalizeReviewRules(article.reviewRules), JSON.stringify(articleReviewRules(article))]));
     article.chapters.forEach((chapter, chapterIndex) => {
       const chapterNameState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
-      statements.push(insert(db, "INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,position,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, JSON.stringify(chapterNameState.nameVersions), chapterNameState.defaultNameVersionId, (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
+      statements.push(insert(db, "INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,settings_json,position,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [chapter.id, article.id, chapter.title, JSON.stringify(chapterNameState.nameVersions), chapterNameState.defaultNameVersionId, JSON.stringify(normalizeChapterSettings(chapter.settings)), (chapterIndex + 1) * 1024, chapter.archived ? 1 : 0, article.createdAt, article.updatedAt, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, null, "chapter", chapter.id, chapter.title, ""]));
       chapter.outlines.forEach((outline, outlineIndex) => {
         const referenceContent = resolvedOutlineContent(outline);
@@ -755,7 +820,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
-          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
+          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
           uniqueExcellentFragments(version.content, version.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         });
         uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
@@ -766,7 +831,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
       });
     });
     article.characters.forEach((character) => {
-      statements.push(insert(db, "INSERT INTO characters(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, character.archived ? 1 : 0, now, now, nextRevision]));
+      statements.push(insert(db, "INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, JSON.stringify(normalizeCharacterProfile(character.profile)), character.archived ? 1 : 0, now, now, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}`]));
     });
     article.relationships.forEach((relationship) => {
@@ -775,7 +840,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     });
   }
   for (const task of data.tasks.slice(0, 20)) {
-    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
+    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history))]));
   }
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
@@ -808,7 +873,7 @@ function updateByKey(db: SqliteDatabase, table: string, key: string, id: string,
   return db.prepare(sql).bind(...assignments.map(([, value]) => value), id);
 }
 
-export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string }) {
+export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string; taskRunnerId?: string }) {
   await ensureDatabase();
   const db = getDatabase();
   const currentRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
@@ -867,17 +932,17 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
   });
 
   for (const article of changes.articles.upsert) {
-    statements.push(insert(db, `INSERT INTO articles(id,title,summary,article_type,style,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,summary=excluded.summary,article_type=excluded.article_type,style=excluded.style,chapter_naming_json=excluded.chapter_naming_json,outline_naming_json=excluded.outline_naming_json,updated_at=excluded.updated_at,last_opened_at=excluded.last_opened_at,revision=excluded.revision`,
-    [article.id, article.title.slice(0, 120), article.summary.slice(0, 10_000), article.type.slice(0, 120), article.style.slice(0, 5_000), JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision]));
+    statements.push(insert(db, `INSERT INTO articles(id,title,summary,article_type,style,story_settings_json,chapter_naming_json,outline_naming_json,created_at,updated_at,last_opened_at,revision,review_rules,review_rule_items_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET review_rule_items_json=excluded.review_rule_items_json,review_rules=excluded.review_rules,title=excluded.title,summary=excluded.summary,article_type=excluded.article_type,style=excluded.style,story_settings_json=excluded.story_settings_json,chapter_naming_json=excluded.chapter_naming_json,outline_naming_json=excluded.outline_naming_json,updated_at=excluded.updated_at,last_opened_at=excluded.last_opened_at,revision=excluded.revision`,
+    [article.id, article.title.slice(0, 120), article.summary.slice(0, 10_000), article.type.slice(0, 120), article.style.slice(0, 5_000), JSON.stringify(normalizeArticleStorySettings(article.storySettings)), JSON.stringify(normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE)), JSON.stringify(normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE)), article.createdAt, article.updatedAt, article.updatedAt, nextRevision, normalizeReviewRules(article.reviewRules), JSON.stringify(articleReviewRules(article))]));
   }
 
   for (const item of changes.chapters.upsert) {
     const chapter = item.chapter;
     const names = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, now, 120);
-    statements.push(insert(db, `INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,position,archived,created_at,updated_at,revision)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,position=excluded.position,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
-    [chapter.id, item.articleId, chapter.title.slice(0, 120), JSON.stringify(names.nameVersions), names.defaultNameVersionId, item.position, chapter.archived ? 1 : 0, now, now, nextRevision]));
+    statements.push(insert(db, `INSERT INTO chapters(id,article_id,title,name_versions_json,default_name_version_id,settings_json,position,archived,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,settings_json=excluded.settings_json,position=excluded.position,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [chapter.id, item.articleId, chapter.title.slice(0, 120), JSON.stringify(names.nameVersions), names.defaultNameVersionId, JSON.stringify(normalizeChapterSettings(chapter.settings)), item.position, chapter.archived ? 1 : 0, now, now, nextRevision]));
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='chapter' AND entity_id=?").bind(chapter.id));
     statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, chapter.id, null, "chapter", chapter.id, chapter.title, ""]));
   }
@@ -901,7 +966,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=?").bind(outline.id));
     const usedFragmentIds = new Set<string>();
     for (const version of outline.versions) {
-      statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
+      statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
       uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
     }
     uniqueExcellentFragments(outline.content, outline.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
@@ -967,7 +1032,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
       statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=? AND version_id IS NOT NULL").bind(item.id));
       statements.push(db.prepare("DELETE FROM versions WHERE outline_id=?").bind(item.id));
       for (const version of item.versions ?? []) {
-        statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,outline_snapshot_json,manual_excellent,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, item.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt]));
+        statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, item.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
         uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, item.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
       }
     }
@@ -1000,11 +1065,11 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
 
   for (const item of changes.characters.upsert) {
     const character = item.character;
-    statements.push(insert(db, `INSERT INTO characters(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision)
-      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,name=excluded.name,aliases_json=excluded.aliases_json,description=excluded.description,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
-    [character.id, item.articleId, character.name.slice(0, 120), JSON.stringify([...new Set(character.aliases.map((value) => value.trim()).filter(Boolean))].slice(0, 50)), character.description.slice(0, 20_000), character.archived ? 1 : 0, now, now, nextRevision]));
+    statements.push(insert(db, `INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,name=excluded.name,aliases_json=excluded.aliases_json,description=excluded.description,profile_json=excluded.profile_json,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [character.id, item.articleId, character.name.slice(0, 120), JSON.stringify([...new Set(character.aliases.map((value) => value.trim()).filter(Boolean))].slice(0, 50)), character.description.slice(0, 20_000), JSON.stringify(normalizeCharacterProfile(character.profile)), character.archived ? 1 : 0, now, now, nextRevision]));
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='character' AND entity_id=?").bind(character.id));
-    statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}`]));
+    statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}\n${Object.values(normalizeCharacterProfile(character.profile)).join("\n")}`]));
   }
 
   for (const item of changes.relationships.upsert) {
@@ -1015,10 +1080,13 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     [relationship.id, item.articleId, low, high, relationship.description.slice(0, 5_000), now, now, nextRevision]));
   }
 
+  // Browser autosaves may contain the pre-claim task snapshot. Server-managed
+  // tasks accept task updates only from their current runner; cancellation,
+  // retry and transfer use their dedicated state endpoint instead.
   for (const task of changes.tasks.upsert.slice(0, 20)) {
-    statements.push(insert(db, `INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,outline_id=excluded.outline_id,target=excluded.target,instruction=excluded.instruction,model_id=excluded.model_id,execution_origin=excluded.execution_origin,context_options_json=excluded.context_options_json,status=excluded.status,attempt=excluded.attempt,result_text=excluded.result_text,result_version_id=excluded.result_version_id,error_message=excluded.error_message,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,phase=excluded.phase,last_progress_at=excluded.last_progress_at,received_characters=excluded.received_characters,timeout_ms=excluded.timeout_ms,runner_id=excluded.runner_id,lease_until=excluded.lease_until,started_at=excluded.started_at,completed_at=excluded.completed_at`,
-    [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null]));
+    statements.push(insert(db, `INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,outline_id=excluded.outline_id,target=excluded.target,instruction=excluded.instruction,model_id=excluded.model_id,execution_origin=excluded.execution_origin,context_options_json=excluded.context_options_json,status=excluded.status,attempt=excluded.attempt,result_text=excluded.result_text,result_version_id=excluded.result_version_id,error_message=excluded.error_message,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,phase=excluded.phase,last_progress_at=excluded.last_progress_at,received_characters=excluded.received_characters,timeout_ms=excluded.timeout_ms,runner_id=excluded.runner_id,lease_until=excluded.lease_until,started_at=excluded.started_at,completed_at=excluded.completed_at,history_json=CASE WHEN json_array_length(excluded.history_json)>=json_array_length(ai_tasks.history_json) THEN excluded.history_json ELSE ai_tasks.history_json END WHERE COALESCE(json_extract(ai_tasks.context_options_json,'$.serverManaged'),0)=0 OR ai_tasks.runner_id=?`,
+    [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history)), options?.taskRunnerId ?? null]));
   }
 
   if (changes.settings) statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(changes.settings) }), now]));

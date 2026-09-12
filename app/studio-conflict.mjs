@@ -66,6 +66,7 @@ function findEntity(data, collection, id) {
   if (!data || !id) return null;
   if (collection === "articles") return (data.articles ?? []).find((item) => item.id === id) ?? null;
   for (const article of data.articles ?? []) {
+    if (collection === "reviewRuleItems") { const item = (article.reviewRuleItems ?? []).find((rule) => rule.id === id); if (item) return item; }
     if (collection === "characters") {
       const item = (article.characters ?? []).find((candidate) => candidate.id === id);
       if (item) return item;
@@ -107,6 +108,7 @@ const entityNames = {
   sessions: "对话",
   messages: "消息",
   characters: "人物",
+  reviewRuleItems: "Review 规则",
   relationships: "人物关系",
   tasks: "AI 任务",
 };
@@ -118,6 +120,10 @@ const fieldNames = {
   contentName: "正文名称",
   summary: "简介",
   style: "文风",
+  reviewRules: "通用 Review 规则",
+  reviewRuleItems: "Review 规则",
+  archived: "归档状态",
+  revision: "规则版本",
   type: "类型",
   description: "描述",
   name: "名称",

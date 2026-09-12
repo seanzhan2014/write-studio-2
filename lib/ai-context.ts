@@ -1,7 +1,8 @@
-import { resolvedOutlineContent } from "./outline-content";
-import { outlineDisplayTitle } from "./outline-title";
-import { normalizeContentGenerationMode, type ContentGenerationMode } from "./generate-options";
-import { DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "./naming-options";
+import { resolvedOutlineContent } from "./outline-content.ts";
+import { outlineDisplayTitle } from "./outline-title.ts";
+import { normalizeContentGenerationMode, type ContentGenerationMode } from "./generate-options.ts";
+import { DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "./naming-options.ts";
+import { normalizeCharacterProfile, resolveChapterSettings, type ArticleStorySettings, type CharacterProfile, type ChapterSettings } from "./story-settings.ts";
 
 export type AiContextKind = "chat" | "content" | "outline" | "chapter-title";
 
@@ -22,15 +23,16 @@ type ContextOutline = {
   archived: boolean;
   chat: { sessions: ContextSession[]; activeSessionId: string };
 };
-type ContextChapter = { id: string; title: string; archived: boolean; outlines: ContextOutline[] };
-type ContextCharacter = { id: string; name: string; aliases: string[]; description: string; archived: boolean };
-type ContextRelationship = { characterAId: string; characterBId: string; description: string };
+type ContextChapter = { id: string; title: string; archived: boolean; settings?: ChapterSettings; outlines: ContextOutline[] };
+type ContextCharacter = { id: string; name: string; aliases: string[]; description: string; profile?: CharacterProfile; archived: boolean };
+type ContextRelationship = { id?: string; characterAId: string; characterBId: string; description: string };
 type ContextArticle = {
   id: string;
   title: string;
   summary: string;
   type: string;
   style: string;
+  storySettings?: ArticleStorySettings;
   outlineNaming?: NamingProfile;
   chapters: ContextChapter[];
   characters: ContextCharacter[];
@@ -41,14 +43,14 @@ export type AiContextData = { articles: ContextArticle[] };
 
 export type SelectedAiContext = {
   kind: AiContextKind;
-  article: { id: string; title: string; summary: string; type: string; style: string; outlineNaming: NamingProfile };
-  currentChapter: { id: string; title: string };
+  article: { id: string; title: string; summary: string; type: string; style: string; era: string; location: string; tone: string; worldRules: string; negativeConstraints: string; outlineNaming: NamingProfile };
+  currentChapter: { id: string; title: string; inheritedFromChapter?: { id: string; title: string } };
   currentOutline: { id: string; title: string; titleGenerationPending: boolean; plan: string; content: string };
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
   previousContentTail: string;
   chapterOutlines: Array<{ id: string; title: string; plan: string }>;
-  characters: Array<{ id: string; name: string; aliases: string[]; description: string; appearanceStatus?: "first" | "established" }>;
-  relationships: Array<{ characterA: string; characterB: string; description: string }>;
+  characters: Array<{ id: string; name: string; aliases: string[]; description: string; profile: CharacterProfile; endingChanges: Partial<CharacterProfile>; appearanceStatus?: "first" | "established" }>;
+  relationships: Array<{ characterA: string; characterB: string; description: string; endingDescription?: string }>;
   recentMessages: ContextMessage[];
   excellentFragments: Array<{ id: string; text: string; outlineId: string; outlineTitle: string; versionId?: string }>;
 };
@@ -96,8 +98,10 @@ export type AiContextSummary = {
 };
 
 export class AiContextSelectionError extends Error {
-  constructor(message: string, readonly code: "not_found" | "archived") {
+  readonly code: "not_found" | "archived";
+  constructor(message: string, code: "not_found" | "archived") {
     super(message);
+    this.code = code;
     this.name = "AiContextSelectionError";
   }
 }
@@ -158,7 +162,8 @@ export function detectFirstAppearanceCharacters(data: AiContextData, outlineId: 
   const currentPlan = options.currentPlan ?? outline.plan;
   const currentSearchable = `${outlineDisplayTitle({ ...outline, plan: currentPlan })}\n${currentPlan}\n${String(options.instruction ?? "")}`;
   const previousOutlines = visibleOutlines.slice(0, currentIndex);
-  return article.characters.filter((character) => !character.archived && Boolean(matchedCharacterReference(currentSearchable, character))).map((character) => {
+  const resolved = resolveChapterSettings(article, chapter.id);
+  return resolved.characters.filter((character) => !character.archived && character.appears !== false && (character.appears === true || Boolean(matchedCharacterReference(currentSearchable, character)))).map((character) => {
     for (const previous of previousOutlines) {
       const matchedReference = matchedCharacterReference(`${outlineDisplayTitle(previous)}\n${previous.plan}`, character);
       if (matchedReference) {
@@ -202,7 +207,8 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
     : kind === "content"
       ? detectFirstAppearanceCharacters(data, outlineId, { instruction: options.instruction, currentPlan }).filter((item) => item.firstAppearance).map((item) => item.characterId)
       : []);
-  const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : article.characters.filter((person) => !person.archived && (firstAppearanceIds.has(person.id) || Boolean(matchedCharacterReference(searchable, person))));
+  const resolvedSettings = resolveChapterSettings(article, chapter.id);
+  const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : resolvedSettings.characters.filter((person) => !person.archived && person.appears !== false && (person.appears === true || firstAppearanceIds.has(person.id) || Boolean(matchedCharacterReference(searchable, person))));
   const characterIds = new Set(matchedCharacters.map((person) => person.id));
   const characterNames = new Map(matchedCharacters.map((person) => [person.id, person.name]));
   const activeSession = outline.chat.sessions.find((session) => session.id === (options.sessionId || outline.chat.activeSessionId)) ?? outline.chat.sessions[0];
@@ -210,8 +216,8 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
 
   return {
     kind,
-    article: { id: article.id, title: article.title, summary: article.summary, type: article.type, style: article.style, outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
-    currentChapter: { id: chapter.id, title: chapter.title },
+    article: { id: article.id, title: article.title, summary: article.summary, ...resolvedSettings.story, outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
+    currentChapter: { id: chapter.id, title: chapter.title, inheritedFromChapter: resolvedSettings.inheritedFromChapter },
     currentOutline: {
       id: outline.id,
       title: outlineDisplayTitle(outline),
@@ -223,12 +229,13 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
     previousContentTail: kind === "content" && previousOutline ? resolvedOutlineContent(previousOutline).slice(-3000) : "",
     chapterOutlines: kind === "chapter-title" ? chapter.outlines.filter((item) => !item.archived).map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })) : [],
     characters: matchedCharacters.map((person) => ({
-      id: person.id, name: person.name, aliases: [...person.aliases], description: person.description,
+      id: person.id, name: person.name, aliases: [...person.aliases], description: person.description, profile: normalizeCharacterProfile(person.profile), endingChanges: person.endingChanges,
       appearanceStatus: kind === "content" ? firstAppearanceIds.has(person.id) ? "first" : "established" : undefined,
     })),
-    relationships: article.relationships
+    relationships: resolvedSettings.relationships
+      .filter((relationship) => relationship.active)
       .filter((relationship) => characterIds.has(relationship.characterAId) && characterIds.has(relationship.characterBId))
-      .map((relationship) => ({ characterA: characterNames.get(relationship.characterAId) ?? "", characterB: characterNames.get(relationship.characterBId) ?? "", description: relationship.description })),
+      .map((relationship) => ({ characterA: characterNames.get(relationship.characterAId) ?? "", characterB: characterNames.get(relationship.characterBId) ?? "", description: relationship.description, endingDescription: relationship.endingDescription })),
     recentMessages: kind === "chat" ? (activeSession?.messages.slice(-20).map((message) => ({ role: message.role, text: message.text })) ?? []) : [],
     excellentFragments,
   };
@@ -236,7 +243,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
 
 export function summarizeAiContext(context: SelectedAiContext, instruction: string): AiContextSummary {
   const counts = {
-    article: context.article.title.length + context.article.summary.length + context.article.type.length + context.article.style.length,
+    article: context.article.title.length + context.article.summary.length + context.article.type.length + context.article.style.length + context.article.era.length + context.article.location.length + context.article.tone.length + context.article.worldRules.length + context.article.negativeConstraints.length,
     chapter: context.currentChapter.title.length,
     chapterOutlines: context.chapterOutlines.reduce((total, item) => total + item.plan.length, 0),
     outline: context.kind === "chapter-title"
@@ -244,7 +251,7 @@ export function summarizeAiContext(context: SelectedAiContext, instruction: stri
       : context.currentOutline.plan.length,
     content: Math.min(context.currentOutline.content.length, 30000),
     previous: context.previousOutlines.reduce((total, item) => total + item.plan.length, 0),
-    characters: context.characters.reduce((total, person) => total + person.name.length + person.aliases.join("").length + person.description.length, 0)
+    characters: context.characters.reduce((total, person) => total + person.name.length + person.aliases.join("").length + person.description.length + Object.values(person.profile).join("").length + Object.values(person.endingChanges).join("").length, 0)
       + context.relationships.reduce((total, relationship) => total + relationship.characterA.length + relationship.characterB.length + relationship.description.length, 0),
     previousContent: context.previousContentTail.length,
     excellentFragments: context.excellentFragments.reduce((total, fragment) => total + fragment.text.length, 0),

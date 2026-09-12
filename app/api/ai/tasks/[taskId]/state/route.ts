@@ -1,6 +1,8 @@
 import type { AiTask } from "@/app/studio-state";
+import { parseTaskHistory } from "@/lib/task-history";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { chatSnapshot, completeChatTask, readChatTask } from "@/db/chat-tasks";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -15,6 +17,13 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
     const db = getDatabase();
     const row = await db.prepare("SELECT status,target,outline_id,lease_until,execution_origin FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
     if (!row) return json({ error: "任务不存在" }, 404);
+    if (row.target === "chat") {
+      if (body.action !== "cancel") return json({ error: "聊天任务请返回会话再次发送" }, 409);
+      if (normalizeTaskExecutionOrigin(row.execution_origin) !== currentTaskExecutionOrigin()) return json({ error: "请在任务所属运行端停止聊天" }, 409);
+      const chat = (await readChatTask(taskId))!;
+      const completed = await completeChatTask(chat, { status: "cancelled", result: String(chat.result_text ?? ""), error: "用户停止了聊天回复" });
+      return json(await chatSnapshot(completed));
+    }
     const now = new Date().toISOString();
     let patch: Partial<AiTask>;
     const statements = [];
@@ -38,6 +47,7 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
     }
     statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(now));
     await db.batch(statements);
+    patch.history = parseTaskHistory(await db.prepare("SELECT history_json FROM ai_tasks WHERE id=?").bind(taskId).first<string>("history_json"));
     const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
     return json({ task: patch, revision });
   } catch (error) {

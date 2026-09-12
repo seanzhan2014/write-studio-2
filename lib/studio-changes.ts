@@ -1,4 +1,5 @@
 import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, StudioSettings } from "@/app/studio-state";
+import { articleReviewRules } from "@/lib/review-rules.mjs";
 import equal from "fast-deep-equal";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 
@@ -71,6 +72,9 @@ function articleRecord(article: Article): StudioArticleChange {
     summary: article.summary,
     type: article.type,
     style: article.style,
+    storySettings: article.storySettings,
+    reviewRules: article.reviewRules ?? "",
+    reviewRuleItems: articleReviewRules(article),
     chapterNaming: article.chapterNaming,
     outlineNaming: article.outlineNaming,
     createdAt: article.createdAt,
@@ -86,6 +90,7 @@ function chapterRecord(chapter: Chapter): Omit<Chapter, "outlines"> {
     nameVersions: chapter.nameVersions,
     defaultNameVersionId: chapter.defaultNameVersionId,
     archived: chapter.archived,
+    settings: chapter.settings,
   };
 }
 

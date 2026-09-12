@@ -1,11 +1,17 @@
 "use client";
 
+import { parseTaskHistory } from "@/lib/task-history";
+
+import type { ReasoningEffort } from "@/lib/reasoning-options";
+
+import { drainChatCompletions } from "@/lib/chat-client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeDialogueDensity, type DialogueDensityLevel, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
+import { articleReviewRules, createDefaultReviewRules, type ReviewRule, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import type { SelectedAiContext } from "@/lib/ai-context";
@@ -18,6 +24,21 @@ import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";
 import { durableStudioData, mergeStudioConflict, resolveStudioConflict, stableStudioStringify, type StudioConflictDetail } from "./studio-conflict.mjs";
 import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-order.mjs";
 import { duplicateArticleForCopy, duplicateArticlesForImport, duplicateOutlineForImport, type ArticleCopyOptions } from "@/lib/data-transfer";
+import {
+  EMPTY_ARTICLE_STORY_SETTINGS,
+  EMPTY_CHARACTER_PROFILE,
+  EMPTY_CHAPTER_SETTINGS,
+  normalizeArticleStorySettings,
+  normalizeCharacterProfile,
+  normalizeChapterSettings,
+  resolveChapterSettings,
+  type ArticleStorySettings,
+  type CharacterProfile,
+  type ChapterSettings,
+  type ResolvedChapterSettings,
+} from "@/lib/story-settings";
+
+import { normalizeReviewRounds, normalizeReviewRules, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 
 type OutlinePlacement = "before" | "after";
 type NameEntityKind = "chapter" | "outline";
@@ -52,10 +73,17 @@ export type Version = {
   modelId?: string;
   prompt?: string;
   taskId?: string;
+  /** Direct link to the body that an AI rewrite used as its source. */
+  rewriteSourceId?: string;
+  /** Source body name as shown when the rewrite was submitted. */
+  rewriteSourceName?: string;
+  reviewReport?: GenerateReviewReport;
+  reviewRuleSnapshot?: ReviewRuleSnapshot;
   outlineSnapshot?: {
     title: string;
     plan: string;
   };
+  settingSnapshot?: ResolvedChapterSettings;
   manualExcellent?: boolean;
   excellentFragments?: ExcellentFragment[];
 };
@@ -97,6 +125,7 @@ export type Chapter = {
   nameVersions?: NameVersion[];
   defaultNameVersionId?: string | null;
   archived: boolean;
+  settings?: ChapterSettings;
   outlines: Outline[];
 };
 
@@ -105,6 +134,7 @@ export type Character = {
   name: string;
   aliases: string[];
   description: string;
+  profile?: CharacterProfile;
   archived: boolean;
 };
 
@@ -121,6 +151,9 @@ export type Article = {
   summary: string;
   type: string;
   style: string;
+  storySettings?: ArticleStorySettings;
+  reviewRules?: string;
+  reviewRuleItems?: ReviewRule[];
   chapterNaming: NamingProfile;
   outlineNaming: NamingProfile;
   createdAt: string;
@@ -143,7 +176,8 @@ export type AiTask = {
   model: string;
   executionOrigin: TaskExecutionOrigin;
   state: "waiting" | "running" | "success" | "failed" | "cancelled";
-  phase?: "queued" | "preparing" | "connecting" | "generating" | "receiving" | "saving" | "retrying" | "completed" | "failed" | "cancelled";
+  phase?: "queued" | "preparing" | "connecting" | "generating" | "receiving" | "reviewing" | "revising" | "verifying" | "saving" | "retrying" | "completed" | "failed" | "cancelled";
+  history?: import("@/lib/task-history").TaskHistoryEntry[];
   attempt?: number;
   createdAt: string;
   startedAt?: string;
@@ -159,12 +193,26 @@ export type AiTask = {
   resultText?: string;
   error?: string;
   contextOptions?: {
+    reasoningEffort?: ReasoningEffort | null;
+    resolvedReasoningEffort?: ReasoningEffort | null;
     includePrevious: boolean;
     includeCharacters: boolean;
     estimatedCharacters: number;
     targetWords?: number;
     contentMode?: ContentGenerationMode;
     rewriteRetention?: RewriteRetentionLevel;
+    dialogueDensity?: DialogueDensityLevel;
+    reviewMaxRounds?: number;
+    reviewRules?: string;
+    reviewRuleSnapshot?: ReviewRuleSnapshot;
+    reviewInstruction?: string;
+    reviewRound?: number;
+    reviewReport?: GenerateReviewReport;
+    reviewSourceContent?: string;
+    reviewSourceVersionId?: string | null;
+    reviewCandidateOnly?: boolean;
+    rewriteSourceId?: string;
+    rewriteSourceName?: string;
     outlinePlanSnapshot?: string;
     outlineTitleSnapshot?: string;
     configuredModelId?: string;
@@ -179,6 +227,7 @@ export type AiTask = {
     nameOutlineCount?: number;
     generatedNameCount?: number;
     sessionId?: string;
+    serverManaged?: boolean;
     firstAppearanceCharacterIds?: string[];
     includeExcellentFragments?: boolean;
     excellentFragmentIds?: string[];
@@ -201,9 +250,14 @@ export type StudioSettings = {
   taskConcurrency: number;
   chatModel: string;
   generateModel: string;
+  generateReasoningEffort?: ReasoningEffort | null;
+  chatReasoningEffort?: ReasoningEffort | null;
+  namingReasoningEffort?: ReasoningEffort | null;
+  reviewReasoningEffort?: ReasoningEffort | null;
   namingModelMode: "inherit" | "fixed";
   namingModel: string;
   reviewModel: string;
+  generateReviewMaxRounds?: number;
   generateTargetWords: number;
   generatePresets: string[];
   reviewPresets: string[];
@@ -271,6 +325,13 @@ const seedData: StudioData = {
       summary: "林澈收到一封来自七年后的信。为了弄清寄信人，她回到停用的旧码头，也重新遇见了那个本应消失的人。",
       type: "近未来悬疑",
       style: "克制、写实，重视环境细节",
+      storySettings: {
+        era: "2033 年前后，现实世界的近未来",
+        location: "常年多雾的临海旧港与已经停用的第七码头",
+        tone: "冷静、潮湿、悬疑中带克制的浪漫",
+        worldRules: "时间异常只通过信件和潮汐发生；改变过去必然造成等价记忆缺失。",
+        negativeConstraints: "不出现无代价复活。\n不把时间异常解释成梦境。",
+      },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-07-12T09:00:00.000Z",
@@ -304,9 +365,9 @@ const seedData: StudioData = {
         },
       ],
       characters: [
-        { id: "character-lin", name: "林澈", aliases: ["阿澈"], description: "海港长大的修理师。冷静敏锐，擅长精密仪器维修和旧地图辨识，习惯用可验证的事实抵抗失序。", archived: false },
-        { id: "character-gu", name: "顾屿", aliases: ["顾先生"], description: "海图绘制员，左手有旧伤。克制且擅长隐藏真实意图，七年前失踪，如今似乎知道信件来源。", archived: false },
-        { id: "character-zhou", name: "周岚", aliases: ["周姨"], description: "港务记录员，谨慎而固执，总带着一本蓝封皮记录册，保存着旧港关闭前最后一份完整潮汐记录。", archived: false },
+        { id: "character-lin", name: "林澈", aliases: ["阿澈"], description: "海港长大的修理师，习惯用可验证的事实抵抗失序。", profile: { age: "29 岁", identity: "精密仪器修理师", appearance: "短发，常穿深色工作服，指尖有细小划痕", personality: "冷静、敏锐、谨慎", speechStyle: "短句，先确认事实再表达判断", abilities: "精密仪器维修、旧地图辨识", mentalState: "对故乡和七年前的事故保持疏离与戒备", knownInformation: "知道旧港事故的公开结论，不知道顾屿失踪与潮汐信件有关", boundaries: "不拿无辜者验证时间异常", immutableTraits: "面对失序会害怕，但一定会追查到可以验证的事实" }, archived: false },
+        { id: "character-gu", name: "顾屿", aliases: ["顾先生"], description: "七年前失踪，如今似乎知道信件来源。", profile: { age: "31 岁", identity: "海图绘制员", appearance: "左手有旧伤，衣着整洁", personality: "克制，擅长隐藏真实意图", speechStyle: "很少解释，用含有双重意思的陈述代替回答", abilities: "海图绘制、航线记忆", mentalState: "急于阻止某件事发生，同时不愿让林澈承担代价", knownInformation: "知道信件来源和七年前事故的真相，但不知道本次循环会在哪一刻结束", boundaries: "不会主动欺骗林澈有关生死的事实", immutableTraits: "即使隐瞒动机，也不会把林澈当成可以牺牲的工具" }, archived: false },
+        { id: "character-zhou", name: "周岚", aliases: ["周姨"], description: "保存着旧港关闭前最后一份完整潮汐记录。", profile: { age: "58 岁", identity: "港务记录员", appearance: "总带着一本蓝封皮记录册", personality: "谨慎而固执", speechStyle: "说话缓慢，习惯给出具体日期", abilities: "熟悉港务档案和潮汐记录", mentalState: "希望秘密终止在自己这里", knownInformation: "知道旧港记录被改写过，不知道顾屿仍然活着", boundaries: "不伪造档案", immutableTraits: "宁可保持沉默，也不会编造证据" }, archived: false },
       ],
       relationships: [
         { id: "relation-1", characterAId: "character-lin", characterBId: "character-gu", description: "旧日搭档 / 彼此隐瞒关键信息" },
@@ -320,6 +381,7 @@ const seedData: StudioData = {
       summary: "关于旧城街巷与家庭记忆的短篇集。",
       type: "现实题材",
       style: "温柔、含蓄",
+      storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-06-02T09:00:00.000Z",
@@ -335,6 +397,7 @@ const seedData: StudioData = {
       summary: "一段发生在海边小镇的成长故事。",
       type: "青春小说",
       style: "明亮、松弛",
+      storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
       createdAt: "2026-05-18T09:00:00.000Z",
@@ -384,10 +447,10 @@ type StudioContextValue = {
   setCurrentOutline: (outlineId: string) => void;
   createArticle: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => string;
   duplicateArticle: (articleId: string, options: ArticleCopyOptions) => { articleId: string; outlineId: string } | null;
-  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "chapterNaming" | "outlineNaming">>) => void;
+  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "storySettings" | "reviewRules" | "reviewRuleItems" | "chapterNaming" | "outlineNaming">>) => void;
   deleteArticle: (articleId: string) => void;
   createChapter: (title?: string) => string;
-  updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived">>) => void;
+  updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived" | "settings">>) => void;
   applyGeneratedNames: (chapterId: string, chapterTitle: string | undefined, outlineTitles: Array<{ id: string; title: string }>) => void;
   addGeneratedNameCandidates: (chapterId: string, chapterTitle: string | undefined, outlineTitles: Array<{ id: string; title: string }>, metadata?: { model?: string; instruction?: string }) => number;
   addManualNameVersion: (kind: NameEntityKind, entityId: string, title: string, makeDefault?: boolean) => string | null;
@@ -410,10 +473,10 @@ type StudioContextValue = {
   importArticles: (articles: Article[], tasks?: AiTask[]) => string[];
   importSettings: (settings: StudioSettings) => void;
   deleteOutline: (outlineId: string) => void;
-  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot" | "manualExcellent" | "excellentFragments">) => string;
+  saveVersion: (outlineId: string, name?: string, source?: Version["source"], content?: string, metadata?: Pick<Version, "model" | "modelId" | "prompt" | "taskId" | "outlineSnapshot" | "settingSnapshot" | "manualExcellent" | "excellentFragments">) => string;
   toggleExcellentFragment: (outlineId: string, versionId: string | undefined, start: number, end: number) => "added" | "removed" | "none";
   setBodyExcellent: (outlineId: string, versionId: string | undefined, excellent: boolean) => void;
-  setCurrentVersion: (outlineId: string, versionId: string) => void;
+  setCurrentVersion: (outlineId: string, versionId?: string) => void;
   setDefaultVersion: (outlineId: string, versionId?: string) => void;
   applyVersion: (outlineId: string, versionId: string) => void;
   applyVersionWithBackup: (outlineId: string, versionId: string) => string | null;
@@ -592,7 +655,10 @@ function applyDeviceUi(source: StudioData, ui: DeviceUiState): StudioData {
 }
 
 function durableSnapshot(data: StudioData) {
-  return durableStudioData(data);
+  // Locally created records can still omit fields that hydration and SQLite
+  // synthesize (notably nameVersions). Canonicalize every side of the save/merge
+  // boundary so those defaults cannot look like local deletions during AI sync.
+  return durableStudioData(normalizeStudioData(data));
 }
 
 function serializeDurable(data: StudioData) {
@@ -681,6 +747,18 @@ function normalizeCharacter(source: unknown): Character {
     name: String(item.name ?? ""),
     aliases: Array.isArray(item.aliases) ? item.aliases.map(String) : [],
     description: String(item.description ?? legacyDescription),
+    profile: normalizeCharacterProfile(item.profile ?? {
+      age: item.age,
+      identity: item.role,
+      appearance: item.appearance,
+      personality: item.personality,
+      speechStyle: item.speechStyle,
+      abilities: item.abilities,
+      mentalState: item.mentalState,
+      knownInformation: item.knownInformation,
+      boundaries: item.boundaries,
+      immutableTraits: item.immutableTraits,
+    }),
     archived: Boolean(item.archived),
   };
 }
@@ -690,10 +768,11 @@ function normalizeAiTask(task: AiTask): AiTask {
   const contentMode = task.target === "正文" ? normalizeContentGenerationMode(task.contextOptions?.contentMode) : undefined;
   return {
     ...task,
+    history: parseTaskHistory(task.history),
     executionOrigin: task.executionOrigin === "cloud" ? "cloud" : "local",
     contextOptions: task.contextOptions ? {
       ...task.contextOptions,
-      ...(task.target === "正文" ? { contentMode, rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
+      ...(task.target === "正文" ? { contentMode, dialogueDensity: normalizeDialogueDensity(task.contextOptions.dialogueDensity), rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
       firstAppearanceCharacterIds: Array.isArray(task.contextOptions.firstAppearanceCharacterIds)
         ? [...new Set(task.contextOptions.firstAppearanceCharacterIds.map(String))].slice(0, 200)
         : undefined,
@@ -708,9 +787,33 @@ function normalizeAiTask(task: AiTask): AiTask {
   };
 }
 
-const emptyChapter: Chapter = { id: "", title: "", archived: false, outlines: [] };
+function reconcileTaskPoll(current: StudioData, tasks: AiTask[], runningOutlineIds: string[]) {
+  const running = new Set(runningOutlineIds);
+  const terminalByOutline = new Map<string, AiTask["state"]>();
+  for (const task of tasks) {
+    if (task.target === "AI Chat" || task.target === "全部名称" || task.state === "waiting" || task.state === "running" || terminalByOutline.has(task.outlineId)) continue;
+    terminalByOutline.set(task.outlineId, task.state);
+  }
+  return {
+    ...current,
+    tasks,
+    articles: current.articles.map((article) => ({
+      ...article,
+      chapters: article.chapters.map((chapter) => ({
+        ...chapter,
+        outlines: chapter.outlines.map((outline) => {
+          if (running.has(outline.id)) return outline.state === "running" ? outline : { ...outline, state: "running" as const };
+          if (outline.state !== "running") return outline;
+          return { ...outline, state: terminalByOutline.get(outline.id) === "failed" ? "failed" as const : "saved" as const };
+        }),
+      })),
+    })),
+  };
+}
+
+const emptyChapter: Chapter = { id: "", title: "", archived: false, settings: EMPTY_CHAPTER_SETTINGS, outlines: [] };
 const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", generateInstruction: "", content: "", contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
-const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
+const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", storySettings: EMPTY_ARTICLE_STORY_SETTINGS, chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
 
 function emptyStudioData(settings: StudioSettings): StudioData {
   return { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings };
@@ -728,9 +831,13 @@ function normalizeStudioData(source: StudioData): StudioData {
       generateTargetWords: normalizeGenerateTargetWords(source.settings?.generateTargetWords),
       generatePresets: normalizeGeneratePresets(source.settings?.generatePresets),
       reviewPresets: normalizeReviewPresets(source.settings?.reviewPresets),
+      generateReviewMaxRounds: normalizeReviewRounds(source.settings?.generateReviewMaxRounds),
     },
     articles: source.articles.map((article) => ({
       ...article,
+      storySettings: normalizeArticleStorySettings(article.storySettings),
+      reviewRules: normalizeReviewRules(article.reviewRules),
+      reviewRuleItems: articleReviewRules(article),
       chapterNaming: normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
       characters: (article.characters ?? []).map(normalizeCharacter),
@@ -739,6 +846,7 @@ function normalizeStudioData(source: StudioData): StudioData {
         return {
         ...chapter,
         ...chapterNameState,
+        settings: normalizeChapterSettings(chapter.settings),
         outlines: chapter.outlines.map((item) => {
           const normalizedTitle = normalizeOutlineTitle(item.title);
           const outlineNameState = normalizeNameVersionState(item.id, normalizedTitle, item.nameVersions, item.defaultNameVersionId, item.updatedAt, 80);
@@ -1213,6 +1321,15 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated) return;
+    const recover = () => { if (navigator.onLine) void drainChatCompletions().then((changed) => { if (changed) void refreshFromServer(); }); };
+    recover();
+    const timer = window.setInterval(recover, 5_000);
+    window.addEventListener("online", recover);
+    return () => { window.clearInterval(timer); window.removeEventListener("online", recover); };
+  }, [hydrated, refreshFromServer]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     let polling = false;
     const refreshVisible = () => { if (document.visibilityState === "visible") void refreshFromServer(); };
     const timer = window.setInterval(() => {
@@ -1224,15 +1341,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           if (!response.ok || !payload.tasks || payload.revision === undefined) return;
           const activeIds = new Set(dataRef.current.tasks.filter((task) => task.state === "waiting" || task.state === "running").map((task) => task.id));
           const terminalTransition = payload.tasks.some((task) => activeIds.has(task.id) && task.state !== "waiting" && task.state !== "running");
+          // Task state is authoritative even while the editor has unrelated
+          // unsaved changes. Apply the terminal transition first so the task
+          // and its original outline cannot remain stuck as running; a clean
+          // full refresh below then brings in the generated version and title.
+          acceptServerMutation(payload.revision, (current) => ({ ...reconcileTaskPoll(current, payload.tasks!, payload.runningOutlineIds ?? []) }), "partial");
           if (terminalTransition) await refreshFromServer();
-          else {
-            const runningOutlineIds = new Set(payload.runningOutlineIds ?? []);
-            acceptServerMutation(payload.revision, (current) => ({
-              ...current,
-              tasks: payload.tasks!,
-              articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => runningOutlineIds.has(outline.id) ? { ...outline, state: "running" } : outline) })) })),
-            }), "partial");
-          }
         })
         .catch(() => undefined)
         .finally(() => { polling = false; });
@@ -1283,12 +1397,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const article: Article = {
         id: articleId,
         ...fields,
+        storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
+        reviewRuleItems: createDefaultReviewRules(articleId, createdAt),
         chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
         outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
         createdAt,
         updatedAt: createdAt,
         lastOutlineId: outlineId,
-        chapters: [{ id: chapterId, title: "第一章", archived: false, outlines: [outline(outlineId, "", "", "")] }],
+        chapters: [{ id: chapterId, title: "第一章", archived: false, settings: { ...EMPTY_CHAPTER_SETTINGS }, outlines: [outline(outlineId, "", "", "")] }],
         characters: [],
         relationships: [],
       };
@@ -1324,7 +1440,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     createChapter(title = "未命名章节") {
       const id = makeId("chapter");
-      setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, chapters: [...article.chapters, { id, title, archived: false, outlines: [] }] } : article) }));
+      setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, chapters: [...article.chapters, { id, title, archived: false, settings: { ...EMPTY_CHAPTER_SETTINGS }, outlines: [] }] } : article) }));
       return id;
     },
     updateChapter(chapterId, patch) {
@@ -1523,11 +1639,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         if (article.id !== current.currentArticleId) return article;
         const targetChapterId = chapterId ?? findOutlineInArticle(article, current.currentOutlineId)?.chapter.id ?? article.chapters[0]?.id;
         let chapters = article.chapters;
-        if (!targetChapterId) chapters = [{ id: makeId("chapter"), title: "第一章", archived: false, outlines: [] }];
+        if (!targetChapterId) chapters = [{ id: makeId("chapter"), title: "第一章", settings: { ...EMPTY_CHAPTER_SETTINGS }, archived: false, outlines: [] }];
         return { ...article, lastOutlineId: id, chapters: chapters.map((chapter) => {
           if (chapter.id !== (targetChapterId ?? chapters[0].id)) return chapter;
           const items = [...chapter.outlines];
-          const index = afterId ? items.findIndex((item) => item.id === afterId) + 1 : items.length;
+          const requestedAfterId = afterId ?? (items.some((item) => item.id === current.currentOutlineId) ? current.currentOutlineId : undefined);
+          const index = requestedAfterId ? items.findIndex((item) => item.id === requestedAfterId) + 1 : items.length;
           items.splice(Math.max(0, index), 0, outline(id, "", "", ""));
           return { ...chapter, outlines: items };
         }) };
@@ -1571,16 +1688,19 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const updatedAt = new Date().toISOString();
       const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
-        const sourceVersion = sourceVersionId ? item.versions.find((version) => version.id === sourceVersionId) : undefined;
-        const sourceContent = sourceVersion?.content ?? resolvedOutlineContent(item);
-        const sourceFragments = sourceVersion ? normalizeExcellentFragments(sourceVersion.content, sourceVersion.excellentFragments) : activeExcellentFragments(item);
+        const sourceIsDirectContent = sourceVersionId === `content:${item.id}`;
+        const sourceVersion = sourceVersionId && !sourceIsDirectContent ? item.versions.find((version) => version.id === sourceVersionId) : undefined;
+        const sourceContent = sourceIsDirectContent ? item.content : sourceVersion?.content ?? resolvedOutlineContent(item);
+        const sourceFragments = sourceIsDirectContent
+          ? normalizeExcellentFragments(item.content, item.excellentFragments)
+          : sourceVersion ? normalizeExcellentFragments(sourceVersion.content, sourceVersion.excellentFragments) : activeExcellentFragments(item);
         return {
           ...item,
           content: text,
           contentName: timestampContentName(updatedAt),
           currentVersionId: null,
-          contentOutlineSnapshot: sourceVersion?.outlineSnapshot ?? resolvedOutlineSnapshot(item) ?? { title: item.title, plan: item.plan },
-          manualExcellent: sourceVersion?.manualExcellent ?? activeManualExcellent(item),
+          contentOutlineSnapshot: sourceIsDirectContent ? item.contentOutlineSnapshot : sourceVersion?.outlineSnapshot ?? resolvedOutlineSnapshot(item) ?? { title: item.title, plan: item.plan },
+          manualExcellent: sourceIsDirectContent ? item.manualExcellent : sourceVersion?.manualExcellent ?? activeManualExcellent(item),
           excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(sourceContent, text, sourceFragments)),
           updatedAt,
         };
@@ -1718,7 +1838,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           : cloneExcellentFragments(nextContent, reanchorExcellentFragments(resolvedOutlineContent(item), nextContent, activeExcellentFragments(item)));
         const inheritedOutlineSnapshot = resolvedOutlineSnapshot(item);
         const manualExcellent = metadata?.manualExcellent ?? activeManualExcellent(item);
-        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, ...metadata, manualExcellent, excellentFragments }, ...item.versions] };
+        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, settingSnapshot: metadata?.settingSnapshot ?? resolveChapterSettings(article, chapter.id), ...metadata, manualExcellent, excellentFragments }, ...item.versions] };
       }) })) })) }));
       return id;
     },
@@ -1755,8 +1875,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     setCurrentVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
-        if (item.id !== outlineId || !item.versions.some((version) => version.id === versionId)) return item;
-        return { ...item, currentVersionId: versionId, updatedAt: new Date().toISOString() };
+        if (item.id !== outlineId || (versionId && !item.versions.some((version) => version.id === versionId))) return item;
+        return { ...item, currentVersionId: versionId ?? null, updatedAt: new Date().toISOString() };
       }) })) })) }));
     },
     setDefaultVersion(outlineId, versionId) {
@@ -1913,7 +2033,21 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, characters: article.characters.map((character) => character.id === characterId ? { ...character, ...patch } : character) } : article) }));
     },
     deleteCharacter(characterId) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, characters: article.characters.filter((character) => character.id !== characterId), relationships: article.relationships.filter((relationship) => relationship.characterAId !== characterId && relationship.characterBId !== characterId) } : article) }));
+      setData((current) => ({ ...current, articles: current.articles.map((article) => {
+        if (article.id !== current.currentArticleId) return article;
+        const removedRelationshipIds = new Set(article.relationships.filter((relationship) => relationship.characterAId === characterId || relationship.characterBId === characterId).map((relationship) => relationship.id));
+        return {
+          ...article,
+          characters: article.characters.filter((character) => character.id !== characterId),
+          relationships: article.relationships.filter((relationship) => !removedRelationshipIds.has(relationship.id)),
+          chapters: article.chapters.map((chapter) => {
+            const settings = normalizeChapterSettings(chapter.settings);
+            const characters = { ...settings.characters };
+            delete characters[characterId];
+            return { ...chapter, settings: { ...settings, characters, relationships: Object.fromEntries(Object.entries(settings.relationships).filter(([id]) => !removedRelationshipIds.has(id))) } };
+          }),
+        };
+      }) }));
     },
     addRelationship(relationship) {
       const id = makeId("relationship");
@@ -1931,7 +2065,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, relationships: article.relationships.map((relationship) => relationship.id === relationshipId ? { ...relationship, ...patch } : relationship) } : article) }));
     },
     deleteRelationship(relationshipId) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, relationships: article.relationships.filter((relationship) => relationship.id !== relationshipId) } : article) }));
+      setData((current) => ({ ...current, articles: current.articles.map((article) => article.id === current.currentArticleId ? { ...article, relationships: article.relationships.filter((relationship) => relationship.id !== relationshipId), chapters: article.chapters.map((chapter) => { const settings = normalizeChapterSettings(chapter.settings); const relationships = { ...settings.relationships }; delete relationships[relationshipId]; return { ...chapter, settings: { ...settings, relationships } }; }) } : article) }));
     },
     async clearBusinessData() {
       try {

@@ -3,6 +3,7 @@ import type { StudioData } from "@/app/studio-state";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";
+import { recoverChatTasks } from "@/db/chat-tasks";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ function matchesEtag(request: Request, etag: string) {
 
 export async function GET(request: Request) {
   try {
+    await recoverChatTasks();
     if (request.headers.has("if-none-match")) {
       const identity = await readStudioStateIdentity();
       const etag = studioStateEtag(identity);

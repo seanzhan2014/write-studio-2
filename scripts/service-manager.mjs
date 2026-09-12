@@ -1,3 +1,4 @@
+import "./load-service-config.mjs";
 import { appendFile, mkdir } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -12,6 +13,12 @@ const servicePort = Number(process.env.WRITER_STUDIO_PORT ?? DEFAULT_SERVICE_POR
 const serviceMode = process.env.WRITER_STUDIO_SERVICE_MODE === "development" ? "development" : "production";
 const logDirectory = path.resolve(workspace, process.env.WRITER_STUDIO_LOG_DIR ?? "logs");
 const managerLog = path.join(logDirectory, "service-manager.log");
+
+for (const [name, port] of [["WRITER_STUDIO_MANAGER_PORT", managerPort], ["WRITER_STUDIO_PORT", servicePort]]) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid ${name}=${port}`);
+  }
+}
 
 if (managerPort === servicePort) {
   throw new Error(`管理端口 ${managerPort} 不能与主服务端口相同`);
@@ -96,7 +103,7 @@ let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
-  await log(`Received ${signal}; stopping managed 3002 service`);
+  await log(`Received ${signal}; stopping managed ${servicePort} service`);
   await controller.stop();
   await new Promise((resolve) => server.close(resolve));
   await log("STOP manager");

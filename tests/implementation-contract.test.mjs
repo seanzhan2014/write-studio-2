@@ -11,15 +11,15 @@ test("database schema contains every specification entity", async () => {
   }
 });
 
-test("character records use only name, aliases, description and archive business fields", async () => {
+test("character records keep the compact profile JSON with core identity fields", async () => {
   const schema = await read("db/schema.ts");
   const runtime = await read("db/runtime.ts");
   const state = await read("app/studio-state.tsx");
   const app = await read("app/WriterStudioApp.tsx");
   const characterSchema = schema.match(/export const characters[\s\S]*?export const relationships/)?.[0] ?? "";
-  for (const field of ["name", "aliasesJson", "description", "archived"]) assert.match(characterSchema, new RegExp(`\\b${field}\\b`));
+  for (const field of ["name", "aliasesJson", "description", "profileJson", "archived"]) assert.match(characterSchema, new RegExp(`\\b${field}\\b`));
   for (const removed of ["role", "appearance", "personality", "abilities", "background", "color"]) assert.doesNotMatch(characterSchema, new RegExp(`\\b${removed}\\b`));
-  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision\)\s*VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision\)\s*VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
   assert.match(state, /description: string/);
   assert.match(app, /character-description-input/);
 });
@@ -47,7 +47,7 @@ test("writing workspace menu supports named save-as versions", async () => {
 
 test("snapshot inserts name every migration-sensitive column explicitly", async () => {
   const runtime = await read("db/runtime.ts");
-  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,archived,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO relationships\(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO chat_sessions\(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO chat_messages\(id,session_id,role,content,status,order_index,created_at\)/);
@@ -61,7 +61,7 @@ test("schema-extensible inserts name their columns explicitly", async () => {
   assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
-  assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at\)/);
+  assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort\)/);
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
 
@@ -303,12 +303,12 @@ test("full content editing exposes one-call chapter AI Review with named current
   ]);
   assert.match(app, /name="review" label="AI Review"/);
   assert.match(app, /function AiReviewDialog/);
-  assert.match(app, /预定义 Review 要求/);
+  assert.match(app, /ArticleReviewRulesPage/);
   assert.match(state, /reviewPresets: string\[\]/);
   assert.match(state, /source: "手动" \| "AI Generate" \| "AI Chat" \| "AI Review"/);
   assert.match(schema, /contentName: text\("content_name"\)/);
   assert.match(runtime, /version\.source === "AI Review" \? "ai-review"/);
-  const reviewFunction = ai.match(/export async function reviewChapter[\s\S]*?\n}\n\nfunction localOutlineTitle/)?.[0] ?? "";
+  const reviewFunction = ai.match(/export async function reviewChapter[\s\S]*?\r?\n}\r?\n\r?\nfunction localOutlineTitle/)?.[0] ?? "";
   assert.equal((reviewFunction.match(/await upstream\(/g) ?? []).length, 1);
   assert.match(route, /aiReviewContentName\(outline\)/);
   assert.match(route, /outline\.currentVersionId = versionId/);
@@ -374,6 +374,25 @@ test("passive explanatory copy is removed from the interface", async () => {
   for (const copy of ["左滑管理", "这里只生成正文", "只提供建议", "这些设置只影响", "创建后会自动生成", "也可以继续手动填写", "应用前可以继续编辑"]) {
     assert.doesNotMatch(app, new RegExp(copy));
   }
+  for (const alwaysVisibleClass of ["generate-review-settings", "generate-advanced-options", "ai-review-article-rules", "ai-review-advanced", "structure-reasoning"]) {
+    assert.doesNotMatch(app, new RegExp(`<details className="${alwaysVisibleClass}"`));
+  }
+  assert.match(app, /<form className="name-version-add"/);
+  assert.doesNotMatch(app, /<details className="name-version-add-panel"/);
+});
+
+test("rewrite versions retain a direct source link and report missing originals", async () => {
+  const schema = await read("db/schema.ts");
+  const runtime = await read("db/runtime.ts");
+  const taskRoute = await read("app/api/ai/tasks/route.ts");
+  const executor = await read("app/api/ai/tasks/[taskId]/execute/route.ts");
+  const app = await read("app/WriterStudioApp.tsx");
+  assert.match(schema, /rewriteSourceId: text\("rewrite_source_id"\)/);
+  assert.match(runtime, /rewriteSourceName: row\.rewrite_source_name/);
+  assert.match(taskRoute, /rewriteSourceId = source\.version_id \? String\(source\.version_id\) : String\(source\.content_id\)/);
+  assert.match(executor, /rewriteSourceId: task\.contextOptions\?\.contentMode === "rewrite"/);
+  assert.match(app, /改写自：\{version\.rewriteSourceName \|\| "原正文"\}/);
+  assert.match(app, /原正文已删除，无法打开/);
 });
 
 test("provider settings own credentials and server-side model discovery", async () => {
@@ -450,7 +469,7 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /本次生成上下文/);
   assert.doesNotMatch(app, /候选版本对比/);
   assert.doesNotMatch(app, /className="generation-card candidate-card"/);
-  assert.match(app, /任务成功后会自动设为该大纲的当前正文/);
+  assert.match(app, /完成后更新当前正文，旧版本保留/);
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
   assert.doesNotMatch(executor, /found\.outline\.defaultVersionId = version\.id/);
@@ -537,13 +556,13 @@ test("dedicated naming is centralized and all-name generation is one durable bac
     read("drizzle/0013_remarkable_the_anarchist.sql"),
   ]);
   assert.match(app, /function FullChapterEditor/);
-  assert.match(app, /生成全部章节名和大纲名/);
+  assert.match(app, /生成全部名称/);
   assert.match(app, /生成章节名/);
   assert.match(app, /生成大纲名/);
   assert.match(app, /persist: true/);
   assert.match(app, /studio\.setDefaultNameVersion/);
   assert.match(app, /target: "all-names"/);
-  assert.match(app, /生成全部会创建一个后台任务/);
+  assert.match(app, /已创建后台任务，将用一次模型请求生成/);
   assert.doesNotMatch(app.match(/async function generateAll\(\)[\s\S]*?async function selectDefault/)?.[0] ?? "", /for \(const|requestNames\(/);
   const outlineActions = app.match(/function OutlineActionSheet[\s\S]*?function DesktopOutlineMenu/)?.[0] ?? "";
   const desktopOutlineActions = app.match(/function DesktopOutlineMenu[\s\S]*?function ChapterActionSheet/)?.[0] ?? "";
@@ -682,7 +701,8 @@ test("AI entry points use bounded server transactions instead of full-state save
   assert.match(taskRoute, /INSERT INTO ai_tasks/);
   assert.match(taskRoute, /UPDATE outlines SET summary=COALESCE/);
   assert.match(chatRoute, /INSERT INTO chat_messages/);
-  assert.match(chatRoute, /UPDATE ai_tasks SET status=/);
+  assert.match(chatRoute, /completeChatTask/);
+  assert.match(await read("db/chat-tasks.ts"), /UPDATE ai_tasks SET status=/);
   assert.match(state, /fetchFromServer\("\/api\/ai\/tasks"/);
   assert.match(state, /\}\), "partial"\);/, "task polling must not treat a partial task snapshot as a complete global revision");
   assert.match(state, /epoch !== saveEpochRef\.current/, "stale save responses must not roll the accepted server baseline backward");
@@ -770,9 +790,10 @@ test("shared UI controls use one type and action scale across native and compone
   const styles = await read("app/globals.css");
   const app = await read("app/WriterStudioApp.tsx");
   const layout = await read("app/layout.tsx");
-  assert.match(styles, /--font-ui: 13px/);
-  assert.match(styles, /--font-label: 12px/);
-  assert.match(styles, /--control-height: 36px/);
+  assert.match(styles, /--font-ui: 14px/);
+  assert.match(styles, /--font-label: 13px/);
+  assert.match(styles, /--font-meta: 12px/);
+  assert.match(styles, /--control-height: 38px/);
   assert.match(styles, /--accent: #755835/);
   assert.doesNotMatch(styles, /#2563eb|#1d4ed8|37, 99, 235/);
   assert.match(layout, /primaryColor: "studio"/);

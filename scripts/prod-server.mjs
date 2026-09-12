@@ -1,3 +1,4 @@
+import "./load-service-config.mjs";
 import path from "node:path";
 import { access } from "node:fs/promises";
 import { startProdServer, tryServeStatic } from "vinext/server/prod-server";
@@ -21,6 +22,9 @@ try {
 }
 
 const { server } = await startProdServer({ host, port, outDir: outputDirectory });
+// Initialize durable review recovery even before a browser reconnects.
+const recoveryHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+void fetch(`http://${recoveryHost}:${port}/api/database/status`).catch((error) => console.error("Review recovery initialization failed", error));
 
 // Vinext 0.0.50 builds its production static-file cache with Windows path
 // separators, while HTTP asset paths always use forward slashes. Serve files
@@ -65,6 +69,9 @@ server.on("request", (request, response) => {
   const startedAt = Date.now();
   response.once("finish", () => {
     process.stdout.write(`${request.method ?? "GET"} ${request.url ?? "/"} ${response.statusCode} ${Date.now() - startedAt}ms\n`);
+  });
+  response.once("close", () => {
+    if (!response.writableFinished) process.stdout.write(JSON.stringify({ event: "http_disconnected", method: request.method, path: request.url?.split("?")[0], elapsedMs: Date.now() - startedAt }) + "\n");
   });
 });
 

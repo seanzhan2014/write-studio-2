@@ -1,0 +1,297 @@
+export const STORY_FIELD_KEYS = ["type", "era", "location", "tone", "style", "worldRules", "negativeConstraints"] as const;
+export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
+
+export const CHARACTER_PROFILE_KEYS = ["age", "identity", "appearance", "personality", "speechStyle", "abilities", "mentalState", "knownInformation", "boundaries", "immutableTraits"] as const;
+export type CharacterProfileKey = typeof CHARACTER_PROFILE_KEYS[number];
+
+export type ArticleStorySettings = {
+  era: string;
+  location: string;
+  tone: string;
+  worldRules: string;
+  negativeConstraints: string;
+};
+
+export type CharacterProfile = {
+  age: string;
+  identity: string;
+  appearance: string;
+  personality: string;
+  speechStyle: string;
+  abilities: string;
+  mentalState: string;
+  knownInformation: string;
+  boundaries: string;
+  immutableTraits: string;
+};
+
+export type OverrideScope = "ongoing" | "chapter";
+export type TextSettingOverride = { value: string; scope: OverrideScope };
+export type BooleanSettingOverride = { value: boolean; scope: OverrideScope };
+
+export type ChapterCharacterSettings = {
+  start: Partial<Record<CharacterProfileKey, TextSettingOverride>>;
+  end: Partial<Record<CharacterProfileKey, string>>;
+  appears?: BooleanSettingOverride;
+};
+
+export type ChapterRelationshipSettings = {
+  start?: TextSettingOverride;
+  end?: string;
+  active?: BooleanSettingOverride;
+};
+
+export type ChapterSettings = {
+  story: Partial<Record<StoryFieldKey, TextSettingOverride>>;
+  characters: Record<string, ChapterCharacterSettings>;
+  relationships: Record<string, ChapterRelationshipSettings>;
+};
+
+export const EMPTY_ARTICLE_STORY_SETTINGS: ArticleStorySettings = {
+  era: "",
+  location: "",
+  tone: "",
+  worldRules: "",
+  negativeConstraints: "",
+};
+
+export const EMPTY_CHARACTER_PROFILE: CharacterProfile = {
+  age: "",
+  identity: "",
+  appearance: "",
+  personality: "",
+  speechStyle: "",
+  abilities: "",
+  mentalState: "",
+  knownInformation: "",
+  boundaries: "",
+  immutableTraits: "",
+};
+
+export const EMPTY_CHAPTER_SETTINGS: ChapterSettings = { story: {}, characters: {}, relationships: {} };
+
+type UnknownRecord = Record<string, unknown>;
+function record(value: unknown): UnknownRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : {}; }
+function text(value: unknown, maximum = 20_000) { return String(value ?? "").slice(0, maximum); }
+function scope(value: unknown): OverrideScope { return value === "chapter" ? "chapter" : "ongoing"; }
+
+function normalizeTextOverride(value: unknown): TextSettingOverride | undefined {
+  const item = record(value);
+  if (!("value" in item)) return undefined;
+  return { value: text(item.value), scope: scope(item.scope) };
+}
+
+function normalizeBooleanOverride(value: unknown): BooleanSettingOverride | undefined {
+  const item = record(value);
+  if (!("value" in item)) return undefined;
+  return { value: item.value === true, scope: scope(item.scope) };
+}
+
+export function normalizeArticleStorySettings(value: unknown): ArticleStorySettings {
+  const item = record(value);
+  return {
+    era: text(item.era, 5_000),
+    location: text(item.location, 10_000),
+    tone: text(item.tone, 5_000),
+    worldRules: text(item.worldRules, 30_000),
+    negativeConstraints: text(item.negativeConstraints, 30_000),
+  };
+}
+
+export function normalizeCharacterProfile(value: unknown): CharacterProfile {
+  const item = record(value);
+  return Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, text(item[key], key === "immutableTraits" || key === "boundaries" ? 20_000 : 10_000)])) as CharacterProfile;
+}
+
+export function normalizeChapterSettings(value: unknown): ChapterSettings {
+  const item = record(value);
+  const storyValue = record(item.story);
+  const story: ChapterSettings["story"] = {};
+  for (const key of STORY_FIELD_KEYS) {
+    const override = normalizeTextOverride(storyValue[key]);
+    if (override) story[key] = override;
+  }
+
+  const characters: ChapterSettings["characters"] = {};
+  for (const [characterId, raw] of Object.entries(record(item.characters)).slice(0, 1_000)) {
+    const value = record(raw);
+    const startValue = record(value.start);
+    const endValue = record(value.end);
+    const start: ChapterCharacterSettings["start"] = {};
+    const end: ChapterCharacterSettings["end"] = {};
+    for (const key of CHARACTER_PROFILE_KEYS) {
+      const override = normalizeTextOverride(startValue[key]);
+      if (override) start[key] = override;
+      if (Object.prototype.hasOwnProperty.call(endValue, key)) {
+        const ending = text(endValue[key]);
+        if (ending.trim()) end[key] = ending;
+      }
+    }
+    const appears = normalizeBooleanOverride(value.appears);
+    if (Object.keys(start).length || Object.keys(end).length || appears) characters[characterId] = { start, end, ...(appears ? { appears } : {}) };
+  }
+
+  const relationships: ChapterSettings["relationships"] = {};
+  for (const [relationshipId, raw] of Object.entries(record(item.relationships)).slice(0, 2_000)) {
+    const value = record(raw);
+    const start = normalizeTextOverride(value.start);
+    const active = normalizeBooleanOverride(value.active);
+    const end = text(value.end);
+    const hasEnd = Object.prototype.hasOwnProperty.call(value, "end") && Boolean(end.trim());
+    if (start || active || hasEnd) relationships[relationshipId] = {
+      ...(start ? { start } : {}),
+      ...(active ? { active } : {}),
+      ...(hasEnd ? { end } : {}),
+    };
+  }
+  return { story, characters, relationships };
+}
+
+export type StorySettingsArticle = {
+  type: string;
+  style: string;
+  storySettings?: ArticleStorySettings;
+  chapters: Array<{ id: string; title: string; archived: boolean; settings?: ChapterSettings }>;
+  characters: Array<{ id: string; name: string; aliases: string[]; description: string; archived: boolean; profile?: CharacterProfile }>;
+  relationships: Array<{ id?: string; characterAId: string; characterBId: string; description: string }>;
+};
+
+export type SettingSource = { kind: "article" } | { kind: "chapter"; chapterId: string; chapterTitle: string };
+export type ResolvedChapterSettings = {
+  chapterId: string;
+  inheritedFromChapter?: { id: string; title: string };
+  story: Record<StoryFieldKey, string>;
+  storySources: Record<StoryFieldKey, SettingSource>;
+  characters: Array<{
+    id: string;
+    name: string;
+    aliases: string[];
+    description: string;
+    archived: boolean;
+    appears?: boolean;
+    profile: CharacterProfile;
+    profileSources: Record<CharacterProfileKey, SettingSource>;
+    endingChanges: Partial<CharacterProfile>;
+  }>;
+  relationships: Array<{
+    id: string;
+    characterAId: string;
+    characterBId: string;
+    description: string;
+    active: boolean;
+    source: SettingSource;
+    endingDescription?: string;
+  }>;
+};
+
+function articleSource(): SettingSource { return { kind: "article" }; }
+function chapterSource(chapter: { id: string; title: string }): SettingSource { return { kind: "chapter", chapterId: chapter.id, chapterTitle: chapter.title }; }
+
+export function resolveChapterSettings(article: StorySettingsArticle, chapterId: string): ResolvedChapterSettings {
+  const base = normalizeArticleStorySettings(article.storySettings);
+  const story = { type: text(article.type), era: base.era, location: base.location, tone: base.tone, style: text(article.style), worldRules: base.worldRules, negativeConstraints: base.negativeConstraints };
+  const storySources = Object.fromEntries(STORY_FIELD_KEYS.map((key) => [key, articleSource()])) as Record<StoryFieldKey, SettingSource>;
+  const profiles = new Map(article.characters.map((character) => [character.id, normalizeCharacterProfile(character.profile)]));
+  const profileSources = new Map(article.characters.map((character) => [character.id, Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, articleSource()])) as Record<CharacterProfileKey, SettingSource>]));
+  const appearances = new Map<string, boolean | undefined>();
+  const relationshipId = (relationship: StorySettingsArticle["relationships"][number]) => relationship.id || [relationship.characterAId, relationship.characterBId].sort().join(":");
+  const relationshipDescriptions = new Map(article.relationships.map((relationship) => [relationshipId(relationship), relationship.description]));
+  const relationshipActive = new Map(article.relationships.map((relationship) => [relationshipId(relationship), true]));
+  const relationshipSources = new Map(article.relationships.map((relationship) => [relationshipId(relationship), articleSource() as SettingSource]));
+  const activeChapters = article.chapters.filter((chapter) => !chapter.archived);
+  const activeTargetIndex = activeChapters.findIndex((chapter) => chapter.id === chapterId);
+  const requestedTargetIndex = article.chapters.findIndex((chapter) => chapter.id === chapterId);
+  const target = activeTargetIndex >= 0
+    ? activeChapters[activeTargetIndex]
+    : article.chapters[requestedTargetIndex] ?? activeChapters[0] ?? article.chapters[0] ?? { id: chapterId, title: "", archived: false };
+  const preceding = activeTargetIndex >= 0
+    ? activeChapters.slice(0, activeTargetIndex)
+    : requestedTargetIndex >= 0
+      ? article.chapters.slice(0, requestedTargetIndex).filter((chapter) => !chapter.archived)
+      : [];
+
+  for (const chapter of preceding) {
+    const settings = normalizeChapterSettings(chapter.settings);
+    const source = chapterSource(chapter);
+    for (const key of STORY_FIELD_KEYS) {
+      const override = settings.story[key];
+      if (override?.scope === "ongoing") { story[key] = override.value; storySources[key] = source; }
+    }
+    for (const [characterId, characterSettings] of Object.entries(settings.characters)) {
+      const profile = profiles.get(characterId);
+      const sources = profileSources.get(characterId);
+      if (!profile || !sources) continue;
+      for (const key of CHARACTER_PROFILE_KEYS) {
+        const start = characterSettings.start[key];
+        if (start?.scope === "ongoing") { profile[key] = start.value; sources[key] = source; }
+        if (Object.prototype.hasOwnProperty.call(characterSettings.end, key)) { profile[key] = characterSettings.end[key] ?? ""; sources[key] = source; }
+      }
+      if (characterSettings.appears?.scope === "ongoing") appearances.set(characterId, characterSettings.appears.value);
+    }
+    for (const [relationshipId, relationshipSettings] of Object.entries(settings.relationships)) {
+      if (relationshipSettings.start?.scope === "ongoing") { relationshipDescriptions.set(relationshipId, relationshipSettings.start.value); relationshipSources.set(relationshipId, source); }
+      if (Object.prototype.hasOwnProperty.call(relationshipSettings, "end")) { relationshipDescriptions.set(relationshipId, relationshipSettings.end ?? ""); relationshipSources.set(relationshipId, source); }
+      if (relationshipSettings.active?.scope === "ongoing") relationshipActive.set(relationshipId, relationshipSettings.active.value);
+    }
+  }
+
+  const current = normalizeChapterSettings(target.settings);
+  const currentSource = chapterSource(target);
+  for (const key of STORY_FIELD_KEYS) {
+    const override = current.story[key];
+    if (override) { story[key] = override.value; storySources[key] = currentSource; }
+  }
+  for (const [characterId, characterSettings] of Object.entries(current.characters)) {
+    const profile = profiles.get(characterId);
+    const sources = profileSources.get(characterId);
+    if (!profile || !sources) continue;
+    for (const key of CHARACTER_PROFILE_KEYS) {
+      const override = characterSettings.start[key];
+      if (override) { profile[key] = override.value; sources[key] = currentSource; }
+    }
+    if (characterSettings.appears) appearances.set(characterId, characterSettings.appears.value);
+  }
+  for (const [relationshipId, relationshipSettings] of Object.entries(current.relationships)) {
+    if (relationshipSettings.start) { relationshipDescriptions.set(relationshipId, relationshipSettings.start.value); relationshipSources.set(relationshipId, currentSource); }
+    if (relationshipSettings.active) relationshipActive.set(relationshipId, relationshipSettings.active.value);
+  }
+
+  return {
+    chapterId: target.id,
+    inheritedFromChapter: preceding.at(-1) ? { id: preceding.at(-1)!.id, title: preceding.at(-1)!.title } : undefined,
+    story,
+    storySources,
+    characters: article.characters.map((character) => ({
+      id: character.id,
+      name: character.name,
+      aliases: [...character.aliases],
+      description: character.description,
+      archived: character.archived,
+      appears: appearances.get(character.id),
+      profile: profiles.get(character.id) ?? { ...EMPTY_CHARACTER_PROFILE },
+      profileSources: profileSources.get(character.id) ?? Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, articleSource()])) as Record<CharacterProfileKey, SettingSource>,
+      endingChanges: current.characters[character.id]?.end ?? {},
+    })),
+    relationships: article.relationships.map((relationship) => ({
+      id: relationshipId(relationship),
+      characterAId: relationship.characterAId,
+      characterBId: relationship.characterBId,
+      description: relationshipDescriptions.get(relationshipId(relationship)) ?? relationship.description,
+      active: relationshipActive.get(relationshipId(relationship)) !== false,
+      source: relationshipSources.get(relationshipId(relationship)) ?? articleSource(),
+      endingDescription: current.relationships[relationshipId(relationship)]?.end,
+    })),
+  };
+}
+
+export function countChapterSettingChanges(value: unknown) {
+  const settings = normalizeChapterSettings(value);
+  let count = Object.keys(settings.story).length;
+  for (const item of Object.values(settings.characters)) count += Object.keys(item.start).length + Object.keys(item.end).length + (item.appears ? 1 : 0);
+  for (const item of Object.values(settings.relationships)) count += (item.start ? 1 : 0) + (Object.prototype.hasOwnProperty.call(item, "end") ? 1 : 0) + (item.active ? 1 : 0);
+  return count;
+}
+
+export function storySettingsText(value: ResolvedChapterSettings) {
+  return STORY_FIELD_KEYS.map((key) => value.story[key]).filter((item) => item.trim()).join("\n");
+}

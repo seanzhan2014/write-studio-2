@@ -1,3 +1,4 @@
+import "./load-service-config.mjs";
 import { appendFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { once } from "node:events";
 import net from "node:net";

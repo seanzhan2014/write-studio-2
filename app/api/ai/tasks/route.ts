@@ -1,14 +1,22 @@
+import { parseTaskHistory } from "@/lib/task-history";
+import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
+import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
 import type { AiTask } from "@/app/studio-state";
+import { MAX_REVIEW_ROUNDS, normalizeReviewRules } from "@/lib/generate-review.mjs";
+import { resolvedOutlineContent } from "@/lib/outline-content";
+import { selectAiContext } from "@/lib/ai-context";
 import { findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
-import { isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { isDialogueDensity, normalizeDialogueDensity, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { recoverChatTasks } from "@/db/chat-tasks";
+import type { NamingArticleContext } from "@/db/ai";
 
 type TaskTarget = "content" | "outline" | "chapter-title" | "all-names";
-type TaskBody = Record<string, unknown> & {
+type TaskBody = Record<string, unknown> & ReasoningOptions & {
   articleId?: string;
   chapterId?: string;
   outlineId?: string;
@@ -16,6 +24,7 @@ type TaskBody = Record<string, unknown> & {
   instruction?: string;
   model?: string;
   promptContext?: SelectedAiContext;
+  namingContext?: NamingArticleContext;
 };
 
 function json(value: unknown, status = 200) {
@@ -41,6 +50,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
     timeoutMs: row.timeout_ms == null ? undefined : Number(row.timeout_ms), inputTokens: row.input_tokens == null ? undefined : Number(row.input_tokens), outputTokens: row.output_tokens == null ? undefined : Number(row.output_tokens),
     runnerId: row.runner_id ? String(row.runner_id) : undefined, leaseUntil: row.lease_until ? String(row.lease_until) : undefined,
     resultText: row.result_text ? String(row.result_text) : undefined, resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
+    history: parseTaskHistory(row.history_json),
     error: row.error_message ? String(row.error_message) : undefined, contextOptions,
   };
 }
@@ -48,6 +58,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
 export async function GET() {
   try {
     await ensureDatabase();
+    await recoverChatTasks();
     const db = getDatabase();
     const [result, revision] = await Promise.all([
       db.prepare("SELECT * FROM ai_tasks ORDER BY created_at DESC,rowid LIMIT 20").all<Record<string, unknown>>(),
@@ -65,6 +76,8 @@ export async function POST(request: Request) {
     const key = request.headers.get("idempotency-key")?.trim() ?? "";
     if (!key || key.length > 200) return json({ error: "Idempotency-Key 无效" }, 400);
     const body = await request.json() as TaskBody;
+    const effortError = reasoningEffortError(body.reasoningEffort);
+    if (effortError) return json({ error: effortError }, 400);
     const articleId = String(body.articleId ?? "");
     const chapterId = String(body.chapterId ?? "");
     const outlineId = String(body.outlineId ?? "");
@@ -74,8 +87,13 @@ export async function POST(request: Request) {
     if (target !== "content" && target !== "all-names" && !instruction) return json({ error: "生成指令不能为空" }, 400);
     if (target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return json({ error: "正文生成模式无效" }, 400);
     const contentMode = normalizeContentGenerationMode(body.contentMode);
+    const reviewMaxRounds = Number(body.reviewMaxRounds ?? 0);
+    if (!Number.isInteger(reviewMaxRounds) || reviewMaxRounds < 0 || reviewMaxRounds > MAX_REVIEW_ROUNDS || (target !== "content" && reviewMaxRounds !== 0)) return json({ error: `审校循环次数必须是 0–${MAX_REVIEW_ROUNDS} 的整数，仅支持正文生成` }, 400);
+    const reviewInstruction = normalizeReviewRules(body.reviewInstruction);
     if (target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return json({ error: "原文保留度无效" }, 400);
     const rewriteRetention = target === "content" && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
+    if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
+    const dialogueDensity = normalizeDialogueDensity(body.dialogueDensity);
     const rawTargetWords = body.targetWords == null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0 ? undefined : Number(body.targetWords);
     if (target === "content" && rawTargetWords !== undefined && (!Number.isInteger(rawTargetWords) || rawTargetWords < MIN_GENERATE_TARGET_WORDS || rawTargetWords > MAX_GENERATE_TARGET_WORDS)) return json({ error: `目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数` }, 400);
 
@@ -86,10 +104,13 @@ export async function POST(request: Request) {
       const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
       return json({ data: taskFromRow(existing), revision });
     }
-    const outlineRow = await db.prepare(`SELECT o.summary,o.title,o.title_generation_pending,o.archived,c.archived AS chapter_archived,a.chapter_naming_json,a.outline_naming_json
+    const outlineRow = await db.prepare(`SELECT o.summary,o.title,o.title_generation_pending,o.archived,c.archived AS chapter_archived,a.chapter_naming_json,a.outline_naming_json,a.review_rules,a.review_rule_items_json,a.created_at AS article_created_at
       FROM outlines o JOIN chapters c ON c.id=o.chapter_id JOIN articles a ON a.id=o.article_id
       WHERE o.id=? AND o.article_id=? AND o.chapter_id=?`).bind(outlineId, articleId, chapterId).first<Record<string, unknown>>();
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
+    const reviewRuleSnapshot = createReviewRuleSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, reviewInstruction);
+    if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
+    if (reviewMaxRounds > 0 && !hasReviewRules(reviewRuleSnapshot)) return json({ error: "没有有效规则或本次 Review 指令，无需审校；请添加规则或将审校循环次数设为 0" }, 422);
     const executionOrigin = currentTaskExecutionOrigin();
     const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
     if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
@@ -97,7 +118,8 @@ export async function POST(request: Request) {
     const requestedModel = String(body.model ?? "").trim();
     const configuredModel = requestedModel ? await findModel(requestedModel) : null;
     if (requestedModel && !configuredModel) return json({ error: "所选模型不存在，请重新选择" }, 422);
-    const promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
+    if (reviewMaxRounds > 0 && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "自动审校需要配置可用模型；循环次数为 0 时可使用本地引擎" }, 422);
+    let promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
     const expectedKind = target === "content" ? "content" : target === "outline" ? "outline" : target === "chapter-title" ? "chapter-title" : undefined;
     if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedKind || JSON.stringify(promptContext).length > 200_000)) return json({ error: "AI 上下文与任务目标不匹配或过大" }, 422);
     const namingContext = target === "all-names" && body.namingContext && typeof body.namingContext === "object" ? structuredClone(body.namingContext) : undefined;
@@ -114,7 +136,33 @@ export async function POST(request: Request) {
       const state = await readStudioState();
       firstAppearanceCharacterIds = state.data ? detectFirstAppearanceCharacters(state.data, outlineId, { instruction, currentPlan: submittedPlan ?? String(outlineRow.summary) }).filter((item) => item.firstAppearance).map((item) => item.characterId) : [];
     }
+    let reviewSourceContent: string | undefined;
+    let reviewSourceVersionId: string | null | undefined;
+    if (reviewMaxRounds > 0) {
+      const snapshot = await readStudioState();
+      const sourceOutline = snapshot.data?.articles.find((article) => article.id === articleId)?.chapters.find((chapter) => chapter.id === chapterId)?.outlines.find((outline) => outline.id === outlineId);
+      if (!snapshot.data || !sourceOutline) return json({ error: "生成正文已不存在" }, 409);
+      reviewSourceContent = resolvedOutlineContent(sourceOutline);
+      reviewSourceVersionId = sourceOutline.currentVersionId;
+      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
+    }
+    let rewriteSourceId: string | undefined;
+    let rewriteSourceName: string | undefined;
+    if (target === "content" && contentMode === "rewrite") {
+      const source = await db.prepare(`SELECT c.id AS content_id,c.content_name,v.id AS version_id,v.name AS version_name
+        FROM contents c LEFT JOIN versions v ON v.id=c.current_version_id AND v.outline_id=c.outline_id
+        WHERE c.outline_id=?`).bind(outlineId).first<Record<string, unknown>>();
+      if (!source) return json({ error: "原正文不存在，无法改写" }, 409);
+      rewriteSourceId = source.version_id ? String(source.version_id) : String(source.content_id);
+      rewriteSourceName = String(source.version_name ?? source.content_name ?? "").trim() || "未命名正文";
+    }
     const contextOptions: NonNullable<AiTask["contextOptions"]> = {
+      // Generate execution is owned by the server once the task is created.
+      // Browser snapshots may still contain an older queued/running copy and
+      // must never be allowed to replace the lease or terminal result.
+      serverManaged: true,
+      reasoningEffort: body.reasoningEffort,
+      resolvedReasoningEffort: resolveReasoningEffort(configuredModel, body.reasoningEffort),
       includePrevious: body.includePrevious !== false,
       includeCharacters: body.includeCharacters !== false,
       estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
@@ -122,6 +170,10 @@ export async function POST(request: Request) {
         targetWords: rawTargetWords,
         contentMode,
         rewriteRetention,
+        rewriteSourceId,
+        rewriteSourceName,
+        dialogueDensity,
+        ...(reviewMaxRounds > 0 ? { reviewMaxRounds, reviewInstruction, reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
         includeOutlineTitle: body.includeOutlineTitle === true || undefined,
         includeExcellentFragments: body.includeExcellentFragments === true || undefined,
         excellentFragmentIds: body.includeExcellentFragments === true ? uniqueStrings(body.excellentFragmentIds) : undefined,
@@ -167,6 +219,7 @@ export async function POST(request: Request) {
     statements.push(db.prepare("DELETE FROM ai_tasks WHERE status NOT IN ('queued','running') AND id NOT IN (SELECT id FROM ai_tasks WHERE status NOT IN ('queued','running') ORDER BY created_at DESC,rowid DESC LIMIT MAX(0,20-(SELECT COUNT(*) FROM ai_tasks WHERE status IN ('queued','running'))))"));
     statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(createdAt));
     await db.batch(statements);
+    task.history = parseTaskHistory(await db.prepare("SELECT history_json FROM ai_tasks WHERE id=?").bind(task.id).first<string>("history_json"));
     const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
     return json({ data: task, revision });
   } catch (error) {

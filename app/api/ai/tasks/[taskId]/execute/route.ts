@@ -1,3 +1,7 @@
+import { parseTaskHistory } from "@/lib/task-history";
+import { taskReasoningEffort } from "@/lib/reasoning-options";
+import { generateWithReview } from "@/db/generate-review";
+import { normalizeReviewRounds, type GenerateReviewDraft, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
 import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, type ArticleNameGenerationResult } from "@/db/ai";
 import { applyStudioChanges, ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
@@ -9,6 +13,8 @@ import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-version
 import { modelSelectionLabel } from "@/lib/model-label";
 import { diffStudioData } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { isCloudDatabase } from "@/db/sqlite";
+import { resolveChapterSettings } from "@/lib/story-settings";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -36,6 +42,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
     receivedCharacters: row.received_characters == null ? undefined : Number(row.received_characters), timeoutMs: row.timeout_ms == null ? undefined : Number(row.timeout_ms),
     runnerId: row.runner_id ? String(row.runner_id) : undefined, leaseUntil: row.lease_until ? String(row.lease_until) : undefined,
     resultText: row.result_text ? String(row.result_text) : undefined, resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
+    history: parseTaskHistory(row.history_json),
     error: row.error_message ? String(row.error_message) : undefined, contextOptions,
   };
 }
@@ -55,14 +62,14 @@ function activeExcellentFragments(outline: StudioData["articles"][number]["chapt
     : normalizeExcellentFragments(outline.content, outline.excellentFragments);
 }
 
-async function mutateState<T>(mutate: (data: StudioData) => Mutation<T>): Promise<T> {
+async function mutateState<T>(mutate: (data: StudioData) => Mutation<T>, runnerId?: string): Promise<T> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const current = await readStudioState();
     if (!current.data) throw new Error("任务数据库为空");
     const next = structuredClone(current.data);
     const outcome = mutate(next);
     if (!outcome.changed) return outcome.value;
-    const saved = await applyStudioChanges(diffStudioData(current.data, next), current.revision);
+    const saved = await applyStudioChanges(diffStudioData(current.data, next), current.revision, { taskRunnerId: runnerId });
     if (!saved.conflict) return outcome.value;
   }
   throw new Error("任务状态更新冲突，请稍后重试");
@@ -76,13 +83,14 @@ function leaseTime() {
   return new Date(Date.now() + 20_000).toISOString();
 }
 
-async function updateOwnedTaskProgress(taskId: string, runnerId: string, patch: { phase?: AiTask["phase"]; attempt?: number }, visible = true) {
+async function updateOwnedTaskProgress(taskId: string, runnerId: string, patch: { phase?: AiTask["phase"]; attempt?: number; error?: string }, visible = true) {
   await ensureDatabase();
   const db = getDatabase();
   const progressedAt = new Date().toISOString();
   const assignments = ["last_progress_at=?", "lease_until=?"];
   const values: unknown[] = [progressedAt, leaseTime()];
   if (patch.phase) { assignments.push("phase=?"); values.push(patch.phase); }
+  if (patch.phase) { assignments.push("error_message=?"); values.push(patch.error ?? null); }
   if (patch.attempt !== undefined) { assignments.push("attempt=?"); values.push(patch.attempt); }
   values.push(taskId, runnerId);
   const result = await db.prepare(`UPDATE ai_tasks SET ${assignments.join(",")} WHERE id=? AND status='running' AND runner_id=?`).bind(...values).run();
@@ -91,8 +99,7 @@ async function updateOwnedTaskProgress(taskId: string, runnerId: string, patch: 
   return updated;
 }
 
-export async function POST(_request: Request, context: RouteContext) {
-  const { taskId } = await context.params;
+async function executeTask(taskId: string) {
   const runnerId = `server-${crypto.randomUUID()}`;
   try {
     await ensureDatabase();
@@ -142,13 +149,34 @@ export async function POST(_request: Request, context: RouteContext) {
     }, 5_000);
 
     try {
-      let result: Awaited<ReturnType<typeof generateText>> | null = null;
+      let result: GenerateReviewDraft | null = null;
+      let reviewReport: GenerateReviewReport | undefined;
       let articleNameResult: ArticleNameGenerationResult | null = null;
+      const reviewEnabled = initialTask.target === "正文" && normalizeReviewRounds(initialTask.contextOptions?.reviewMaxRounds) > 0;
+      const generate = () => generateText({
+              reasoningEffort: taskReasoningEffort(initialTask.contextOptions),
+              outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: executionModelReference,
+              target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
+              includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
+              includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
+              excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
+              contentMode: initialTask.contextOptions?.contentMode,
+              rewriteRetention: initialTask.contextOptions?.rewriteRetention,
+              dialogueDensity: initialTask.contextOptions?.dialogueDensity,
+              firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
+              includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
+              context: initialTask.contextOptions?.promptContext,
+            }, upstreamController.signal);
+      if (reviewEnabled) {
+        const reviewed = await generateWithReview(initialTask, runnerId, executionModelReference, initialRow?.review_state_json, generate, upstreamController.signal);
+        result = reviewed.draft;
+        reviewReport = reviewed.report;
+      }
       let lastError: unknown;
-      for (let requestAttempt = Math.max(1, (initialTask.attempt ?? 0) + 1); requestAttempt <= 3; requestAttempt += 1) {
+      for (let requestAttempt = Math.max(1, (initialTask.attempt ?? 0) + 1); !reviewEnabled && requestAttempt <= 3; requestAttempt += 1) {
         if (upstreamController.signal.aborted) break;
         if (requestAttempt > 1) {
-          if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "retrying", attempt: requestAttempt })) break;
+          if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "retrying", attempt: requestAttempt, error: lastError instanceof Error ? lastError.message : undefined })) break;
           await new Promise((resolve) => setTimeout(resolve, requestAttempt === 2 ? 1_000 : 2_000));
         }
         if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "connecting", attempt: requestAttempt })) break;
@@ -156,6 +184,7 @@ export async function POST(_request: Request, context: RouteContext) {
           if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "generating" })) break;
           if (initialTask.target === "全部名称") {
             articleNameResult = await generateArticleNames({
+              reasoningEffort: taskReasoningEffort(initialTask.contextOptions),
               articleId: initialTask.articleId,
               chapterNaming: initialTask.contextOptions?.chapterNamingSnapshot,
               outlineNaming: initialTask.contextOptions?.outlineNamingSnapshot,
@@ -164,18 +193,7 @@ export async function POST(_request: Request, context: RouteContext) {
               context: initialTask.contextOptions?.namingContext,
             }, upstreamController.signal);
           } else {
-            result = await generateText({
-              outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: executionModelReference,
-              target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
-              includeCharacters: initialTask.contextOptions?.includeCharacters ?? true, targetWords: initialTask.contextOptions?.targetWords,
-              includeExcellentFragments: initialTask.contextOptions?.includeExcellentFragments === true,
-              excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
-              contentMode: initialTask.contextOptions?.contentMode,
-              rewriteRetention: initialTask.contextOptions?.rewriteRetention,
-              firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
-              includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
-              context: initialTask.contextOptions?.promptContext,
-            }, upstreamController.signal);
+            result = await generate();
           }
           break;
         } catch (error) {
@@ -189,10 +207,10 @@ export async function POST(_request: Request, context: RouteContext) {
         throw lastError instanceof Error ? lastError : new Error("生成失败");
       }
 
+      if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "saving" })) return json({ accepted: true, cancelled: true }, 202);
       await mutateState((data) => {
         const task = findTask(data, taskId);
         if (!task || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
-        task.phase = "saving";
         const found = findOutline(data, task.outlineId);
         let completedAt = new Date().toISOString();
         let resultText = result?.text ?? "";
@@ -246,19 +264,24 @@ export async function POST(_request: Request, context: RouteContext) {
         } else if (task.target === "正文" && found && result) {
           const completedAt = new Date().toISOString();
           const previousOutlineSnapshot = resolvedOutlineSnapshot(found.outline);
+          const sourceChanged = reviewEnabled && (resolvedOutlineContent(found.outline) !== initialTask.contextOptions?.reviewSourceContent || found.outline.currentVersionId !== initialTask.contextOptions?.reviewSourceVersionId);
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
-          if (task.contextOptions?.includeOutlineTitle && generatedTitle && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
+          if (!sourceChanged && task.contextOptions?.includeOutlineTitle && generatedTitle && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
             found.outline.title = generatedTitle;
             found.outline.titleGenerationPending = false;
           }
           const version: Version = {
             id: `version-${crypto.randomUUID()}`,
             name: aiGenerateContentName(model?.modelId ?? task.contextOptions?.modelId, completedAt),
+            reviewReport,
             content: result.text, source: "AI Generate", createdAt: completedAt, model: model ? modelSelectionLabel(model) : task.contextOptions?.modelName ?? task.model, modelId: model?.modelId ?? task.contextOptions?.modelId, prompt: task.prompt, taskId: task.id,
+            rewriteSourceId: task.contextOptions?.contentMode === "rewrite" ? task.contextOptions.rewriteSourceId : undefined,
+            rewriteSourceName: task.contextOptions?.contentMode === "rewrite" ? task.contextOptions.rewriteSourceName : undefined,
             outlineSnapshot: {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
             },
+            settingSnapshot: resolveChapterSettings(found.article, found.chapter.id),
             excellentFragments: task.contextOptions?.contentMode && task.contextOptions.contentMode !== "fresh"
               ? cloneExcellentFragments(result.text, reanchorExcellentFragments(resolvedOutlineContent(found.outline), result.text, activeExcellentFragments(found.outline)))
               : [],
@@ -277,7 +300,7 @@ export async function POST(_request: Request, context: RouteContext) {
               }
             : undefined;
           found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
-          found.outline.currentVersionId = version.id;
+          if (!sourceChanged) found.outline.currentVersionId = version.id;
           found.outline.state = "saved";
           found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;
@@ -288,6 +311,7 @@ export async function POST(_request: Request, context: RouteContext) {
             ...task.contextOptions,
             generatedOutlineTitle: result.outlineTitle,
             generatedOutlineTitleError: result.outlineTitleError,
+            ...(reviewReport ? { reviewReport, reviewRound: reviewReport.completedRounds, reviewCandidateOnly: sourceChanged } : {}),
           };
         } else if (found && result) {
           found.outline.state = "saved";
@@ -307,7 +331,7 @@ export async function POST(_request: Request, context: RouteContext) {
           runnerId: undefined, leaseUntil: undefined, error: undefined,
         } satisfies Partial<AiTask>);
         return { changed: true, value: true };
-      });
+      }, runnerId);
       return json({ accepted: true, completed: true });
     } catch (error) {
       await mutateState((data) => {
@@ -321,7 +345,7 @@ export async function POST(_request: Request, context: RouteContext) {
         const found = findOutline(data, task.outlineId);
         if (found && task.target !== "全部名称") found.outline.state = "failed";
         return { changed: true, value: true };
-      });
+      }, runnerId);
       return json({ accepted: true, completed: false, error: error instanceof Error ? error.message : "生成失败" }, 502);
     } finally {
       clearInterval(heartbeat);
@@ -329,4 +353,16 @@ export async function POST(_request: Request, context: RouteContext) {
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "任务执行失败" }, 500);
   }
+}
+
+export async function POST(_request: Request, context: RouteContext) {
+  const { taskId } = await context.params;
+  if (!isCloudDatabase() && process.env.WRITER_STUDIO_TEST_MODE !== "1") {
+    // A browser navigation closes its HTTP response, but a local generation
+    // must remain owned by the service. Detach the long-running work from the
+    // request and let SQLite leases reject duplicate dispatches.
+    void executeTask(taskId).catch((error) => console.error("Background Generate task failed", error));
+    return json({ accepted: true, scheduled: true }, 202);
+  }
+  return executeTask(taskId);
 }

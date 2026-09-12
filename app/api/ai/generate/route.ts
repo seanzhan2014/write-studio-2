@@ -1,9 +1,12 @@
+import { reasoningEffortError } from "@/lib/reasoning-options";
 import { AiInputError, generateText } from "@/db/ai";
-import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, normalizeDialogueDensity, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json() as Parameters<typeof generateText>[0];
+    const effortError = reasoningEffortError(body.reasoningEffort);
+    if (effortError) return Response.json({ error: effortError }, { status: 400 });
     if (!["content", "outline", "chapter-title"].includes(body.target)) return Response.json({ error: "生成目标无效" }, { status: 400 });
     body.instruction = String(body.instruction ?? "").trim();
     if (body.instruction.length > 20000) return Response.json({ error: "补充指令不能超过 20,000 字符" }, { status: 400 });
@@ -12,6 +15,8 @@ export async function POST(request: Request) {
     if (body.target === "content") body.contentMode = normalizeContentGenerationMode(body.contentMode);
     if (body.target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return Response.json({ error: "原文保留度无效" }, { status: 400 });
     body.rewriteRetention = body.target === "content" && body.contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
+    if (body.target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return Response.json({ error: "对话密度无效" }, { status: 400 });
+    body.dialogueDensity = body.target === "content" ? normalizeDialogueDensity(body.dialogueDensity) : undefined;
     body.includeExcellentFragments = body.target === "content" && body.includeExcellentFragments === true;
     body.excellentFragmentIds = body.includeExcellentFragments && Array.isArray(body.excellentFragmentIds) ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200) : undefined;
     const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;

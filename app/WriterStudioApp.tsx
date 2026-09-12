@@ -1,5 +1,17 @@
 "use client";
 
+import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
+import { ReasoningSettings } from "@/app/ui/reasoning-settings";
+import { normalizeReasoningEffort, resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
+
+import { MAX_REVIEW_ROUNDS, MAX_REVIEW_RULE_CHARACTERS, normalizeReviewRounds, normalizeReviewRules } from "@/lib/generate-review.mjs";
+import { ArticleReviewRulesPage, ReviewRuleSnapshotView } from "@/app/ui/review-rules";
+import { createReviewRuleSnapshot, hasReviewRules, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
+import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
+import { TaskHistory } from "@/app/ui/task-history";
+import { taskPhaseLabels } from "@/lib/task-history";
+
+import { sendChatCompletion } from "@/lib/chat-client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import {
   Alert,
@@ -42,19 +54,20 @@ import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, t
 import type { NamingArticleContext } from "@/db/ai";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { DEFAULT_DIALOGUE_DENSITY, DIALOGUE_DENSITY_OPTIONS, dialogueDensityLabel, normalizeDialogueDensity, type DialogueDensityLevel, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
-import { BUILTIN_REVIEW_REQUIREMENTS, MAX_REVIEW_PRESETS, MAX_REVIEW_PRESET_CHARACTERS, normalizeReviewPresets } from "@/lib/review-options";
 import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 import { DEFAULT_ARTICLE_COPY_OPTIONS, suggestArticleCopyTitle, type ArticleCopyOptions } from "@/lib/data-transfer";
 import { browserIsOffline, fetchFromServer, fetchServerAction, OFFLINE_OPERATION_MESSAGE } from "@/lib/browser-network";
-import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
+import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Message, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
 import { DataTransferProvider, useDataTransfer } from "./data-transfer";
 import { MobileActionSheet, ResponsiveModal, ScrollableDrawer, type ActionSheetItem } from "./ui/overlays";
+import { ArticleSettingsDrawer, ArticleStoryFields, ChapterSettingsDrawer, CHARACTER_LABELS } from "./ui/story-settings-editor";
+import { CHARACTER_PROFILE_KEYS, countChapterSettingChanges, normalizeCharacterProfile, resolveChapterSettings, type ResolvedChapterSettings } from "@/lib/story-settings";
 
 type View =
   | "outline-home"
@@ -66,8 +79,8 @@ type View =
   | "outline-edit"
   | "read"
   | "search"
+  | "info-ai-tasks"
   | "info-basic"
-  | "info-chapters"
   | "info-characters"
   | "info-relationships"
   | "settings-general"
@@ -160,7 +173,21 @@ function clientId(prefix: string) {
   return `${prefix}-${uuid ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 12)}`}`;
 }
 
+function chapterIsEmpty(chapter: Chapter) {
+  return chapter.outlines.length <= 1 && chapter.outlines.every((item) => (
+    !normalizeOutlineTitle(item.title)
+    && !item.plan.trim()
+    && !resolvedOutlineContent(item).trim()
+    && !item.versions.some((version) => version.content.trim())
+    && !item.chat.sessions.some((session) => session.draft.trim() || session.messages.length > 0)
+  ));
+}
+
 type ServerTaskInput = {
+  reasoningEffort?: ReasoningEffort | null;
+  reviewRuleSnapshot?: ReviewRuleSnapshot;
+  reviewMaxRounds?: number;
+  reviewInstruction?: string;
   articleId: string;
   chapterId: string;
   outlineId: string;
@@ -176,6 +203,7 @@ type ServerTaskInput = {
   targetWords?: number;
   contentMode?: ContentGenerationMode;
   rewriteRetention?: RewriteRetentionLevel;
+  dialogueDensity?: DialogueDensityLevel;
   firstAppearanceCharacterIds?: string[];
   chapterNaming?: NamingProfile;
   outlineNaming?: NamingProfile;
@@ -238,7 +266,7 @@ function namingArticleContext(article: Article): NamingArticleContext {
 
 type ActiveChatStream = { controller: AbortController; cancel: () => void };
 type ChatStreamState = { taskId: string; sessionId: string; submissionToken: string; controller: AbortController; result: string; finalized: boolean };
-type ChatResponseStage = { taskId: string; stage: "requesting-model" | "waiting-first-token" };
+type ChatResponseStage = { taskId: string; stage: "requesting-model" | "waiting-first-token" | "recovering" };
 const activeChatStreams = new Map<string, ActiveChatStream>();
 
 function registerActiveChatStream(taskId: string, stream: ActiveChatStream) {
@@ -302,7 +330,7 @@ async function copyTextToClipboard(text: string) {
   }
 }
 
-type ConfiguredModel = { id: string; providerName: string; name: string; modelId: string; hasSecret: boolean; timeoutMs: number; maxInputCharacters: number };
+type ConfiguredModel = { reasoningEffort?: ReasoningEffort | null; id: string; providerName: string; name: string; modelId: string; hasSecret: boolean; timeoutMs: number; maxInputCharacters: number };
 
 function configuredModelForReference(models: ConfiguredModel[], reference: string) {
   const normalized = reference.trim();
@@ -335,6 +363,31 @@ function resolvedExcellentFragments(outline: Outline) {
     : normalizeExcellentFragments(outline.content, outline.excellentFragments);
 }
 
+function directContentId(outlineId: string) {
+  return `content:${outlineId}`;
+}
+
+function directContentPreview(outline: Outline): Version {
+  return {
+    id: directContentId(outline.id),
+    name: outline.contentName?.trim() || timestampContentName(outline.updatedAt),
+    content: outline.content,
+    source: "手动",
+    createdAt: outline.updatedAt,
+    outlineSnapshot: outline.contentOutlineSnapshot,
+    manualExcellent: outline.manualExcellent,
+    excellentFragments: outline.excellentFragments,
+  };
+}
+
+function locateRewriteSource(articles: Article[], sourceId: string) {
+  for (const article of articles) for (const chapter of article.chapters) for (const outline of chapter.outlines) {
+    if (sourceId === directContentId(outline.id)) return { articleId: article.id, outlineId: outline.id, previewId: sourceId };
+    if (outline.versions.some((version) => version.id === sourceId)) return { articleId: article.id, outlineId: outline.id, previewId: sourceId };
+  }
+  return null;
+}
+
 function textOffsetWithin(root: HTMLElement, node: Node, offset: number) {
   if (node !== root && !root.contains(node)) return null;
   const range = document.createRange();
@@ -356,9 +409,15 @@ function canonicalModelReference(models: ConfiguredModel[], reference: string) {
   return configuredModelForReference(models, reference)?.id ?? reference.trim();
 }
 
+function TaskReasoningSettings({ kind, model, disabled = false }: { kind: "generate" | "chat" | "naming" | "review"; model?: ConfiguredModel; disabled?: boolean }) {
+  const studio = useStudio();
+  const key = `${kind}ReasoningEffort` as const;
+  return <ReasoningSettings value={studio.data.settings[key]} modelValue={model?.reasoningEffort} disabled={disabled} onChange={(value) => studio.updateSettings({ [key]: value })} />;
+}
+
 function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelName?: string) {
   const reference = selectedModel.trim();
-  if (!reference) return "本地 PoC 引擎";
+  if (!reference) return "本地演示引擎";
   const configured = configuredModelForReference(models, reference);
   return configured ? modelSelectionLabel(configured) : fixedModelName?.trim() || reference;
 }
@@ -476,7 +535,11 @@ function viewFromPath(pathname: string): View {
   if (pathname.includes("/chapters/")) return "chapter";
   if (pathname.endsWith("/edit") || pathname.endsWith("/read")) return "read";
   if (pathname.endsWith("/search")) return "search";
-  if (pathname.includes("/info/chapters")) return "info-chapters";
+  if (pathname.includes("/info/ai-tasks")) return "info-ai-tasks";
+  // Keep existing bookmarks working after the article settings are grouped
+  // under the AI task settings tab.
+  if (pathname.includes("/info/review-rules")) return "info-ai-tasks";
+  if (pathname.includes("/info/chapters")) return "info-ai-tasks";
   if (pathname.includes("/info/characters")) return "info-characters";
   if (pathname.includes("/info/relationships")) return "info-relationships";
   if (pathname.includes("/info/")) return "info-basic";
@@ -502,7 +565,7 @@ function routeFor(view: View, articleId: string, outlineId: string, chapterId: s
     read: `${base}/edit`,
     search: `${base}/search`,
     "info-basic": `${base}/info/basic`,
-    "info-chapters": `${base}/info/chapters`,
+    "info-ai-tasks": `${base}/info/ai-tasks`,
     "info-characters": `${base}/info/characters`,
     "info-relationships": `${base}/info/relationships`,
     "settings-general": "/settings/general",
@@ -673,7 +736,20 @@ function WriterStudioInner() {
     await go(next, outlineId, true);
   }
 
-  const previewVersion = previewSelection?.outlineId === currentOutline ? activeOutline.versions.find((version) => version.id === previewSelection.versionId) : undefined;
+  async function openRewriteSource(sourceId: string) {
+    const source = locateRewriteSource(studio.data.articles, sourceId);
+    if (!source) {
+      setToast("原正文已删除，无法打开");
+      return;
+    }
+    setVersions(false);
+    await openOutline(source.outlineId, "write", source.previewId);
+  }
+
+  const previewVersion = previewSelection?.outlineId === currentOutline
+    ? activeOutline.versions.find((version) => version.id === previewSelection.versionId)
+      ?? (previewSelection.versionId === directContentId(activeOutline.id) ? directContentPreview(activeOutline) : undefined)
+    : undefined;
   const selectedOutline = { chapter: studio.currentChapter.title, title: activeOutline.title, plan: activeOutline.plan, content: previewVersion?.content ?? resolvedOutlineContent(activeOutline) };
   const isOutlineWorkspaceView = view === "write" || view === "chat" || view === "generate";
   const requiresSaveBeforeNavigation = isOutlineWorkspaceView || view === "chapter-edit" || view === "outline-edit" || view === "read";
@@ -744,6 +820,7 @@ function WriterStudioInner() {
             onOpenTasks={() => setTaskPanel(true)}
             onNotice={setToast}
             previewVersion={previewVersion}
+            onOpenRewriteSource={openRewriteSource}
             onClearPreview={() => setPreviewSelection(null)}
             onWritingEditingChange={setMobileWritingEditing}
           /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />
@@ -775,6 +852,7 @@ function WriterStudioInner() {
         onClose={() => setVersions(false)}
         onPreview={(versionId) => { setPreviewSelection({ outlineId: currentOutline, versionId }); void go("write", currentOutline, true); }}
         onClearPreview={() => { setPreviewSelection(null); void go("write", currentOutline, true); }}
+        onOpenRewriteSource={openRewriteSource}
         onNotice={setToast}
       />}
       {taskPanel && <TaskPanel onClose={() => setTaskPanel(false)} onOpen={openOutline} />}
@@ -924,6 +1002,7 @@ function Sidebar({
   });
   const [outlineMenu, setOutlineMenu] = useState<Outline | null>(null);
   const [chapterMenu, setChapterMenu] = useState<Chapter | null>(null);
+  const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
   const [structureGenerate, setStructureGenerate] = useState<{ kind: "outline" | "chapter"; id: string; title: string } | null>(null);
   const [articleQuery, setArticleQuery] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -1056,13 +1135,13 @@ function Sidebar({
           onDragEnd={finishOutlineDrag}
         >
           <div className={`chapter-scroll ${virtualizeTree ? "virtualized-tree" : ""}`}>
-            <div className="tree-title"><span>章节</span><IconButton name="plus" label="新建章节" onClick={() => { const chapterId = studio.createChapter(); const outlineId = studio.createOutline(chapterId); setExpanded((state) => ({ ...state, [chapterId]: true })); onOutline(outlineId); onNotice("已创建章节和第一条大纲"); }} /></div>
+            <div className="tree-title"><span>章节</span><IconButton name="plus" label="新建章节" onClick={() => { const answer = window.prompt("章节标题", "未命名章节"); if (answer === null) return; const title = answer.trim().slice(0, 120) || "未命名章节"; const chapterId = studio.createChapter(title); const outlineId = studio.createOutline(chapterId); setExpanded((state) => ({ ...state, [chapterId]: true })); onOutline(outlineId); onNotice(`已创建章节「${title}」和第一条大纲`); }} /></div>
             {groups.map((group) => (
               <div className="chapter-group" key={group.id}>
                 <DesktopChapterDropRow chapterId={group.id} className={`chapter-row ${view === "chapter" && group.id === studio.currentChapter.id ? "active" : ""}`}>
                   <button className={`disclosure ${expanded[group.id] ? "expanded" : ""}`} type="button" aria-label={`${expanded[group.id] ? "折叠" : "展开"}${group.title}`} onClick={() => setExpanded((state) => ({ ...state, [group.id]: !state[group.id] }))}><Icon name="chevron" /></button>
                   <button className="chapter-link" type="button" onDoubleClick={() => { const title = window.prompt("章节标题", group.title); if (title?.trim()) studio.updateChapter(group.id, { title: title.trim() }); }} onClick={() => { if (group.items[0]) studio.setCurrentOutline(group.items[0].id); onGo("chapter"); }}>{group.title}</button>
-                  <IconButton name="plus" label={`在${group.title}中新建大纲`} onClick={() => { const id = studio.createOutline(group.id); onOutline(id); }} />
+                  <IconButton name="plus" label={`在${group.title}中新建大纲`} className="chapter-outline-add" onClick={() => { const id = studio.createOutline(group.id); onOutline(id); }} />
                   <IconButton name="more" label={`${group.title}更多操作`} onClick={() => setChapterMenu(group)} />
                 </DesktopChapterDropRow>
                 {expanded[group.id] && <SortableContext items={group.items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
@@ -1102,7 +1181,8 @@ function Sidebar({
         <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整侧栏宽度" onPointerDown={startResize} />
       </aside>
       {outlineMenu && <DesktopOutlineMenu outline={outlineMenu} onClose={() => setOutlineMenu(null)} onOpenChat={() => { studio.setCurrentOutline(outlineMenu.id); setOutlineMenu(null); onOutline(outlineMenu.id); onGo("chat"); }} onGenerate={() => { setStructureGenerate({ kind: "outline", id: outlineMenu.id, title: outlineDisplayTitle(outlineMenu) }); setOutlineMenu(null); }} onNotice={onNotice} />}
-      {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} />}
+      {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} onSettings={() => setChapterSettingsId(chapterMenu.id)} />}
+      {chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
       {structureGenerate && <StructureGenerateSheet target={structureGenerate} onClose={() => setStructureGenerate(null)} onApplied={(message, result, generatedTitle) => { studio.updateOutline(structureGenerate.id, { plan: result, ...(generatedTitle ? { title: generatedTitle, titleGenerationPending: false } : {}) }); onNotice(message); setStructureGenerate(null); }} />}
     </>
   );
@@ -1189,6 +1269,7 @@ function MobileOutlineHome({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<OutlineDropIndicator>(null);
   const [chapterMenu, setChapterMenu] = useState<Chapter | null>(null);
+  const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
   const expandTimer = useRef<number | null>(null);
   const expandTarget = useRef<string | null>(null);
   const virtualizeTree = groups.reduce((total, group) => total + group.items.length, 0) > 200;
@@ -1311,6 +1392,7 @@ function MobileOutlineHome({
                 <button className={`mobile-disclosure ${expanded[group.id] ? "expanded" : ""}`} type="button" aria-label={`${expanded[group.id] ? "折叠" : "展开"}${group.title}`} aria-expanded={expanded[group.id]} onClick={() => setExpanded((state) => ({ ...state, [group.id]: !state[group.id] }))}><Icon name="chevron" /></button>
                 <button className="mobile-chapter-title" type="button" onClick={() => { if (group.items[0]) studio.setCurrentOutline(group.items[0].id); onChapter(); }}><span>第 {groupIndex + 1} 章</span><span className="ui-title">{group.title.replace(/^第.+?·\s*/, "")}</span></button>
                 <span className="chapter-count">{group.items.length}</span>
+                <IconButton name="plus" label={`在${group.title}中新建大纲`} className="chapter-outline-add" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); const id = studio.createOutline(group.id); onOutline(id); }} />
                 <IconButton name="more" label={`${group.title}更多操作`} className="mobile-row-more" aria-haspopup="dialog" aria-expanded={chapterMenu?.id === group.id} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); setChapterMenu(group); }} />
               </MobileChapterDropHeader>
                 {expanded[group.id] && <SortableContext items={group.items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
@@ -1405,7 +1487,8 @@ function MobileOutlineHome({
         onNotice(message);
         setStructureGenerate(null);
       }} />}
-      {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} />}
+      {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} onSettings={() => setChapterSettingsId(chapterMenu.id)} />}
+      {chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
     </div>
   );
 }
@@ -1731,20 +1814,21 @@ function DesktopOutlineMenu({ outline, onClose, onOpenChat, onGenerate, onNotice
   return <MobileActionSheet actions={actions} ariaLabel={`大纲操作：${displayTitle}`} closeLabel="关闭大纲菜单" eyebrow="大纲操作" onClose={onClose} responsiveDesktopMenu title={displayTitle} />;
 }
 
-function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline }: { chapter: Chapter; onClose: () => void; onNotice: (message: string) => void; onOpenOutline: (id: string) => void }) {
+function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline, onSettings }: { chapter: Chapter; onClose: () => void; onNotice: (message: string) => void; onOpenOutline: (id: string) => void; onSettings: () => void }) {
   const studio = useStudio();
   const transfer = useDataTransfer();
   const items: Array<{ key: string; label: string; icon: IconName; className?: string; onSelect: () => void }> = [
     { key: "rename", label: "重命名", icon: "edit", onSelect: () => { const title = window.prompt("章节标题", chapter.title); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } } },
+    { key: "settings", label: `章节设定${countChapterSettingChanges(chapter.settings) ? ` · ${countChapterSettingChanges(chapter.settings)}` : ""}`, icon: "info", onSelect: onSettings },
     { key: "create", label: "新建大纲", icon: "plus", onSelect: () => { const id = studio.createOutline(chapter.id); onOpenOutline(id); } },
     { key: "import", label: "导入大纲", icon: "paste", onSelect: () => { onClose(); void transfer.importOutline(chapter.id); } },
-    { key: "move-up", label: "上移", icon: "move", onSelect: () => studio.moveChapter(chapter.id, -1) },
-    { key: "move-down", label: "下移", icon: "move", onSelect: () => studio.moveChapter(chapter.id, 1) },
-    { key: "archive", label: chapter.archived ? "恢复章节" : "归档章节", icon: chapter.archived ? "refresh" : "archive", onSelect: () => studio.updateChapter(chapter.id, { archived: !chapter.archived }) },
+    { key: "move-up", label: "上移", icon: "move", onSelect: () => { studio.moveChapter(chapter.id, -1); onNotice("章节已上移，后续章节的继承设定已按新顺序重算"); } },
+    { key: "move-down", label: "下移", icon: "move", onSelect: () => { studio.moveChapter(chapter.id, 1); onNotice("章节已下移，后续章节的继承设定已按新顺序重算"); } },
+    { key: "archive", label: chapter.archived ? "恢复章节" : "归档章节", icon: chapter.archived ? "refresh" : "archive", onSelect: () => { studio.updateChapter(chapter.id, { archived: !chapter.archived }); onNotice(chapter.archived ? "章节已恢复，继承链已重算" : "章节已归档，继承链已跳过本章并重算"); } },
   ];
   const actions: ActionSheetItem[] = [
     ...items.map((item) => ({ ...item, icon: <Icon name={item.icon} /> })),
-    { key: "delete", label: "删除章节", icon: <Icon name="trash" />, danger: true, onSelect: () => { const typed = window.prompt(`章节包含 ${chapter.outlines.length} 条大纲。输入章节标题以确认删除：`, ""); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除"); } } },
+    { key: "delete", label: "删除章节", icon: <Icon name="trash" />, danger: true, onSelect: () => { const settingCount = countChapterSettingChanges(chapter.settings); if (chapterIsEmpty(chapter) && settingCount === 0) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); return; } const typed = window.prompt(`章节包含 ${chapter.outlines.length} 条大纲和 ${settingCount} 项章节设定。删除后，后续章节的继承会重算。输入章节标题以确认删除：`, ""); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); } } },
   ];
   return <MobileActionSheet actions={actions} ariaLabel={`章节操作：${chapter.title}`} classNames={{ content: "outline-action-drawer", body: "outline-action-drawer-body" }} closeLabel="关闭章节菜单" eyebrow="章节操作" onClose={onClose} responsiveDesktopMenu title={chapter.title} />;
 }
@@ -1783,6 +1867,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
   const [generatedSourceText, setGeneratedSourceText] = useState("");
   const [generatedOutlineTitle, setGeneratedOutlineTitle] = useState("");
   const selectedModel = studio.data.settings.generateModel;
+  const reasoningEffort = studio.data.settings.generateReasoningEffort;
   const selectedModelReference = canonicalModelReference(models, selectedModel);
   const targetChapter = studio.currentArticle.chapters.find((chapter) => isChapter ? chapter.id === target.id : chapter.outlines.some((outline) => outline.id === target.id));
   const targetOutline = isChapter ? targetChapter?.outlines.find((outline) => !outline.archived) : targetChapter?.outlines.find((outline) => outline.id === target.id);
@@ -1798,7 +1883,7 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     setLoading(true); setError("");
     try {
       const context = selectAiContext({ articles: [studio.currentArticle] }, outlineId, isChapter ? "chapter-title" : "outline", { includePrevious: true, includeCharacters: true, instruction: prompt });
-      const response = await fetchServerAction("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
+      const response = await fetchServerAction("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, reasoningEffort, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
       const payload = await response.json() as { text?: string; outlineTitle?: string; error?: string };
       if (!response.ok || !payload.text) throw new Error(payload.error || "生成失败");
       setResult(payload.text);
@@ -1812,15 +1897,18 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     opened
     onClose={onClose}
     closeButtonProps={{ "aria-label": "关闭结构生成" }}
-    title={<div className="structure-generate-drawer-title"><div className="structure-generate-icon"><Icon name="spark" /></div><div><span>AI Generate · 文章结构</span><span className="ui-title">{isChapter ? "生成章节标题" : "生成大纲内容"}</span><small>{target.title}</small></div></div>}
+    title={<div className="structure-generate-drawer-title"><div className="structure-generate-icon"><Icon name="spark" /></div><div><span className="ui-title">{isChapter ? "AI Generate 章节名" : "AI Generate 大纲"}</span><small>{target.title}</small></div></div>}
     position="bottom"
     size="auto"
     classNames={{ content: "structure-generate-drawer", body: "structure-generate-sheet structure-generate-drawer-body" }}
   >
     <div className="structure-context"><Icon name="book" /><span className="ui-label">上下文 · {contextSummary?.total.toLocaleString("zh-CN") ?? "—"} 字符</span></div>
-    <details className="structure-current"><summary>{isChapter ? "当前章节标题" : "当前大纲内容"}</summary><p>{currentValue || "（当前内容为空）"}</p></details>
-    <label>生成要求<textarea maxLength={20000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入生成要求" /></label>
-    <label className="structure-model">本次模型<select value={selectedModelReference} onChange={(event) => selectGenerateModel(event.target.value)}><option value="">本地 PoC 引擎</option>{selectedModelReference && !configuredModelForReference(models, selectedModelReference) && <option value={selectedModelReference}>{selectedModelReference}</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></label>
+    <section className="structure-current"><span className="ui-label">{isChapter ? "当前章节标题" : "当前大纲内容"}</span><p>{currentValue || "（当前内容为空）"}</p></section>
+    <div className="structure-request-grid">
+      <label className="structure-requirement">生成要求<textarea maxLength={20000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入生成要求" /></label>
+      <label className="structure-model">本次模型<select value={selectedModelReference} onChange={(event) => selectGenerateModel(event.target.value)}><option value="">本地演示引擎</option>{selectedModelReference && !configuredModelForReference(models, selectedModelReference) && <option value={selectedModelReference}>{selectedModelReference}</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></label>
+      <div className="structure-reasoning"><TaskReasoningSettings kind="generate" model={configuredModelForReference(models, selectedModelReference)} disabled={loading} /></div>
+    </div>
     {error && <p className="task-error" role="alert">{error}</p>}
     {generated && <div className="structure-compare"><section><span>当前内容</span><p>{currentValue || "（空）"}</p></section><section><span>生成预览</span>{isChapter ? <input value={result} onChange={(event) => setResult(event.target.value)} /> : <textarea value={result} onChange={(event) => setResult(event.target.value)} />}</section></div>}
     <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button>{generated ? <><button className="secondary-button" type="button" onClick={() => void generate()}>重新生成</button><button className="primary-compact" type="button" disabled={!result.trim()} onClick={() => onApplied(isChapter ? "已应用新的章节标题" : `已应用「${target.title}」的大纲内容`, result.trim(), !isChapter && result.trim() === generatedSourceText ? generatedOutlineTitle : undefined)}>应用结果</button></> : <button className="primary-compact" type="button" disabled={!prompt.trim() || loading} onClick={() => void generate()}><Icon name="spark" />{loading ? "正在生成…" : "生成预览"}</button>}</footer>
@@ -1860,6 +1948,7 @@ function OutlineWorkspace({
   onOpenTasks,
   onNotice,
   previewVersion,
+  onOpenRewriteSource,
   onClearPreview,
   onWritingEditingChange,
 }: {
@@ -1873,6 +1962,7 @@ function OutlineWorkspace({
   onOpenTasks: () => void;
   onNotice: (message: string) => void;
   previewVersion?: Version;
+  onOpenRewriteSource: (sourceId: string) => void;
   onClearPreview: () => void;
   onWritingEditingChange: (editing: boolean) => void;
 }) {
@@ -1917,7 +2007,7 @@ function OutlineWorkspace({
         </div>
       )}
 
-      {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onClearPreview={onClearPreview} onNotice={onNotice} onEditingChange={onWritingEditingChange} />}
+      {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onOpenRewriteSource={onOpenRewriteSource} onClearPreview={onClearPreview} onNotice={onNotice} onEditingChange={onWritingEditingChange} />}
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView models={models} outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
       {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
@@ -1925,7 +2015,7 @@ function OutlineWorkspace({
   );
 }
 
-function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEditingChange }: { focusMode: boolean; previewVersion?: Version; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void }) {
+function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPreview, onNotice, onEditingChange }: { focusMode: boolean; previewVersion?: Version; onOpenRewriteSource: (sourceId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void }) {
   const studio = useStudio();
   const [planOpen, setPlanOpen] = useState(studio.data.settings.outlineExpanded);
   const [planPeek, setPlanPeek] = useState(false);
@@ -1963,7 +2053,9 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
   const editingOutlineId = studio.currentOutline.id;
   const currentVersion = currentOutlineVersion(studio.currentOutline);
   const displayedVersion = previewVersion ?? currentVersion;
-  const displayedIsCurrent = !previewVersion || previewVersion.id === studio.currentOutline.currentVersionId;
+  const displayedIsDirectContent = displayedVersion?.id === directContentId(studio.currentOutline.id);
+  const displayedIsCurrent = !previewVersion
+    || (displayedIsDirectContent ? studio.currentOutline.currentVersionId === null : previewVersion.id === studio.currentOutline.currentVersionId);
   const displayedIsDefault = Boolean(displayedVersion && displayedVersion.id === studio.currentOutline.defaultVersionId);
   const planSnapshot = displayedVersion?.outlineSnapshot ?? studio.currentOutline.contentOutlineSnapshot;
   const plan = planSnapshot?.plan ?? "";
@@ -2229,7 +2321,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
       onNotice(saved ? "已取消默认正文" : "取消默认正文未完成，请查看保存状态");
       return;
     }
-    const existingVersionId = displayedVersion?.id;
+    const existingVersionId = displayedIsDirectContent ? undefined : displayedVersion?.id;
     const versionId = existingVersionId ?? studio.saveVersion(
       studio.currentOutline.id,
       resolvedOutlineContentName(studio.currentOutline),
@@ -2246,8 +2338,8 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
   }
 
   async function setDisplayedAsCurrent() {
-    if (!previewVersion || previewVersion.id === studio.currentOutline.currentVersionId) return;
-    studio.setCurrentVersion(studio.currentOutline.id, previewVersion.id);
+    if (!previewVersion || displayedIsCurrent) return;
+    studio.setCurrentVersion(studio.currentOutline.id, displayedIsDirectContent ? undefined : previewVersion.id);
     onClearPreview();
     const saved = await studio.saveNow();
     onNotice(saved ? "已设为当前正文" : "设置当前正文未完成，请查看保存状态");
@@ -2258,7 +2350,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
     settingExcellentRef.current = true;
     setSettingExcellent(true);
     const next = !displayedManuallyExcellent;
-    studio.setBodyExcellent(studio.currentOutline.id, displayedVersion?.id, next);
+    studio.setBodyExcellent(studio.currentOutline.id, displayedIsDirectContent ? undefined : displayedVersion?.id, next);
     const saved = await studio.saveNow();
     settingExcellentRef.current = false;
     setSettingExcellent(false);
@@ -2275,7 +2367,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
 
   function applyAppreciationRange(range: { start: number; end: number }) {
     if (!displayedContent.trim()) return;
-    const action = studio.toggleExcellentFragment(studio.currentOutline.id, displayedVersion?.id, range.start, range.end);
+    const action = studio.toggleExcellentFragment(studio.currentOutline.id, displayedIsDirectContent ? undefined : displayedVersion?.id, range.start, range.end);
     setSelectionMenu(null);
     window.getSelection()?.removeAllRanges();
     if (action === "added") onNotice("已标记优秀片段");
@@ -2309,6 +2401,8 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
           </section>
         )}
 
+        {!editing && displayedVersion?.reviewReport && <GenerateReviewReportView report={displayedVersion.reviewReport} />}
+        {!editing && displayedVersion?.reviewRuleSnapshot && <details className="generate-review-report"><summary>本次 Review 规则</summary><ReviewRuleSnapshotView snapshot={displayedVersion.reviewRuleSnapshot} /></details>}
         <section className="content-editor-section">
           <div className="editor-heading">
             <div className="body-title-cluster">
@@ -2325,6 +2419,7 @@ function WritingView({ focusMode, previewVersion, onClearPreview, onNotice, onEd
               <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button></div>}</div>
             </> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
           </div>
+          {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
           {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: studio.data.settings.editorFont === "serif" ? "Georgia, 'Noto Serif SC', serif" : undefined, maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
@@ -2354,6 +2449,8 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const displayTitle = outlineDisplayTitle(outline);
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
+  const reviewMaxRounds = normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds);
+  const [reviewInstruction, setReviewInstruction] = useState("");
   const [prompt, setPrompt] = useState(() => initialPrompt || storedPromptAtOpen);
   const [savedPrompt, setSavedPrompt] = useState(storedPromptAtOpen);
   const [promptSaving, setPromptSaving] = useState(false);
@@ -2367,7 +2464,9 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const [includeOutlineTitle, setIncludeOutlineTitle] = useState(false);
   const [generationMode, setGenerationMode] = useState<ContentGenerationMode>("fresh");
   const [rewriteRetention, setRewriteRetention] = useState<RewriteRetentionLevel>(DEFAULT_REWRITE_RETENTION_LEVEL);
+  const [dialogueDensity, setDialogueDensity] = useState<DialogueDensityLevel>(DEFAULT_DIALOGUE_DENSITY);
   const selectedModel = studio.data.settings.generateModel;
+  const reasoningEffort = studio.data.settings.generateReasoningEffort;
   const [notice, setNotice] = useState("");
   const [presetManagerOpen, setPresetManagerOpen] = useState(false);
   const [targetWordsInput, setTargetWordsInput] = useState(() => studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : "");
@@ -2390,7 +2489,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     if (previous.id !== studio.currentOutline.id || outlinePlanDraftRef.current === previous.plan) {
       outlinePlanDraftRef.current = outline.plan;
       setOutlinePlanDraft(outline.plan);
-      if (previous.id !== studio.currentOutline.id) { setAppearanceOverrides({}); setIncludeOutlineTitle(false); }
+      if (previous.id !== studio.currentOutline.id) { setAppearanceOverrides({}); setIncludeOutlineTitle(false); setReviewInstruction(""); }
     }
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
   }, [studio.currentOutline.id, outline.plan]);
@@ -2425,7 +2524,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const selectedRecord = configuredModelForReference(models, selectedModel);
   const selectedModelReference = selectedRecord?.id ?? selectedModel.trim();
   const modelOptions = [
-    { value: "", label: "本地 PoC 引擎" },
+    { value: "", label: "本地演示引擎" },
     ...(selectedModelReference && !selectedRecord ? [{ value: selectedModelReference, label: selectedModelReference }] : []),
     ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
   ];
@@ -2462,13 +2561,23 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     return saved;
   }, [normalizedPrompt, promptDirty, studio]);
 
+  async function changeGenerateTaskState(task: AiTask, action: "cancel" | "retry") {
+    try {
+      const response = await fetchServerAction(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "任务状态更新失败");
+      await studio.refreshFromServer();
+    } catch (error) { setNotice(error instanceof Error ? error.message : "任务状态更新失败"); }
+  }
+
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
+    if (reviewMaxRounds > 0 && !hasReviewRules(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)))) { setNotice("没有有效规则或本次 Review 指令，无需审校。请添加规则或将审校循环次数设为 0。"); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && task.prompt === prompt.trim() && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && task.contextOptions?.includeExcellentFragments === includeExcellentFragments && task.contextOptions?.includeOutlineTitle === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)))) && normalizeDialogueDensity(task.contextOptions?.dialogueDensity) === dialogueDensity && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
       const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
@@ -2488,6 +2597,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         target: "content",
         instruction: prompt.trim().slice(0, 20_000),
         model: selectedModelReference,
+        reasoningEffort,
         includePrevious,
         includeCharacters,
         includeExcellentFragments,
@@ -2497,6 +2607,10 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         targetWords,
         contentMode: generationMode,
         rewriteRetention: generationMode === "rewrite" ? rewriteRetention : undefined,
+        dialogueDensity,
+        reviewRuleSnapshot: createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)),
+        reviewMaxRounds,
+        reviewInstruction: normalizeReviewRules(reviewInstruction),
         firstAppearanceCharacterIds: effectiveFirstAppearanceIds,
         timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
         promptContext,
@@ -2513,7 +2627,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, hasCurrentContent, outlinePlanDraft, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, dialogueDensity, reviewMaxRounds, reviewInstruction, hasCurrentContent, outlinePlanDraft, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -2526,11 +2640,6 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   return (
     <div className="generate-view">
       <div className="generate-page">
-        <header className="generate-compact-header">
-          <div><span>正文生成</span><h2>{displayTitle}</h2></div>
-          <em>正文</em>
-        </header>
-
         <section className="generate-command-card">
           <section className="generate-outline-editor">
             <div className="generate-outline-editor-heading">
@@ -2544,24 +2653,26 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               classNames={{ input: "generate-outline-plan-input" }}
               maxLength={10000}
               autosize
-              minRows={5}
-              maxRows={12}
+              minRows={3}
+              maxRows={5}
               value={outlinePlanDraft}
               onChange={(event) => { outlinePlanDraftRef.current = event.target.value; setOutlinePlanDraft(event.target.value); }}
             />
-            <div className="generate-outline-save-row">
+            {(outlinePlanDirty || outlineSaving) && <div className="generate-outline-save-row">
               <span className={`generate-outline-save-state ${outlinePlanDirty ? "unsaved" : "saved"}`}>{outlineSaving ? "正在保存…" : outlinePlanDirty ? "有未保存修改" : "已保存"}</span>
               <Button className="generate-outline-save-button" variant={outlinePlanDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!outlinePlanDirty || outlineSaving} loading={outlineSaving} onClick={() => void saveOutlineDraft()}>保存大纲</Button>
-            </div>
+            </div>}
           </section>
           <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
-            <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span><small>{contentGenerationModeLabel(generationMode)}</small></div>
+            <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span></div>
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
               {contentGenerationModes.map((item) => {
                 const disabled = item.value !== "fresh" && !hasCurrentContent;
-                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} disabled={disabled} key={item.value} onClick={() => setGenerationMode(item.value)}><span className="ui-title">{item.label}</span><span>{compact ? item.mobileDescription : item.description}</span></button>;
+                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} aria-label={`${item.label}：${item.mobileDescription}`} disabled={disabled} key={item.value} onClick={() => setGenerationMode(item.value)}><span className="ui-title">{item.label}</span></button>;
               })}
             </div>
+            <p className="generate-mode-description">{contentGenerationModes.find((item) => item.value === generationMode)?.mobileDescription}</p>
+            {generationMode === "rewrite" && <p className="generate-mode-hint">原正文：{resolvedOutlineContentName(studio.currentOutline)}</p>}
             {!hasCurrentContent && <p className="generate-mode-hint">当前正文为空，只能使用全新生成。</p>}
           </section>
           {generationMode === "rewrite" && <section className="rewrite-retention-control" aria-labelledby="rewrite-retention-heading">
@@ -2583,43 +2694,67 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
             <p>{rewriteRetentionOption.description}</p>
             {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
           </section>}
+          <section className="dialogue-density-control" aria-labelledby="dialogue-density-heading">
+            <div className="dialogue-density-heading"><span id="dialogue-density-heading">对话密度</span></div>
+            <div className="dialogue-density-options" role="radiogroup" aria-label="对话密度" aria-describedby="dialogue-density-description">
+              {DIALOGUE_DENSITY_OPTIONS.map((item) => <label className={dialogueDensity === item.value ? "selected" : ""} key={item.value}>
+                <input type="radio" name="generate-dialogue-density" value={item.value} checked={dialogueDensity === item.value} onChange={() => setDialogueDensity(item.value)} />
+                <span>{item.label}</span>
+              </label>)}
+            </div>
+            <span id="dialogue-density-description" className="sr-only">{DIALOGUE_DENSITY_OPTIONS.find((item) => item.value === dialogueDensity)?.description}</span>
+            {generationMode === "continue" && <small>仅影响新增正文，已有正文保持原样。</small>}
+            {generationMode === "rewrite" && rewriteRetention === "high" && dialogueDensity !== "auto" && <small>优先保留原文结构，对话密度只作有限调整。</small>}
+            {!selectedModelReference && dialogueDensity !== "auto" && <small>本地演示引擎不执行对话密度控制，使用配置的模型后生效。</small>}
+          </section>
           <div className="generate-option-bar">
-            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数（可选）" : "目标字数（可选）"} description={compact ? undefined : "留空或 0 表示不限字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限字数" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) studio.updateSettings({ generateTargetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); studio.updateSettings({ generateTargetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : ""); }} />
+            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) studio.updateSettings({ generateTargetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); studio.updateSettings({ generateTargetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : ""); }} />
             <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
-            <label className="generate-excellent-fragments-toggle">
-              <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => setIncludeExcellentFragments(event.currentTarget.checked)} />
-              <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
-            </label>
-            <label className="generate-outline-title-toggle">
-              <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => setIncludeOutlineTitle(event.currentTarget.checked)} />
-              <span><span className="ui-label">同时生成大纲名</span><small>{compact ? "按大纲命名设置" : "遵循文章的大纲命名设置"}</small></span>
-            </label>
           </div>
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
-          <section className="generate-first-appearance" aria-label="首次出场人物">
-            <div className="generate-first-appearance-heading">
-              <div><span>人物出场</span><span className="ui-title">首次出场人物</span><small>{compact ? "自动识别，可手动调整" : "根据当前及前序大纲中的姓名、别名推测"}</small></div>
-              <Button className="generate-first-appearance-edit" variant="default" size="compact-sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>编辑</Button>
-            </div>
-            {includeCharacters ? firstAppearanceCharacters.length > 0
-              ? <div className="generate-first-appearance-tags">{firstAppearanceCharacters.map((character) => <span key={character.id}>{character.name}</span>)}</div>
-              : <p>未推测到首次出场人物，可点击“编辑”手动指定。</p>
-              : <p>人物上下文已关闭，本次生成不会发送首次出场信息。</p>}
-          </section>
+          <div className="generate-reference-bar" aria-label="生成参考设置">
+            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</small></span><Icon name="chevron" /></button>
+            <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>人物出场{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
+          </div>
           <div className="generate-prompt-label">
             <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
-            <Textarea maxLength={20000} autosize minRows={4} maxRows={10} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
-            <div className="generate-instruction-save-row">
+            <Textarea maxLength={20000} autosize minRows={3} maxRows={6} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
+            {(promptDirty || promptSaving || promptSaveFailed) && <div className="generate-instruction-save-row">
               <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
+            </div>}
+          </div>
+          <section className="generate-review-settings" aria-labelledby="generate-review-heading">
+            <div className="generate-section-heading"><span id="generate-review-heading">生成后审校</span><strong>{reviewMaxRounds > 0 ? `${reviewMaxRounds} 轮` : "关闭"}</strong></div>
+            <div className="generate-review-settings-body">
+              <NumberInput label="最多修正次数" aria-label="审校循环次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={reviewMaxRounds} onChange={(value) => studio.updateSettings({ generateReviewMaxRounds: normalizeReviewRounds(value) })} />
+              {reviewMaxRounds > 0 && <>
+                <Textarea label="本次 Review 指令" aria-label="本次 Review 指令" value={reviewInstruction} maxLength={MAX_REVIEW_RULE_CHARACTERS} onChange={(event) => setReviewInstruction(event.currentTarget.value)} autosize minRows={2} maxRows={6} placeholder="例如：重点检查人物对白，并压缩重复描写" />
+                <section className="generate-review-rules-panel"><span className="ui-label">文章 Review 规则</span><div className="generate-review-rules"><ReviewRuleSnapshotView snapshot={createReviewRuleSnapshot(studio.currentArticle)} showInstruction={false} /></div></section>
+              </>}
             </div>
+          </section>
+          <section className="generate-advanced-options" aria-labelledby="generate-reference-heading">
+            <div className="generate-section-heading"><span id="generate-reference-heading">参考与推理</span></div>
+            <div className="generate-advanced-options-body">
+              <label className="generate-excellent-fragments-toggle">
+                <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => setIncludeExcellentFragments(event.currentTarget.checked)} />
+                <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
+              </label>
+              <label className="generate-outline-title-toggle">
+                <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => setIncludeOutlineTitle(event.currentTarget.checked)} />
+                <span><span className="ui-label">同时生成大纲名</span><small>遵循大纲命名设置</small></span>
+              </label>
+              <div className="generate-reasoning-options"><TaskReasoningSettings kind="generate" model={selectedRecord} /></div>
+            </div>
+          </section>
+          <div className="generate-submit-zone">
+            <div className="generate-submit-row">
+              <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
+              <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
+            </div>
+            <p className="generate-auto-apply-note">完成后更新当前正文，旧版本保留。</p>
           </div>
-          <div className="generate-submit-row">
-            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">{contentGenerationModeLabel(generationMode)} · 上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>前面大纲 {summary.previousCount} 条 · 当前正文 {generationMode === "fresh" ? "不发送" : `${summary.content.toLocaleString("zh-CN")} 字符`} · 优秀片段 {summary.excellentFragmentCount} 个 · 人物 {summary.characterCount} 位</small></span><Icon name="chevron" /></button>
-            <div className="generate-model-control"><Select label="本次模型" description={compact ? `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符` : `输入上限 ${(selectedRecord?.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS).toLocaleString("zh-CN")} 字符；选择后保存为默认模型`} data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} /><small>{selectedModelReference ? selectedRecord?.hasSecret ? "● 可用" : "需要载入密钥" : "● 本地可用"}</small></div>
-            <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
-          </div>
-          <p className="generate-auto-apply-note">{compact ? "成功后自动设为当前正文，并保留为版本。" : "任务成功后会自动设为该大纲的当前正文，并保留在正文版本中。"}</p>
         </section>
 
         <ScrollableDrawer
@@ -2640,12 +2775,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
           </div>
         </ScrollableDrawer>
 
-        <section className="generate-task-section">
+        {(activeTasks.length > 0 || latestFailed) && <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><div className="generation-progress"><span /></div><button type="button" onClick={() => { studio.updateTask(task.id, { state: "cancelled" }); studio.updateOutline(task.outlineId, { state: "saved" }); }}>取消任务</button></article>)}
-          {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><span className="ui-title">{latestFailed.prompt || "按大纲生成"}</span><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => studio.updateTask(latestFailed.id, { state: "waiting", error: undefined })}>原样重试</button></div></article>}
-          {!activeTasks.length && !latestFailed && <div className="generate-empty-row">没有进行中的正文生成任务。</div>}
-        </section>
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${task.state}`} />{task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : "正在生成"}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)} · 对话密度 {dialogueDensityLabel(task.contextOptions?.dialogueDensity)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><TaskHistory task={task} collapsible /><div className="generation-progress"><span /></div><button type="button" onClick={() => { void changeGenerateTaskState(task, "cancel"); }}>取消任务</button></article>)}
+          {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><span className="ui-title">{latestFailed.prompt || "按大纲生成"}</span><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => { void changeGenerateTaskState(latestFailed, "retry"); }}>原样重试</button></div></article>}
+        </section>}
 
         {notice && <div className="generate-inline-notice" role="status"><Icon name="check" />{notice}</div>}
       </div>
@@ -2821,16 +2955,22 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   const isSubmitting = Boolean(submittingTaskId);
   const chatBusy = isStreaming || isSubmitting;
   const currentResponseStage = chatResponseStage && chatResponseStage.taskId === sessionChatTask?.id ? chatResponseStage.stage : null;
+  const restoringChat = Boolean(activeChatTask && !currentResponseStage && !activeChatStreams.has(activeChatTask.id));
+  const waitingForFirstToken = currentResponseStage === "waiting-first-token" || sessionChatTask?.phase === "generating";
   const chatProgressLabel = isSubmitting
     ? "正在提交"
-    : streaming
+    : sessionChatTask?.phase === "saving"
+      ? "正在保存回复"
+      : currentResponseStage === "recovering" || restoringChat && !sessionChatTask?.contextOptions?.serverManaged
+        ? "正在核对任务状态"
+        : streaming
       ? "正在回复"
-      : currentResponseStage === "waiting-first-token"
+      : waitingForFirstToken
         ? "等待首字"
         : activeChatTask ? "正在请求模型" : "正在回复";
-  const chatProgressText = streaming || (isSubmitting
+  const chatProgressText = streaming || (currentResponseStage === "recovering" || restoringChat && !sessionChatTask?.contextOptions?.serverManaged ? "正在恢复聊天状态，请稍候…" : isSubmitting
     ? "正在保存消息并创建任务…"
-    : currentResponseStage === "waiting-first-token"
+    : waitingForFirstToken
       ? "模型已响应，正在等待首字…"
       : activeChatTask ? "正在向模型发送请求…" : "正在思考…");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
@@ -2891,17 +3031,14 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
   }
 
   async function finalizeChat(stream: ChatStreamState, status: "success" | "failed" | "cancelled", error = "", stopped = false) {
-    const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "finalize", taskId: stream.taskId, sessionId: stream.sessionId, status, result: stream.result, error, stopped, chatbotName, messageId: clientId("message-assistant") }),
+    const response = await sendChatCompletion(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
+      action: "finalize", taskId: stream.taskId, sessionId: stream.sessionId, status, result: stream.result, error, stopped, chatbotName,
     });
     const payload = await response.json() as { revision?: number; task?: Partial<AiTask>; message?: Message; sessionUpdatedAt?: string; error?: string };
     if (!response.ok || payload.revision === undefined || !payload.task) throw new Error(payload.error || "聊天结果保存失败");
     applyChatTransaction({ revision: payload.revision, task: payload.task, message: payload.message, sessionUpdatedAt: payload.sessionUpdatedAt }, stream.taskId, stream.sessionId);
     setLocalStreaming((current) => current?.taskId === stream.taskId ? null : current);
-    setChatResponseStage((current) => current?.taskId === stream.taskId ? null : current);
+    setChatResponseStage((current) => payload.task?.state === "running" ? { taskId: stream.taskId, stage: "recovering" } : current?.taskId === stream.taskId ? null : current);
   }
 
   function stopStream(stream: ChatStreamState, stopped = true) {
@@ -2915,12 +3052,12 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       submissionLock.current = "";
       setSubmittingTaskId("");
     }
-    void finalizeChat(stream, "cancelled", stopped ? "用户停止了聊天回复" : "", stopped).catch((reason) => onNotice(reason instanceof Error ? reason.message : "聊天停止状态保存失败"));
+    void finalizeChat(stream, "cancelled", stopped ? "用户停止了聊天回复" : "", stopped).catch((reason) => onNotice(`停止请求尚未确认，联网后会自动重试：${reason instanceof Error ? reason.message : "连接失败"}`));
   }
   function cancelCurrentChatTask() {
     if (!activeChatTask || cancelActiveChatStream(activeChatTask.id)) return;
     const stream: ChatStreamState = { taskId: activeChatTask.id, sessionId: activeChatTask.contextOptions?.sessionId ?? session?.id ?? "", submissionToken: "", controller: new AbortController(), result: activeChatTask.resultText ?? "", finalized: true };
-    void finalizeChat(stream, "cancelled", "用户停止了聊天回复", true).catch((reason) => onNotice(reason instanceof Error ? reason.message : "聊天停止状态保存失败"));
+    void finalizeChat(stream, "cancelled", "用户停止了聊天回复", true).catch((reason) => onNotice(`停止请求尚未确认，联网后会自动重试：${reason instanceof Error ? reason.message : "连接失败"}`));
   }
 
   async function requestAnswer(question: string, addUser: boolean, targetSessionId = session?.id, targetSession = session) {
@@ -2944,22 +3081,24 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       promptContext = { ...promptContext, recentMessages: submittedMessages.slice(-20).map((item) => ({ role: item.role, text: item.text })) };
       const submitResponse = await fetchServerAction(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         cache: "no-store",
         headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
-        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
+        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, reasoningEffort: studio.data.settings.chatReasoningEffort, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
       });
       const submitted = await submitResponse.json() as { revision?: number; task?: AiTask; messages?: Message[]; sessionTitle?: string; sessionUpdatedAt?: string; error?: string };
       if (!submitResponse.ok || submitted.revision === undefined || !submitted.task || !submitted.messages) throw new Error(submitted.error || "消息提交失败");
       applyChatTransaction({ revision: submitted.revision, task: submitted.task, messages: submitted.messages, sessionTitle: submitted.sessionTitle, sessionUpdatedAt: submitted.sessionUpdatedAt }, taskId, targetSessionId);
       releaseSubmission();
       const controller = new AbortController();
+      const responseDeadline = window.setTimeout(() => controller.abort("response-timeout"), Math.max(1_000, (submitted.task.timeoutMs ?? 600_000) + 15_000));
       const stream: ChatStreamState = { taskId, sessionId: targetSessionId, submissionToken, controller, result: "", finalized: false };
       currentStream.current = stream;
       registerActiveChatStream(taskId, { controller, cancel: () => stopStream(stream, true) });
       setChatResponseStage({ taskId, stage: "requesting-model" });
       try {
         if (controller.signal.aborted) return;
-        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
+        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, reasoningEffort: studio.data.settings.chatReasoningEffort, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
         setChatResponseStage({ taskId, stage: "waiting-first-token" });
         const reader = response.body.getReader();
@@ -2987,19 +3126,21 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
         stream.finalized = true;
         await finalizeChat(stream, "success");
       } catch (error) {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted || controller.signal.reason === "response-timeout") {
           stream.finalized = true;
-          const errorMessage = error instanceof Error ? error.message : "请求失败";
+          const errorMessage = controller.signal.reason === "response-timeout" ? "等待聊天响应超时，正在核对服务端结果" : error instanceof Error ? error.message : "请求失败";
           await finalizeChat(stream, "failed", errorMessage);
         }
       } finally {
+        window.clearTimeout(responseDeadline);
         releaseActiveChatStream(taskId, controller);
         if (currentStream.current === stream) currentStream.current = null;
-        setChatResponseStage((current) => current?.taskId === taskId ? null : current);
+        setChatResponseStage((current) => current?.taskId === taskId && current.stage !== "recovering" ? null : current);
         stream.finalized = true;
       }
     } catch (reason) {
-      onNotice(reason instanceof Error ? reason.message : "AI Chat 提交失败");
+      onNotice(reason instanceof Error ? reason.message : "聊天结果尚未确认，联网后会自动核对");
+      void studio.refreshFromServer();
     } finally {
       releaseSubmission();
     }
@@ -3111,10 +3252,11 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       </div>
 
       <div className="chat-composer-wrap">
+        <details className="chat-reasoning-options"><summary>推理强度 · {studio.data.settings.chatReasoningEffort === undefined ? "沿用模型" : studio.data.settings.chatReasoningEffort ?? "不发送参数"}</summary><TaskReasoningSettings kind="chat" model={chatModelRecord} disabled={chatBusy} /></details>
         {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="AI Chat 上下文"><header><div><span className="ui-title">本次上下文</span><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={session.includePrevious} onChange={(event) => studio.setChatSetting(outline.id, "includePrevious", event.target.checked)} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{session.includePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={session.includeCharacters} onChange={(event) => studio.setChatSetting(outline.id, "includeCharacters", event.target.checked)} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{session.includeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
           <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="AI Chat 消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { studio.updateSettings({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地 PoC 引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { studio.updateSettings({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地演示引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
@@ -3157,14 +3299,16 @@ function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string
 
 function ChapterReader({ onOutline }: { onOutline: (id: string) => void }) {
   const studio = useStudio();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const chapter = studio.currentChapter;
   const outlines = chapter.outlines.filter((item) => studio.data.settings.showArchived || !item.archived);
   const totalWords = outlines.reduce((total, item) => total + wordCount(resolvedOutlineContent(item)), 0);
   return <div className="page-scroll"><div className="reader-page">
-      <PageHeader eyebrow={studio.currentArticle.title} title={chapter.title} description={`${outlines.length} 条大纲 · ${totalWords} 字`} actions={<button className="primary-compact" type="button" onClick={() => { const id = studio.createOutline(chapter.id); onOutline(id); }}><Icon name="plus" />新建大纲</button>} />
+      <PageHeader eyebrow={studio.currentArticle.title} title={chapter.title} description={`${outlines.length} 条大纲 · ${totalWords} 字`} actions={<Group gap="xs"><Button variant="default" onClick={() => setSettingsOpen(true)}>章节设定{countChapterSettingChanges(chapter.settings) ? ` · ${countChapterSettingChanges(chapter.settings)}` : ""}</Button><button className="primary-compact" type="button" onClick={() => { const id = studio.createOutline(chapter.id); onOutline(id); }}><Icon name="plus" />新建大纲</button></Group>} />
       <div className="reader-divider" />
       {outlines.map((item, index) => <ReaderSection key={item.id} number={String(index + 1).padStart(2, "0")} title={outlineDisplayTitle(item)} onClick={() => onOutline(item.id)}>{resolvedOutlineContent(item).split("\n\n").filter(Boolean).map((paragraph, paragraphIndex) => <p key={paragraphIndex}>{paragraph}</p>)}</ReaderSection>)}
       {!outlines.length && <div className="empty-inline">本章节还没有大纲。</div>}
+      {settingsOpen && <ChapterSettingsDrawer chapterId={chapter.id} onClose={() => setSettingsOpen(false)} />}
     </div></div>;
 }
 
@@ -3278,7 +3422,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
   const [error, setError] = useState("");
   const modelData = [
     { value: "__inherit__", label: `继承 AI Generate（${modelDisplayLabel(models, inheritedReference)}）` },
-    { value: "__local__", label: "本地 PoC 引擎" },
+    { value: "__local__", label: "本地演示引擎" },
     ...(namingSelection !== "__inherit__" && namingSelection !== "__local__" && !configuredModelForReference(models, namingSelection) ? [{ value: namingSelection, label: namingSelection }] : []),
     ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
   ];
@@ -3301,6 +3445,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
         chapterNaming: article.chapterNaming,
         outlineNaming: article.outlineNaming,
         model: selectedModelReference,
+        reasoningEffort: settings.namingReasoningEffort,
         modelLabel: modelDisplayLabel(models, selectedModelReference),
         instruction: instruction.trim(),
         context: namingArticleContext(article),
@@ -3374,6 +3519,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
         target: "all-names",
         instruction: instruction.trim(),
         model: selectedModelReference,
+        reasoningEffort: settings.namingReasoningEffort,
         includePrevious: false,
         includeCharacters: false,
         estimatedCharacters,
@@ -3425,11 +3571,11 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
   }
 
   return <div className="page-scroll"><div className="full-chapter-editor">
-    <PageHeader eyebrow="全章节编辑" title={article.title} description={`${chapters.length} 章 · ${outlineCount} 条大纲 · ${candidateCount} 个待选 AI 名称`} actions={<Button leftSection={<Icon name="spark" />} loading={activeAllTask?.state === "running"} disabled={Boolean(busy) || Boolean(activeAllTask) || missingSecret || !eligibleChapters.length} onClick={() => void generateAll()}>{activeAllTask ? "全部名称后台生成中" : "生成全部章节名和大纲名"}</Button>} />
+    <PageHeader title={article.title} description={`${chapters.length} 章 · ${outlineCount} 条大纲 · ${candidateCount} 个待选 AI 名称`} actions={<Button leftSection={<Icon name="spark" />} loading={activeAllTask?.state === "running"} disabled={Boolean(busy) || Boolean(activeAllTask) || missingSecret || !eligibleChapters.length} onClick={() => void generateAll()}>{activeAllTask ? "全部名称生成中" : "生成全部名称"}</Button>} />
     <section className="full-chapter-generation-bar" aria-label="名称生成设置">
       <Select label="名称生成模型" data={modelData} value={namingSelection} allowDeselect={false} disabled={Boolean(busy) || Boolean(activeAllTask)} onChange={selectNamingModel} />
       <Textarea label="补充命名要求（可选）" maxLength={20_000} autosize minRows={2} maxRows={5} value={instruction} disabled={Boolean(busy) || Boolean(activeAllTask)} placeholder="例如：避免剧透，保持海洋意象" onChange={(event) => setInstruction(event.currentTarget.value)} />
-      <p>生成全部会创建一个后台任务，并在一次模型请求中返回整篇名称；AI 结果只会添加为候选版本。</p>
+      <div className="name-generation-reasoning"><TaskReasoningSettings kind="naming" model={selectedRecord} disabled={Boolean(busy) || Boolean(activeAllTask)} /></div>
     </section>
     {activeAllTask && <Alert color="studio" role="status">全部名称正在后台{activeAllTask.state === "waiting" ? "排队" : "生成"}，可以离开本页面；完成后候选名称会自动出现在这里。</Alert>}
     {error && <Alert color="red" role="alert">{error}</Alert>}
@@ -3725,9 +3871,9 @@ function useContinuousEditorViewport(scrollRef: { current: HTMLDivElement | null
   }, [scrollRef]);
 }
 
-function ContinuousChapterHeading({ chapterId, index, title }: { chapterId: string; index: number; title: string }) {
+function ContinuousChapterHeading({ chapterId, index, title, settingCount, onSettings }: { chapterId: string; index: number; title: string; settingCount: number; onSettings: () => void }) {
   const { isOver, setNodeRef } = useDroppable({ id: `continuous-chapter:${chapterId}`, data: { type: "chapter", chapterId } });
-  return <header ref={setNodeRef} className={`continuous-chapter-heading ${isOver ? "chapter-drop-active" : ""}`}><span>第 {index + 1} 章</span><h2>{title}</h2></header>;
+  return <header ref={setNodeRef} className={`continuous-chapter-heading ${isOver ? "chapter-drop-active" : ""}`}><div><span>第 {index + 1} 章</span><h2>{title}</h2></div><button className="chapter-setting-trigger" type="button" onClick={onSettings}>章节设定{settingCount ? ` · ${settingCount}` : ""}</button></header>;
 }
 
 function ContinuousEmptyChapter({ chapterId }: { chapterId: string }) {
@@ -3837,95 +3983,45 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
   </article>;
 }
 
-function AiReviewDialog({ chapters, models, presets, initialModel, onClose, onSavePresets, onSetDefaultModel, onRun }: {
+function AiReviewDialog({ article, chapters, models, initialModel, onClose, onSetDefaultModel, onRun }: {
+  article: Article;
   chapters: Chapter[];
   models: ConfiguredModel[];
-  presets: string[];
   initialModel: string;
   onClose: () => void;
-  onSavePresets: (presets: string[]) => void;
   onSetDefaultModel: (modelId: string) => void;
-  onRun: (input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string }) => Promise<void>;
+  onRun: (input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string; ruleSnapshot: ReviewRuleSnapshot; reasoningEffort?: ReasoningEffort | null }) => Promise<void>;
 }) {
+  const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const availableChapters = chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && resolvedOutlineContent(outline).trim()));
-  const preferredModel = canonicalModelReference(models, initialModel) || models[0]?.id || "";
   const [chapterId, setChapterId] = useState(availableChapters[0]?.id ?? "");
-  const model = preferredModel;
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const model = canonicalModelReference(models, initialModel) || models[0]?.id || "";
   const [additionalRequirement, setAdditionalRequirement] = useState("");
-  const [running, setRunning] = useState(false);
+  const [runningSnapshot, setRunningSnapshot] = useState<ReviewRuleSnapshot | null>(null);
   const [error, setError] = useState("");
-
-  function togglePreset(value: string, checked: boolean) {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (checked) next.add(value); else next.delete(value);
-      return next;
-    });
-  }
-
-  function saveAdditionalAsPreset() {
-    const value = additionalRequirement.trim().slice(0, MAX_REVIEW_PRESET_CHARACTERS);
-    if (!value) return;
-    onSavePresets(normalizeReviewPresets([...presets, value]));
-    setSelected((current) => new Set(current).add(value));
-    setAdditionalRequirement("");
-  }
-
+  const running = Boolean(runningSnapshot);
+  const snapshot = runningSnapshot ?? createReviewRuleSnapshot(article, additionalRequirement);
   async function submit() {
-    if (!chapterId || !model || running) return;
-    onSetDefaultModel(model);
-    setRunning(true);
-    setError("");
-    try {
-      await onRun({ chapterId, model, requirements: presets.filter((item) => selected.has(item)), additionalRequirement: additionalRequirement.trim() });
-      onClose();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "AI Review 失败");
-    } finally {
-      setRunning(false);
-    }
+    if (!chapterId || !model || running || !hasReviewRules(snapshot)) return;
+    onSetDefaultModel(model); setRunningSnapshot(snapshot); setError("");
+    try { await onRun({ chapterId, model, requirements: [], additionalRequirement: snapshot.instruction, ruleSnapshot: snapshot, reasoningEffort: studio.data.settings.reviewReasoningEffort }); onClose(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "AI Review 失败"); }
+    finally { setRunningSnapshot(null); }
   }
-
-  return <ResponsiveModal
-    opened
-    onClose={running ? () => undefined : onClose}
-    closeButtonProps={{ "aria-label": "关闭 AI Review" }}
-    title="AI Review"
-    centered
-    fullScreen={compact}
-    size="lg"
-    classNames={{ content: "ai-review-dialog ws-modal-content", header: "ws-modal-header", body: "ai-review-dialog-body" }}
-    overlayProps={{ backgroundOpacity: 0.46, blur: 3 }}
-  >
-    <Stack gap="md">
-      <div className="ai-review-basics">
-        <Select label="Review 章节" value={chapterId} onChange={(value) => setChapterId(value ?? "")} data={availableChapters.map((chapter) => ({ value: chapter.id, label: chapter.title }))} disabled={running} />
-        <Select label="模型" description="选择后自动保存为 AI Review 默认模型" value={model} onChange={(value) => onSetDefaultModel(value ?? "")} data={models.map((item) => ({ value: item.id, label: `${modelDisplayLabel(models, item.id)}${item.hasSecret ? "" : "（需密钥）"}` }))} disabled={running} />
+  return <ResponsiveModal scrollMode="content" opened onClose={running ? () => undefined : onClose} closeButtonProps={{ "aria-label": "关闭 AI Review" }} title="AI Review" centered fullScreen={compact} size="lg" classNames={{ content: "ai-review-dialog ws-modal-content", header: "ws-modal-header", body: "ai-review-dialog-body" }} overlayProps={{ backgroundOpacity: 0.46, blur: 3 }}>
+    <div className="ai-review-layout">
+      <div className="ai-review-scroll" data-ui-overlay-scroll>
+        <div className="ai-review-basics"><Select label="Review 章节" value={chapterId} onChange={(value) => setChapterId(value ?? "")} data={availableChapters.map((chapter) => ({ value: chapter.id, label: chapter.title }))} disabled={running} /><Select label="模型" value={model} onChange={(value) => onSetDefaultModel(value ?? "")} data={models.map((item) => ({ value: item.id, label: modelDisplayLabel(models, item.id) }))} disabled={running} /></div>
+        <Textarea className="ai-review-requirement" label="本次附加要求" minRows={3} maxRows={6} autosize maxLength={MAX_REVIEW_RULE_CHARACTERS} value={additionalRequirement} onChange={(event) => setAdditionalRequirement(event.currentTarget.value)} disabled={running} />
+      <section className="ai-review-article-rules"><div className="ai-review-section-heading"><span>本次文章规则</span><small>{snapshot.rules.length} 条</small>{!running && <a href={`/articles/${article.id}/info/ai-tasks`}>管理规则</a>}</div><div className="ai-review-rules-body"><ReviewRuleSnapshotView snapshot={snapshot} showInstruction={false} /></div></section>
+        <section className="ai-review-advanced"><TaskReasoningSettings kind="review" model={configuredModelForReference(models, model)} disabled={running} /></section>
+        {!hasReviewRules(snapshot) && <Alert color="studio">请添加文章规则或填写本次附加要求。</Alert>}
+        {error && <Alert color="red">{error}</Alert>}
+        {!models.length && <Alert color="yellow">请先配置一个可用模型。</Alert>}
       </div>
-      <section className="ai-review-builtins">
-        <Text fw={650} size="sm">固定检查</Text>
-        {BUILTIN_REVIEW_REQUIREMENTS.map((item) => <div key={item}><Icon name="check" /><span>{item}</span></div>)}
-      </section>
-      <section className="ai-review-presets">
-        <Group justify="space-between"><Text fw={650} size="sm">预定义 Review 要求</Text><Text c="dimmed" size="xs">可多选</Text></Group>
-        {presets.length ? <Stack gap={6}>{presets.map((item) => <div className="ai-review-preset-row" key={item}>
-          <Checkbox checked={selected.has(item)} onChange={(event) => togglePreset(item, event.currentTarget.checked)} label={item} disabled={running} />
-          <Button variant="subtle" color="red" size="compact-xs" type="button" disabled={running} onClick={() => { togglePreset(item, false); onSavePresets(presets.filter((preset) => preset !== item)); }}>删除</Button>
-        </div>)}</Stack> : <Text c="dimmed" size="sm">尚未保存预定义要求。</Text>}
-      </section>
-      <div>
-        <Textarea label="本次附加要求" description="只用于本次 Review；也可以保存后供以后多选。" minRows={4} maxRows={8} autosize maxLength={20_000} value={additionalRequirement} onChange={(event) => setAdditionalRequirement(event.currentTarget.value)} disabled={running} />
-        <Button mt="xs" variant="default" size="sm" type="button" disabled={!additionalRequirement.trim() || presets.length >= MAX_REVIEW_PRESETS || running} onClick={saveAdditionalAsPreset}>保存为预定义要求</Button>
-      </div>
-      {error && <Alert color="red">{error}</Alert>}
-      {!models.length && <Alert color="yellow">请先在模型设置中添加并配置一个支持结构化 JSON 输出的模型。</Alert>}
-      <Group justify="flex-end">
-        <Button variant="default" type="button" disabled={running} onClick={onClose}>取消</Button>
-        <Button leftSection={<Icon name="review" />} loading={running} disabled={!chapterId || !model || !models.length} onClick={() => void submit()}>开始 AI Review</Button>
-      </Group>
-    </Stack>
+      <div className="ai-review-actions"><Button variant="default" disabled={running} onClick={onClose}>取消</Button><Button leftSection={<Icon name="review" />} loading={running} disabled={!chapterId || !model || !models.length || !hasReviewRules(snapshot)} onClick={() => void submit()}>开始 AI Review</Button></div>
+    </div>
   </ResponsiveModal>;
 }
 
@@ -3942,6 +4038,8 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
   const [versionSelections, setVersionSelections] = useState<Record<string, string>>({});
   const [chatOutlineId, setChatOutlineId] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [articleSettingsOpen, setArticleSettingsOpen] = useState(false);
+  const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<OutlineDropIndicator>(null);
   const contentDraftsRef = useRef(contentDrafts);
@@ -4234,9 +4332,10 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
     onNotice(item.archived ? `已恢复「${outlineDisplayTitle(item)}」` : `已归档「${outlineDisplayTitle(item)}」`);
   }
 
-  async function runReview(input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string }) {
+  async function runReview(input: { chapterId: string; model: string; requirements: string[]; additionalRequirement: string; ruleSnapshot: ReviewRuleSnapshot; reasoningEffort?: ReasoningEffort | null }) {
     const chapter = studio.currentArticle.chapters.find((item) => item.id === input.chapterId);
     if (!chapter) throw new Error("Review 章节不存在");
+    const resolvedSettings = resolveChapterSettings(studio.currentArticle, chapter.id);
     const sourceOutlines = chapter.outlines.filter((item) => !item.archived).map((item) => ({
       id: item.id,
       title: item.title,
@@ -4254,9 +4353,8 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
           id: studio.currentArticle.id,
           title: studio.currentArticle.title,
           summary: studio.currentArticle.summary,
-          type: studio.currentArticle.type,
-          style: studio.currentArticle.style,
-          characters: studio.currentArticle.characters.filter((person) => !person.archived).map((person) => ({ name: person.name, aliases: person.aliases, description: person.description })),
+          ...resolvedSettings.story,
+          characters: resolvedSettings.characters.filter((person) => !person.archived && person.appears !== false).map((person) => ({ name: person.name, aliases: person.aliases, description: person.description, profile: person.profile, endingChanges: person.endingChanges })),
         },
         chapter: { id: chapter.id, title: chapter.title },
         outlines: sourceOutlines,
@@ -4358,11 +4456,11 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
   const status = mode === "content" && dirtyContentIds.size ? `${dirtyContentIds.size} 条编辑中` : saveStatusLabel(studio.saveStatus);
 
   return <div ref={scrollRef} className="page-scroll keyboard-aware-page-scroll"><div className={`continuous-document-editor ${mode}`}>
-    <PageHeader eyebrow={mode === "outline" ? "全大纲编辑" : "全文编辑"} title={studio.currentArticle.title} description={`${groups.length} 章 · ${outlines.length} 条大纲${mode === "content" ? ` · ${contentWords.toLocaleString("zh-CN")} 字` : ""} · ${status}`} actions={mode === "outline" ? <Button className="copy-all-outlines-button" variant="default" size="sm" type="button" leftSection={<Icon name="copy" />} onClick={() => void copyAllOutlines()}>复制</Button> : <><Button variant="default" type="button" onClick={() => void saveAllContentAsVersions()}>另存为</Button><Button type="button" loading={studio.saveStatus === "saving"} onClick={() => void saveAllContent()}>保存</Button><IconButton name="review" label="AI Review" variant="glass" size="large" className="full-content-review-button" onClick={() => setReviewOpen(true)} /></>} />
+    <PageHeader eyebrow={mode === "outline" ? "全大纲编辑" : "全文编辑"} title={studio.currentArticle.title} description={`${groups.length} 章 · ${outlines.length} 条大纲${mode === "content" ? ` · ${contentWords.toLocaleString("zh-CN")} 字` : ""} · ${status}`} actions={mode === "outline" ? <Group gap="xs" wrap="nowrap"><Button className="article-setting-trigger" variant="subtle" size="sm" type="button" onClick={() => setArticleSettingsOpen(true)}>文章设定</Button><Button className="copy-all-outlines-button" variant="default" size="sm" type="button" leftSection={<Icon name="copy" />} onClick={() => void copyAllOutlines()}>复制</Button></Group> : <><Button variant="default" type="button" onClick={() => void saveAllContentAsVersions()}>另存为</Button><Button type="button" loading={studio.saveStatus === "saving"} onClick={() => void saveAllContent()}>保存</Button>{STANDALONE_AI_REVIEW_ENABLED && <IconButton name="review" label="AI Review" variant="glass" size="large" className="full-content-review-button" onClick={() => setReviewOpen(true)} />}</>} />
     <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={{ acceleration: 10, threshold: { x: 0.12, y: 0.12 } }} onDragStart={(event) => setDraggingId(String(event.active.id))} onDragOver={handleDragOver} onDragCancel={clearDragState} onDragEnd={finishDrag}>
       <div className="continuous-document-body">
         {groups.map((group, groupIndex) => <section className="continuous-chapter" key={group.id}>
-          <ContinuousChapterHeading chapterId={group.id} index={groupIndex} title={group.title} />
+          <ContinuousChapterHeading chapterId={group.id} index={groupIndex} title={group.title} settingCount={countChapterSettingChanges(group.settings)} onSettings={() => setChapterSettingsId(group.id)} />
           <SortableContext items={group.items.map((item) => item.id)} strategy={verticalListSortingStrategy}>
             {group.items.length ? group.items.map((item, itemIndex) => <ContinuousOutlineBlock
               key={item.id}
@@ -4401,7 +4499,9 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
       </DragOverlay>
     </DndContext>
     {mode === "outline" && chatOutlineId && <FullOutlineChatDialog outlineId={chatOutlineId} onClose={() => setChatOutlineId(null)} onNotice={onNotice} />}
-    {mode === "content" && reviewOpen && <AiReviewDialog chapters={studio.currentArticle.chapters} models={reviewModels} presets={studio.data.settings.reviewPresets} initialModel={studio.data.settings.reviewModel} onClose={() => setReviewOpen(false)} onSavePresets={(presets) => studio.updateSettings({ reviewPresets: presets })} onSetDefaultModel={(reviewModel) => { studio.updateSettings({ reviewModel }); void studio.saveNow(); }} onRun={runReview} />}
+    {mode === "outline" && <ArticleSettingsDrawer opened={articleSettingsOpen} onClose={() => setArticleSettingsOpen(false)} />}
+    {mode === "outline" && chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
+    {STANDALONE_AI_REVIEW_ENABLED && mode === "content" && reviewOpen && <AiReviewDialog article={studio.currentArticle} chapters={studio.currentArticle.chapters} models={reviewModels} initialModel={studio.data.settings.reviewModel} onClose={() => setReviewOpen(false)} onSetDefaultModel={(reviewModel) => { studio.updateSettings({ reviewModel }); void studio.saveNow(); }} onRun={runReview} />}
   </div></div>;
 }
 
@@ -4462,10 +4562,13 @@ function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (view: Vi
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
       {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
-        ["info-basic", "基本信息"], ["info-chapters", "章节"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
+        ["info-basic", "基本信息"], ["info-ai-tasks", "AI 任务设定"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
       ]} active={view} onGo={onGo} />
       {view === "info-basic" && <BasicInfo />}
-      {view === "info-chapters" && <ArticleChapterNames />}
+      {view === "info-ai-tasks" && <div className="article-ai-task-settings">
+        <div className="form-card article-ai-task-section"><ArticleReviewRulesPage /></div>
+        <ArticleChapterNames />
+      </div>}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
       {copySource && <ArticleCopyDialog article={copySource} existingTitles={studio.data.articles.map((article) => article.title)} onClose={() => setCopySource(null)} onCreate={copyArticle} />}
@@ -4480,7 +4583,7 @@ function Tabs({ items, active, onGo }: { items: [View, string][]; active: View; 
 function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
-  return <div className="form-card"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label>文章类型<input value={article.type} maxLength={120} onChange={(event) => studio.updateArticle({ type: event.target.value })} /></label><label className="full">写作风格<textarea value={article.style} maxLength={5000} onChange={(event) => studio.updateArticle({ style: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+  return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
 }
 
 function ArticleChapterNames() {
@@ -4488,14 +4591,14 @@ function ArticleChapterNames() {
   const article = studio.currentArticle;
   const activeChapters = article.chapters.filter((chapter) => !chapter.archived);
   const eligibleOutlineCount = activeChapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()).length, 0);
-  return <div className="form-card article-naming-page">
+  return <section className="form-card article-ai-task-section article-naming-page" aria-labelledby="article-naming-title">
+      <header className="article-ai-task-section-heading"><h2 id="article-naming-title">命名规则</h2><p>用于 AI 生成章节和大纲名称。</p></header>
       <section className="article-naming-settings">
-        <div className="article-naming-heading"><div><span>AI 命名</span><h2>章节与大纲名称</h2><p>这里只设置名称生成规则。生成、候选版本和默认名称统一在“全章节编辑”中管理。</p></div></div>
         {!eligibleOutlineCount && <Alert color="studio" variant="light">当前没有包含内容的未归档大纲。填写大纲内容后即可生成全部名称。</Alert>}
         <div className="article-naming-grid"><NamingProfileEditor title="章节命名" profile={article.chapterNaming} fallback={DEFAULT_CHAPTER_NAMING_PROFILE} onChange={(chapterNaming) => studio.updateArticle({ chapterNaming })} /><NamingProfileEditor title="大纲命名" profile={article.outlineNaming} fallback={DEFAULT_OUTLINE_NAMING_PROFILE} onChange={(outlineNaming) => studio.updateArticle({ outlineNaming })} /></div>
       </section>
       <div className="form-foot"><span>{activeChapters.length} 个未归档章节 · {eligibleOutlineCount} 条可命名大纲</span><span className="save-state"><i /> 已自动保存</span></div>
-    </div>;
+    </section>;
 }
 
 function NamingProfileEditor({ title, profile, fallback, onChange }: { title: string; profile: NamingProfile; fallback: NamingProfile; onChange: (profile: NamingProfile) => void }) {
@@ -4525,40 +4628,63 @@ function Characters() {
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", aliases: "", description: "" });
-  const visible = studio.currentArticle.characters.filter((person) => (studio.data.settings.showArchived || !person.archived) && `${person.name}${person.aliases.join("")}${person.description}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  function openCreate() { setEditingId(null); setForm({ name: "", aliases: "", description: "" }); setFormOpen(true); }
-  function openEdit(person: Character) { setEditingId(person.id); setForm({ name: person.name, aliases: person.aliases.join("，"), description: person.description }); setFormOpen(true); }
+  const [form, setForm] = useState({ name: "", aliases: "", description: "", profile: normalizeCharacterProfile(undefined) });
+  const visible = studio.currentArticle.characters.filter((person) => (studio.data.settings.showArchived || !person.archived) && `${person.name}${person.aliases.join("")}${person.description}${Object.values(normalizeCharacterProfile(person.profile)).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  function openCreate() { setEditingId(null); setForm({ name: "", aliases: "", description: "", profile: normalizeCharacterProfile(undefined) }); setFormOpen(true); }
+  function openEdit(person: Character) { setEditingId(person.id); setForm({ name: person.name, aliases: person.aliases.join("，"), description: person.description, profile: normalizeCharacterProfile(person.profile) }); setFormOpen(true); }
   function save() {
     const name = form.name.trim();
     if (!name) return;
     const aliases = [...new Set(form.aliases.split(/[，,;；\n]/).map((item) => item.trim()).filter(Boolean))];
-    if (editingId) studio.updateCharacter(editingId, { name, aliases, description: form.description });
-    else studio.addCharacter({ name, aliases, description: form.description, archived: false });
+    if (editingId) studio.updateCharacter(editingId, { name, aliases, description: form.description, profile: form.profile });
+    else studio.addCharacter({ name, aliases, description: form.description, profile: form.profile, archived: false });
     setFormOpen(false);
   }
   return <>
     <div className="list-toolbar"><label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物…" /></label><button className="primary-compact" type="button" onClick={openCreate}><Icon name="plus" />新建人物</button></div>
-    <div className="character-grid">{visible.map((person, index) => <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}>{person.name[0]}</div><div><h3>{person.name}</h3>{person.aliases.length > 0 && <span>{person.aliases.join("、")}</span>}<p>{person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><button type="button" onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</button><button className="danger-text" type="button" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</button></div></article>)}</div>
+    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}>{person.name[0]}</div><div><h3>{person.name}</h3><span>{[profile.age, profile.identity, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || profile.personality || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     {!visible.length && <div className="empty-inline">没有符合条件的人物。</div>}
-    {formOpen && <div className="character-edit-layer"><button className="modal-scrim" type="button" aria-label="关闭人物编辑" onClick={() => setFormOpen(false)} /><div className="dialog-card character-edit-dialog" role="dialog" aria-modal="true" aria-label={editingId ? "编辑人物" : "新建人物"}><header><h2>{editingId ? "编辑人物" : "新建人物"}</h2><IconButton name="close" label="关闭人物编辑" onClick={() => setFormOpen(false)} /></header><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><label>描述<textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><footer><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer></div></div>}
+    {formOpen && <div className="character-edit-layer"><button className="modal-scrim" type="button" aria-label="关闭人物编辑" onClick={() => setFormOpen(false)} /><div className="dialog-card character-edit-dialog" role="dialog" aria-modal="true" aria-label={editingId ? "编辑人物" : "新建人物"}><header><h2>{editingId ? "编辑人物" : "新建人物"}</h2><IconButton name="close" label="关闭人物编辑" onClick={() => setFormOpen(false)} /></header><div className="character-edit-scroll"><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>补充说明<textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div><footer><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer></div></div>}
   </>;
 }
 
 function Relationships() {
   const studio = useStudio();
+  const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const people = studio.currentArticle.characters.filter((person) => !person.archived);
-  function create() {
-    if (people.length < 2) { window.alert("至少需要两个人物才能建立关系。"); return; }
-    const options = people.map((person, index) => `${index + 1}. ${person.name}`).join("\n");
-    const first = people[Number(window.prompt(`选择人物 A：\n${options}`, "1")) - 1];
-    const second = people[Number(window.prompt(`选择人物 B：\n${options}`, "2")) - 1];
-    if (!first || !second || first.id === second.id) { window.alert("请选择两个不同人物。"); return; }
-    if (studio.currentArticle.relationships.some((item) => [item.characterAId, item.characterBId].includes(first.id) && [item.characterAId, item.characterBId].includes(second.id))) { window.alert("这两个人物之间已经存在关系。"); return; }
-    const description = window.prompt("关系描述");
-    if (description?.trim()) studio.addRelationship({ characterAId: first.id, characterBId: second.id, description: description.trim() });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [form, setForm] = useState({ characterAId: "", characterBId: "", description: "" });
+  const [error, setError] = useState("");
+  const personOptions = people.map((person) => ({ value: person.id, label: person.name }));
+  function openCreate() {
+    if (people.length < 2) return;
+    setEditingId(null);
+    setForm({ characterAId: people[0].id, characterBId: people[1].id, description: "" });
+    setError("");
+    setFormOpen(true);
   }
-  return <><div className="relationship-toolbar"><span className="ui-title">{studio.currentArticle.relationships.length} 条人物关系</span><button className="primary-compact" type="button" onClick={create}><Icon name="plus" />新建关系</button></div><div className="relationship-list">{studio.currentArticle.relationships.map((item) => { const a = studio.currentArticle.characters.find((person) => person.id === item.characterAId); const b = studio.currentArticle.characters.find((person) => person.id === item.characterBId); if (!a || !b) return null; return <article className="relationship-card" key={item.id}><div className="mini-avatar blue">{a.name[0]}</div><span className="ui-title">{a.name}</span><span className="relationship-line"><Icon name="link" /><em>{item.description}</em></span><span className="ui-title">{b.name}</span><div className="mini-avatar blue">{b.name[0]}</div><div className="card-actions"><button type="button" onClick={() => { const description = window.prompt("关系描述", item.description); if (description?.trim()) studio.updateRelationship(item.id, { description: description.trim() }); }}>编辑</button><button className="danger-text" type="button" onClick={() => { if (window.confirm("删除这条人物关系？")) studio.deleteRelationship(item.id); }}>删除</button></div></article>; })}</div></>;
+  function openEdit(item: Article["relationships"][number]) {
+    setEditingId(item.id);
+    setForm({ characterAId: item.characterAId, characterBId: item.characterBId, description: item.description });
+    setError("");
+    setFormOpen(true);
+  }
+  function save() {
+    if (!form.characterAId || !form.characterBId || form.characterAId === form.characterBId) { setError("请选择两个不同人物。"); return; }
+    const description = form.description.trim();
+    if (!description) { setError("请填写关系描述。"); return; }
+    const duplicate = studio.currentArticle.relationships.some((item) => item.id !== editingId && [item.characterAId, item.characterBId].includes(form.characterAId) && [item.characterAId, item.characterBId].includes(form.characterBId));
+    if (duplicate) { setError("这两个人物之间已经存在关系。"); return; }
+    if (editingId) studio.updateRelationship(editingId, { ...form, description });
+    else studio.addRelationship({ ...form, description });
+    setFormOpen(false);
+  }
+  return <><div className="relationship-toolbar"><span className="ui-title">{studio.currentArticle.relationships.length} 条人物关系</span><button className="primary-compact" type="button" disabled={people.length < 2} onClick={openCreate}><Icon name="plus" />新建关系</button></div>{people.length < 2 && <div className="empty-inline">至少需要两个人物才能建立关系。</div>}<div className="relationship-list">{studio.currentArticle.relationships.map((item) => { const a = studio.currentArticle.characters.find((person) => person.id === item.characterAId); const b = studio.currentArticle.characters.find((person) => person.id === item.characterBId); if (!a || !b) return null; return <article className="relationship-card" key={item.id}><div className="mini-avatar blue">{a.name[0]}</div><span className="ui-title">{a.name}</span><span className="relationship-line"><Icon name="link" /><em>{item.description}</em></span><span className="ui-title">{b.name}</span><div className="mini-avatar blue">{b.name[0]}</div><div className="card-actions"><button type="button" onClick={() => openEdit(item)}>编辑</button><Menu position="bottom-end" shadow="md" width={140} withinPortal><Menu.Target><button type="button" aria-label={`${a.name}与${b.name}关系的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item color="red" onClick={() => { if (window.confirm("删除这条人物关系？")) studio.deleteRelationship(item.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
+    <ResponsiveModal opened={formOpen} onClose={() => setFormOpen(false)} closeButtonProps={{ "aria-label": "关闭人物关系编辑" }} title={editingId ? "编辑人物关系" : "新建人物关系"} size="md" fullScreen={compact} centered={!compact}>
+      <Stack gap="md"><SimpleGrid cols={{ base: 1, sm: 2 }}><Select label="人物 A" data={personOptions} value={form.characterAId} allowDeselect={false} onChange={(value) => setForm({ ...form, characterAId: value ?? "" })} /><Select label="人物 B" data={personOptions} value={form.characterBId} allowDeselect={false} onChange={(value) => setForm({ ...form, characterBId: value ?? "" })} /></SimpleGrid><Textarea label="关系描述" value={form.description} maxLength={1000} minRows={3} maxRows={8} autosize onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} />{error && <Alert color="red">{error}</Alert>}<Group justify="flex-end"><Button variant="default" onClick={() => setFormOpen(false)}>取消</Button><Button disabled={!form.description.trim() || !form.characterAId || !form.characterBId} onClick={save}>保存关系</Button></Group></Stack>
+    </ResponsiveModal>
+  </>;
 }
 
 function SettingsPage({ view, onGo }: { view: View; onGo: (view: View) => void }) {
@@ -4608,7 +4734,7 @@ function ModelSettings() {
   const [providerForm, setProviderForm] = useState({ name: "", adapterKind: "openai-compatible", baseUrl: "https://api.openai.com/v1", secret: "", timeoutMinutes: "2" });
   const [modelFormOpen, setModelFormOpen] = useState(false);
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
-  const [modelForm, setModelForm] = useState({ providerId: "", name: "", modelId: "", systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
+  const [modelForm, setModelForm] = useState({ providerId: "", name: "", modelId: "", systemPrompt: "", reasoningEffort: null as ReasoningEffort | null, maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) });
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
@@ -4684,15 +4810,15 @@ function ModelSettings() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "API Key 移除失败"); }
   }
 
-  function closeModelForm() { setModelFormOpen(false); setEditingModelId(null); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: "", name: "", modelId: "", systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); }
+  function closeModelForm() { setModelFormOpen(false); setEditingModelId(null); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: "", name: "", modelId: "", systemPrompt: "", reasoningEffort: null as ReasoningEffort | null, maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); }
   function openCreateModel(providerId = providers[0]?.id ?? "", candidates: string[] = []) {
     setError(""); setEditingModelId(null); setDiscoveredModels(candidates);
     const saved = new Set(models.filter((model) => model.providerId === providerId).map((model) => model.modelId));
     const existing = candidates.filter((modelId) => saved.has(modelId));
     const initial = existing.length ? existing : candidates.slice(0, 1);
-    setSelectedModelIds(initial); setModelForm({ providerId, name: "", modelId: initial.join(", "), systemPrompt: "", maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true);
+    setSelectedModelIds(initial); setModelForm({ providerId, name: "", modelId: initial.join(", "), systemPrompt: "", reasoningEffort: null as ReasoningEffort | null, maxInputCharacters: String(DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true);
   }
-  function openEditModel(model: Model) { setError(""); setEditingModelId(model.id); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: model.providerId, name: model.name, modelId: model.modelId, systemPrompt: model.systemPrompt, maxInputCharacters: String(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true); }
+  function openEditModel(model: Model) { setError(""); setEditingModelId(model.id); setDiscoveredModels([]); setSelectedModelIds([]); setModelForm({ providerId: model.providerId, name: model.name, modelId: model.modelId, systemPrompt: model.systemPrompt, reasoningEffort: normalizeReasoningEffort(model.reasoningEffort), maxInputCharacters: String(model.maxInputCharacters ?? DEFAULT_MAX_INPUT_CHARACTERS) }); setModelFormOpen(true); }
   async function fetchProviderModels(provider: Provider) {
     setBusy(`discover-${provider.id}`); setError("");
     try {
@@ -4709,12 +4835,12 @@ function ModelSettings() {
     try {
       if (!editingModelId) {
         if (!newModelIds.length) { closeModelForm(); return; }
-        const response = await fetchServerAction("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: newModelIds, systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        const response = await fetchServerAction("/api/models/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelIds: newModelIds, systemPrompt: modelForm.systemPrompt, reasoningEffort: modelForm.reasoningEffort, maxInputCharacters }) });
         const payload = await response.json() as { models?: Model[]; error?: string };
         if (!response.ok) throw new Error(payload.error || "模型创建失败");
         // The server also skips models created by another session.
       } else {
-        const response = await fetchServerAction(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, maxInputCharacters }) });
+        const response = await fetchServerAction(`/api/models/${editingModelId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: modelForm.providerId, name: modelForm.name, modelId: requestedModelIds[0] ?? "", systemPrompt: modelForm.systemPrompt, reasoningEffort: modelForm.reasoningEffort, maxInputCharacters }) });
         const model = await response.json() as Model & { error?: string };
         if (!response.ok) throw new Error(model.error || "模型更新失败");
         if (previous && (previous.name !== model.name || previous.providerName !== model.providerName)) {
@@ -4788,9 +4914,9 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
       <Text c="dimmed" size="sm">{providers.length} 个 Provider · {models.length} 个模型</Text>
       <Button size="sm" leftSection={<Icon name="plus" />} onClick={openCreateProvider}>新建 Provider</Button>
     </Group>
-    {modelCheckNotice && <Alert color="blue" role="status">{modelCheckNotice}</Alert>}
+    {modelCheckNotice && <Alert color="studio" role="status">{modelCheckNotice}</Alert>}
     {!providerFormOpen && !modelFormOpen && error && <Alert className="settings-error" color="red" role="alert">{error}</Alert>}
-    <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地 PoC 引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !configuredModelForReference(models, studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
+    <SettingSection title="名称生成"><SettingRow title="默认模型"><select aria-label="名称生成默认模型" value={namingSelection} onChange={(event) => selectNamingModel(event.target.value)}><option value="__inherit__">{inheritedNamingLabel}</option><option value="__local__">本地演示引擎（固定）</option>{studio.data.settings.namingModelMode === "fixed" && studio.data.settings.namingModel && !configuredModelForReference(models, studio.data.settings.namingModel) && <option value={studio.data.settings.namingModel}>{studio.data.settings.namingModel}（不可用）</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（Provider 需密钥）"}</option>)}</select></SettingRow></SettingSection>
     <SettingSection title="Providers">
       <Stack gap="sm" className="provider-list provider-groups">
         {providers.map((provider) => {
@@ -4804,10 +4930,7 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
               </div>
               <div className="provider-group-actions">
                 <Button variant="default" size="xs" loading={busy === `test-${provider.id}`} onClick={() => void testProviderConnection(provider)}>测试连接</Button>
-                <Button variant="default" size="xs" disabled={Boolean(modelCheck) || !providerModels.length} onClick={() => void checkProviderModels(provider)}>{modelCheck?.providerId === provider.id ? `检测中 ${modelCheck.completed}/${modelCheck.total}` : "检测全部模型"}</Button>
-                <Button variant="light" size="xs" loading={busy === `discover-${provider.id}`} onClick={() => void fetchProviderModels(provider)}>Fetch 模型</Button>
-                <Button variant="default" size="xs" onClick={() => openEditProvider(provider)}>编辑</Button>
-                <Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={!provider.hasSecret} onClick={() => void clearProviderKey(provider)}>移除 API Key</Menu.Item><Menu.Divider /><Menu.Item color="red" disabled={providerModels.length > 0 || provider.modelCount > 0} onClick={() => void removeProvider(provider)}>删除 Provider</Menu.Item></Menu.Dropdown></Menu>
+                <Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs" aria-label={`${provider.name}的更多操作`}>更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={Boolean(modelCheck) || !providerModels.length} onClick={() => void checkProviderModels(provider)}>{modelCheck?.providerId === provider.id ? `检测中 ${modelCheck.completed}/${modelCheck.total}` : "检测全部模型"}</Menu.Item><Menu.Item onClick={() => void fetchProviderModels(provider)}>Fetch 模型</Menu.Item><Menu.Item onClick={() => openEditProvider(provider)}>编辑 Provider</Menu.Item><Menu.Divider /><Menu.Item disabled={!provider.hasSecret} onClick={() => void clearProviderKey(provider)}>移除 API Key</Menu.Item><Menu.Item color="red" disabled={providerModels.length > 0 || provider.modelCount > 0} onClick={() => void removeProvider(provider)}>删除 Provider</Menu.Item></Menu.Dropdown></Menu>
               </div>
             </div>
             {!collapsed && <div className="provider-group-body">
@@ -4816,13 +4939,13 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
                 const isGenerateDefault = modelMatchesReference(model, studio.data.settings.generateModel);
                 const isNamingDefault = studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel);
                 const isChatDefault = modelMatchesReference(model, studio.data.settings.chatModel);
-                const isReviewDefault = modelMatchesReference(model, studio.data.settings.reviewModel);
+                const isReviewDefault = STANDALONE_AI_REVIEW_ENABLED && modelMatchesReference(model, studio.data.settings.reviewModel);
                 const hasDefault = isGenerateDefault || isNamingDefault || isChatDefault || isReviewDefault;
                 return <article className="provider-model-row" data-provider-model-id={model.id} key={model.id}>
                   <div className="provider-model-main"><h4>{model.name}</h4><p>{model.modelId}</p></div>
                   <div className="model-default-tags provider-model-defaults">{isGenerateDefault && <em>默认 AI Generate</em>}{isNamingDefault && <em>默认名称生成</em>}{isChatDefault && <em>默认 AI Chat</em>}{isReviewDefault && <em>默认 AI Review</em>}{!hasDefault && <span className="provider-model-no-default">—</span>}</div>
                   <span className="provider-model-limit">{model.maxInputCharacters.toLocaleString("zh-CN")} 字符</span>
-                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={isGenerateDefault} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={isNamingDefault} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={isChatDefault} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item><Menu.Item disabled={isReviewDefault} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item><Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
+                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={isGenerateDefault} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={isNamingDefault} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={isChatDefault} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item>{STANDALONE_AI_REVIEW_ENABLED && <Menu.Item disabled={isReviewDefault} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item>}<Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
                 </article>;
               })}
               {!providerModels.length && <div className="provider-model-empty">这个 Provider 还没有模型</div>}
@@ -4837,7 +4960,7 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
       <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><TextInput label="Provider 名称" value={providerForm.name} onChange={(event) => setProviderForm({ ...providerForm, name: event.target.value })} /><Select label="协议" value={providerForm.adapterKind} data={[{ value: "openai-compatible", label: "OpenAI Compatible" }]} disabled /><TextInput label="接口地址" value={providerForm.baseUrl} onChange={(event) => setProviderForm({ ...providerForm, baseUrl: event.target.value })} /><NumberInput label="请求超时" aria-label="Provider 超时（分钟）" min={0.1} max={10} step={0.1} decimalScale={2} suffix=" 分钟" value={providerForm.timeoutMinutes} error={!providerTimeoutValid ? "请输入 0.1–10 分钟" : undefined} onChange={(value) => setProviderForm({ ...providerForm, timeoutMinutes: String(value) })} /><PasswordInput label="API Key" description={editingProviderId ? "留空会保留现有 API Key" : undefined} autoComplete="new-password" value={providerForm.secret} onChange={(event) => setProviderForm({ ...providerForm, secret: event.target.value })} /></SimpleGrid><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeProviderForm}>取消</Button><Button disabled={!providerForm.name.trim() || !providerForm.baseUrl.trim() || !providerTimeoutValid} loading={busy === "save-provider"} onClick={() => void saveProvider()}>保存 Provider</Button></Group></Stack>
     </ResponsiveModal>
     <ResponsiveModal opened={modelFormOpen} onClose={closeModelForm} closeButtonProps={{ "aria-label": "关闭模型编辑" }} title={editingModelId ? "编辑模型" : "新建模型"} size="lg" fullScreen={compact} centered={!compact} classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "model-form-modal" }} overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}>
-      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><Select label="Provider" value={modelForm.providerId} data={providers.map((provider) => ({ value: provider.id, label: provider.name }))} onChange={(value) => { const providerId = value ?? ""; const providerChanged = providerId !== modelForm.providerId; setModelForm({ ...modelForm, providerId, modelId: providerChanged && discoveredModels.length > 0 ? "" : modelForm.modelId }); if (providerChanged) { setDiscoveredModels([]); setSelectedModelIds([]); } }} /><TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增模型会自动附加自己的模型 ID" : undefined} value={modelForm.name} onChange={(event) => setModelForm({ ...modelForm, name: event.target.value })} /><NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={modelForm.maxInputCharacters} error={!maxInputValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setModelForm({ ...modelForm, maxInputCharacters: String(value) })} /></SimpleGrid><div className="model-id-field"><TextInput id="model-id-input" label="模型 ID" aria-label="模型 ID" placeholder={editingModelId ? "输入模型 ID" : "多个模型 ID 使用逗号分隔"} value={modelForm.modelId} onChange={(event) => { const modelId = event.target.value; setModelForm({ ...modelForm, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />{discoveredModels.length > 0 && <MultiSelect className="discovered-model-select" label={`Provider 返回 ${discoveredModels.length} 个模型`} description="已有模型已自动勾选；保存仅添加新模型，取消勾选不会删除已有模型。" aria-label="选择获取到的大模型" placeholder="选择一个或多个模型" searchable withCheckIcon checkIconPosition="right" data={discoveredModels.map((id) => ({ value: id, label: models.some((model) => model.providerId === modelForm.providerId && model.modelId === id) ? `${id}（已添加）` : id }))} value={selectedModelIds} onChange={(values) => { setSelectedModelIds(values); setModelForm((current) => ({ ...current, modelId: values.join(", ") })); }} />}</div><Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={modelForm.systemPrompt} onChange={(event) => setModelForm({ ...modelForm, systemPrompt: event.target.value })} /><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeModelForm}>取消</Button><Button disabled={!modelForm.providerId || !requestedModelIds.length || (Boolean(editingModelId) && !modelForm.name.trim()) || !maxInputValid} loading={busy === "save-model"} onClick={() => void saveModel()}>{!editingModelId ? (newModelIds.length ? `添加 ${newModelIds.length} 个模型` : "完成") : "保存模型"}</Button></Group></Stack>
+      <Stack className="model-editor-stack" gap="md">{error && <Alert className="model-form-error" color="red" role="alert">{error}</Alert>}<SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md"><Select label="Provider" value={modelForm.providerId} data={providers.map((provider) => ({ value: provider.id, label: provider.name }))} onChange={(value) => { const providerId = value ?? ""; const providerChanged = providerId !== modelForm.providerId; setModelForm({ ...modelForm, providerId, modelId: providerChanged && discoveredModels.length > 0 ? "" : modelForm.modelId }); if (providerChanged) { setDiscoveredModels([]); setSelectedModelIds([]); } }} /><TextInput label={selectedModelIds.length > 1 ? "显示名称前缀" : "显示名称"} description={selectedModelIds.length > 1 ? "新增模型会自动附加自己的模型 ID" : undefined} value={modelForm.name} onChange={(event) => setModelForm({ ...modelForm, name: event.target.value })} /><NumberInput label="最大输入字符数" description="名称生成和正文生成会参考此上限" min={MIN_MAX_INPUT_CHARACTERS} max={MAX_MAX_INPUT_CHARACTERS} step={1000} thousandSeparator="," value={modelForm.maxInputCharacters} error={!maxInputValid ? `请输入 ${MIN_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}–${MAX_MAX_INPUT_CHARACTERS.toLocaleString("zh-CN")}` : undefined} onChange={(value) => setModelForm({ ...modelForm, maxInputCharacters: String(value) })} /></SimpleGrid><div className="model-id-field"><TextInput id="model-id-input" label="模型 ID" aria-label="模型 ID" placeholder={editingModelId ? "输入模型 ID" : "多个模型 ID 使用逗号分隔"} value={modelForm.modelId} onChange={(event) => { const modelId = event.target.value; setModelForm({ ...modelForm, modelId }); setSelectedModelIds(parseModelIds(modelId).filter((value) => discoveredModels.includes(value))); }} />{discoveredModels.length > 0 && <MultiSelect className="discovered-model-select" label={`Provider 返回 ${discoveredModels.length} 个模型`} description="已有模型已自动勾选；保存仅添加新模型，取消勾选不会删除已有模型。" aria-label="选择获取到的大模型" placeholder="选择一个或多个模型" searchable withCheckIcon checkIconPosition="right" data={discoveredModels.map((id) => ({ value: id, label: models.some((model) => model.providerId === modelForm.providerId && model.modelId === id) ? `${id}（已添加）` : id }))} value={selectedModelIds} onChange={(values) => { setSelectedModelIds(values); setModelForm((current) => ({ ...current, modelId: values.join(", ") })); }} />}</div><ReasoningSettings key={editingModelId ?? "new-model"} modelSetting value={modelForm.reasoningEffort} onChange={(value) => setModelForm({ ...modelForm, reasoningEffort: value ?? null })} /><Textarea label="附加提示词" autosize minRows={3} maxRows={8} value={modelForm.systemPrompt} onChange={(event) => setModelForm({ ...modelForm, systemPrompt: event.target.value })} /><Group className="model-form-actions" justify="flex-end"><Button variant="default" onClick={closeModelForm}>取消</Button><Button disabled={!modelForm.providerId || !requestedModelIds.length || (Boolean(editingModelId) && !modelForm.name.trim()) || !maxInputValid} loading={busy === "save-model"} onClick={() => void saveModel()}>{!editingModelId ? (newModelIds.length ? `添加 ${newModelIds.length} 个模型` : "完成") : "保存模型"}</Button></Group></Stack>
     </ResponsiveModal>
   </>;
 }
@@ -5067,7 +5190,7 @@ function SystemSettings() {
 
   return <>
     <SettingSection title="运行状态">
-      <SettingRow title="应用版本"><span className="readonly-value">Writer Studio 2.1.0 PoC</span></SettingRow>
+      <SettingRow title="应用版本"><span className="readonly-value">Writer Studio 2.1.0</span></SettingRow>
       <SettingRow title="本地服务"><span className={serviceHealthy ? "status-online" : "status-warning"}>{serviceLabel}</span></SettingRow>
       <SettingRow title="最近错误"><span className="readonly-value">{serviceStatus?.service.lastError || serviceError || "暂无错误"}</span></SettingRow>
     </SettingSection>
@@ -5097,7 +5220,23 @@ function SystemSettings() {
   </>;
 }
 
-function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, onNotice }: { selectedVersionId?: string; onClose: () => void; onPreview: (versionId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void }) {
+function VersionSettingSnapshotView({ snapshot }: { snapshot: ResolvedChapterSettings }) {
+  const storyLabels: Array<[keyof ResolvedChapterSettings["story"], string]> = [
+    ["type", "类型"], ["era", "时代"], ["location", "地点"], ["tone", "基调"], ["style", "风格"], ["worldRules", "世界规则"], ["negativeConstraints", "负面约束"],
+  ];
+  const visibleCharacters = snapshot.characters.filter((person) => !person.archived && person.appears !== false);
+  const names = new Map(snapshot.characters.map((person) => [person.id, person.name]));
+  return <details className="version-setting-snapshot">
+    <summary>生成时采用的设定</summary>
+    <div className="version-setting-snapshot-body">
+      <section><h4>故事</h4>{storyLabels.filter(([key]) => snapshot.story[key]?.trim()).map(([key, label]) => <p key={key}><strong>{label}</strong><span>{snapshot.story[key]}</span></p>)}</section>
+      {visibleCharacters.length > 0 && <section><h4>人物</h4>{visibleCharacters.map((person) => <details key={person.id}><summary>{person.name}</summary>{CHARACTER_PROFILE_KEYS.filter((key) => person.profile[key]?.trim()).map((key) => <p key={key}><strong>{CHARACTER_LABELS[key].label}</strong><span>{person.profile[key]}</span></p>)}</details>)}</section>}
+      {snapshot.relationships.filter((item) => item.active).length > 0 && <section><h4>关系</h4>{snapshot.relationships.filter((item) => item.active).map((item) => <p key={item.id}><strong>{names.get(item.characterAId) ?? "未知"} ↔ {names.get(item.characterBId) ?? "未知"}</strong><span>{item.description}</span></p>)}</section>}
+    </div>
+  </details>;
+}
+
+function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, onOpenRewriteSource, onNotice }: { selectedVersionId?: string; onClose: () => void; onPreview: (versionId: string) => void; onClearPreview: () => void; onOpenRewriteSource: (sourceId: string) => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
@@ -5107,7 +5246,11 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
   const currentContentName = resolvedOutlineContentName(studio.currentOutline);
   const currentExcellentFragments = resolvedExcellentFragments(studio.currentOutline);
   const currentVersion = currentOutlineVersion(studio.currentOutline);
-  const showStandaloneCurrent = !currentVersion;
+  const directPreviewSelected = selectedVersionId === directContentId(studio.currentOutline.id);
+  const standaloneContent = directPreviewSelected ? studio.currentOutline.content : currentContent;
+  const standaloneContentName = directPreviewSelected ? (studio.currentOutline.contentName?.trim() || timestampContentName(studio.currentOutline.updatedAt)) : currentContentName;
+  const standaloneExcellentFragments = directPreviewSelected ? normalizeExcellentFragments(studio.currentOutline.content, studio.currentOutline.excellentFragments) : currentExcellentFragments;
+  const showStandaloneCurrent = !currentVersion || directPreviewSelected;
   return <ScrollableDrawer
     scrollMode="content"
     opened
@@ -5131,9 +5274,9 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
         <p><ins>{compareVersion.content.slice(0, 500) || "（版本正文为空）"}</ins></p>
         <div className="diff-legend"><span><i className="removed" />{currentContentName}</span><span><i className="added" />{compareVersion.name}</span></div>
       </div> : <div className="version-list" data-ui-overlay-scroll>
-        {showStandaloneCurrent && <article className={!selectedVersionId ? "active current" : "current"}>
-          <button className="version-preview-main" type="button" onClick={onClearPreview}><div><span className="ui-title" title={currentContentName}>{currentContentName}</span>{(studio.currentOutline.manualExcellent || currentExcellentFragments.length > 0) && <i className="excellent-fragment-dot" title={studio.currentOutline.manualExcellent ? "优秀正文" : "含优秀片段，已自动设为优秀"} />}<em>当前 · 已直接保存</em></div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(currentContent)} 字</p><span>正文</span></button>
-          {!selectedVersionId && <div className="version-content-preview" aria-label="当前正文内容">{currentContent ? <ExcellentText text={currentContent} fragments={currentExcellentFragments} /> : "（正文为空）"}</div>}
+        {showStandaloneCurrent && <article className={`${directPreviewSelected || !selectedVersionId ? "active" : ""} ${!currentVersion ? "current" : ""}`}>
+          <button className="version-preview-main" type="button" onClick={onClearPreview}><div><span className="ui-title" title={standaloneContentName}>{standaloneContentName}</span>{(studio.currentOutline.manualExcellent || standaloneExcellentFragments.length > 0) && <i className="excellent-fragment-dot" title={studio.currentOutline.manualExcellent ? "优秀正文" : "含优秀片段，已自动设为优秀"} />}{!currentVersion && <em>当前 · 已直接保存</em>}</div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(standaloneContent)} 字</p><span>正文</span></button>
+          {(directPreviewSelected || !selectedVersionId) && <div className="version-content-preview" aria-label="直接保存正文内容">{standaloneContent ? <ExcellentText text={standaloneContent} fragments={standaloneExcellentFragments} /> : "（正文为空）"}</div>}
         </article>}
         {versions.map((version) => {
           const isDefault = studio.currentOutline.defaultVersionId === version.id;
@@ -5143,7 +5286,9 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
           const isExcellent = version.manualExcellent === true || excellentFragments.length > 0;
           return <article className={`${isDefault ? "default" : ""} ${isCurrent ? "current" : ""} ${isActive ? "active" : ""}`} key={version.id}>
             <button className="version-preview-main" type="button" onClick={() => isCurrent ? onClearPreview() : onPreview(version.id)}><div><span className="ui-title">{version.name}</span>{isExcellent && <i className="excellent-fragment-dot" title={version.manualExcellent ? "优秀正文" : "含优秀片段，已自动设为优秀"} />}{isCurrent && <em>当前</em>}{isDefault && <em>默认</em>}</div><p>{formatTime(version.createdAt)} · {wordCount(version.content)} 字</p><span>{version.source}</span></button>
+            {version.rewriteSourceId && <button className="version-rewrite-source" type="button" onClick={() => onOpenRewriteSource(version.rewriteSourceId!)}>改写自：{version.rewriteSourceName || "原正文"}</button>}
             {isActive && <div className="version-content-preview" aria-label={`${version.name}正文内容`}>{version.content ? <ExcellentText text={version.content} fragments={excellentFragments} /> : "（正文为空）"}</div>}
+            {isActive && version.settingSnapshot && <VersionSettingSnapshotView snapshot={version.settingSnapshot} />}
             <div className="version-actions">
               <button type="button" onClick={() => setCompareVersionId(version.id)}>对比</button>
               <button type="button" disabled={isCurrent} onClick={() => { studio.setCurrentVersion(studio.currentOutline.id, version.id); onClearPreview(); onNotice("已设为当前正文"); }}>{isCurrent ? "已当前" : "设为当前"}</button>
@@ -5165,9 +5310,15 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [clock, setClock] = useState(() => Date.now());
+  const [drawerDrag, setDrawerDrag] = useState<{ offset: number; phase: "dragging" | "settling" | "dismissing" } | null>(null);
+  const drawerPointer = useRef<{ id: number; startY: number; lastY: number; lastTime: number } | null>(null);
+  const drawerMotionTimer = useRef<number | null>(null);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 3000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      if (drawerMotionTimer.current !== null) window.clearTimeout(drawerMotionTimer.current);
+    };
   }, []);
   const tasks = [...studio.data.tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
@@ -5225,7 +5376,7 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     else if (task.target === "章节标题" && task.resultText) studio.updateChapter(task.chapterId, { title: task.resultText });
   }
   const labels: Record<AiTask["state"], string> = { waiting: "等待中", running: "运行中", success: "已完成", failed: "失败", cancelled: "已取消" };
-  const phaseLabels: Record<NonNullable<AiTask["phase"]>, string> = { queued: "等待调度", preparing: "准备上下文", connecting: "等待模型响应", generating: "模型生成中", receiving: "接收结果", saving: "保存结果", retrying: "准备重试", completed: "已保存", failed: "执行失败", cancelled: "已取消" };
+  const phaseLabels = taskPhaseLabels;
   const taskTime = (value: string) => {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -5245,6 +5396,66 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
   const isStale = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= clock);
   const isForeign = (task: AiTask) => task.executionOrigin !== studio.executionOrigin;
   const transferLabel = studio.executionOrigin === "cloud" ? "转移到云端执行" : "转移到本地执行";
+
+  function clearDrawerMotionTimer() {
+    if (drawerMotionTimer.current === null) return;
+    window.clearTimeout(drawerMotionTimer.current);
+    drawerMotionTimer.current = null;
+  }
+
+  function startDrawerDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!compact || !event.isPrimary || event.button !== 0) return;
+    clearDrawerMotionTimer();
+    drawerPointer.current = { id: event.pointerId, startY: event.clientY, lastY: event.clientY, lastTime: event.timeStamp };
+    setDrawerDrag({ offset: 0, phase: "dragging" });
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Synthetic pointer events may not support capture. */ }
+  }
+
+  function moveDrawerDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const pointer = drawerPointer.current;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    pointer.lastY = event.clientY;
+    pointer.lastTime = event.timeStamp;
+    setDrawerDrag({ offset: Math.max(0, event.clientY - pointer.startY), phase: "dragging" });
+    event.preventDefault();
+  }
+
+  function settleDrawerDrag() {
+    drawerPointer.current = null;
+    setDrawerDrag({ offset: 0, phase: "settling" });
+    clearDrawerMotionTimer();
+    drawerMotionTimer.current = window.setTimeout(() => {
+      setDrawerDrag(null);
+      drawerMotionTimer.current = null;
+    }, 180);
+  }
+
+  function finishDrawerDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const pointer = drawerPointer.current;
+    if (!pointer || pointer.id !== event.pointerId) return;
+    const offset = Math.max(0, event.clientY - pointer.startY);
+    const elapsed = Math.max(1, event.timeStamp - pointer.lastTime);
+    const velocity = Math.max(0, event.clientY - pointer.lastY) / elapsed;
+    drawerPointer.current = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch { /* The pointer may already have been released by the browser. */ }
+    if (offset >= Math.min(120, window.innerHeight * .14) || (offset >= 32 && velocity > .65)) {
+      clearDrawerMotionTimer();
+      setDrawerDrag({ offset: window.innerHeight, phase: "dismissing" });
+      drawerMotionTimer.current = window.setTimeout(() => {
+        drawerMotionTimer.current = null;
+        onClose();
+      }, 180);
+      return;
+    }
+    settleDrawerDrag();
+  }
+
+  const drawerContentStyle = drawerDrag ? {
+    transform: `translate3d(0, ${drawerDrag.offset}px, 0)`,
+    transition: drawerDrag.phase === "dragging" ? "none" : "transform 180ms ease",
+  } : undefined;
   return <ScrollableDrawer
     scrollMode="content"
     opened
@@ -5254,16 +5465,30 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
     position={compact ? "bottom" : "right"}
     size={compact ? "85dvh" : 470}
     classNames={{ content: "ws-drawer-content task-drawer-shell", header: "ws-drawer-header", body: "ws-drawer-body" }}
+    styles={{ content: drawerContentStyle }}
     overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}
   >
     <div className="task-panel" aria-label="AI 任务">
+      {compact && <button
+        className="task-drawer-drag-handle"
+        type="button"
+        aria-label="下滑关闭 AI 任务"
+        onPointerDown={startDrawerDrag}
+        onPointerMove={moveDrawerDrag}
+        onPointerUp={finishDrawerDrag}
+        onPointerCancel={settleDrawerDrag}
+      ><span aria-hidden="true" /></button>}
       {selectedTask ? <section className="task-detail" aria-label="任务详情">
         <div className="task-detail-body" data-ui-overlay-scroll>
           <div className={`task-detail-status ${isStale(selectedTask) ? "stale" : ""}`}><span className={`state-dot ${selectedTask.state}`} /><span className="ui-label">{isStale(selectedTask) ? "执行心跳已中断" : labels[selectedTask.state]}</span><span>{phaseLabels[selectedTask.phase ?? "queued"]} · {selectedTask.executionOrigin === "cloud" ? "云端执行" : "本地执行"} · 已用时 {taskElapsed(selectedTask)}</span></div>
+          <TaskHistory task={selectedTask} />
           <dl className="task-detail-metadata">
             <div><dt>生成目标</dt><dd>{selectedTask.target}{selectedTask.target === "正文" ? ` · ${generateTargetWordsLabel(selectedTask.contextOptions?.targetWords)}` : ""}</dd></div>
+            {selectedTask.target === "正文" && <div><dt>对话密度</dt><dd>{dialogueDensityLabel(selectedTask.contextOptions?.dialogueDensity)}</dd></div>}
             {selectedTask.target === "正文" && <div><dt>生成方式</dt><dd>{contentGenerationModeLabel(selectedTask.contextOptions?.contentMode)}{selectedTask.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(selectedTask.contextOptions.rewriteRetention)}` : ""}</dd></div>}
+            {selectedTask.contextOptions?.contentMode === "rewrite" && <div><dt>改写原文</dt><dd>{selectedTask.contextOptions.rewriteSourceName || "原正文"}</dd></div>}
             <div><dt>模型</dt><dd>{modelDisplayLabel(models, selectedTask.model || "", selectedTask.contextOptions?.modelName)}</dd></div>
+            {selectedTask.contextOptions?.resolvedReasoningEffort !== undefined && <div><dt>推理强度</dt><dd>{selectedTask.contextOptions.resolvedReasoningEffort ?? "不指定"}{selectedTask.contextOptions.reasoningEffort === undefined ? "（沿用模型）" : "（任务设置）"}</dd></div>}
             <div><dt>阶段</dt><dd>{phaseLabels[selectedTask.phase ?? "queued"]}</dd></div>
             <div><dt>尝试</dt><dd>{selectedTask.attempt ? `${selectedTask.attempt} / 3` : "—"}</dd></div>
             <div><dt>超时</dt><dd>{duration(selectedTask.timeoutMs ?? 600_000)}</dd></div>
@@ -5273,8 +5498,12 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
             <div className="wide"><dt>位置</dt><dd>{selectedArticle?.title ?? "已删除的文章"}{selectedTask.target === "全部名称" ? " / 全章节编辑" : ` / ${selectedChapter?.title ?? "已删除的章节"} / ${selectedOutline ? outlineDisplayTitle(selectedOutline) : "已删除的大纲"}`}</dd></div>
           </dl>
           <section className="task-detail-section"><h3>任务指令</h3><div className="task-detail-copy">{selectedTask.prompt || (selectedTask.target === "全部名称" ? "使用文章命名设置，无补充要求" : "按大纲生成（无补充指令）")}</div></section>
-          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags">{selectedTask.target === "全部名称" ? <><span>一次模型请求</span><span>{selectedTask.contextOptions.nameChapterCount ?? 0} 个章节名</span><span>{selectedTask.contextOptions.nameOutlineCount ?? 0} 个大纲名</span></> : <><span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span></>}{selectedTask.target === "正文" && <span>{contentGenerationModeLabel(selectedTask.contextOptions.contentMode)}</span>}{selectedTask.target === "正文" && selectedTask.contextOptions.contentMode === "rewrite" && <span>原文保留 {rewriteRetentionLabel(selectedTask.contextOptions.rewriteRetention)}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.includeExcellentFragments ? `参考优秀片段 ${selectedTask.contextOptions.excellentFragmentIds?.length ?? 0} 个` : "不参考优秀片段"}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.contentMode === "fresh" ? "不发送当前正文" : "包含当前正文"}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.includeOutlineTitle ? "同时生成大纲名" : "不生成大纲名"}</span>}{selectedTask.target === "正文" && selectedTask.contextOptions.firstAppearanceCharacterIds && <span>首次出场：{selectedFirstAppearanceNames.length ? selectedFirstAppearanceNames.join("、") : "无"}</span>}{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
+          {selectedTask.contextOptions && <section className="task-detail-section"><h3>生成上下文</h3><div className="task-context-tags">{selectedTask.target === "全部名称" ? <><span>一次模型请求</span><span>{selectedTask.contextOptions.nameChapterCount ?? 0} 个章节名</span><span>{selectedTask.contextOptions.nameOutlineCount ?? 0} 个大纲名</span></> : <><span>{selectedTask.contextOptions.includePrevious ? "包含前面大纲" : "不包含前面大纲"}</span><span>{selectedTask.contextOptions.includeCharacters ? "包含相关人物" : "不包含相关人物"}</span></>}{selectedTask.target === "正文" && <span>{contentGenerationModeLabel(selectedTask.contextOptions.contentMode)}</span>}{selectedTask.target === "正文" && <span>对话密度 {dialogueDensityLabel(selectedTask.contextOptions.dialogueDensity)}</span>}{selectedTask.target === "正文" && selectedTask.contextOptions.contentMode === "rewrite" && <span>原文保留 {rewriteRetentionLabel(selectedTask.contextOptions.rewriteRetention)}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.includeExcellentFragments ? `参考优秀片段 ${selectedTask.contextOptions.excellentFragmentIds?.length ?? 0} 个` : "不参考优秀片段"}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.contentMode === "fresh" ? "不发送当前正文" : "包含当前正文"}</span>}{selectedTask.target === "正文" && <span>{selectedTask.contextOptions.includeOutlineTitle ? "同时生成大纲名" : "不生成大纲名"}</span>}{selectedTask.target === "正文" && selectedTask.contextOptions.firstAppearanceCharacterIds && <span>首次出场：{selectedFirstAppearanceNames.length ? selectedFirstAppearanceNames.join("、") : "无"}</span>}{typeof selectedTask.contextOptions.estimatedCharacters === "number" && <span>约 {selectedTask.contextOptions.estimatedCharacters.toLocaleString("zh-CN")} 字符</span>}{selectedTask.contextOptions.sessionId && <span>会话 {selectedTask.contextOptions.sessionId}</span>}</div></section>}
           {selectedTask.contextOptions?.generatedOutlineTitleError && <section className="task-detail-section task-detail-error"><h3>大纲名未应用</h3><div>{selectedTask.contextOptions.generatedOutlineTitleError}。正文已正常保存。</div></section>}
+          {!!selectedTask.contextOptions?.reviewMaxRounds && <section className="task-detail-section"><h3>生成后审校</h3><p>已修正 {selectedTask.contextOptions.reviewRound ?? 0} / {selectedTask.contextOptions.reviewMaxRounds} 次</p><details><summary>本次审校规则</summary><div className="task-detail-copy">{selectedTask.contextOptions.reviewRuleSnapshot ? <ReviewRuleSnapshotView snapshot={selectedTask.contextOptions.reviewRuleSnapshot} /> : <>文章通用规则：{selectedTask.contextOptions.reviewRules || "无额外规则"}{"\n\n"}本次指令：{selectedTask.contextOptions.reviewInstruction || "无额外指令"}</>}</div></details></section>}
+          {selectedTask.contextOptions?.reviewReport && <GenerateReviewReportView report={selectedTask.contextOptions.reviewReport} />}
+          {selectedTask.contextOptions?.reviewCandidateOnly && <Alert color="yellow">执行期间正文已变化，终稿已保存为候选版本，可通过“打开生成版本”查看。</Alert>}
+          {!!selectedTask.contextOptions?.reviewMaxRounds && selectedTask.state === "failed" && !selectedTask.contextOptions.reviewReport && <Alert color="yellow">审校未完成。下方结果是最近保存的中间稿，重新执行会从保存的进度继续。</Alert>}
           {selectedTask.error && <section className="task-detail-section task-detail-error"><h3>错误</h3><div>{selectedTask.error}</div></section>}
           <section className="task-detail-section"><h3>任务结果</h3>{selectedResult ? <div className="task-detail-result" aria-label="任务结果">{selectedResult}</div> : <div className="task-detail-empty">{selectedTask.state === "waiting" || selectedTask.state === "running" ? "任务尚未产生结果" : "没有可用结果"}</div>}</section>
         </div>
@@ -5293,9 +5522,10 @@ function TaskPanel({ onClose, onOpen }: { onClose: () => void; onOpen: (id: stri
         return <article className="task-card" key={task.id}>
           <div className="task-state"><span className={`state-dot ${task.state}`} />{labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
           <button className="task-title" type="button" aria-label={`查看任务详情：${task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}`} onClick={() => setSelectedTaskId(task.id)}>{task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}</button>
-          <p>{article?.title ?? "未知文章"}{task.target === "全部名称" ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
+          <p>{article?.title ?? "未知文章"}{task.target === "全部名称" ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · 对话密度 ${dialogueDensityLabel(task.contextOptions?.dialogueDensity)} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
           <blockquote>{task.prompt || (task.target === "全部名称" ? "使用文章命名设置" : "按大纲生成")}</blockquote>
           {task.error && <p className="task-error">{task.error}</p>}
+          <TaskHistory task={task} collapsible />
           <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
             <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
             {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
@@ -5363,9 +5593,9 @@ function ArticleCopyDialog({ article, existingTitles, onClose, onCreate }: {
             <label><input type="radio" name="copy-content-versions" checked={options.contentVersions === "all"} onChange={() => setOption("contentVersions", "all")} />全部正文版本</label>
           </fieldset>
         </section>
-        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeCharacters} onChange={(event) => setOption("includeCharacters", event.target.checked)} /><span><strong>人物资料</strong><small>包含人物、别名、归档状态和人物关系</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeCharacters} onChange={(event) => setOption("includeCharacters", event.target.checked)} /><span><strong>人物资料</strong><small>包含人物档案、章节人物变化和人物关系</small></span></label>
         <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeStyle} onChange={(event) => setOption("includeStyle", event.target.checked)} /><span><strong>写作风格</strong><small>保留文章的写作风格设置</small></span></label>
-        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeMetadata} onChange={(event) => setOption("includeMetadata", event.target.checked)} /><span><strong>简介与文章类型</strong><small>默认留空，便于把副本发展为新项目</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeMetadata} onChange={(event) => setOption("includeMetadata", event.target.checked)} /><span><strong>文章资料与世界设定</strong><small>包含简介、类型、时代、地点、基调、世界规则和负面约束</small></span></label>
         <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeChat} onChange={(event) => setOption("includeChat", event.target.checked)} /><span><strong>AI 对话记录</strong><small>复制历史消息，不复制未发送草稿</small></span></label>
       </div>
       <p className="article-copy-task-note">AI 任务、执行状态和任务历史不会复制。</p>
