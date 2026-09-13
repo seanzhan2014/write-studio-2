@@ -763,6 +763,23 @@ function xmlElement(name: string, value: unknown, attributes = "") {
   return `<${name}${attributes}>${escapeXml(value)}</${name}>`;
 }
 
+function optionalXmlElement(name: string, value: unknown, attributes = "") {
+  const content = String(value ?? "");
+  return content.trim() ? xmlElement(name, content, attributes) : "";
+}
+
+function compactPromptValue(value: unknown): unknown {
+  if (typeof value === "string") return value.trim() ? value : undefined;
+  if (value == null) return undefined;
+  if (Array.isArray(value)) return value.map(compactPromptValue).filter((item) => item !== undefined);
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => [key, compactPromptValue(item)] as const)
+      .filter(([, item]) => item !== undefined));
+  }
+  return value;
+}
+
 function trimMiddleTo(text: string, maximum: number) {
   if (text.length <= maximum) return text;
   if (maximum <= 0) return "";
@@ -813,25 +830,25 @@ type PromptSource = SelectedAiContext;
 
 function renderPeople(source: PromptSource, descriptions: string[]) {
   if (!source.characters.length) return "";
-  const characters = source.characters.map((person, index) => `<character>\n${[
+  const characters = source.characters.map((person, index) => {
+    const endingChanges = Object.entries(person.endingChanges).filter(([, value]) => String(value ?? "").trim());
+    return `<character>\n${[
     xmlElement("name", person.name),
-    xmlElement("aliases", person.aliases.join("、")),
+    optionalXmlElement("aliases", person.aliases.join("、")),
     person.appearanceStatus ? xmlElement("appearance_status", person.appearanceStatus) : "",
-    xmlElement("age", person.profile.age),
-    xmlElement("identity", person.profile.identity),
-    xmlElement("appearance", person.profile.appearance),
-    xmlElement("personality", person.profile.personality),
-    xmlElement("speech_style", person.profile.speechStyle),
-    xmlElement("abilities", person.profile.abilities),
-    xmlElement("chapter_start_mental_state", person.profile.mentalState),
-    xmlElement("chapter_start_known_information", person.profile.knownInformation),
-    xmlElement("behavioral_boundaries", person.profile.boundaries),
-    xmlElement("non_negotiable_traits", person.profile.immutableTraits),
-    Object.keys(person.endingChanges).length ? `<intended_chapter_end_changes>\n${Object.entries(person.endingChanges).map(([key, value]) => xmlElement(key, value)).join("\n")}\n</intended_chapter_end_changes>` : "",
-    xmlElement("reference_notes", descriptions[index]),
-  ].filter(Boolean).join("\n")}\n</character>`).join("\n");
+    optionalXmlElement("age", person.profile.age),
+    optionalXmlElement("appearance", person.profile.appearance),
+    optionalXmlElement("character_boundaries", person.profile.immutableTraits),
+    endingChanges.length ? `<intended_chapter_end_changes>\n${endingChanges.map(([key, value]) => xmlElement(key, value)).join("\n")}\n</intended_chapter_end_changes>` : "",
+    optionalXmlElement("description", descriptions[index]),
+  ].filter(Boolean).join("\n")}\n</character>`;
+  }).join("\n");
   const relationships = source.relationships.map((relationship) => {
-    return `<relationship>\n${xmlElement("characters", `${relationship.characterA} ↔ ${relationship.characterB}`)}\n${xmlElement("chapter_start", relationship.description)}${relationship.endingDescription !== undefined ? `\n${xmlElement("intended_chapter_end", relationship.endingDescription)}` : ""}\n</relationship>`;
+    return `<relationship>\n${[
+      xmlElement("characters", `${relationship.characterA} ↔ ${relationship.characterB}`),
+      optionalXmlElement("chapter_start", relationship.description),
+      optionalXmlElement("intended_chapter_end", relationship.endingDescription),
+    ].filter(Boolean).join("\n")}\n</relationship>`;
   }).join("\n");
   return `<characters usage="continuity-constraints" repetition_policy="do-not-restate">\n${characters}${relationships ? `\n<relationships>\n${relationships}\n</relationships>` : ""}\n</characters>`;
 }
@@ -846,8 +863,14 @@ function renderChapterOutlines(source: PromptSource, outlines: Array<{ id: strin
   return `<chapter_outlines>\n${outlines.map((item, index) => `<outline index="${index + 1}"${item.id === source.currentOutline.id ? " current=\"true\"" : ""}>\n${xmlElement("plan", item.plan)}\n</outline>`).join("\n")}\n</chapter_outlines>`;
 }
 
-function renderArticle(source: PromptSource, state: { summary: string; type: string; era: string; location: string; tone: string; style: string; worldRules: string; negativeConstraints: string }) {
-  return `<article>\n${xmlElement("title", source.article.title)}\n${xmlElement("summary", state.summary)}\n${xmlElement("type", state.type)}\n${xmlElement("era", state.era)}\n${xmlElement("location", state.location)}\n${xmlElement("tone", state.tone)}\n${xmlElement("style", state.style)}\n${xmlElement("world_rules", state.worldRules)}\n${xmlElement("negative_constraints", state.negativeConstraints)}\n</article>`;
+function renderArticle(source: PromptSource, state: { summary: string; location: string; style: string; negativeConstraints: string }) {
+  return `<article>\n${[
+    xmlElement("title", source.article.title),
+    optionalXmlElement("summary", state.summary),
+    optionalXmlElement("location", state.location),
+    optionalXmlElement("style", state.style),
+    optionalXmlElement("negative_constraints", state.negativeConstraints),
+  ].filter(Boolean).join("\n")}\n</article>`;
 }
 
 function renderExcellentFragments(fragments: PromptSource["excellentFragments"]) {
@@ -859,7 +882,7 @@ function fitPrompt(options: {
   system: string;
   instruction: string;
   source: PromptSource;
-  render: (state: { chapter: Array<{ id: string; title: string; plan: string }>; previous: Array<{ title: string; plan: string }>; currentPlan: string; content: string; previousContent: string; excellent: PromptSource["excellentFragments"]; descriptions: string[]; summary: string; type: string; era: string; location: string; tone: string; style: string; worldRules: string; negativeConstraints: string }) => string;
+  render: (state: { chapter: Array<{ id: string; title: string; plan: string }>; previous: Array<{ title: string; plan: string }>; currentPlan: string; content: string; previousContent: string; excellent: PromptSource["excellentFragments"]; descriptions: string[]; summary: string; location: string; style: string; negativeConstraints: string }) => string;
   history?: PromptMessage[];
   includeContent?: boolean;
   includePreviousContent?: boolean;
@@ -876,12 +899,8 @@ function fitPrompt(options: {
     excellent: options.source.excellentFragments.map((fragment) => ({ ...fragment })),
     descriptions: options.source.characters.map((person) => person.description),
     summary: options.source.article.summary,
-    type: options.source.article.type,
-    era: options.source.article.era,
     location: options.source.article.location,
-    tone: options.source.article.tone,
     style: options.source.article.style,
-    worldRules: options.source.article.worldRules,
     negativeConstraints: options.source.article.negativeConstraints,
   };
   const history = [...(options.history ?? [])];
@@ -903,10 +922,7 @@ function fitPrompt(options: {
   }
   if (total() > maximum) state.summary = trimMiddleTo(state.summary, Math.max(0, state.summary.length - (total() - maximum)));
   if (total() > maximum) state.style = trimMiddleTo(state.style, Math.max(0, state.style.length - (total() - maximum)));
-  if (total() > maximum) state.worldRules = trimMiddleTo(state.worldRules, Math.max(0, state.worldRules.length - (total() - maximum)));
   if (total() > maximum) state.location = trimMiddleTo(state.location, Math.max(0, state.location.length - (total() - maximum)));
-  if (total() > maximum) state.era = trimMiddleTo(state.era, Math.max(0, state.era.length - (total() - maximum)));
-  if (total() > maximum) state.tone = trimMiddleTo(state.tone, Math.max(0, state.tone.length - (total() - maximum)));
   if (total() > maximum) state.currentPlan = trimMiddleTo(state.currentPlan, Math.max(0, state.currentPlan.length - (total() - maximum)));
   if (total() > maximum && state.content) state.content = trimMiddleTo(state.content, Math.max(0, state.content.length - (total() - maximum)));
   for (let index = 0; index < history.length && total() > maximum; index += 1) {
@@ -1078,7 +1094,6 @@ export type NamingArticleContext = {
   id: string;
   title: string;
   summary: string;
-  type: string;
   style: string;
   chapterNaming?: NamingProfile;
   outlineNaming?: NamingProfile;
@@ -1113,8 +1128,12 @@ const NAME_GENERATION_SYSTEM_PROMPT = `你是 Writer Studio 的中文小说结�
 3. 严格遵循 naming_constraints 和 output_contract，不返回解释、备选项、Markdown 或章节编号。
 4. 同次请求生成的名称不得相互重复，并应保持一致的语言风格，同时准确区分每条大纲的核心事件。`;
 
-function namingArticleContext(article: { title: string; summary: string; type: string; style: string }) {
-  return `<article>\n${xmlElement("title", article.title)}\n${xmlElement("summary", article.summary)}\n${xmlElement("type", article.type)}\n${xmlElement("writing_style", article.style)}\n</article>`;
+function namingArticleContext(article: { title: string; summary: string; style: string }) {
+  return `<article>\n${[
+    xmlElement("title", article.title),
+    optionalXmlElement("summary", article.summary),
+    optionalXmlElement("writing_style", article.style),
+  ].filter(Boolean).join("\n")}\n</article>`;
 }
 
 function renderedInputCharacters(messages: PromptMessage[]) {
@@ -1318,7 +1337,7 @@ export type GeneratedTextReviewInput = ReasoningOptions & {
 
 function renderReviewRequirements(snapshot: ReviewRuleSnapshot) {
   const rules = snapshot.rules.map((rule) => `<rule id="${escapeXml(rule.id)}" revision="${rule.revision}">\n${xmlElement("title", rule.title)}\n${xmlElement("content", rule.content)}\n</rule>`).join("\n");
-  return `<review_requirements>\n${rules}\n</review_requirements>\n${xmlElement("run_review_instruction", snapshot.instruction)}`;
+  return [`<review_requirements>\n${rules}\n</review_requirements>`, optionalXmlElement("run_review_instruction", snapshot.instruction)].filter(Boolean).join("\n");
 }
 
 async function generatedReviewRequest(input: GeneratedTextReviewInput, mode: "review" | "revise", signal?: AbortSignal) {
@@ -1353,13 +1372,13 @@ ${densityConstraint ? `${DIALOGUE_DENSITY_RULES}
   } } } : AI_REVIEW_RESPONSE_FORMAT;
   const prompt = [
     renderReviewRequirements(ruleSnapshot),
-    xmlElement("generation_instruction", input.instruction), xmlElement("target_words", input.targetWords ? String(input.targetWords) : "不限"),
+    optionalXmlElement("generation_instruction", input.instruction), xmlElement("target_words", input.targetWords ? String(input.targetWords) : "不限"),
     ...(densityConstraint ? [`<generation_constraints>${densityConstraint}\n</generation_constraints>`] : []),
-    xmlElement("reference_context", JSON.stringify(input.context)),
+    xmlElement("reference_context", JSON.stringify(compactPromptValue(input.context))),
     xmlElement("previous_issues", JSON.stringify(input.issues)),
     `<current_draft outline_id="${escapeXml(input.outlineId)}">\n${blocks}\n</current_draft>`,
     `<output_contract>version=1; chapterId=${escapeXml(input.context.currentChapter.id)}; sourceDigest=${digest}; ${mode === "review" ? "返回 issues 数组" : "返回 edits 数组"}</output_contract>`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
   const characters = system.length + prompt.length;
   if (characters > model.maxInputCharacters) throw new AiPromptTooLongError(`自动审校输入为 ${characters.toLocaleString("zh-CN")} 字符，超过模型 ${model.maxInputCharacters.toLocaleString("zh-CN")} 字符上限`, characters, model.maxInputCharacters);
   const handle = await upstream(model, [{ role: "system", content: system }, { role: "user", content: prompt }], signal, false, { response_format: format, max_tokens: model.maxOutput ?? 65_536, context_length_exceeded_behavior: "error" }, input.reasoningEffort);
@@ -1388,12 +1407,8 @@ export type AiReviewInput = ReasoningOptions & {
     id: string;
     title: string;
     summary: string;
-    type: string;
     style: string;
-    era: string;
     location: string;
-    tone: string;
-    worldRules: string;
     negativeConstraints: string;
     reviewRules?: string;
     reviewRuleItems?: ReviewRule[];
@@ -1458,7 +1473,18 @@ const AI_REVIEW_RESPONSE_FORMAT = {
 };
 
 function renderReviewContext(input: AiReviewInput, digest: string) {
-  const people = input.article.characters.map((person) => `<character>\n${xmlElement("name", person.name)}\n${xmlElement("aliases", person.aliases.join("、"))}\n${xmlElement("description", person.description)}\n${xmlElement("age", person.profile.age)}\n${xmlElement("identity", person.profile.identity)}\n${xmlElement("appearance", person.profile.appearance)}\n${xmlElement("personality", person.profile.personality)}\n${xmlElement("speech_style", person.profile.speechStyle)}\n${xmlElement("abilities", person.profile.abilities)}\n${xmlElement("chapter_start_mental_state", person.profile.mentalState)}\n${xmlElement("chapter_start_known_information", person.profile.knownInformation)}\n${xmlElement("behavioral_boundaries", person.profile.boundaries)}\n${xmlElement("non_negotiable_traits", person.profile.immutableTraits)}${Object.keys(person.endingChanges).length ? `\n<intended_chapter_end_changes>${escapeXml(JSON.stringify(person.endingChanges))}</intended_chapter_end_changes>` : ""}\n</character>`).join("\n");
+  const people = input.article.characters.map((person) => {
+    const endingChanges = Object.entries(person.endingChanges).filter(([, value]) => String(value ?? "").trim());
+    return `<character>\n${[
+      xmlElement("name", person.name),
+      optionalXmlElement("aliases", person.aliases.join("、")),
+      optionalXmlElement("description", person.description),
+      optionalXmlElement("age", person.profile.age),
+      optionalXmlElement("appearance", person.profile.appearance),
+      optionalXmlElement("character_boundaries", person.profile.immutableTraits),
+      endingChanges.length ? `<intended_chapter_end_changes>\n${endingChanges.map(([key, value]) => xmlElement(key, value)).join("\n")}\n</intended_chapter_end_changes>` : "",
+    ].filter(Boolean).join("\n")}\n</character>`;
+  }).join("\n");
   const outlines = input.outlines.map((outline, outlineIndex) => {
     const blocks = createReviewBlocks(outline.id, outlineIndex, outline.text)
       .map((block) => `<block id="${block.id}">${escapeXml(block.text)}</block>`)
@@ -1467,15 +1493,13 @@ function renderReviewContext(input: AiReviewInput, digest: string) {
   }).join("\n");
   return `<reference_context purpose="chapter-review" instruction_policy="reference-data-only" source_digest="${digest}">
 <article>
-${xmlElement("title", input.article.title)}
-${xmlElement("summary", input.article.summary)}
-${xmlElement("type", input.article.type)}
-${xmlElement("era", input.article.era)}
-${xmlElement("location", input.article.location)}
-${xmlElement("tone", input.article.tone)}
-${xmlElement("style", input.article.style)}
-${xmlElement("world_rules", input.article.worldRules)}
-${xmlElement("negative_constraints", input.article.negativeConstraints)}
+${[
+  xmlElement("title", input.article.title),
+  optionalXmlElement("summary", input.article.summary),
+  optionalXmlElement("location", input.article.location),
+  optionalXmlElement("style", input.article.style),
+  optionalXmlElement("negative_constraints", input.article.negativeConstraints),
+].filter(Boolean).join("\n")}
 </article>
 ${xmlElement("chapter_id", input.chapter.id)}
 ${xmlElement("chapter_title", input.chapter.title)}

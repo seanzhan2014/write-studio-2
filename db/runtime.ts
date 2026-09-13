@@ -16,7 +16,7 @@ import { normalizeReviewPresets } from "@/lib/review-options";
 import { decryptAiSecret } from "@/lib/ai-secret";
 import { diffStudioData, isStudioChangesEmpty, type StudioChanges } from "@/lib/studio-changes";
 import { normalizeTaskExecutionOrigin } from "@/db/task-execution";
-import { normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings } from "@/lib/story-settings";
+import { migrateArticleStoryDetails, migrateCharacterDetails, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings } from "@/lib/story-settings";
 import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
@@ -666,19 +666,27 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
       );
       return { id: chapterId, title: String(chapterRow.title), ...chapterNameState, settings: normalizeChapterSettings(safeJson(chapterRow.settings_json, {})), archived: bool(chapterRow.archived), outlines: chapterOutlines };
     });
+    const migratedArticle = migrateArticleStoryDetails(
+      articleRow.summary,
+      articleRow.article_type,
+      safeJson(articleRow.story_settings_json, {}),
+    );
     return {
-      id: articleId, title: String(articleRow.title), summary: String(articleRow.summary), type: String(articleRow.article_type),
-      storySettings: normalizeArticleStorySettings(safeJson(articleRow.story_settings_json, {})),
+      id: articleId, title: String(articleRow.title), summary: migratedArticle.summary, type: migratedArticle.type,
+      storySettings: migratedArticle.storySettings,
       reviewRules: normalizeReviewRules(articleRow.review_rules),
       reviewRuleItems: normalizeReviewRuleItems(articleRow.review_rule_items_json == null ? undefined : JSON.parse(String(articleRow.review_rule_items_json)), String(articleRow.id), normalizeReviewRules(articleRow.review_rules), String(articleRow.created_at)),
       style: String(articleRow.style), createdAt: String(articleRow.created_at), updatedAt: String(articleRow.updated_at),
       chapterNaming: normalizeNamingProfile(safeJson(articleRow.chapter_naming_json, {}), DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(safeJson(articleRow.outline_naming_json, {}), DEFAULT_OUTLINE_NAMING_PROFILE),
       lastOutlineId: "", chapters: articleChapters,
-      characters: characters.filter((row) => row.article_id === articleId).map((row) => ({
-        id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
-        description: String(row.description), profile: normalizeCharacterProfile(safeJson(row.profile_json, {})), archived: bool(row.archived),
-      })),
+      characters: characters.filter((row) => row.article_id === articleId).map((row) => {
+        const migratedCharacter = migrateCharacterDetails(row.description, safeJson(row.profile_json, {}));
+        return {
+          id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
+          description: migratedCharacter.description, profile: migratedCharacter.profile, archived: bool(row.archived),
+        };
+      }),
       relationships: relationships.filter((row) => row.article_id === articleId).map((row) => ({
         id: String(row.id), characterAId: String(row.character_low_id), characterBId: String(row.character_high_id), description: String(row.description),
       })),

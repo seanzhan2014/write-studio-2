@@ -192,6 +192,23 @@ test.beforeEach(async ({ request }) => {
   expect(saved.ok()).toBeTruthy();
 });
 
+test("simplified story and character settings stay clear on desktop and mobile", async ({ page }) => {
+  await page.goto("/articles/article-main/info/basic");
+  await expect(page.getByText("故事类型、时代背景、世界规则等内容都可以写在这里。", { exact: true })).toBeVisible();
+  for (const label of ["故事发生地点", "写作风格", "负面约束"]) await expect(page.getByLabel(label, { exact: true })).toBeVisible();
+  for (const removed of ["类型", "时代背景", "整体基调", "世界规则"]) await expect(page.getByLabel(removed, { exact: true })).toHaveCount(0);
+
+  await page.goto("/articles/article-main/info/characters");
+  await page.locator(".character-card").first().getByRole("button", { name: "编辑", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑人物" });
+  await expect(dialog.getByText("身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。", { exact: true })).toBeVisible();
+  for (const label of ["年龄", "外貌", "人物说明", "人物底线"]) await expect(dialog.getByLabel(label, { exact: false })).toBeVisible();
+  for (const removed of ["身份", "性格", "说话方式", "能力", "当前心理状态", "当前已知信息", "行为底线", "绝对不能写崩的特点"]) {
+    await expect(dialog.getByLabel(removed, { exact: true })).toHaveCount(0);
+  }
+  await expectInsideViewport(page, dialog);
+});
+
 test("all application pages share the control and typography scale", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   const articleBase = "/articles/article-main";
@@ -1529,7 +1546,7 @@ test("article copy choices preserve selected defaults or complete histories with
   const defaultsDialog = page.getByRole("dialog", { name: "复制文章" });
   await expect(defaultsDialog).toBeVisible();
   for (const label of ["章节与大纲", "正文", "人物资料", "写作风格"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(`^${label}`) })).toBeChecked();
-  for (const label of ["简介与文章类型", "AI 对话记录"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(`^${label}`) })).not.toBeChecked();
+  for (const label of ["文章资料", "AI 对话记录"]) await expect(defaultsDialog.getByRole("checkbox", { name: new RegExp(`^${label}`) })).not.toBeChecked();
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认名称" })).toBeChecked();
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认正文" })).toBeChecked();
   await defaultsDialog.getByRole("button", { name: "创建副本" }).click();
@@ -1570,7 +1587,7 @@ test("article copy choices preserve selected defaults or complete histories with
   const allDialog = page.getByRole("dialog", { name: "复制文章" });
   await allDialog.getByRole("radio", { name: "全部候选名称" }).check();
   await allDialog.getByRole("radio", { name: "全部正文版本" }).check();
-  await allDialog.getByRole("checkbox", { name: /简介与文章类型/ }).check();
+  await allDialog.getByRole("checkbox", { name: /文章资料/ }).check();
   await allDialog.getByRole("checkbox", { name: /AI 对话记录/ }).check();
   await allDialog.getByRole("button", { name: "创建副本" }).click();
   await expect(page.getByText("文章副本已创建")).toBeVisible();

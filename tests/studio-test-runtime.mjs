@@ -19,7 +19,7 @@ import { fullStudioFixture } from "./fixtures.mjs";
 // loading browser-only storage and network dependencies.
 const source = readFileSync(new URL("../app/studio-state.tsx", import.meta.url), "utf8");
 const parsed = ts.createSourceFile("studio-state.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["makeId", "emptyChat", "normalizeCharacter", "normalizeAiTask", "reconcileTaskPoll", "normalizeStudioData", "durableSnapshot", "serializeDurable"];
+const names = ["makeId", "emptyChat", "normalizedArticleSummary", "normalizeCharacter", "normalizeAiTask", "reconcileTaskPoll", "normalizeStudioData", "durableSnapshot", "serializeDurable"];
 const functions = parsed.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
 assert.equal(functions.length, names.length);
 const code = ts.transpileModule(functions.map((node) => node.getText(parsed)).join("\n"), {

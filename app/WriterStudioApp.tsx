@@ -251,7 +251,6 @@ function namingArticleContext(article: Article): NamingArticleContext {
     id: article.id,
     title: article.title,
     summary: article.summary,
-    type: article.type,
     style: article.style,
     chapterNaming: article.chapterNaming,
     outlineNaming: article.outlineNaming,
@@ -3510,7 +3509,7 @@ function FullChapterEditor({ onNotice, onTaskCreated }: { onNotice: (message: st
     const anchorChapter = eligibleChapters[0];
     const anchorOutline = eligibleOutlines(anchorChapter)[0];
     const eligibleOutlineCount = eligibleChapters.reduce((total, chapter) => total + eligibleOutlines(chapter).length, 0);
-    const estimatedCharacters = article.summary.length + article.type.length + article.style.length + eligibleChapters.reduce((total, chapter) => total + eligibleOutlines(chapter).reduce((sum, outline) => sum + outline.plan.length, 0), 0);
+    const estimatedCharacters = article.summary.length + article.style.length + eligibleChapters.reduce((total, chapter) => total + eligibleOutlines(chapter).reduce((sum, outline) => sum + outline.plan.length, 0), 0);
     try {
       await createServerTask(studio, {
         articleId: article.id,
@@ -4583,7 +4582,7 @@ function Tabs({ items, active, onGo }: { items: [View, string][]; active: View; 
 function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
-  return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+  return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<small>故事类型、时代背景、世界规则等内容都可以写在这里。</small><textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
 }
 
 function ArticleChapterNames() {
@@ -4642,9 +4641,9 @@ function Characters() {
   }
   return <>
     <div className="list-toolbar"><label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物…" /></label><button className="primary-compact" type="button" onClick={openCreate}><Icon name="plus" />新建人物</button></div>
-    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}>{person.name[0]}</div><div><h3>{person.name}</h3><span>{[profile.age, profile.identity, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || profile.personality || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
+    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}>{person.name[0]}</div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     {!visible.length && <div className="empty-inline">没有符合条件的人物。</div>}
-    {formOpen && <div className="character-edit-layer"><button className="modal-scrim" type="button" aria-label="关闭人物编辑" onClick={() => setFormOpen(false)} /><div className="dialog-card character-edit-dialog" role="dialog" aria-modal="true" aria-label={editingId ? "编辑人物" : "新建人物"}><header><h2>{editingId ? "编辑人物" : "新建人物"}</h2><IconButton name="close" label="关闭人物编辑" onClick={() => setFormOpen(false)} /></header><div className="character-edit-scroll"><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>补充说明<textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div><footer><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer></div></div>}
+    {formOpen && <div className="character-edit-layer"><button className="modal-scrim" type="button" aria-label="关闭人物编辑" onClick={() => setFormOpen(false)} /><div className="dialog-card character-edit-dialog" role="dialog" aria-modal="true" aria-label={editingId ? "编辑人物" : "新建人物"}><header><h2>{editingId ? "编辑人物" : "新建人物"}</h2><IconButton name="close" label="关闭人物编辑" onClick={() => setFormOpen(false)} /></header><div className="character-edit-scroll"><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div><footer><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer></div></div>}
   </>;
 }
 
@@ -5222,7 +5221,7 @@ function SystemSettings() {
 
 function VersionSettingSnapshotView({ snapshot }: { snapshot: ResolvedChapterSettings }) {
   const storyLabels: Array<[keyof ResolvedChapterSettings["story"], string]> = [
-    ["type", "类型"], ["era", "时代"], ["location", "地点"], ["tone", "基调"], ["style", "风格"], ["worldRules", "世界规则"], ["negativeConstraints", "负面约束"],
+    ["location", "地点"], ["style", "风格"], ["negativeConstraints", "负面约束"],
   ];
   const visibleCharacters = snapshot.characters.filter((person) => !person.archived && person.appears !== false);
   const names = new Map(snapshot.characters.map((person) => [person.id, person.name]));
@@ -5595,7 +5594,7 @@ function ArticleCopyDialog({ article, existingTitles, onClose, onCreate }: {
         </section>
         <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeCharacters} onChange={(event) => setOption("includeCharacters", event.target.checked)} /><span><strong>人物资料</strong><small>包含人物档案、章节人物变化和人物关系</small></span></label>
         <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeStyle} onChange={(event) => setOption("includeStyle", event.target.checked)} /><span><strong>写作风格</strong><small>保留文章的写作风格设置</small></span></label>
-        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeMetadata} onChange={(event) => setOption("includeMetadata", event.target.checked)} /><span><strong>文章资料与世界设定</strong><small>包含简介、类型、时代、地点、基调、世界规则和负面约束</small></span></label>
+        <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeMetadata} onChange={(event) => setOption("includeMetadata", event.target.checked)} /><span><strong>文章资料</strong><small>包含简介、故事发生地点和负面约束</small></span></label>
         <label className="article-copy-option-card article-copy-check"><input type="checkbox" checked={options.includeChat} onChange={(event) => setOption("includeChat", event.target.checked)} /><span><strong>AI 对话记录</strong><small>复制历史消息，不复制未发送草稿</small></span></label>
       </div>
       <p className="article-copy-task-note">AI 任务、执行状态和任务历史不会复制。</p>
@@ -5607,7 +5606,6 @@ function ArticleCopyDialog({ article, existingTitles, onClose, onCreate }: {
 function NewArticleDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => void }) {
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
-  const [type, setType] = useState("");
   const [style, setStyle] = useState("");
   return <ResponsiveModal
     opened
@@ -5617,10 +5615,10 @@ function NewArticleDialog({ onClose, onCreate }: { onClose: () => void; onCreate
     size="md"
     classNames={{ body: "new-article-dialog-body" }}
   >
-    <form className="new-article-form" onSubmit={(event) => { event.preventDefault(); onCreate({ title: title.trim(), summary, type, style }); }}>
+    <form className="new-article-form" onSubmit={(event) => { event.preventDefault(); onCreate({ title: title.trim(), summary, type: "", style }); }}>
       <label>标题 <em>必填</em><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={120} /></label>
-      <label>简介 <textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={10000} /></label>
-      <div className="dialog-grid"><label>文章类型<input value={type} onChange={(event) => setType(event.target.value)} maxLength={120} /></label><label>写作风格<input value={style} onChange={(event) => setStyle(event.target.value)} maxLength={5000} /></label></div>
+      <label>简介 <small>故事类型、时代背景、世界规则等内容都可以写在这里。</small><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={10000} /></label>
+      <label>写作风格<input value={style} onChange={(event) => setStyle(event.target.value)} maxLength={5000} /></label>
       <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-compact" type="submit" disabled={!title.trim()}>创建文章</button></footer>
     </form>
   </ResponsiveModal>;

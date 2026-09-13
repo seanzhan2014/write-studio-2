@@ -11,7 +11,7 @@ test("database schema contains every specification entity", async () => {
   }
 });
 
-test("character records keep the compact profile JSON with core identity fields", async () => {
+test("character records keep compact description and profile storage", async () => {
   const schema = await read("db/schema.ts");
   const runtime = await read("db/runtime.ts");
   const state = await read("app/studio-state.tsx");

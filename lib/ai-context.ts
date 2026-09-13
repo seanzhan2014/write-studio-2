@@ -43,7 +43,7 @@ export type AiContextData = { articles: ContextArticle[] };
 
 export type SelectedAiContext = {
   kind: AiContextKind;
-  article: { id: string; title: string; summary: string; type: string; style: string; era: string; location: string; tone: string; worldRules: string; negativeConstraints: string; outlineNaming: NamingProfile };
+  article: { id: string; title: string; summary: string; style: string; location: string; negativeConstraints: string; outlineNaming: NamingProfile };
   currentChapter: { id: string; title: string; inheritedFromChapter?: { id: string; title: string } };
   currentOutline: { id: string; title: string; titleGenerationPending: boolean; plan: string; content: string };
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
@@ -243,7 +243,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
 
 export function summarizeAiContext(context: SelectedAiContext, instruction: string): AiContextSummary {
   const counts = {
-    article: context.article.title.length + context.article.summary.length + context.article.type.length + context.article.style.length + context.article.era.length + context.article.location.length + context.article.tone.length + context.article.worldRules.length + context.article.negativeConstraints.length,
+    article: context.article.title.length + context.article.summary.length + context.article.style.length + context.article.location.length + context.article.negativeConstraints.length,
     chapter: context.currentChapter.title.length,
     chapterOutlines: context.chapterOutlines.reduce((total, item) => total + item.plan.length, 0),
     outline: context.kind === "chapter-title"

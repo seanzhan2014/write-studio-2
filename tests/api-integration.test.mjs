@@ -457,7 +457,10 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.match(messages[1].content, /<characters usage="continuity-constraints" repetition_policy="do-not-restate">/);
     assert.match(messages[1].content, /<name>林澈<\/name>[\s\S]*?<appearance_status>established<\/appearance_status>/);
     assert.match(messages[1].content, /<name>顾屿<\/name>[\s\S]*?<appearance_status>first<\/appearance_status>/);
-    assert.match(messages[1].content, /<reference_notes>海港长大的冷静修理师。<\/reference_notes>/);
+    assert.match(messages[1].content, /<description>海港长大的冷静修理师。<\/description>/);
+    for (const emptyOrRemovedTag of ["type", "era", "tone", "world_rules", "location", "negative_constraints", "age", "appearance", "character_boundaries"]) {
+      assert.doesNotMatch(messages[1].content, new RegExp(`<${emptyOrRemovedTag}>`), `空值或已移除设定不应发送：${emptyOrRemovedTag}`);
+    }
     assert.match(messages[1].content, /前序灯塔/);
     assert.match(messages[1].content, /当前码头/);
     assert.doesNotMatch(messages[1].content, /<chapter_outlines>/);

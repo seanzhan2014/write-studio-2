@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fullStudioFixture } from "./fixtures.mjs";
-import { durableSnapshot, diffStudioData, isStudioChangesEmpty, reconcileTaskPoll } from "./studio-test-runtime.mjs";
+import { durableSnapshot, diffStudioData, isStudioChangesEmpty, normalizeStudioData, reconcileTaskPoll } from "./studio-test-runtime.mjs";
 import { mergeStudioConflict, resolveStudioConflict } from "../app/studio-conflict.mjs";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
@@ -25,6 +25,27 @@ async function reset() {
 async function saveDiff(base, local, revision) {
   return write("/api/state/mutations", { changes: diffStudioData(durableSnapshot(base), durableSnapshot(local)) }, revision);
 }
+
+test("retired story and character fields move into the simplified text fields", () => {
+  const source = fullStudioFixture();
+  const article = source.articles[0];
+  article.summary = "一封未来来信引出旧港秘密。";
+  article.type = "近未来悬疑";
+  article.storySettings = { era: "2033 年", location: "雾港", tone: "冷峻", worldRules: "改变过去会失去记忆", negativeConstraints: "不能用梦解释" };
+  article.characters[0].profile = { age: "29 岁", identity: "修理师", appearance: "短发", personality: "谨慎", speechStyle: "短句", abilities: "维修", mentalState: "戒备", knownInformation: "只知道公开结论", boundaries: "不伤害无辜者", immutableTraits: "坚持验证事实" };
+
+  const normalized = normalizeStudioData(source);
+  const migratedArticle = normalized.articles[0];
+  const migratedPerson = migratedArticle.characters[0];
+  assert.equal(migratedArticle.type, "");
+  assert.match(migratedArticle.summary, /类型：近未来悬疑/);
+  assert.match(migratedArticle.summary, /时代背景：2033 年/);
+  assert.match(migratedArticle.summary, /世界规则：改变过去会失去记忆/);
+  assert.deepEqual(migratedArticle.storySettings, { location: "雾港", negativeConstraints: "不能用梦解释" });
+  assert.match(migratedPerson.description, /身份：修理师/);
+  assert.match(migratedPerson.description, /当前已知信息：只知道公开结论/);
+  assert.deepEqual(migratedPerson.profile, { age: "29 岁", appearance: "短发", immutableTraits: "不伤害无辜者\n坚持验证事实" });
+});
 
 test("terminal task polling closes only the task's original outline", () => {
   const current = fullStudioFixture();
@@ -51,12 +72,12 @@ test("SQLite snapshot lifecycle", { skip: !baseUrl }, async (t) => {
     await t.test(`${mode}: create, read, save again does not invent changes or advance revision`, async () => {
       const before = await reset();
       const local = structuredClone(before.data);
-      local.articles[0].storySettings = { era: "近未来", location: "雾港", tone: "冷峻", worldRules: "潮汐倒流", negativeConstraints: "不能用梦解释" };
-      local.articles[0].characters[0].profile = { age: "29 岁", identity: "修理师", appearance: "短发", personality: "谨慎", speechStyle: "短句", abilities: "机械维修", mentalState: "戒备", knownInformation: "只知道公开结论", boundaries: "不伤害无辜者", immutableTraits: "一定验证证据" };
-      local.articles[0].chapters[0].settings = { story: { location: { value: "旧码头", scope: "ongoing" } }, characters: { "character-lin": { start: { mentalState: { value: "抱有希望", scope: "chapter" } }, end: { knownInformation: "知道记录被改写" } } }, relationships: {} };
+      local.articles[0].storySettings = { location: "雾港", negativeConstraints: "不能用梦解释" };
+      local.articles[0].characters[0].profile = { age: "29 岁", appearance: "短发", immutableTraits: "一定验证证据" };
+      local.articles[0].chapters[0].settings = { story: { location: { value: "旧码头", scope: "ongoing" } }, characters: { "character-lin": { start: { appearance: { value: "披着雨衣", scope: "chapter" } }, end: { age: "30 岁" } } }, relationships: {} };
       local.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current").versions[0].settingSnapshot = {
         chapterId: "chapter-main",
-        story: { type: "悬疑", era: "近未来", location: "旧码头", tone: "冷峻", style: "克制", worldRules: "潮汐倒流", negativeConstraints: "不能用梦解释" },
+        story: { location: "旧码头", style: "克制", negativeConstraints: "不能用梦解释" },
         storySources: {},
         characters: [],
         relationships: [],

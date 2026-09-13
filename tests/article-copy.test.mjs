@@ -145,14 +145,14 @@ test("copy options remove excluded story and character overrides from chapter se
   const source = sourceArticle();
   const characterId = source.characters[0].id;
   const relationshipId = source.relationships[0].id;
-  source.storySettings = { era: "近未来", location: "雾港", tone: "冷峻", worldRules: "潮汐倒流", negativeConstraints: "不能用梦解释" };
+  source.storySettings = { location: "雾港", negativeConstraints: "不能用梦解释" };
   source.chapters[0].settings = {
     story: { location: { value: "旧码头", scope: "ongoing" }, style: { value: "短句", scope: "chapter" } },
-    characters: { [characterId]: { start: { knownInformation: { value: "知道密钥所在", scope: "ongoing" } }, end: {} } },
+    characters: { [characterId]: { start: { appearance: { value: "披着雨衣", scope: "ongoing" } }, end: {} } },
     relationships: { [relationshipId]: { start: { value: "暂时结盟", scope: "ongoing" } } },
   };
 
   const copied = duplicateArticleForCopy(source, { ...DEFAULT_ARTICLE_COPY_OPTIONS, includeCharacters: false, includeStyle: false, includeMetadata: false });
-  assert.deepEqual(copied.storySettings, { era: "", location: "", tone: "", worldRules: "", negativeConstraints: "" });
+  assert.deepEqual(copied.storySettings, { location: "", negativeConstraints: "" });
   assert.deepEqual(copied.chapters[0].settings, { story: {}, characters: {}, relationships: {} });
 });

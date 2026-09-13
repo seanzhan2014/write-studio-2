@@ -72,6 +72,10 @@ test("article rules persist and both review paths use only frozen effective rule
       assert.equal(result.updated.length, 1);
       const messages = fake.control.calls[0].body.messages;
       assert.match(messages.at(-1).content, /只检查人物年龄为十八岁/);
+      assert.match(messages.at(-1).content, /<description>海港长大的冷静修理师。<\/description>/);
+      for (const emptyOrRemovedTag of ["type", "era", "tone", "world_rules", "location", "negative_constraints", "age", "appearance", "character_boundaries"]) {
+        assert.doesNotMatch(messages.at(-1).content, new RegExp(`<${emptyOrRemovedTag}>`), `Review 不应发送空值或已移除设定：${emptyOrRemovedTag}`);
+      }
       assert.doesNotMatch(JSON.stringify(messages), /修正中文正文中无必要|跨全部正文识别重复|不新增、删除或改变情节事实/);
       const state = await api("/api/state");
       const version = state.data.articles[0].chapters[0].outlines[0].versions.find((item) => item.id === result.updated[0].versionId);
@@ -100,6 +104,7 @@ test("article rules persist and both review paths use only frozen effective rule
         assert.match(messages, /唯一文章规则/);
         assert.match(messages, /本次保留雨景/);
         assert.doesNotMatch(messages, /修正中文正文中无必要|builtin_requirements/);
+        assert.doesNotMatch(messages, /\\\"(?:summary|style|location|negativeConstraints|age|appearance|immutableTraits)\\\":\\\"\\\"/, "自动审校上下文不应序列化空设定");
       }
       const snapshot = completed.contextOptions.reviewRuleSnapshot;
       assert.equal(snapshot.rules[0].revision, 3);

@@ -28,6 +28,8 @@ import {
   EMPTY_ARTICLE_STORY_SETTINGS,
   EMPTY_CHARACTER_PROFILE,
   EMPTY_CHAPTER_SETTINGS,
+  migrateArticleStoryDetails,
+  migrateCharacterDetails,
   normalizeArticleStorySettings,
   normalizeCharacterProfile,
   normalizeChapterSettings,
@@ -322,14 +324,11 @@ const seedData: StudioData = {
     {
       id: "harbor-letters",
       title: "潮汐来信",
-      summary: "林澈收到一封来自七年后的信。为了弄清寄信人，她回到停用的旧码头，也重新遇见了那个本应消失的人。",
-      type: "近未来悬疑",
+      summary: "一部发生在 2033 年前后的近未来悬疑小说。林澈收到一封来自七年后的信，为了弄清寄信人，她回到停用的旧码头，也重新遇见了那个本应消失的人。时间异常只通过信件和潮汐发生，改变过去必然造成等价记忆缺失。",
+      type: "",
       style: "克制、写实，重视环境细节",
       storySettings: {
-        era: "2033 年前后，现实世界的近未来",
         location: "常年多雾的临海旧港与已经停用的第七码头",
-        tone: "冷静、潮湿、悬疑中带克制的浪漫",
-        worldRules: "时间异常只通过信件和潮汐发生；改变过去必然造成等价记忆缺失。",
         negativeConstraints: "不出现无代价复活。\n不把时间异常解释成梦境。",
       },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
@@ -365,9 +364,9 @@ const seedData: StudioData = {
         },
       ],
       characters: [
-        { id: "character-lin", name: "林澈", aliases: ["阿澈"], description: "海港长大的修理师，习惯用可验证的事实抵抗失序。", profile: { age: "29 岁", identity: "精密仪器修理师", appearance: "短发，常穿深色工作服，指尖有细小划痕", personality: "冷静、敏锐、谨慎", speechStyle: "短句，先确认事实再表达判断", abilities: "精密仪器维修、旧地图辨识", mentalState: "对故乡和七年前的事故保持疏离与戒备", knownInformation: "知道旧港事故的公开结论，不知道顾屿失踪与潮汐信件有关", boundaries: "不拿无辜者验证时间异常", immutableTraits: "面对失序会害怕，但一定会追查到可以验证的事实" }, archived: false },
-        { id: "character-gu", name: "顾屿", aliases: ["顾先生"], description: "七年前失踪，如今似乎知道信件来源。", profile: { age: "31 岁", identity: "海图绘制员", appearance: "左手有旧伤，衣着整洁", personality: "克制，擅长隐藏真实意图", speechStyle: "很少解释，用含有双重意思的陈述代替回答", abilities: "海图绘制、航线记忆", mentalState: "急于阻止某件事发生，同时不愿让林澈承担代价", knownInformation: "知道信件来源和七年前事故的真相，但不知道本次循环会在哪一刻结束", boundaries: "不会主动欺骗林澈有关生死的事实", immutableTraits: "即使隐瞒动机，也不会把林澈当成可以牺牲的工具" }, archived: false },
-        { id: "character-zhou", name: "周岚", aliases: ["周姨"], description: "保存着旧港关闭前最后一份完整潮汐记录。", profile: { age: "58 岁", identity: "港务记录员", appearance: "总带着一本蓝封皮记录册", personality: "谨慎而固执", speechStyle: "说话缓慢，习惯给出具体日期", abilities: "熟悉港务档案和潮汐记录", mentalState: "希望秘密终止在自己这里", knownInformation: "知道旧港记录被改写过，不知道顾屿仍然活着", boundaries: "不伪造档案", immutableTraits: "宁可保持沉默，也不会编造证据" }, archived: false },
+        { id: "character-lin", name: "林澈", aliases: ["阿澈"], description: "海港长大的精密仪器修理师，冷静、敏锐、谨慎，擅长维修精密仪器和辨识旧地图。她习惯说短句，先确认事实再表达判断；目前对故乡和七年前的事故保持疏离与戒备，只知道事故的公开结论，不知道顾屿失踪与潮汐信件有关。", profile: { age: "29 岁", appearance: "短发，常穿深色工作服，指尖有细小划痕", immutableTraits: "面对失序会害怕，但一定会追查到可以验证的事实" }, archived: false },
+        { id: "character-gu", name: "顾屿", aliases: ["顾先生"], description: "七年前失踪的海图绘制员，克制且擅长隐藏真实意图，拥有出色的航线记忆。他很少解释，常用含有双重意思的陈述代替回答；目前急于阻止某件事发生，又不愿让林澈承担代价。他知道信件来源和七年前事故的真相，但不知道本次循环会在哪一刻结束。", profile: { age: "31 岁", appearance: "左手有旧伤，衣着整洁", immutableTraits: "即使隐瞒动机，也不会把林澈当成可以牺牲的工具" }, archived: false },
+        { id: "character-zhou", name: "周岚", aliases: ["周姨"], description: "熟悉港务档案和潮汐记录的港务记录员，谨慎而固执，说话缓慢并习惯给出具体日期。她保存着旧港关闭前最后一份完整潮汐记录，希望秘密终止在自己这里；她知道旧港记录被改写过，但不知道顾屿仍然活着。", profile: { age: "58 岁", appearance: "总带着一本蓝封皮记录册", immutableTraits: "宁可保持沉默，也不会编造证据" }, archived: false },
       ],
       relationships: [
         { id: "relation-1", characterAId: "character-lin", characterBId: "character-gu", description: "旧日搭档 / 彼此隐瞒关键信息" },
@@ -379,7 +378,7 @@ const seedData: StudioData = {
       id: "south-city",
       title: "城南旧事集",
       summary: "关于旧城街巷与家庭记忆的短篇集。",
-      type: "现实题材",
+      type: "",
       style: "温柔、含蓄",
       storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
@@ -395,7 +394,7 @@ const seedData: StudioData = {
       id: "long-summer",
       title: "漫长夏日备忘录",
       summary: "一段发生在海边小镇的成长故事。",
-      type: "青春小说",
+      type: "",
       style: "明亮、松弛",
       storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
@@ -736,29 +735,36 @@ function activeManualExcellent(outline: Outline) {
   return currentOutlineVersion(outline)?.manualExcellent === true || (!outline.currentVersionId && outline.manualExcellent === true);
 }
 
+function normalizedArticleSummary(article: Article) {
+  return migrateArticleStoryDetails(article.summary, article.type, article.storySettings).summary;
+}
+
 function normalizeCharacter(source: unknown): Character {
   const item = source as Partial<Character> & Record<string, unknown>;
-  const legacyDescription = [item.role, item.appearance, item.personality, item.abilities, item.background]
-    .map((value) => String(value ?? "").trim())
-    .filter(Boolean)
-    .join("\n");
+  const rawProfile = item.profile && typeof item.profile === "object" && !Array.isArray(item.profile) ? item.profile as Record<string, unknown> : {};
+  const migrated = migrateCharacterDetails(item.description, {
+    ...rawProfile,
+    age: rawProfile.age ?? item.age,
+    appearance: rawProfile.appearance ?? item.appearance,
+    identity: rawProfile.identity ?? item.role,
+    personality: rawProfile.personality ?? item.personality,
+    speechStyle: rawProfile.speechStyle ?? item.speechStyle,
+    abilities: rawProfile.abilities ?? item.abilities,
+    mentalState: rawProfile.mentalState ?? item.mentalState,
+    knownInformation: rawProfile.knownInformation ?? item.knownInformation,
+    boundaries: rawProfile.boundaries ?? item.boundaries,
+    immutableTraits: rawProfile.immutableTraits ?? item.immutableTraits,
+  });
+  const legacyBackground = String(item.background ?? "").trim();
+  const description = legacyBackground && !migrated.description.includes(legacyBackground)
+    ? [migrated.description, `背景：${legacyBackground}`].filter(Boolean).join("\n")
+    : migrated.description;
   return {
     id: String(item.id ?? makeId("character")),
     name: String(item.name ?? ""),
     aliases: Array.isArray(item.aliases) ? item.aliases.map(String) : [],
-    description: String(item.description ?? legacyDescription),
-    profile: normalizeCharacterProfile(item.profile ?? {
-      age: item.age,
-      identity: item.role,
-      appearance: item.appearance,
-      personality: item.personality,
-      speechStyle: item.speechStyle,
-      abilities: item.abilities,
-      mentalState: item.mentalState,
-      knownInformation: item.knownInformation,
-      boundaries: item.boundaries,
-      immutableTraits: item.immutableTraits,
-    }),
+    description,
+    profile: migrated.profile,
     archived: Boolean(item.archived),
   };
 }
@@ -835,6 +841,8 @@ function normalizeStudioData(source: StudioData): StudioData {
     },
     articles: source.articles.map((article) => ({
       ...article,
+      summary: normalizedArticleSummary(article),
+      type: "",
       storySettings: normalizeArticleStorySettings(article.storySettings),
       reviewRules: normalizeReviewRules(article.reviewRules),
       reviewRuleItems: articleReviewRules(article),

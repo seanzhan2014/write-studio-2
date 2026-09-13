@@ -487,7 +487,7 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
           ...version.settingSnapshot,
           story: options.includeMetadata
             ? { ...version.settingSnapshot.story, ...(!options.includeStyle ? { style: "" } : {}) }
-            : { type: "", era: "", location: "", tone: "", style: options.includeStyle ? version.settingSnapshot.story.style : "", worldRules: "", negativeConstraints: "" },
+            : { location: "", style: options.includeStyle ? version.settingSnapshot.story.style : "", negativeConstraints: "" },
           characters: options.includeCharacters ? version.settingSnapshot.characters : [],
           relationships: options.includeCharacters ? version.settingSnapshot.relationships : [],
         },

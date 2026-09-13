@@ -19,8 +19,8 @@ function json(value: unknown, status = 200) {
 function reviewContextSnapshot(article: AiReviewInput["article"], chapterTitle: string) {
   // Rules are frozen at request creation; later rule edits must not invalidate
   // the result. Reference facts and body changes still protect current text.
-  const { id, title, summary, type, style, era, location, tone, worldRules, negativeConstraints, characters } = article;
-  return JSON.stringify({ article: { id, title, summary, type, style, era, location, tone, worldRules, negativeConstraints, characters }, chapterTitle });
+  const { id, title, summary, style, location, negativeConstraints, characters } = article;
+  return JSON.stringify({ article: { id, title, summary, style, location, negativeConstraints, characters }, chapterTitle });
 }
 
 function activeExcellentFragments(outline: StudioData["articles"][number]["chapters"][number]["outlines"][number]) {

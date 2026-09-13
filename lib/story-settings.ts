@@ -1,27 +1,17 @@
-export const STORY_FIELD_KEYS = ["type", "era", "location", "tone", "style", "worldRules", "negativeConstraints"] as const;
+export const STORY_FIELD_KEYS = ["location", "style", "negativeConstraints"] as const;
 export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
 
-export const CHARACTER_PROFILE_KEYS = ["age", "identity", "appearance", "personality", "speechStyle", "abilities", "mentalState", "knownInformation", "boundaries", "immutableTraits"] as const;
+export const CHARACTER_PROFILE_KEYS = ["age", "appearance", "immutableTraits"] as const;
 export type CharacterProfileKey = typeof CHARACTER_PROFILE_KEYS[number];
 
 export type ArticleStorySettings = {
-  era: string;
   location: string;
-  tone: string;
-  worldRules: string;
   negativeConstraints: string;
 };
 
 export type CharacterProfile = {
   age: string;
-  identity: string;
   appearance: string;
-  personality: string;
-  speechStyle: string;
-  abilities: string;
-  mentalState: string;
-  knownInformation: string;
-  boundaries: string;
   immutableTraits: string;
 };
 
@@ -48,23 +38,13 @@ export type ChapterSettings = {
 };
 
 export const EMPTY_ARTICLE_STORY_SETTINGS: ArticleStorySettings = {
-  era: "",
   location: "",
-  tone: "",
-  worldRules: "",
   negativeConstraints: "",
 };
 
 export const EMPTY_CHARACTER_PROFILE: CharacterProfile = {
   age: "",
-  identity: "",
   appearance: "",
-  personality: "",
-  speechStyle: "",
-  abilities: "",
-  mentalState: "",
-  knownInformation: "",
-  boundaries: "",
   immutableTraits: "",
 };
 
@@ -74,6 +54,15 @@ type UnknownRecord = Record<string, unknown>;
 function record(value: unknown): UnknownRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : {}; }
 function text(value: unknown, maximum = 20_000) { return String(value ?? "").slice(0, maximum); }
 function scope(value: unknown): OverrideScope { return value === "chapter" ? "chapter" : "ongoing"; }
+
+function appendMissingDetails(baseValue: unknown, details: Array<[string, unknown]>, maximum: number) {
+  const base = text(baseValue, maximum);
+  const additions = details
+    .map(([label, value]) => [label, String(value ?? "").trim()] as const)
+    .map(([label, value]) => value ? `${label}：${value}` : "")
+    .filter((detail) => detail && !base.includes(detail));
+  return text([base, ...additions].filter((value) => value.trim()).join("\n"), maximum);
+}
 
 function normalizeTextOverride(value: unknown): TextSettingOverride | undefined {
   const item = record(value);
@@ -90,17 +79,50 @@ function normalizeBooleanOverride(value: unknown): BooleanSettingOverride | unde
 export function normalizeArticleStorySettings(value: unknown): ArticleStorySettings {
   const item = record(value);
   return {
-    era: text(item.era, 5_000),
     location: text(item.location, 10_000),
-    tone: text(item.tone, 5_000),
-    worldRules: text(item.worldRules, 30_000),
     negativeConstraints: text(item.negativeConstraints, 30_000),
   };
 }
 
 export function normalizeCharacterProfile(value: unknown): CharacterProfile {
   const item = record(value);
-  return Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, text(item[key], key === "immutableTraits" || key === "boundaries" ? 20_000 : 10_000)])) as CharacterProfile;
+  return Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, text(item[key], key === "immutableTraits" ? 20_000 : 10_000)])) as CharacterProfile;
+}
+
+export function migrateArticleStoryDetails(summaryValue: unknown, typeValue: unknown, settingsValue: unknown) {
+  const rawSettings = record(settingsValue);
+  return {
+    summary: appendMissingDetails(summaryValue, [
+      ["类型", typeValue],
+      ["时代背景", rawSettings.era],
+      ["世界规则", rawSettings.worldRules],
+    ], 10_000),
+    type: "",
+    storySettings: normalizeArticleStorySettings(rawSettings),
+  };
+}
+
+export function migrateCharacterDetails(descriptionValue: unknown, profileValue: unknown) {
+  const rawProfile = record(profileValue);
+  const immutableTraits = [...new Set([
+    String(rawProfile.boundaries ?? "").trim(),
+    String(rawProfile.immutableTraits ?? "").trim(),
+  ].filter(Boolean))].join("\n");
+  return {
+    description: appendMissingDetails(descriptionValue, [
+      ["身份", rawProfile.identity],
+      ["性格", rawProfile.personality],
+      ["说话方式", rawProfile.speechStyle],
+      ["能力", rawProfile.abilities],
+      ["当前心理状态", rawProfile.mentalState],
+      ["当前已知信息", rawProfile.knownInformation],
+    ], 20_000),
+    profile: normalizeCharacterProfile({
+      age: rawProfile.age,
+      appearance: rawProfile.appearance,
+      immutableTraits,
+    }),
+  };
 }
 
 export function normalizeChapterSettings(value: unknown): ChapterSettings {
@@ -148,7 +170,6 @@ export function normalizeChapterSettings(value: unknown): ChapterSettings {
 }
 
 export type StorySettingsArticle = {
-  type: string;
   style: string;
   storySettings?: ArticleStorySettings;
   chapters: Array<{ id: string; title: string; archived: boolean; settings?: ChapterSettings }>;
@@ -189,7 +210,7 @@ function chapterSource(chapter: { id: string; title: string }): SettingSource { 
 
 export function resolveChapterSettings(article: StorySettingsArticle, chapterId: string): ResolvedChapterSettings {
   const base = normalizeArticleStorySettings(article.storySettings);
-  const story = { type: text(article.type), era: base.era, location: base.location, tone: base.tone, style: text(article.style), worldRules: base.worldRules, negativeConstraints: base.negativeConstraints };
+  const story = { location: base.location, style: text(article.style), negativeConstraints: base.negativeConstraints };
   const storySources = Object.fromEntries(STORY_FIELD_KEYS.map((key) => [key, articleSource()])) as Record<StoryFieldKey, SettingSource>;
   const profiles = new Map(article.characters.map((character) => [character.id, normalizeCharacterProfile(character.profile)]));
   const profileSources = new Map(article.characters.map((character) => [character.id, Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, articleSource()])) as Record<CharacterProfileKey, SettingSource>]));
