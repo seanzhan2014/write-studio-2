@@ -1,4 +1,4 @@
-export const STORY_FIELD_KEYS = ["location", "style", "negativeConstraints"] as const;
+export const STORY_FIELD_KEYS = ["summary", "location", "style", "negativeConstraints"] as const;
 export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
 
 export const CHARACTER_PROFILE_KEYS = ["age", "appearance", "immutableTraits"] as const;
@@ -36,6 +36,8 @@ export type ChapterSettings = {
   characters: Record<string, ChapterCharacterSettings>;
   relationships: Record<string, ChapterRelationshipSettings>;
 };
+
+export type OutlineSettings = ChapterSettings;
 
 export const EMPTY_ARTICLE_STORY_SETTINGS: ArticleStorySettings = {
   location: "",
@@ -170,14 +172,15 @@ export function normalizeChapterSettings(value: unknown): ChapterSettings {
 }
 
 export type StorySettingsArticle = {
+  summary: string;
   style: string;
   storySettings?: ArticleStorySettings;
-  chapters: Array<{ id: string; title: string; archived: boolean; settings?: ChapterSettings }>;
+  chapters: Array<{ id: string; title: string; archived: boolean; settings?: ChapterSettings; outlines?: Array<{ id: string; title: string; archived: boolean; settings?: OutlineSettings }> }>;
   characters: Array<{ id: string; name: string; aliases: string[]; description: string; archived: boolean; profile?: CharacterProfile }>;
   relationships: Array<{ id?: string; characterAId: string; characterBId: string; description: string }>;
 };
 
-export type SettingSource = { kind: "article" } | { kind: "chapter"; chapterId: string; chapterTitle: string };
+export type SettingSource = { kind: "article" } | { kind: "chapter"; chapterId: string; chapterTitle: string } | { kind: "outline"; outlineId: string; outlineTitle: string };
 export type ResolvedChapterSettings = {
   chapterId: string;
   inheritedFromChapter?: { id: string; title: string };
@@ -205,12 +208,18 @@ export type ResolvedChapterSettings = {
   }>;
 };
 
+export type ResolvedOutlineSettings = ResolvedChapterSettings & {
+  outlineId: string;
+  inheritedFromOutline?: { id: string; title: string };
+};
+
 function articleSource(): SettingSource { return { kind: "article" }; }
 function chapterSource(chapter: { id: string; title: string }): SettingSource { return { kind: "chapter", chapterId: chapter.id, chapterTitle: chapter.title }; }
+function outlineSource(outline: { id: string; title: string }): SettingSource { return { kind: "outline", outlineId: outline.id, outlineTitle: outline.title }; }
 
 export function resolveChapterSettings(article: StorySettingsArticle, chapterId: string): ResolvedChapterSettings {
   const base = normalizeArticleStorySettings(article.storySettings);
-  const story = { location: base.location, style: text(article.style), negativeConstraints: base.negativeConstraints };
+  const story = { summary: text(article.summary, 10_000), location: base.location, style: text(article.style), negativeConstraints: base.negativeConstraints };
   const storySources = Object.fromEntries(STORY_FIELD_KEYS.map((key) => [key, articleSource()])) as Record<StoryFieldKey, SettingSource>;
   const profiles = new Map(article.characters.map((character) => [character.id, normalizeCharacterProfile(character.profile)]));
   const profileSources = new Map(article.characters.map((character) => [character.id, Object.fromEntries(CHARACTER_PROFILE_KEYS.map((key) => [key, articleSource()])) as Record<CharacterProfileKey, SettingSource>]));
@@ -305,6 +314,102 @@ export function resolveChapterSettings(article: StorySettingsArticle, chapterId:
   };
 }
 
+export function resolveOutlineSettings(article: StorySettingsArticle, outlineId: string): ResolvedOutlineSettings {
+  const chapter = article.chapters.find((item) => item.outlines?.some((outline) => outline.id === outlineId));
+  const outline = chapter?.outlines?.find((item) => item.id === outlineId);
+  if (!chapter || !outline) {
+    const fallback = resolveChapterSettings(article, chapter?.id ?? article.chapters[0]?.id ?? "");
+    return { ...fallback, outlineId };
+  }
+
+  const chapterResolved = resolveChapterSettings(article, chapter.id);
+  const story = { ...chapterResolved.story };
+  const storySources = { ...chapterResolved.storySources };
+  const profiles = new Map(chapterResolved.characters.map((character) => [character.id, { ...character.profile }]));
+  const profileSources = new Map(chapterResolved.characters.map((character) => [character.id, { ...character.profileSources }]));
+  const appearances = new Map(chapterResolved.characters.map((character) => [character.id, character.appears]));
+  const relationshipDescriptions = new Map(chapterResolved.relationships.map((relationship) => [relationship.id, relationship.description]));
+  const relationshipActive = new Map(chapterResolved.relationships.map((relationship) => [relationship.id, relationship.active]));
+  const relationshipSources = new Map(chapterResolved.relationships.map((relationship) => [relationship.id, relationship.source]));
+  const activeOutlines = (chapter.outlines ?? []).filter((item) => !item.archived);
+  const activeTargetIndex = activeOutlines.findIndex((item) => item.id === outlineId);
+  const requestedTargetIndex = (chapter.outlines ?? []).findIndex((item) => item.id === outlineId);
+  const target = activeTargetIndex >= 0 ? activeOutlines[activeTargetIndex] : outline;
+  const preceding = activeTargetIndex >= 0
+    ? activeOutlines.slice(0, activeTargetIndex)
+    : requestedTargetIndex >= 0
+      ? (chapter.outlines ?? []).slice(0, requestedTargetIndex).filter((item) => !item.archived)
+      : [];
+
+  for (const precedingOutline of preceding) {
+    const settings = normalizeChapterSettings(precedingOutline.settings);
+    const source = outlineSource(precedingOutline);
+    for (const key of STORY_FIELD_KEYS) {
+      const override = settings.story[key];
+      if (override?.scope === "ongoing") { story[key] = override.value; storySources[key] = source; }
+    }
+    for (const [characterId, characterSettings] of Object.entries(settings.characters)) {
+      const profile = profiles.get(characterId);
+      const sources = profileSources.get(characterId);
+      if (!profile || !sources) continue;
+      for (const key of CHARACTER_PROFILE_KEYS) {
+        const start = characterSettings.start[key];
+        if (start?.scope === "ongoing") { profile[key] = start.value; sources[key] = source; }
+        if (Object.prototype.hasOwnProperty.call(characterSettings.end, key)) { profile[key] = characterSettings.end[key] ?? ""; sources[key] = source; }
+      }
+      if (characterSettings.appears?.scope === "ongoing") appearances.set(characterId, characterSettings.appears.value);
+    }
+    for (const [relationshipId, relationshipSettings] of Object.entries(settings.relationships)) {
+      if (relationshipSettings.start?.scope === "ongoing") { relationshipDescriptions.set(relationshipId, relationshipSettings.start.value); relationshipSources.set(relationshipId, source); }
+      if (Object.prototype.hasOwnProperty.call(relationshipSettings, "end")) { relationshipDescriptions.set(relationshipId, relationshipSettings.end ?? ""); relationshipSources.set(relationshipId, source); }
+      if (relationshipSettings.active?.scope === "ongoing") relationshipActive.set(relationshipId, relationshipSettings.active.value);
+    }
+  }
+
+  const current = normalizeChapterSettings(target.settings);
+  const currentSource = outlineSource(target);
+  for (const key of STORY_FIELD_KEYS) {
+    const override = current.story[key];
+    if (override) { story[key] = override.value; storySources[key] = currentSource; }
+  }
+  for (const [characterId, characterSettings] of Object.entries(current.characters)) {
+    const profile = profiles.get(characterId);
+    const sources = profileSources.get(characterId);
+    if (!profile || !sources) continue;
+    for (const key of CHARACTER_PROFILE_KEYS) {
+      const override = characterSettings.start[key];
+      if (override) { profile[key] = override.value; sources[key] = currentSource; }
+    }
+    if (characterSettings.appears) appearances.set(characterId, characterSettings.appears.value);
+  }
+  for (const [relationshipId, relationshipSettings] of Object.entries(current.relationships)) {
+    if (relationshipSettings.start) { relationshipDescriptions.set(relationshipId, relationshipSettings.start.value); relationshipSources.set(relationshipId, currentSource); }
+    if (relationshipSettings.active) relationshipActive.set(relationshipId, relationshipSettings.active.value);
+  }
+
+  return {
+    ...chapterResolved,
+    outlineId: target.id,
+    inheritedFromOutline: preceding.at(-1) ? { id: preceding.at(-1)!.id, title: preceding.at(-1)!.title } : undefined,
+    story,
+    storySources,
+    characters: chapterResolved.characters.map((character) => ({
+      ...character,
+      appears: appearances.get(character.id),
+      profile: profiles.get(character.id) ?? { ...EMPTY_CHARACTER_PROFILE },
+      profileSources: profileSources.get(character.id) ?? { ...character.profileSources },
+      endingChanges: { ...character.endingChanges, ...(current.characters[character.id]?.end ?? {}) },
+    })),
+    relationships: chapterResolved.relationships.map((relationship) => ({
+      ...relationship,
+      description: relationshipDescriptions.get(relationship.id) ?? relationship.description,
+      active: relationshipActive.get(relationship.id) !== false,
+      source: relationshipSources.get(relationship.id) ?? relationship.source,
+      endingDescription: current.relationships[relationship.id]?.end ?? relationship.endingDescription,
+    })),
+  };
+}
+
 export function countChapterSettingChanges(value: unknown) {
   const settings = normalizeChapterSettings(value);
   let count = Object.keys(settings.story).length;
@@ -312,6 +417,8 @@ export function countChapterSettingChanges(value: unknown) {
   for (const item of Object.values(settings.relationships)) count += (item.start ? 1 : 0) + (Object.prototype.hasOwnProperty.call(item, "end") ? 1 : 0) + (item.active ? 1 : 0);
   return count;
 }
+
+export const countOutlineSettingChanges = countChapterSettingChanges;
 
 export function storySettingsText(value: ResolvedChapterSettings) {
   return STORY_FIELD_KEYS.map((key) => value.story[key]).filter((item) => item.trim()).join("\n");

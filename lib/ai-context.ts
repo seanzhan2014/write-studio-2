@@ -2,7 +2,7 @@ import { resolvedOutlineContent } from "./outline-content.ts";
 import { outlineDisplayTitle } from "./outline-title.ts";
 import { normalizeContentGenerationMode, type ContentGenerationMode } from "./generate-options.ts";
 import { DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "./naming-options.ts";
-import { normalizeCharacterProfile, resolveChapterSettings, type ArticleStorySettings, type CharacterProfile, type ChapterSettings } from "./story-settings.ts";
+import { normalizeCharacterProfile, resolveOutlineSettings, type ArticleStorySettings, type CharacterProfile, type ChapterSettings, type OutlineSettings } from "./story-settings.ts";
 
 export type AiContextKind = "chat" | "content" | "outline" | "chapter-title";
 
@@ -14,6 +14,7 @@ type ContextOutline = {
   titleGenerationPending?: boolean;
   plan: string;
   content: string;
+  settings?: OutlineSettings;
   currentVersionId?: string | null;
   defaultVersionId?: string | null;
   contentOverride?: boolean;
@@ -162,7 +163,7 @@ export function detectFirstAppearanceCharacters(data: AiContextData, outlineId: 
   const currentPlan = options.currentPlan ?? outline.plan;
   const currentSearchable = `${outlineDisplayTitle({ ...outline, plan: currentPlan })}\n${currentPlan}\n${String(options.instruction ?? "")}`;
   const previousOutlines = visibleOutlines.slice(0, currentIndex);
-  const resolved = resolveChapterSettings(article, chapter.id);
+  const resolved = resolveOutlineSettings(article, outline.id);
   return resolved.characters.filter((character) => !character.archived && character.appears !== false && (character.appears === true || Boolean(matchedCharacterReference(currentSearchable, character)))).map((character) => {
     for (const previous of previousOutlines) {
       const matchedReference = matchedCharacterReference(`${outlineDisplayTitle(previous)}\n${previous.plan}`, character);
@@ -207,7 +208,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
     : kind === "content"
       ? detectFirstAppearanceCharacters(data, outlineId, { instruction: options.instruction, currentPlan }).filter((item) => item.firstAppearance).map((item) => item.characterId)
       : []);
-  const resolvedSettings = resolveChapterSettings(article, chapter.id);
+  const resolvedSettings = resolveOutlineSettings(article, outline.id);
   const matchedCharacters = kind === "chapter-title" || options.includeCharacters === false ? [] : resolvedSettings.characters.filter((person) => !person.archived && person.appears !== false && (person.appears === true || firstAppearanceIds.has(person.id) || Boolean(matchedCharacterReference(searchable, person))));
   const characterIds = new Set(matchedCharacters.map((person) => person.id));
   const characterNames = new Map(matchedCharacters.map((person) => [person.id, person.name]));
@@ -216,7 +217,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
 
   return {
     kind,
-    article: { id: article.id, title: article.title, summary: article.summary, ...resolvedSettings.story, outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
+    article: { id: article.id, title: article.title, ...resolvedSettings.story, outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
     currentChapter: { id: chapter.id, title: chapter.title, inheritedFromChapter: resolvedSettings.inheritedFromChapter },
     currentOutline: {
       id: outline.id,

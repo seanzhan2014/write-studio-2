@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { selectAiContext } from "../lib/ai-context.ts";
 
-function outline(id, plan) {
-  return { id, title: "", plan, content: "", versions: [], archived: false, chat: { sessions: [], activeSessionId: "" } };
+function outline(id, plan, settings = undefined) {
+  return { id, title: "", plan, settings, content: "", versions: [], archived: false, chat: { sessions: [], activeSessionId: "" } };
 }
 
 test("AI context uses the target chapter's resolved story, character and relationship state", () => {
@@ -28,15 +28,32 @@ test("AI context uses the target chapter's resolved story, character and relatio
           gu: { start: {}, end: {}, appears: { value: true, scope: "chapter" } },
         },
         relationships: { pair: { start: { value: "暂时结盟", scope: "chapter" }, end: "公开决裂" } },
-      }, outlines: [outline("current", "林澈和顾屿在码头交换线索")] },
+      }, outlines: [
+        outline("previous-local", "林澈先检查仓库", {
+          story: { location: { value: "码头仓库", scope: "ongoing" } },
+          characters: { lin: { start: {}, end: { age: "31 岁" } } },
+          relationships: {},
+        }),
+        outline("current", "林澈和顾屿在码头交换线索", {
+          story: {
+            summary: { value: "两人在涨潮前交换证物", scope: "chapter" },
+            style: { value: "急促短句", scope: "chapter" },
+          },
+          characters: { lin: { start: { appearance: { value: "袖口沾血", scope: "chapter" } }, end: {} } },
+          relationships: {},
+        }),
+      ] },
     ],
   };
 
   const selected = selectAiContext({ articles: [article] }, "current", "content", { includeCharacters: true, firstAppearanceCharacterIds: ["lin", "gu"] });
-  assert.equal(selected.article.location, "旧码头");
+  assert.equal(selected.article.summary, "两人在涨潮前交换证物");
+  assert.equal(selected.article.location, "码头仓库");
+  assert.equal(selected.article.style, "急促短句");
   assert.equal(selected.article.negativeConstraints, "不能用梦解释");
   assert.equal(selected.currentChapter.inheritedFromChapter.title, "第一章");
-  assert.equal(selected.characters.find((person) => person.id === "lin").profile.appearance, "披着雨衣");
-  assert.equal(selected.characters.find((person) => person.id === "lin").endingChanges.age, "30 岁");
+  assert.equal(selected.characters.find((person) => person.id === "lin").profile.appearance, "袖口沾血");
+  assert.equal(selected.characters.find((person) => person.id === "lin").profile.age, "31 岁");
+  assert.deepEqual(selected.characters.find((person) => person.id === "lin").endingChanges, { age: "30 岁" });
   assert.deepEqual(selected.relationships[0], { characterA: "林澈", characterB: "顾屿", description: "暂时结盟", endingDescription: "公开决裂" });
 });

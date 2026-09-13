@@ -151,8 +151,33 @@ test("copy options remove excluded story and character overrides from chapter se
     characters: { [characterId]: { start: { appearance: { value: "披着雨衣", scope: "ongoing" } }, end: {} } },
     relationships: { [relationshipId]: { start: { value: "暂时结盟", scope: "ongoing" } } },
   };
+  source.chapters[0].outlines[0].settings = {
+    story: { summary: { value: "本大纲简介", scope: "ongoing" }, style: { value: "更短的句子", scope: "chapter" } },
+    characters: { [characterId]: { start: { age: { value: "30 岁", scope: "ongoing" } }, end: {} } },
+    relationships: { [relationshipId]: { end: "关系破裂" } },
+  };
 
   const copied = duplicateArticleForCopy(source, { ...DEFAULT_ARTICLE_COPY_OPTIONS, includeCharacters: false, includeStyle: false, includeMetadata: false });
   assert.deepEqual(copied.storySettings, { location: "", negativeConstraints: "" });
   assert.deepEqual(copied.chapters[0].settings, { story: {}, characters: {}, relationships: {} });
+  assert.deepEqual(copied.chapters[0].outlines[0].settings, { story: {}, characters: {}, relationships: {} });
+});
+
+test("article copies rekey character and relationship references inside outline settings", () => {
+  const source = sourceArticle();
+  const sourceCharacterId = source.characters[0].id;
+  const sourceRelationshipId = source.relationships[0].id;
+  source.chapters[0].outlines[0].settings = {
+    story: { summary: { value: "大纲简介", scope: "ongoing" } },
+    characters: { [sourceCharacterId]: { start: { appearance: { value: "戴面具", scope: "ongoing" } }, end: {} } },
+    relationships: { [sourceRelationshipId]: { start: { value: "临时合作", scope: "ongoing" } } },
+  };
+
+  const copied = duplicateArticleForCopy(source, { ...DEFAULT_ARTICLE_COPY_OPTIONS, includeMetadata: true });
+  const settings = copied.chapters[0].outlines[0].settings;
+  assert.deepEqual(settings.story, { summary: { value: "大纲简介", scope: "ongoing" } });
+  assert.deepEqual(Object.keys(settings.characters), [copied.characters[0].id]);
+  assert.deepEqual(Object.keys(settings.relationships), [copied.relationships[0].id]);
+  assert.equal(settings.characters[sourceCharacterId], undefined);
+  assert.equal(settings.relationships[sourceRelationshipId], undefined);
 });

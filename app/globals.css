@@ -6309,6 +6309,14 @@ kbd {
 .chapter-setting-fields { display: grid; gap: 20px; }
 .inherited-setting-field { border-left: 2px solid var(--border); display: grid; gap: 7px; padding-left: 13px; }
 .inherited-setting-field.overridden { border-left-color: var(--accent); }
+.setting-collapsible { border: 1px solid var(--border); border-left-width: 2px; border-radius: 10px; padding: 0; }
+.setting-collapsible > summary { align-items: center; cursor: pointer; display: flex; list-style: none; min-height: 52px; padding: 10px 13px; }
+.setting-collapsible > summary::-webkit-details-marker { display: none; }
+.setting-collapsible > summary::after { color: var(--text-disabled); content: "›"; font-size: 20px; margin-left: auto; transform: rotate(90deg); transition: transform .15s ease; }
+.setting-collapsible[open] > summary::after { transform: rotate(-90deg); }
+.setting-collapsible > summary > span { display: grid; gap: 2px; }
+.setting-collapsible > summary small { color: var(--text-secondary); font-size: 12px; font-weight: 400; }
+.setting-collapsible-body { border-top: 1px solid var(--border); display: grid; gap: 8px; padding: 13px; }
 .setting-field-meta { align-items: center; display: flex; gap: 10px; min-height: 24px; }
 .setting-field-meta > span { color: var(--text-secondary); font-size: 12px; margin-right: auto; }
 .setting-field-meta > button { font-size: 12px; }

@@ -58,7 +58,7 @@ test("snapshot inserts name every migration-sensitive column explicitly", async 
 test("schema-extensible inserts name their columns explicitly", async () => {
   const runtime = await read("db/runtime.ts");
   const ai = await read("db/ai.ts");
-  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
   assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort\)/);

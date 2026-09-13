@@ -117,10 +117,12 @@ test("explicit null version selection and empty candidate collections are user e
   changed.currentVersionId = null;
   changed.defaultVersionId = null;
   changed.nameVersions = [];
+  changed.settings = { story: { summary: { value: "当前大纲简介", scope: "chapter" } }, characters: {}, relationships: {} };
   const diff = diffStudioData(base, durableSnapshot(local));
   const patch = diff.outlines.patch.find((item) => item.id === changed.id);
   assert.equal(patch.content.currentVersionId, null);
   assert.equal(patch.content.defaultVersionId, null);
+  assert.deepEqual(patch.outline.settings, changed.settings);
   assert.equal(durableSnapshot(local).articles[0].chapters[0].outlines.find((item) => item.id === changed.id).versions.length, 1);
 });
 

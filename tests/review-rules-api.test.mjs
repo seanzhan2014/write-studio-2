@@ -19,6 +19,14 @@ async function reset() {
   chapter.outlines = chapter.outlines.filter((outline) => outline.id === "outline-current");
   chapter.outlines[0].content = "她十七岁。\n\n窗外的雨停了。";
   chapter.outlines[0].currentVersionId = null;
+  chapter.outlines[0].settings = {
+    story: {
+      location: { value: "潮汐观测室", scope: "chapter" },
+      negativeConstraints: { value: "", scope: "chapter" },
+    },
+    characters: { "character-lin": { start: { age: { value: "十八岁", scope: "chapter" } }, end: {} } },
+    relationships: {},
+  };
   await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) });
   return (await api("/api/state")).data.articles[0];
 }
@@ -73,7 +81,10 @@ test("article rules persist and both review paths use only frozen effective rule
       const messages = fake.control.calls[0].body.messages;
       assert.match(messages.at(-1).content, /只检查人物年龄为十八岁/);
       assert.match(messages.at(-1).content, /<description>海港长大的冷静修理师。<\/description>/);
-      for (const emptyOrRemovedTag of ["type", "era", "tone", "world_rules", "location", "negative_constraints", "age", "appearance", "character_boundaries"]) {
+      assert.match(messages.at(-1).content, /<outline_settings>/);
+      assert.match(messages.at(-1).content, /<location>潮汐观测室<\/location>/);
+      assert.match(messages.at(-1).content, /<age>十八岁<\/age>/);
+      for (const emptyOrRemovedTag of ["type", "era", "tone", "world_rules", "negative_constraints", "appearance", "character_boundaries"]) {
         assert.doesNotMatch(messages.at(-1).content, new RegExp(`<${emptyOrRemovedTag}>`), `Review 不应发送空值或已移除设定：${emptyOrRemovedTag}`);
       }
       assert.doesNotMatch(JSON.stringify(messages), /修正中文正文中无必要|跨全部正文识别重复|不新增、删除或改变情节事实/);

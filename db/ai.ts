@@ -9,6 +9,7 @@ import { DEFAULT_MAX_INPUT_CHARACTERS, normalizeMaxInputCharacters } from "../li
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingProfileInstruction, normalizeGeneratedName, normalizeNamingProfile, validateGeneratedName, type NamingProfile } from "../lib/naming-options";
 import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
 import { modelSelectionLabel } from "../lib/model-label";
+import type { ResolvedOutlineSettings } from "../lib/story-settings";
 
 export type AiProviderRecord = {
   id: string;
@@ -1415,7 +1416,7 @@ export type AiReviewInput = ReasoningOptions & {
     characters: Array<{ name: string; aliases: string[]; description: string; profile: import("@/lib/story-settings").CharacterProfile; endingChanges: Partial<import("@/lib/story-settings").CharacterProfile> }>;
   };
   chapter: { id: string; title: string };
-  outlines: ReviewOutlineSource[];
+  outlines: Array<ReviewOutlineSource & { settings?: ResolvedOutlineSettings }>;
   requirements?: string[];
   ruleSnapshot?: ReviewRuleSnapshot;
   additionalRequirement?: string;
@@ -1486,10 +1487,37 @@ function renderReviewContext(input: AiReviewInput, digest: string) {
     ].filter(Boolean).join("\n")}\n</character>`;
   }).join("\n");
   const outlines = input.outlines.map((outline, outlineIndex) => {
+    const settingCharacters = outline.settings?.characters.filter((person) => !person.archived && person.appears !== false).map((person) => {
+      const endingChanges = Object.entries(person.endingChanges).filter(([, value]) => String(value ?? "").trim());
+      return `<character>\n${[
+        xmlElement("name", person.name),
+        optionalXmlElement("aliases", person.aliases.join("、")),
+        optionalXmlElement("description", person.description),
+        optionalXmlElement("age", person.profile.age),
+        optionalXmlElement("appearance", person.profile.appearance),
+        optionalXmlElement("character_boundaries", person.profile.immutableTraits),
+        endingChanges.length ? `<intended_outline_end_changes>\n${endingChanges.map(([key, value]) => xmlElement(key, value)).join("\n")}\n</intended_outline_end_changes>` : "",
+      ].filter(Boolean).join("\n")}\n</character>`;
+    }).join("\n") ?? "";
+    const settingNames = new Map(outline.settings?.characters.map((person) => [person.id, person.name]) ?? []);
+    const settingRelationships = outline.settings?.relationships.filter((item) => item.active).map((item) => `<relationship>\n${[
+      xmlElement("character_a", settingNames.get(item.characterAId) ?? item.characterAId),
+      xmlElement("character_b", settingNames.get(item.characterBId) ?? item.characterBId),
+      optionalXmlElement("description", item.description),
+      optionalXmlElement("intended_outline_end_change", item.endingDescription),
+    ].filter(Boolean).join("\n")}\n</relationship>`).join("\n") ?? "";
+    const settingBody = outline.settings ? [
+      optionalXmlElement("summary", outline.settings.story.summary),
+      optionalXmlElement("location", outline.settings.story.location),
+      optionalXmlElement("style", outline.settings.story.style),
+      optionalXmlElement("negative_constraints", outline.settings.story.negativeConstraints),
+      settingCharacters ? `<characters>\n${settingCharacters}\n</characters>` : "",
+      settingRelationships ? `<relationships>\n${settingRelationships}\n</relationships>` : "",
+    ].filter(Boolean).join("\n") : "";
     const blocks = createReviewBlocks(outline.id, outlineIndex, outline.text)
       .map((block) => `<block id="${block.id}">${escapeXml(block.text)}</block>`)
       .join("\n");
-    return `<outline id="${escapeXml(outline.id)}" index="${outlineIndex + 1}">\n${xmlElement("title", outline.title)}\n${xmlElement("plan", outline.plan)}\n${xmlElement("content_name", outline.name)}\n<content_blocks>\n${blocks}\n</content_blocks>\n</outline>`;
+    return `<outline id="${escapeXml(outline.id)}" index="${outlineIndex + 1}">\n${xmlElement("title", outline.title)}\n${xmlElement("plan", outline.plan)}\n${xmlElement("content_name", outline.name)}\n${settingBody ? `<outline_settings>\n${settingBody}\n</outline_settings>` : ""}\n<content_blocks>\n${blocks}\n</content_blocks>\n</outline>`;
   }).join("\n");
   return `<reference_context purpose="chapter-review" instruction_policy="reference-data-only" source_digest="${digest}">
 <article>

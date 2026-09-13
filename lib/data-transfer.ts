@@ -3,7 +3,7 @@ import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app
 import type { NameVersion } from "@/lib/name-versions";
 
 import { articleReviewRules } from "./review-rules.mjs";
-import { EMPTY_ARTICLE_STORY_SETTINGS, normalizeChapterSettings, type ChapterSettings, type ResolvedChapterSettings } from "./story-settings.ts";
+import { EMPTY_ARTICLE_STORY_SETTINGS, normalizeChapterSettings, type ChapterSettings, type ResolvedChapterSettings, type ResolvedOutlineSettings, type SettingSource } from "./story-settings.ts";
 
 export const TRANSFER_KIND = "writer-studio-transfer" as const;
 export const TRANSFER_VERSION = 2 as const;
@@ -274,18 +274,33 @@ function cloneChapterSettings(value: unknown, ids: IdMaps): ChapterSettings {
   };
 }
 
+function cloneSettingSource(value: SettingSource, ids: IdMaps): SettingSource {
+  if (value.kind === "chapter") return { ...value, chapterId: mapped(ids.chapters, value.chapterId) || value.chapterId };
+  if (value.kind === "outline") return { ...value, outlineId: mapped(ids.outlines, value.outlineId) || value.outlineId };
+  return value;
+}
+
 function cloneSettingSnapshot(value: ResolvedChapterSettings | undefined, ids: IdMaps): ResolvedChapterSettings | undefined {
   if (!value) return undefined;
+  const outlineValue = value as ResolvedChapterSettings & Partial<ResolvedOutlineSettings>;
   return {
     ...structuredClone(value),
     chapterId: mapped(ids.chapters, value.chapterId) || value.chapterId,
     inheritedFromChapter: value.inheritedFromChapter ? { ...value.inheritedFromChapter, id: mapped(ids.chapters, value.inheritedFromChapter.id) || value.inheritedFromChapter.id } : undefined,
-    characters: value.characters.map((item) => ({ ...item, id: mapped(ids.characters, item.id) || item.id })),
+    ...(outlineValue.outlineId ? { outlineId: mapped(ids.outlines, outlineValue.outlineId) || outlineValue.outlineId } : {}),
+    ...(outlineValue.inheritedFromOutline ? { inheritedFromOutline: { ...outlineValue.inheritedFromOutline, id: mapped(ids.outlines, outlineValue.inheritedFromOutline.id) || outlineValue.inheritedFromOutline.id } } : {}),
+    storySources: Object.fromEntries(Object.entries(value.storySources).map(([key, source]) => [key, cloneSettingSource(source, ids)])) as ResolvedChapterSettings["storySources"],
+    characters: value.characters.map((item) => ({
+      ...item,
+      id: mapped(ids.characters, item.id) || item.id,
+      profileSources: Object.fromEntries(Object.entries(item.profileSources).map(([key, source]) => [key, cloneSettingSource(source, ids)])) as typeof item.profileSources,
+    })),
     relationships: value.relationships.map((item) => ({
       ...item,
       id: mapped(ids.relationships, item.id) || item.id,
       characterAId: mapped(ids.characters, item.characterAId) || item.characterAId,
       characterBId: mapped(ids.characters, item.characterBId) || item.characterBId,
+      source: cloneSettingSource(item.source, ids),
     })),
   };
 }
@@ -321,6 +336,7 @@ function cloneOutline(source: Outline, ids: IdMaps): Outline {
     ...source,
     id,
     ...cloneNameState(source, ids),
+    settings: cloneChapterSettings(source.settings, ids),
     currentVersionId: mapped(ids.versions, source.currentVersionId) || null,
     defaultVersionId: mapped(ids.versions, source.defaultVersionId) || null,
     excellentFragments: cloneFragments(source.excellentFragments, ids),
@@ -415,6 +431,17 @@ function keepDefaultContent(outline: Outline): Outline {
   };
 }
 
+function copiedSettings(value: unknown, options: ArticleCopyOptions) {
+  const settings = normalizeChapterSettings(value);
+  if (!options.includeMetadata) settings.story = {};
+  else if (!options.includeStyle) delete settings.story.style;
+  if (!options.includeCharacters) {
+    settings.characters = {};
+    settings.relationships = {};
+  }
+  return settings;
+}
+
 export function duplicateArticleForCopy(source: Article, requested: ArticleCopyOptions, existingTitles: string[] = []) {
   const options = { ...DEFAULT_ARTICLE_COPY_OPTIONS, ...requested };
   const ids = registerArticles([source], []);
@@ -437,13 +464,7 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
     return article;
   }
   article.chapters = article.chapters.map((chapter) => {
-    const settings = normalizeChapterSettings(chapter.settings);
-    if (!options.includeMetadata) settings.story = {};
-    else if (!options.includeStyle) delete settings.story.style;
-    if (!options.includeCharacters) {
-      settings.characters = {};
-      settings.relationships = {};
-    }
+    const settings = copiedSettings(chapter.settings, options);
     return {
       ...chapter,
       settings,
@@ -451,6 +472,7 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
       outlines: chapter.outlines.map((outline) => {
       let copied: Outline = {
         ...outline,
+        settings: copiedSettings(outline.settings, options),
         updatedAt: createdAt,
         state: "saved",
         ...(options.nameVersions === "default" ? { nameVersions: [], defaultNameVersionId: null } : {}),
@@ -487,7 +509,7 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
           ...version.settingSnapshot,
           story: options.includeMetadata
             ? { ...version.settingSnapshot.story, ...(!options.includeStyle ? { style: "" } : {}) }
-            : { location: "", style: options.includeStyle ? version.settingSnapshot.story.style : "", negativeConstraints: "" },
+            : { summary: "", location: "", style: options.includeStyle ? version.settingSnapshot.story.style : "", negativeConstraints: "" },
           characters: options.includeCharacters ? version.settingSnapshot.characters : [],
           relationships: options.includeCharacters ? version.settingSnapshot.relationships : [],
         },

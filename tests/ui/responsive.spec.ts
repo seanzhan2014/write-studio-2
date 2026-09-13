@@ -209,6 +209,41 @@ test("simplified story and character settings stay clear on desktop and mobile",
   await expectInsideViewport(page, dialog);
 });
 
+test("outline settings inherit the previous outline and keep long story fields collapsed", async ({ page, request }, testInfo) => {
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const chapter = fixture.articles[0].chapters[0];
+  chapter.settings = { story: { summary: { value: "章节阶段简介", scope: "chapter" } }, characters: {}, relationships: {} };
+  chapter.outlines[0].settings = { story: { location: { value: "灯塔地下室", scope: "ongoing" } }, characters: {}, relationships: {} };
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  if (testInfo.project.name === "mobile-chromium") {
+    await page.goto("/");
+    await page.getByRole("button", { name: "当前码头更多操作" }).click();
+    await page.getByRole("button", { name: "大纲设定", exact: true }).click();
+  } else {
+    await page.goto("/articles/article-main/outlines/outline-current/write");
+    await page.getByRole("button", { name: "当前码头更多操作" }).click();
+    await page.getByRole("button", { name: /^大纲设定/ }).click();
+  }
+
+  const drawer = page.getByRole("dialog").filter({ hasText: "本大纲修改" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByText("继承前序灯塔", { exact: false })).toBeVisible();
+  await expect(drawer.getByLabel("故事发生地点", { exact: true })).toHaveValue("灯塔地下室");
+  for (const label of ["简介", "写作风格"]) {
+    const details = drawer.locator("details.setting-collapsible").filter({ hasText: label });
+    await expect(details).not.toHaveAttribute("open", "");
+    await expect(drawer.getByLabel(label, { exact: true })).not.toBeVisible();
+  }
+  await expectOverlayContract(page, drawer);
+});
+
 test("all application pages share the control and typography scale", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   const articleBase = "/articles/article-main";

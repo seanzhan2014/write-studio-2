@@ -66,8 +66,8 @@ import { browserIsOffline, fetchFromServer, fetchServerAction, OFFLINE_OPERATION
 import { StudioProvider, chatSessionHasUnread, formatTime, useStudio, wordCount, type AiTask, type Message, type Article, type Character, type Chapter, type ExcellentFragment, type Outline, type Version } from "./studio-state";
 import { DataTransferProvider, useDataTransfer } from "./data-transfer";
 import { MobileActionSheet, ResponsiveModal, ScrollableDrawer, type ActionSheetItem } from "./ui/overlays";
-import { ArticleSettingsDrawer, ArticleStoryFields, ChapterSettingsDrawer, CHARACTER_LABELS } from "./ui/story-settings-editor";
-import { CHARACTER_PROFILE_KEYS, countChapterSettingChanges, normalizeCharacterProfile, resolveChapterSettings, type ResolvedChapterSettings } from "@/lib/story-settings";
+import { ArticleSettingsDrawer, ArticleStoryFields, ChapterSettingsDrawer, OutlineSettingsDrawer, CHARACTER_LABELS } from "./ui/story-settings-editor";
+import { CHARACTER_PROFILE_KEYS, countChapterSettingChanges, countOutlineSettingChanges, normalizeCharacterProfile, resolveChapterSettings, resolveOutlineSettings, type ResolvedChapterSettings } from "@/lib/story-settings";
 
 type View =
   | "outline-home"
@@ -1000,6 +1000,7 @@ function Sidebar({
     return Object.fromEntries(studio.currentArticle.chapters.map((chapter) => [chapter.id, !chapter.archived]));
   });
   const [outlineMenu, setOutlineMenu] = useState<Outline | null>(null);
+  const [outlineSettingsId, setOutlineSettingsId] = useState<string | null>(null);
   const [chapterMenu, setChapterMenu] = useState<Chapter | null>(null);
   const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
   const [structureGenerate, setStructureGenerate] = useState<{ kind: "outline" | "chapter"; id: string; title: string } | null>(null);
@@ -1179,9 +1180,10 @@ function Sidebar({
         </div>
         <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整侧栏宽度" onPointerDown={startResize} />
       </aside>
-      {outlineMenu && <DesktopOutlineMenu outline={outlineMenu} onClose={() => setOutlineMenu(null)} onOpenChat={() => { studio.setCurrentOutline(outlineMenu.id); setOutlineMenu(null); onOutline(outlineMenu.id); onGo("chat"); }} onGenerate={() => { setStructureGenerate({ kind: "outline", id: outlineMenu.id, title: outlineDisplayTitle(outlineMenu) }); setOutlineMenu(null); }} onNotice={onNotice} />}
+      {outlineMenu && <DesktopOutlineMenu outline={outlineMenu} onClose={() => setOutlineMenu(null)} onSettings={() => { setOutlineSettingsId(outlineMenu.id); setOutlineMenu(null); }} onOpenChat={() => { studio.setCurrentOutline(outlineMenu.id); setOutlineMenu(null); onOutline(outlineMenu.id); onGo("chat"); }} onGenerate={() => { setStructureGenerate({ kind: "outline", id: outlineMenu.id, title: outlineDisplayTitle(outlineMenu) }); setOutlineMenu(null); }} onNotice={onNotice} />}
       {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} onSettings={() => setChapterSettingsId(chapterMenu.id)} />}
       {chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
+      {outlineSettingsId && <OutlineSettingsDrawer outlineId={outlineSettingsId} onClose={() => setOutlineSettingsId(null)} />}
       {structureGenerate && <StructureGenerateSheet target={structureGenerate} onClose={() => setStructureGenerate(null)} onApplied={(message, result, generatedTitle) => { studio.updateOutline(structureGenerate.id, { plan: result, ...(generatedTitle ? { title: generatedTitle, titleGenerationPending: false } : {}) }); onNotice(message); setStructureGenerate(null); }} />}
     </>
   );
@@ -1269,6 +1271,7 @@ function MobileOutlineHome({
   const [dropIndicator, setDropIndicator] = useState<OutlineDropIndicator>(null);
   const [chapterMenu, setChapterMenu] = useState<Chapter | null>(null);
   const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
+  const [outlineSettingsId, setOutlineSettingsId] = useState<string | null>(null);
   const expandTimer = useRef<number | null>(null);
   const expandTarget = useRef<string | null>(null);
   const virtualizeTree = groups.reduce((total, group) => total + group.items.length, 0) > 200;
@@ -1438,6 +1441,7 @@ function MobileOutlineHome({
         title={outlineDisplayTitle(actionTarget)}
         archived={actionTarget.archived}
         onClose={() => setActionTarget(null)}
+        onSettings={() => { setOutlineSettingsId(actionTarget.id); setActionTarget(null); }}
         onEdit={() => {
           const selected = groups.flatMap((group) => group.items).find((item) => item.id === actionTarget.id);
           setEditTarget({ id: actionTarget.id, title: normalizeOutlineTitle(actionTarget.title), plan: selected?.plan ?? "" });
@@ -1488,6 +1492,7 @@ function MobileOutlineHome({
       }} />}
       {chapterMenu && <ChapterActionSheet chapter={chapterMenu} onClose={() => setChapterMenu(null)} onNotice={onNotice} onOpenOutline={onOutline} onSettings={() => setChapterSettingsId(chapterMenu.id)} />}
       {chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
+      {outlineSettingsId && <OutlineSettingsDrawer outlineId={outlineSettingsId} onClose={() => setOutlineSettingsId(null)} />}
     </div>
   );
 }
@@ -1732,8 +1737,9 @@ function MobileOutlineRow({
   );
 }
 
-function OutlineActionSheet({ title, archived, onClose, onEdit, onGenerate, onChat, onCopy, onExport, onMove, onMoveUp, onMoveDown, onArchive, onDelete }: { title: string; archived: boolean; onClose: () => void; onEdit: () => void; onGenerate: () => void; onChat: () => void; onCopy: () => void; onExport: () => void; onMove: () => void; onMoveUp?: () => void; onMoveDown?: () => void; onArchive: () => void; onDelete: () => void }) {
+function OutlineActionSheet({ title, archived, onClose, onSettings, onEdit, onGenerate, onChat, onCopy, onExport, onMove, onMoveUp, onMoveDown, onArchive, onDelete }: { title: string; archived: boolean; onClose: () => void; onSettings: () => void; onEdit: () => void; onGenerate: () => void; onChat: () => void; onCopy: () => void; onExport: () => void; onMove: () => void; onMoveUp?: () => void; onMoveDown?: () => void; onArchive: () => void; onDelete: () => void }) {
   const definitions: Array<{ key: string; icon: IconName; label: string; danger?: boolean }> = [
+    { key: "settings", icon: "info", label: "大纲设定" },
     { key: "edit", icon: "edit", label: "编辑大纲" },
     { key: "chat", icon: "chat", label: "AI Chat 大纲" },
     { key: "generate", icon: "spark", label: "AI Generate 大纲" },
@@ -1746,7 +1752,8 @@ function OutlineActionSheet({ title, archived, onClose, onEdit, onGenerate, onCh
     { key: "delete", icon: "trash", label: "删除大纲", danger: true },
   ];
   function handle(key: string) {
-    if (key === "edit") onEdit();
+    if (key === "settings") onSettings();
+    else if (key === "edit") onEdit();
     else if (key === "chat") onChat();
     else if (key === "generate") onGenerate();
     else if (key === "copy") onCopy();
@@ -1775,7 +1782,7 @@ function OutlineActionSheet({ title, archived, onClose, onEdit, onGenerate, onCh
   />;
 }
 
-function DesktopOutlineMenu({ outline, onClose, onOpenChat, onGenerate, onNotice }: { outline: Outline; onClose: () => void; onOpenChat: () => void; onGenerate: () => void; onNotice: (message: string) => void }) {
+function DesktopOutlineMenu({ outline, onClose, onSettings, onOpenChat, onGenerate, onNotice }: { outline: Outline; onClose: () => void; onSettings: () => void; onOpenChat: () => void; onGenerate: () => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const transfer = useDataTransfer();
   const chapter = studio.currentArticle.chapters.find((item) => item.outlines.some((candidate) => candidate.id === outline.id));
@@ -1784,6 +1791,7 @@ function DesktopOutlineMenu({ outline, onClose, onOpenChat, onGenerate, onNotice
   const previousOutline = outlineIndex > 0 ? chapter?.outlines[outlineIndex - 1] : undefined;
   const nextOutline = chapter && outlineIndex >= 0 && outlineIndex < chapter.outlines.length - 1 ? chapter.outlines[outlineIndex + 1] : undefined;
   const items: Array<[string, () => void]> = [
+    [`大纲设定${countOutlineSettingChanges(outline.settings) ? ` · ${countOutlineSettingChanges(outline.settings)}` : ""}`, onSettings],
     ["编辑大纲", () => {
       const title = window.prompt("大纲标题", normalizeOutlineTitle(outline.title));
       if (title === null) return;
@@ -1968,6 +1976,7 @@ function OutlineWorkspace({
   const studio = useStudio();
   const models = useConfiguredModels();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateSeed, setGenerateSeed] = useState("");
   const displayTitle = outlineDisplayTitle(outline);
   const chatResultReady = mode !== "chat" && studio.currentOutline.chat.sessions.some(chatSessionHasUnread);
@@ -2009,7 +2018,8 @@ function OutlineWorkspace({
       {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onOpenRewriteSource={onOpenRewriteSource} onClearPreview={onClearPreview} onNotice={onNotice} onEditingChange={onWritingEditingChange} />}
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView models={models} outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
-      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
+      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定{countOutlineSettingChanges(studio.currentOutline.settings) ? ` · ${countOutlineSettingChanges(studio.currentOutline.settings)}` : ""}</button><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
+      {settingsOpen && <OutlineSettingsDrawer outlineId={studio.currentOutline.id} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -3880,7 +3890,7 @@ function ContinuousEmptyChapter({ chapterId }: { chapterId: string }) {
   return <div ref={setNodeRef} className={`continuous-empty-chapter ${isOver ? "chapter-drop-active" : ""}`} aria-label="将大纲移动到此章节" />;
 }
 
-function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, dropPlacement, contentStyle, onActivate, onAdd, onDelete, onArchive, onTitle, onText, onContentFocus, onContentBlur, onSelectVersion, onSetCurrentVersion, onSetDefaultVersion, onMoveUp, onMoveDown, onMoveChapter, onOpenChat }: {
+function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, dropPlacement, contentStyle, onActivate, onAdd, onDelete, onArchive, onSettings, onTitle, onText, onContentFocus, onContentBlur, onSelectVersion, onSetCurrentVersion, onSetDefaultVersion, onMoveUp, onMoveDown, onMoveChapter, onOpenChat }: {
   item: Outline;
   number: number;
   mode: "outline" | "content";
@@ -3892,6 +3902,7 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
   onAdd?: () => void;
   onDelete?: () => void;
   onArchive?: () => void;
+  onSettings?: () => void;
   onTitle: (value: string) => void;
   onText: (value: string) => void;
   onContentFocus?: () => void;
@@ -3937,6 +3948,7 @@ function ContinuousOutlineBlock({ item, number, mode, text, selectedVersionId, d
     <Menu position="bottom-end" shadow="md" width={150}>
       <Menu.Target><IconButton name="more" label={`${displayTitle}排序操作`} className="continuous-outline-more" /></Menu.Target>
       <Menu.Dropdown>
+        {mode === "outline" && onSettings && <Menu.Item leftSection={<Icon name="info" />} onClick={onSettings}>大纲设定{countOutlineSettingChanges(item.settings) ? ` · ${countOutlineSettingChanges(item.settings)}` : ""}</Menu.Item>}
         {mode === "outline" && onOpenChat && <Menu.Item leftSection={<Icon name="chat" />} onClick={onOpenChat}>AI Chat</Menu.Item>}
         <Menu.Item disabled={!onMoveUp} onClick={onMoveUp}>上移一位</Menu.Item>
         <Menu.Item disabled={!onMoveDown} onClick={onMoveDown}>下移一位</Menu.Item>
@@ -4039,6 +4051,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
   const [reviewOpen, setReviewOpen] = useState(false);
   const [articleSettingsOpen, setArticleSettingsOpen] = useState(false);
   const [chapterSettingsId, setChapterSettingsId] = useState<string | null>(null);
+  const [outlineSettingsId, setOutlineSettingsId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropIndicator, setDropIndicator] = useState<OutlineDropIndicator>(null);
   const contentDraftsRef = useRef(contentDrafts);
@@ -4343,6 +4356,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
       text: contentDraftsRef.current[item.id] ?? resolvedOutlineContent(item),
       baseText: resolvedOutlineContent(item),
       sourceVersionId: editSourceVersionIdsRef.current[item.id],
+      settings: resolveOutlineSettings(studio.currentArticle, item.id),
     })).filter((item) => item.text.trim());
     const response = await fetchServerAction("/api/ai/review", {
       method: "POST",
@@ -4351,7 +4365,6 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
         article: {
           id: studio.currentArticle.id,
           title: studio.currentArticle.title,
-          summary: studio.currentArticle.summary,
           ...resolvedSettings.story,
           characters: resolvedSettings.characters.filter((person) => !person.archived && person.appears !== false).map((person) => ({ name: person.name, aliases: person.aliases, description: person.description, profile: person.profile, endingChanges: person.endingChanges })),
         },
@@ -4474,6 +4487,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
               onAdd={mode === "outline" ? () => createOutlineBelow(item, group.id) : undefined}
               onDelete={mode === "outline" ? () => deleteOutlineFromDocument(item) : undefined}
               onArchive={mode === "outline" ? () => toggleOutlineArchive(item) : undefined}
+              onSettings={mode === "outline" ? () => setOutlineSettingsId(item.id) : undefined}
               onTitle={(value) => studio.updateOutline(item.id, { title: value.slice(0, 80) })}
               onText={(value) => mode === "outline" ? studio.updateOutline(item.id, { plan: value.slice(0, 10000) }) : changeContent(item.id, value, versionSelections[item.id])}
               onContentBlur={mode === "content" ? () => commitContent(item.id) : undefined}
@@ -4500,6 +4514,7 @@ function ContinuousDocumentEditor({ mode, positionMemory, onNotice }: { mode: "o
     {mode === "outline" && chatOutlineId && <FullOutlineChatDialog outlineId={chatOutlineId} onClose={() => setChatOutlineId(null)} onNotice={onNotice} />}
     {mode === "outline" && <ArticleSettingsDrawer opened={articleSettingsOpen} onClose={() => setArticleSettingsOpen(false)} />}
     {mode === "outline" && chapterSettingsId && <ChapterSettingsDrawer chapterId={chapterSettingsId} onClose={() => setChapterSettingsId(null)} />}
+    {mode === "outline" && outlineSettingsId && <OutlineSettingsDrawer outlineId={outlineSettingsId} onClose={() => setOutlineSettingsId(null)} />}
     {STANDALONE_AI_REVIEW_ENABLED && mode === "content" && reviewOpen && <AiReviewDialog article={studio.currentArticle} chapters={studio.currentArticle.chapters} models={reviewModels} initialModel={studio.data.settings.reviewModel} onClose={() => setReviewOpen(false)} onSetDefaultModel={(reviewModel) => { studio.updateSettings({ reviewModel }); void studio.saveNow(); }} onRun={runReview} />}
   </div></div>;
 }
@@ -5221,7 +5236,7 @@ function SystemSettings() {
 
 function VersionSettingSnapshotView({ snapshot }: { snapshot: ResolvedChapterSettings }) {
   const storyLabels: Array<[keyof ResolvedChapterSettings["story"], string]> = [
-    ["location", "地点"], ["style", "风格"], ["negativeConstraints", "负面约束"],
+    ["summary", "简介"], ["location", "地点"], ["style", "风格"], ["negativeConstraints", "负面约束"],
   ];
   const visibleCharacters = snapshot.characters.filter((person) => !person.archived && person.appears !== false);
   const names = new Map(snapshot.characters.map((person) => [person.id, person.name]));

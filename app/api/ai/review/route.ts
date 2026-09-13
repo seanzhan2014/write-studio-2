@@ -10,7 +10,7 @@ import { normalizeReviewPresets } from "@/lib/review-options";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { diffStudioData } from "@/lib/studio-changes";
-import { resolveChapterSettings } from "@/lib/story-settings";
+import { resolveChapterSettings, resolveOutlineSettings } from "@/lib/story-settings";
 
 function json(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -42,12 +42,12 @@ function findChapterSource(data: StudioData, articleId: string, chapterId: strin
       plan: outline.plan,
       name: resolvedOutlineContentName(outline),
       text: resolvedOutlineContent(outline),
+      settings: resolveOutlineSettings(article, outline.id),
     }))
     .filter((outline) => outline.text.trim());
   const inputArticle: AiReviewInput["article"] = {
     id: article.id,
     title: article.title,
-    summary: article.summary,
     ...resolveChapterSettings(article, chapter.id).story,
     reviewRules: article.reviewRules ?? "",
     reviewRuleItems: article.reviewRuleItems,
@@ -159,7 +159,7 @@ export async function POST(request: Request) {
           reviewRuleSnapshot: ruleSnapshot,
           taskId: reviewId,
           outlineSnapshot: { title: outline.title, plan: outline.plan },
-          settingSnapshot: resolveChapterSettings(targetArticle, targetChapter.id),
+          settingSnapshot: resolveOutlineSettings(targetArticle, outline.id),
           excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(outline), text, activeExcellentFragments(outline))),
         };
         outline.versions.unshift(version);

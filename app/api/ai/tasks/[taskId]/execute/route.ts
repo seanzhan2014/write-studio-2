@@ -14,7 +14,7 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import { diffStudioData } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 import { isCloudDatabase } from "@/db/sqlite";
-import { resolveChapterSettings } from "@/lib/story-settings";
+import { resolveOutlineSettings } from "@/lib/story-settings";
 
 type RouteContext = { params: Promise<{ taskId: string }> };
 type Mutation<T> = { changed: boolean; value: T };
@@ -281,7 +281,7 @@ async function executeTask(taskId: string) {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
             },
-            settingSnapshot: resolveChapterSettings(found.article, found.chapter.id),
+            settingSnapshot: resolveOutlineSettings(found.article, found.outline.id),
             excellentFragments: task.contextOptions?.contentMode && task.contextOptions.contentMode !== "fresh"
               ? cloneExcellentFragments(result.text, reanchorExcellentFragments(resolvedOutlineContent(found.outline), result.text, activeExcellentFragments(found.outline)))
               : [],

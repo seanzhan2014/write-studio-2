@@ -34,9 +34,11 @@ import {
   normalizeCharacterProfile,
   normalizeChapterSettings,
   resolveChapterSettings,
+  resolveOutlineSettings,
   type ArticleStorySettings,
   type CharacterProfile,
   type ChapterSettings,
+  type OutlineSettings,
   type ResolvedChapterSettings,
 } from "@/lib/story-settings";
 
@@ -96,6 +98,7 @@ export type Outline = {
   titleGenerationPending: boolean;
   plan: string;
   generateInstruction: string;
+  settings?: OutlineSettings;
   content: string;
   contentName?: string;
   currentVersionId: string | null;
@@ -295,7 +298,7 @@ function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"]
 }
 
 function outline(id: string, title: string, plan: string, content: string, state: Outline["state"] = "saved"): Outline {
-  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, generateInstruction: "", content, contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title, plan }, state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
+  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, generateInstruction: "", settings: { ...EMPTY_CHAPTER_SETTINGS }, content, contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title, plan }, state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
 }
 
 const openingContent = "雨从凌晨开始落，到清晨也没有停下来的意思。\n\n林澈推开修理铺的百叶门时，海风正沿着旧街一路灌进来，带着盐、铁锈和昨夜没有散尽的雾。门后的铜铃只响了半声，像被谁在梦里按住。\n\n工作台上多了一封信。\n\n信封是最普通的牛皮纸，边缘却被海水泡得发白。她翻到背面，没有邮票，也没有寄件人的名字，只有一行熟悉得让她停住呼吸的字：给二〇三三年的林澈。\n\n那是她自己的笔迹。\n\n她没有立刻拆开。墙上的挂钟走到八点十七分，老旧的秒针轻轻颤了一下。远处，港口的雾笛在看不见的海面上响起，低沉得像某种迟到了很多年的回答。";
@@ -458,7 +461,7 @@ type StudioContextValue = {
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
-  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
+  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "settings" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
@@ -880,6 +883,7 @@ function normalizeStudioData(source: StudioData): StudioData {
             ...outlineNameState,
             title: normalizedTitle,
             generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
+            settings: normalizeChapterSettings(item.settings),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
             currentVersionId,
             defaultVersionId,
@@ -1846,7 +1850,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           : cloneExcellentFragments(nextContent, reanchorExcellentFragments(resolvedOutlineContent(item), nextContent, activeExcellentFragments(item)));
         const inheritedOutlineSnapshot = resolvedOutlineSnapshot(item);
         const manualExcellent = metadata?.manualExcellent ?? activeManualExcellent(item);
-        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, settingSnapshot: metadata?.settingSnapshot ?? resolveChapterSettings(article, chapter.id), ...metadata, manualExcellent, excellentFragments }, ...item.versions] };
+        return { ...item, versions: [{ id, name: name || timestampContentName(createdAt), source, createdAt, content: nextContent, outlineSnapshot: metadata?.outlineSnapshot ?? inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, settingSnapshot: metadata?.settingSnapshot ?? resolveOutlineSettings(article, item.id), ...metadata, manualExcellent, excellentFragments }, ...item.versions] };
       }) })) })) }));
       return id;
     },

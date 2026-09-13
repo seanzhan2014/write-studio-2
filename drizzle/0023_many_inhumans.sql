@@ -1,0 +1,1 @@
+ALTER TABLE `outlines` ADD `settings_json` text DEFAULT '{}' NOT NULL;

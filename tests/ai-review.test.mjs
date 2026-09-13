@@ -45,9 +45,10 @@ test("AI Review rejects overlapping or cross-body edits", () => {
   ]), AiReviewResultError);
 });
 
-test("review source digest changes with正文 name or text", async () => {
+test("review source digest changes with正文 name, text or outline settings", async () => {
   const base = [{ id: "a", title: "A", plan: "", name: "初稿", text: "正文" }];
   const first = await reviewSourceDigest("chapter-a", base);
   assert.notEqual(first, await reviewSourceDigest("chapter-a", [{ ...base[0], name: "二稿" }]));
   assert.notEqual(first, await reviewSourceDigest("chapter-a", [{ ...base[0], text: "修改" }]));
+  assert.notEqual(first, await reviewSourceDigest("chapter-a", [{ ...base[0], settings: { story: { location: "旧码头" } } }]));
 });

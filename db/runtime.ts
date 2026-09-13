@@ -41,7 +41,7 @@ const schemaStatements = [
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, title TEXT NOT NULL,
     name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT,
-    summary TEXT NOT NULL DEFAULT '', generate_instruction TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '', generate_instruction TEXT NOT NULL DEFAULT '', settings_json TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'saved', title_generation_pending INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1, UNIQUE(chapter_id, position)
@@ -143,7 +143,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "10";
+const RUNTIME_SCHEMA_VERSION = "11";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -201,6 +201,7 @@ export async function ensureDatabase() {
       await ensureOutlineTitleGenerationColumn(db);
       await ensureNameVersionColumns(db);
       await ensureOutlineGenerateInstructionColumn(db);
+      await ensureOutlineSettingsColumn(db);
       await ensureContentOverrideColumn(db);
       await ensureContentNameColumn(db);
       await ensureContentSelectionColumns(db);
@@ -217,7 +218,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '12', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '13', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -644,7 +645,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           80,
         );
         return {
-          id: outlineId, title: outlineTitle, ...outlineNameState, plan: String(outlineRow.summary), generateInstruction: String(outlineRow.generate_instruction ?? ""),
+          id: outlineId, title: outlineTitle, ...outlineNameState, plan: String(outlineRow.summary), generateInstruction: String(outlineRow.generate_instruction ?? ""), settings: normalizeChapterSettings(safeJson(outlineRow.settings_json, {})),
           titleGenerationPending: bool(outlineRow.title_generation_pending),
           content: String(content?.text ?? ""), contentName: String(content?.content_name ?? "").trim() || timestampContentName(String(outlineRow.updated_at)),
           currentVersionId, defaultVersionId,
@@ -754,6 +755,11 @@ async function ensureArticleNamingColumns(db: SqliteDatabase) {
   if (!columns.includes("outline_naming_json")) await db.prepare("ALTER TABLE articles ADD COLUMN outline_naming_json TEXT NOT NULL DEFAULT '{}'").run();
 }
 
+async function ensureOutlineSettingsColumn(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('outlines')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("settings_json")) await db.prepare("ALTER TABLE outlines ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'").run();
+}
+
 async function ensureStorySettingColumns(db: SqliteDatabase) {
   const tableColumns = async (table: string) => rows(await db.prepare(`PRAGMA table_info('${table}')`).all<Record<string, unknown>>()).map((row) => String(row.name));
   const articleColumns = await tableColumns("articles");
@@ -824,7 +830,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         const contentOutlineSnapshot = outline.contentOutlineSnapshot
           ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
           ?? { title: normalizedTitle, plan: outline.plan };
-        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, JSON.stringify(outlineNameState.nameVersions), outlineNameState.defaultNameVersionId, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
+        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, JSON.stringify(outlineNameState.nameVersions), outlineNameState.defaultNameVersionId, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), JSON.stringify(normalizeChapterSettings(outline.settings)), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
@@ -964,9 +970,9 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     const contentOutlineSnapshot = outline.contentOutlineSnapshot
       ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
       ?? { title: normalizedTitle, plan: outline.plan };
-    statements.push(insert(db, `INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,position,archived,state,title_generation_pending,created_at,updated_at,revision)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,summary=excluded.summary,generate_instruction=excluded.generate_instruction,position=excluded.position,archived=excluded.archived,state=excluded.state,title_generation_pending=excluded.title_generation_pending,updated_at=excluded.updated_at,revision=excluded.revision`,
-    [outline.id, item.articleId, item.chapterId, normalizedTitle, JSON.stringify(names.nameVersions), names.defaultNameVersionId, outline.plan.slice(0, 10_000), String(outline.generateInstruction ?? "").slice(0, 20_000), item.position, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
+    statements.push(insert(db, `INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,title=excluded.title,name_versions_json=excluded.name_versions_json,default_name_version_id=excluded.default_name_version_id,summary=excluded.summary,generate_instruction=excluded.generate_instruction,settings_json=excluded.settings_json,position=excluded.position,archived=excluded.archived,state=excluded.state,title_generation_pending=excluded.title_generation_pending,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [outline.id, item.articleId, item.chapterId, normalizedTitle, JSON.stringify(names.nameVersions), names.defaultNameVersionId, outline.plan.slice(0, 10_000), String(outline.generateInstruction ?? "").slice(0, 20_000), JSON.stringify(normalizeChapterSettings(outline.settings)), item.position, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision]));
     statements.push(insert(db, `INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(outline_id) DO UPDATE SET text=excluded.text,content_name=excluded.content_name,content_override=excluded.content_override,source_version_id=excluded.source_version_id,current_version_id=excluded.current_version_id,default_version_id=excluded.default_version_id,outline_snapshot_json=excluded.outline_snapshot_json,manual_excellent=excluded.manual_excellent,updated_at=excluded.updated_at,revision=excluded.revision`,
     [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
@@ -998,6 +1004,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     if (owns(outlineFields, "defaultNameVersionId")) outlineAssignments.push(["default_name_version_id", outlineFields?.defaultNameVersionId ?? null]);
     if (owns(outlineFields, "plan")) outlineAssignments.push(["summary", String(outlineFields?.plan ?? "").slice(0, 10_000)]);
     if (owns(outlineFields, "generateInstruction")) outlineAssignments.push(["generate_instruction", String(outlineFields?.generateInstruction ?? "").slice(0, 20_000)]);
+    if (owns(outlineFields, "settings")) outlineAssignments.push(["settings_json", JSON.stringify(normalizeChapterSettings(outlineFields?.settings))]);
     if (owns(outlineFields, "archived")) outlineAssignments.push(["archived", outlineFields?.archived ? 1 : 0]);
     if (owns(outlineFields, "state")) outlineAssignments.push(["state", ["saved", "running", "failed"].includes(String(outlineFields?.state)) ? outlineFields?.state : "saved"]);
     if (owns(outlineFields, "titleGenerationPending")) outlineAssignments.push(["title_generation_pending", outlineFields?.titleGenerationPending ? 1 : 0]);

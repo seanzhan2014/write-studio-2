@@ -43,6 +43,7 @@ export const outlines = sqliteTable("outlines", {
   defaultNameVersionId: text("default_name_version_id"),
   summary: text("summary").notNull().default(""),
   generateInstruction: text("generate_instruction").notNull().default(""),
+  settingsJson: text("settings_json").notNull().default("{}"),
   position: integer("position").notNull(),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
   state: text("state").notNull().default("saved"),

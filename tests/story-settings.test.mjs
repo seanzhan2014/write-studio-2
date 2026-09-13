@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveChapterSettings } from "../lib/story-settings.ts";
+import { countOutlineSettingChanges, resolveChapterSettings, resolveOutlineSettings } from "../lib/story-settings.ts";
 
 function articleFixture() {
   return {
+    summary: "钟表倒转牵出旧港秘密",
     type: "悬疑",
     style: "克制的近距离叙事",
     storySettings: {
@@ -47,11 +48,53 @@ function articleFixture() {
 
 test("first chapter inherits article settings and character profiles", () => {
   const resolved = resolveChapterSettings(articleFixture(), "one");
-  assert.deepEqual(Object.keys(resolved.story), ["location", "style", "negativeConstraints"]);
+  assert.deepEqual(Object.keys(resolved.story), ["summary", "location", "style", "negativeConstraints"]);
+  assert.equal(resolved.story.summary, "钟表倒转牵出旧港秘密");
   assert.equal(resolved.story.location, "雾港");
   assert.deepEqual(Object.keys(resolved.characters[0].profile), ["age", "appearance", "immutableTraits"]);
   assert.equal(resolved.characters[0].profile.immutableTraits, "一定验证证据");
   assert.equal(resolved.storySources.location.kind, "article");
+});
+
+test("outlines inherit the chapter first and then the preceding active outline", () => {
+  const article = articleFixture();
+  const chapter = article.chapters[1];
+  chapter.outlines = [
+    { id: "first", title: "发现暗门", archived: false, settings: {
+      story: {
+        summary: { value: "暗门后传来潮声", scope: "ongoing" },
+        style: { value: "第一条大纲使用长句", scope: "chapter" },
+      },
+      characters: { lin: { start: {}, end: { age: "31 岁" } } },
+      relationships: {},
+    } },
+    { id: "archived", title: "废弃线索", archived: true, settings: {
+      story: { location: { value: "不应继承的地点", scope: "ongoing" } }, characters: {}, relationships: {},
+    } },
+    { id: "second", title: "进入暗门", archived: false, settings: {
+      story: {},
+      characters: { lin: { start: { appearance: { value: "袖口沾着盐霜", scope: "ongoing" } }, end: {} } },
+      relationships: {},
+    } },
+    { id: "third", title: "追踪潮声", archived: false, settings: {} },
+  ];
+
+  const first = resolveOutlineSettings(article, "first");
+  assert.equal(first.story.location, "旧码头");
+  assert.equal(first.story.style, "第一条大纲使用长句");
+  assert.equal(first.inheritedFromOutline, undefined);
+
+  const second = resolveOutlineSettings(article, "second");
+  assert.equal(second.story.summary, "暗门后传来潮声");
+  assert.equal(second.story.style, "本章使用轻快短句");
+  assert.equal(second.story.location, "旧码头");
+  assert.equal(second.characters[0].profile.age, "31 岁");
+  assert.deepEqual(second.inheritedFromOutline, { id: "first", title: "发现暗门" });
+
+  const third = resolveOutlineSettings(article, "third");
+  assert.equal(third.characters[0].profile.appearance, "袖口沾着盐霜");
+  assert.deepEqual(third.inheritedFromOutline, { id: "second", title: "进入暗门" });
+  assert.equal(countOutlineSettingChanges(chapter.outlines[0].settings), 3);
 });
 
 test("chapter-only overrides stay local while ongoing and ending changes propagate", () => {
