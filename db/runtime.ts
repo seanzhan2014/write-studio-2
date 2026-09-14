@@ -1,5 +1,6 @@
 import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { parseTaskHistory } from "@/lib/task-history";
+import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
 import { normalizeReviewRounds, normalizeReviewRules, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import { startGenerateReviewRunner } from "@/db/generate-runner";
@@ -712,7 +713,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
 }
 
 const defaultSettings: StudioData["settings"] = {
-  theme: "light", editorFont: "sans", fontSize: 17, lineHeight: 1.8, contentWidth: 920,
+  ...DEFAULT_APPEARANCE,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
@@ -723,6 +724,7 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
   return {
     ...defaultSettings,
     ...settings,
+    ...normalizeAppearance(settings),
     namingModelMode: settings.namingModelMode === "fixed" ? "fixed" : "inherit",
     namingModel: String(settings.namingModel ?? ""),
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),

@@ -1,3 +1,5 @@
+import { DEFAULT_APPEARANCE } from "../lib/appearance.mjs";
+
 const MISSING = Symbol("missing");
 
 function clone(value) {
@@ -332,11 +334,7 @@ export function durableStudioData(source) {
   data.currentArticleId = "";
   data.currentOutlineId = "";
   Object.assign(data.settings, {
-    theme: "light",
-    editorFont: "sans",
-    fontSize: 17,
-    lineHeight: 1.8,
-    contentWidth: 920,
+    ...DEFAULT_APPEARANCE,
     outlineExpanded: true,
     showArchived: false,
     openLastArticle: true,

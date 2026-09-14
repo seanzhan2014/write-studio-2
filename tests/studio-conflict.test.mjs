@@ -282,6 +282,8 @@ test("device-only navigation and composing state are excluded from durable snaps
   ] };
   data.settings = { theme: "dark", editorFont: "serif", fontSize: 22, lineHeight: 2, contentWidth: 1100, outlineExpanded: false, showArchived: true, openLastArticle: false };
   data.currentArticleId = "article";
+  data.settings.accentColor = "#2563a6";
+  data.settings.uiFont = "kai";
   data.currentOutlineId = "outline";
   data.articles[0].lastOutlineId = "outline";
 
@@ -296,4 +298,6 @@ test("device-only navigation and composing state are excluded from durable snaps
   assert.equal(durable.articles[0].chapters[0].outlines[0].chat.sessions[0].includeCharacters, true);
   assert.equal(durable.settings.theme, "light");
   assert.equal(durable.settings.editorFont, "sans");
+  assert.equal(durable.settings.accentColor, "#755835");
+  assert.equal(durable.settings.uiFont, "sans");
 });

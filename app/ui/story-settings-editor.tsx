@@ -76,7 +76,7 @@ function ScopedStorySettingField({ settingKey, value, source, override, level, o
     <StoryInput {...STORY_LABELS[settingKey]} value={override?.value ?? value} onChange={onChange} />
   </>;
   const className = `inherited-setting-field ${override ? "overridden" : ""}`;
-  if (settingKey === "summary" || settingKey === "style") return <details className={`${className} setting-collapsible`}><summary><span><strong>{STORY_LABELS[settingKey].label}</strong><small>{status}</small></span></summary><div className="setting-collapsible-body">{body}</div></details>;
+  if (settingKey === "summary" || settingKey === "style") return <details className={`${className} setting-collapsible`} open={Boolean(override)}><summary><span><strong>{STORY_LABELS[settingKey].label}</strong><small>{status}</small></span></summary><div className="setting-collapsible-body">{body}</div></details>;
   return <div className={className}>{body}</div>;
 }
 
@@ -126,6 +126,138 @@ function ArticleSettingsBody({ article }: { article: Article }) {
       {!article.relationships.length && <Text c="dimmed">尚未建立人物关系。</Text>}
     </Stack>}
   </>;
+}
+
+export function ArticleSettingsInline() {
+  const studio = useStudio();
+  return <div className="inline-story-settings"><ArticleSettingsBody article={studio.currentArticle} /></div>;
+}
+
+type ScopedSettingsLevel = "chapter" | "outline";
+
+export function ScopedSettingsInline({ level, targetId }: { level: ScopedSettingsLevel; targetId: string }) {
+  const studio = useStudio();
+  const article = studio.currentArticle;
+  const chapter = level === "chapter"
+    ? article.chapters.find((item) => item.id === targetId)
+    : article.chapters.find((item) => item.outlines.some((outline) => outline.id === targetId));
+  const outline = level === "outline" ? chapter?.outlines.find((item) => item.id === targetId) : undefined;
+  const target = level === "chapter" ? chapter : outline;
+  const [tab, setTab] = useState<"story" | "characters" | "relationships">("story");
+  const [showInherited, setShowInherited] = useState(false);
+  const [query, setQuery] = useState("");
+  const [lastChange, setLastChange] = useState<{ settings: ChapterSettings; label: string } | null>(null);
+  const resolved = useMemo(() => {
+    if (!target) return null;
+    return level === "chapter" ? resolveChapterSettings(article, target.id) : resolveOutlineSettings(article, target.id);
+  }, [article, level, target]);
+  if (!chapter || !target || !resolved) return null;
+
+  const settings = normalizeChapterSettings(target.settings);
+  const levelLabel = level === "chapter" ? "本章" : "本大纲";
+  const inheritedLabel = level === "chapter"
+    ? resolved.inheritedFromChapter?.title ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"
+    : "inheritedFromOutline" in resolved && resolved.inheritedFromOutline?.title ? `继承${resolved.inheritedFromOutline.title}` : "继承章节设定";
+  const changeCount = level === "chapter" ? countChapterSettingChanges(settings) : countOutlineSettingChanges(settings);
+  const inheritedStoryCount = STORY_FIELD_KEYS.filter((key) => !settings.story[key]).length;
+
+  function commit(next: ChapterSettings, label: string) {
+    setLastChange({ settings: cloneSettings(settings), label });
+    if (level === "chapter") studio.updateChapter(targetId, { settings: normalizeChapterSettings(next) });
+    else studio.updateOutline(targetId, { settings: normalizeChapterSettings(next) });
+  }
+  function patchStory(key: StoryFieldKey, value: string, nextScope?: OverrideScope) {
+    const next = cloneSettings(settings);
+    next.story[key] = { value, scope: nextScope ?? next.story[key]?.scope ?? "ongoing" };
+    commit(next, STORY_LABELS[key].label);
+  }
+  function restoreStory(key: StoryFieldKey) {
+    const next = cloneSettings(settings);
+    delete next.story[key];
+    commit(next, STORY_LABELS[key].label);
+  }
+  function patchCharacter(characterId: string, key: CharacterProfileKey, value: string, nextScope?: OverrideScope) {
+    const next = cloneSettings(settings);
+    const item = next.characters[characterId] ?? { start: {}, end: {} };
+    item.start[key] = { value, scope: nextScope ?? item.start[key]?.scope ?? "ongoing" };
+    next.characters[characterId] = item;
+    commit(next, CHARACTER_LABELS[key].label);
+  }
+  function restoreCharacter(characterId: string, key: CharacterProfileKey) {
+    const next = cloneSettings(settings);
+    const item = next.characters[characterId];
+    if (!item) return;
+    delete item.start[key];
+    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
+    commit(next, CHARACTER_LABELS[key].label);
+  }
+  function patchEnding(characterId: string, key: CharacterProfileKey, value: string | undefined) {
+    const next = cloneSettings(settings);
+    const item = next.characters[characterId] ?? { start: {}, end: {} };
+    if (value === undefined || !value.trim()) delete item.end[key];
+    else item.end[key] = value;
+    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
+    else next.characters[characterId] = item;
+    commit(next, `${CHARACTER_LABELS[key].label}${level === "chapter" ? "章末" : "大纲末"}变化`);
+  }
+  function patchAppearance(characterId: string, value: string, nextScope?: OverrideScope) {
+    const next = cloneSettings(settings);
+    const item = next.characters[characterId] ?? { start: {}, end: {} };
+    if (value === "inherit") delete item.appears;
+    else item.appears = { value: value === "yes", scope: nextScope ?? item.appears?.scope ?? "chapter" };
+    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
+    else next.characters[characterId] = item;
+    commit(next, "出场状态");
+  }
+
+  const visibleCharacters = resolved.characters.filter((person) => !person.archived
+    && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())
+    && (showInherited || Boolean(settings.characters[person.id])));
+  const visibleRelationships = resolved.relationships.filter((item) => showInherited || Boolean(settings.relationships[item.id]));
+  const inheritedCharacterCount = resolved.characters.filter((person) => !person.archived && !settings.characters[person.id]).length;
+  const inheritedRelationshipCount = resolved.relationships.filter((item) => !settings.relationships[item.id]).length;
+  const inheritedCount = tab === "story" ? inheritedStoryCount : tab === "characters" ? inheritedCharacterCount : inheritedRelationshipCount;
+
+  return <div className="inline-story-settings">
+    <div className="inline-setting-toolbar">
+      <SectionTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setShowInherited(false); }} />
+      <div className="inline-setting-summary"><span>{changeCount ? `${levelLabel}修改 ${changeCount} 项` : `${levelLabel}全部继承`} · {inheritedLabel}</span>{inheritedCount > 0 && <button type="button" aria-expanded={showInherited} onClick={() => setShowInherited((value) => !value)}>{showInherited ? "收起继承内容" : `查看继承内容 · ${inheritedCount}`}</button>}</div>
+    </div>
+    {lastChange && <div className="setting-undo" role="status"><span>已修改“{lastChange.label}”</span><button type="button" onClick={() => { if (level === "chapter") studio.updateChapter(target.id, { settings: lastChange.settings }); else studio.updateOutline(target.id, { settings: lastChange.settings }); setLastChange(null); }}>撤销</button></div>}
+    {tab === "story" && <div className="chapter-setting-fields inline-setting-fields">
+      {STORY_FIELD_KEYS.filter((key) => showInherited || Boolean(settings.story[key])).map((key) => <ScopedStorySettingField key={key} settingKey={key} level={level} value={resolved.story[key]} source={resolved.storySources[key]} override={settings.story[key]} onChange={(value) => patchStory(key, value)} onScope={(scope) => patchStory(key, settings.story[key]!.value, scope)} onRestore={() => restoreStory(key)} />)}
+      {!showInherited && !Object.keys(settings.story).length && <Text c="dimmed">故事设定全部继承，继承内容保持收起。</Text>}
+    </div>}
+    {tab === "characters" && <Stack gap="md">
+      {showInherited && <TextInput label="查找人物" placeholder="姓名、别名或设定" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />}
+      {visibleCharacters.map((person) => {
+        const own = settings.characters[person.id];
+        const appearanceValue = own?.appears ? own.appears.value ? "yes" : "no" : "inherit";
+        const profileKeys = CHARACTER_PROFILE_KEYS.filter((key) => showInherited || Boolean(own?.start[key]));
+        return <details className="setting-entity" open={Boolean(own)} key={person.id}><summary><span><strong>{person.name}</strong><small>{own ? `${Object.keys(own.start).length + Object.keys(own.end).length + (own.appears ? 1 : 0)} 项变化` : "继承人物资料"}</small></span></summary><Stack gap="md">
+          {(showInherited || own?.appears) && <div className="appearance-setting"><Select label={`${levelLabel}出场`} data={[{ value: "inherit", label: "跟随内容匹配" }, { value: "yes", label: "明确出场" }, { value: "no", label: "明确不出场" }]} value={appearanceValue} onChange={(value) => patchAppearance(person.id, value ?? "inherit")} />{own?.appears && <ScopeSelect level={level} value={own.appears.scope} onChange={(scope) => patchAppearance(person.id, appearanceValue, scope)} />}</div>}
+          {profileKeys.map((key) => { const override = own?.start[key]; return <div className={`inherited-setting-field ${override ? "overridden" : ""}`} key={key}><div className="setting-field-meta"><span>{override ? `${levelLabel}开始修改` : sourceLabel(person.profileSources[key])}</span>{override && <><ScopeSelect level={level} value={override.scope} onChange={(scope) => patchCharacter(person.id, key, override.value, scope)} /><button type="button" onClick={() => restoreCharacter(person.id, key)}>恢复继承</button></>}</div><StoryInput {...CHARACTER_LABELS[key]} value={override?.value ?? person.profile[key]} onChange={(value) => patchCharacter(person.id, key, value)} /></div>; })}
+          {(showInherited || Object.keys(own?.end ?? {}).length > 0) && <details className="ending-change-group" open={Object.keys(own?.end ?? {}).length > 0}><summary>{level === "chapter" ? "章末变化" : "大纲末变化"}<small>供下一{level === "chapter" ? "章" : "大纲"}继承</small></summary>{CHARACTER_PROFILE_KEYS.filter((key) => showInherited || Object.prototype.hasOwnProperty.call(own?.end ?? {}, key)).map((key) => <div className="ending-change-field" key={key}><StoryInput {...CHARACTER_LABELS[key]} label={`${level === "chapter" ? "章末" : "大纲末"}${CHARACTER_LABELS[key].label}`} value={own?.end[key] ?? person.endingChanges[key] ?? ""} onChange={(value) => patchEnding(person.id, key, value)} />{Object.prototype.hasOwnProperty.call(own?.end ?? {}, key) && <button type="button" onClick={() => patchEnding(person.id, key, undefined)}>移除变化</button>}</div>)}</details>}
+        </Stack></details>;
+      })}
+      {!visibleCharacters.length && <Text c="dimmed">人物设定没有本级变化，继承内容保持收起。</Text>}
+    </Stack>}
+    {tab === "relationships" && <Stack gap="md">
+      {visibleRelationships.map((item) => {
+        const a = resolved.characters.find((person) => person.id === item.characterAId);
+        const b = resolved.characters.find((person) => person.id === item.characterBId);
+        const own = settings.relationships[item.id];
+        const activeValue = own?.active ? own.active.value ? "yes" : "no" : "inherit";
+        const patchRelationship = (patch: Partial<NonNullable<ChapterSettings["relationships"][string]>>, label: string) => { const next = cloneSettings(settings); const current = next.relationships[item.id] ?? {}; next.relationships[item.id] = { ...current, ...patch }; commit(next, label); };
+        return <details className="setting-entity" open={Boolean(own)} key={item.id}><summary><span><strong>{a?.name ?? "未知"} ↔ {b?.name ?? "未知"}</strong><small>{own ? "本级有变化" : item.description || "继承人物关系"}</small></span></summary><Stack gap="md">
+          {(showInherited || own?.active) && <div className="appearance-setting"><Select label={`关系在${levelLabel}是否有效`} data={[{ value: "inherit", label: "继承" }, { value: "yes", label: "有效" }, { value: "no", label: "暂时无效" }]} value={activeValue} onChange={(value) => { const next = cloneSettings(settings); const current = next.relationships[item.id] ?? {}; if (value === "inherit") delete current.active; else current.active = { value: value === "yes", scope: current.active?.scope ?? "chapter" }; if (!current.start && !current.active && !Object.prototype.hasOwnProperty.call(current, "end")) delete next.relationships[item.id]; else next.relationships[item.id] = current; commit(next, "关系状态"); }} />{own?.active && <ScopeSelect level={level} value={own.active.scope} onChange={(scope) => patchRelationship({ active: { ...own.active!, scope } }, "关系状态")} />}</div>}
+          {(showInherited || own?.start) && <div className={`inherited-setting-field ${own?.start ? "overridden" : ""}`}><div className="setting-field-meta"><span>{own?.start ? `${levelLabel}修改` : sourceLabel(item.source)}</span>{own?.start && <><ScopeSelect level={level} value={own.start.scope} onChange={(scope) => patchRelationship({ start: { ...own.start!, scope } }, "人物关系")} /><button type="button" onClick={() => { const next = cloneSettings(settings); const current = next.relationships[item.id]; if (!current) return; delete current.start; if (!current.active && !Object.prototype.hasOwnProperty.call(current, "end")) delete next.relationships[item.id]; commit(next, "人物关系"); }}>恢复继承</button></>}</div><Textarea autosize minRows={2} label={`${level === "chapter" ? "章初" : "大纲开始"}关系`} value={own?.start?.value ?? item.description} onChange={(event) => patchRelationship({ start: { value: event.currentTarget.value, scope: own?.start?.scope ?? "ongoing" } }, "人物关系")} /></div>}
+          {(showInherited || Object.prototype.hasOwnProperty.call(own ?? {}, "end")) && <div className="ending-change-field"><Textarea autosize minRows={2} label={`${level === "chapter" ? "章末" : "大纲末"}关系变化`} value={own?.end ?? item.endingDescription ?? ""} onChange={(event) => patchRelationship({ end: event.currentTarget.value }, "关系变化")} />{Object.prototype.hasOwnProperty.call(own ?? {}, "end") && <button type="button" onClick={() => { const next = cloneSettings(settings); const current = next.relationships[item.id]; if (!current) return; delete current.end; if (!current.start && !current.active) delete next.relationships[item.id]; commit(next, "关系变化"); }}>移除变化</button>}</div>}
+        </Stack></details>;
+      })}
+      {!visibleRelationships.length && <Text c="dimmed">关系设定没有本级变化，继承内容保持收起。</Text>}
+    </Stack>}
+  </div>;
 }
 
 export function ArticleSettingsDrawer({ opened, onClose }: { opened: boolean; onClose: () => void }) {

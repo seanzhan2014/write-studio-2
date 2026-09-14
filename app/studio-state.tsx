@@ -1,5 +1,7 @@
 "use client";
 
+import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
+
 import { parseTaskHistory } from "@/lib/task-history";
 
 import type { ReasoningEffort } from "@/lib/reasoning-options";
@@ -243,12 +245,7 @@ export type AiTask = {
 
 export type { ExcellentFragment };
 
-export type StudioSettings = {
-  theme: "light" | "dark" | "system";
-  editorFont: "sans" | "serif";
-  fontSize: number;
-  lineHeight: number;
-  contentWidth: number;
+export type StudioSettings = AppearanceSettings & {
   outlineExpanded: boolean;
   showArchived: boolean;
   openLastArticle: boolean;
@@ -415,11 +412,7 @@ const seedData: StudioData = {
     { id: "task-failed", articleId: "harbor-letters", chapterId: "chapter-2", outlineId: "outline-5", target: "正文", prompt: "让海图显示出不存在的航线", model: "创作主模型", executionOrigin: "local", state: "failed", createdAt: "2026-07-28T13:50:00.000Z", error: "模拟服务暂时不可用" },
   ],
   settings: {
-    theme: "light",
-    editorFont: "sans",
-    fontSize: 17,
-    lineHeight: 1.8,
-    contentWidth: 920,
+    ...DEFAULT_APPEARANCE,
     outlineExpanded: true,
     showArchived: false,
     openLastArticle: true,
@@ -552,7 +545,7 @@ type DeviceUiState = {
   chatDraftBySession?: Record<string, string>;
   lastReadBySession?: Record<string, string | null>;
   chatOptionsBySession?: Record<string, { includePrevious: boolean; includeCharacters: boolean }>;
-  settings?: Pick<StudioSettings, "theme" | "editorFont" | "fontSize" | "lineHeight" | "contentWidth" | "outlineExpanded" | "showArchived" | "openLastArticle">;
+  settings?: AppearanceSettings & Pick<StudioSettings, "outlineExpanded" | "showArchived" | "openLastArticle">;
 };
 
 function deviceUiFromData(data: StudioData): DeviceUiState {
@@ -566,6 +559,8 @@ function deviceUiFromData(data: StudioData): DeviceUiState {
     chatOptionsBySession: {},
     settings: {
       theme: data.settings.theme,
+      accentColor: data.settings.accentColor,
+      uiFont: data.settings.uiFont,
       editorFont: data.settings.editorFont,
       fontSize: data.settings.fontSize,
       lineHeight: data.settings.lineHeight,
@@ -623,7 +618,10 @@ function deviceUiForCurrentPath(source: DeviceUiState, data: StudioData): Device
 
 function applyDeviceUi(source: StudioData, ui: DeviceUiState): StudioData {
   const data = structuredClone(source);
-  if (ui.settings) data.settings = { ...data.settings, ...ui.settings };
+  if (ui.settings) {
+    const settings = { ...data.settings, ...ui.settings };
+    data.settings = { ...settings, ...normalizeAppearance(settings) };
+  }
   for (const article of data.articles) {
     const outlineIds = new Set(article.chapters.flatMap((chapter) => chapter.outlines.map((outline) => outline.id)));
     const requested = ui.lastOutlineByArticle?.[article.id];
@@ -835,6 +833,7 @@ function normalizeStudioData(source: StudioData): StudioData {
     settings: {
       ...seedData.settings,
       ...(source.settings ?? {}),
+      ...normalizeAppearance(source.settings),
       namingModelMode: source.settings?.namingModelMode === "fixed" ? "fixed" : "inherit",
       namingModel: String(source.settings?.namingModel ?? ""),
       generateTargetWords: normalizeGenerateTargetWords(source.settings?.generateTargetWords),
@@ -2028,7 +2027,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setData((current) => ({ ...current, tasks: current.tasks.filter((task) => task.state !== "success") }));
     },
     updateSettings(patch) {
-      setData((current) => ({ ...current, settings: { ...current.settings, ...patch } }));
+      setData((current) => {
+        const settings = { ...current.settings, ...patch };
+        return { ...current, settings: { ...settings, ...normalizeAppearance(settings) } };
+      });
     },
     addCharacter(character) {
       const id = makeId("character");

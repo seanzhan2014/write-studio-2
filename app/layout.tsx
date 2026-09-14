@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
-import { ColorSchemeScript, MantineProvider } from "@mantine/core";
+import { ColorSchemeScript } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "./globals.css";
 import OfflineBootstrap from "./offline-bootstrap";
@@ -51,31 +51,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <head><ColorSchemeScript defaultColorScheme="auto" /></head>
       <body>
         <OfflineBootstrap />
-        <MantineProvider
-          defaultColorScheme="auto"
-          theme={{
-            colors: {
-              studio: [
-                "#faf8f5",
-                "#f4eee7",
-                "#e8dccc",
-                "#d6c1a5",
-                "#b99a73",
-                "#95734d",
-                "#755835",
-                "#5f462a",
-                "#49351f",
-                "#322416",
-              ],
-            },
-            primaryColor: "studio",
-            primaryShade: { light: 6, dark: 5 },
-            defaultRadius: "md",
-            fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
-          }}
-        >
-          {children}
-        </MantineProvider>
+        {children}
       </body>
     </html>
   );

@@ -235,7 +235,8 @@ test("desktop and mobile outline sorting share touch-safe cross-chapter behavior
   assert.doesNotMatch(app, /className="mobile-primary-nav"|label="打开文章导航"/);
   assert.match(app, /label="AI 任务"[^>]+className="mobile-header-action"/);
   assert.match(app, /label="设置"[^>]+className="mobile-header-action"/);
-  assert.match(app, /aria-label="文章功能"[\s\S]*全章节编辑[\s\S]*全大纲编辑[\s\S]*全文编辑[\s\S]*搜索[\s\S]*文章资料/);
+  assert.match(app, /aria-label="文章功能"[\s\S]*章节与大纲[\s\S]*全文编辑[\s\S]*搜索[\s\S]*文章资料/);
+  assert.doesNotMatch(app, /全章节编辑|全大纲编辑|只看标题/);
   assert.match(app, /aria-label=\{`切换文章，当前 \$\{articleTitle\}`\}/);
   assert.match(app, /useSensor\(TouchSensor, \{ activationConstraint: \{ delay: 420, tolerance: 10 \} \}\)/);
   assert.match(app, /<DndContext[\s\S]*sensors=\{sensors\}/);
@@ -257,7 +258,10 @@ test("desktop and mobile outline sorting share touch-safe cross-chapter behavior
 test("full outline and full content editors use one continuous auto-growing document", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const styles = await read("app/globals.css");
+  const settings = await read("app/ui/story-settings-editor.tsx");
+  assert.match(app, /pathname\.endsWith\("\/chapters\/edit-all"\)\) return "outline-edit"/);
   assert.match(app, /"outline-edit": `\$\{base\}\/outlines\/edit-all`/);
+  assert.doesNotMatch(app, /"chapter-edit":/);
   assert.match(app, /read: `\$\{base\}\/edit`/);
   assert.match(app, /function ContinuousDocumentEditor/);
   assert.match(app, /function AutoGrowTextarea/);
@@ -271,6 +275,21 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /async function copyAllOutlines\(\)/);
   assert.match(app, /copyTextToClipboard\(text\)/);
   assert.match(app, />复制<\/Button>/);
+  assert.match(app, /<ArticleSettingsInline \/>/);
+  assert.match(app, /<ScopedSettingsInline level="chapter"/);
+  assert.match(app, /<ScopedSettingsInline level="outline"/);
+  assert.match(app, /function UnifiedNamingEditor/);
+  assert.match(app, /className="continuous-outline-primary-actions"/);
+  assert.match(app, /function ContinuousOutlinePropertiesDrawer/);
+  assert.match(app, /className="continuous-outline-action-menu"/);
+  assert.doesNotMatch(app, /className="continuous-outline-secondary-actions"/);
+  const unifiedEditor = app.match(/function ContinuousDocumentEditor[\s\S]*?function SearchPage/)?.[0] ?? "";
+  assert.match(unifiedEditor, /setOutlinePanel/);
+  assert.match(styles, /\.continuous-outline-primary-actions[\s\S]*flex-wrap: nowrap/);
+  assert.match(styles, /\.continuous-outline-properties-tabs/);
+  assert.match(settings, /STORY_FIELD_KEYS\.filter\(\(key\) => showInherited \|\| Boolean\(settings\.story\[key\]\)\)/);
+  assert.match(settings, /open=\{Boolean\(override\)\}/);
+  assert.match(settings, /查看继承内容/);
   assert.match(await read("app/studio-state.tsx"), /saveCurrentContent[\s\S]*currentVersionId: null/);
   assert.match(app, /className="continuous-drag-handle"/);
   assert.match(styles, /\.continuous-text-editor[\s\S]*overflow: hidden/);
@@ -555,10 +574,9 @@ test("dedicated naming is centralized and all-name generation is one durable bac
     read("lib/name-versions.ts"),
     read("drizzle/0013_remarkable_the_anarchist.sql"),
   ]);
-  assert.match(app, /function FullChapterEditor/);
+  assert.match(app, /function UnifiedNamingEditor/);
   assert.match(app, /生成全部名称/);
-  assert.match(app, /生成章节名/);
-  assert.match(app, /生成大纲名/);
+  assert.match(app, /AI 生成候选/);
   assert.match(app, /persist: true/);
   assert.match(app, /studio\.setDefaultNameVersion/);
   assert.match(app, /target: "all-names"/);
