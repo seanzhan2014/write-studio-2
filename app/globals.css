@@ -8742,7 +8742,66 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   }
 
   .generate-options-section {
+    gap: 16px;
     padding: 16px 0;
+  }
+
+  .generate-options-section-heading {
+    align-items: start;
+    column-gap: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+
+  .generate-options-section-heading .ui-title,
+  .generate-options-section-heading small,
+  .generate-options-section-heading strong {
+    line-height: 1.55;
+  }
+
+  .generate-options-section-heading .ui-title {
+    font-size: 14px;
+  }
+
+  .generate-options-section-heading strong {
+    align-self: start;
+    padding-top: 0;
+  }
+
+  .generate-options-drawer .context-card > div,
+  .generate-options-drawer .context-card label {
+    min-height: 36px;
+    padding-block: 8px;
+  }
+
+  .generate-options-drawer .context-card label {
+    align-items: start;
+    column-gap: 7px;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+  }
+
+  .generate-options-drawer .context-card label span {
+    line-height: 1.55;
+    margin-left: 0;
+    white-space: nowrap;
+  }
+
+  .generate-options-drawer .rewrite-retention-control .mantine-Slider-root {
+    margin: 18px 12px 42px;
+  }
+
+  .generate-options-drawer .rewrite-retention-control .mantine-Slider-markLabel {
+    line-height: 1.4;
+    margin-top: 7px;
+    white-space: nowrap;
+  }
+
+  .generate-options-drawer .dialogue-density-options label,
+  .generate-options-drawer .generate-outline-title-toggle,
+  .generate-options-drawer .generate-first-appearance-edit.mantine-Button-root {
+    min-height: 52px;
   }
 
   .generate-options-inline-actions {
