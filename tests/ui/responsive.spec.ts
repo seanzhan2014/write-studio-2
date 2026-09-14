@@ -350,10 +350,10 @@ test("mobile overlays stay reachable across the supported viewport matrix", asyn
       await articleDrawer.getByRole("button", { name: "关闭文章菜单" }).click();
 
       await page.goto("/articles/article-main/outlines/outline-current/generate");
-      await page.getByRole("button", { name: "打开生成选项" }).click();
-      const optionsDrawer = page.locator(".generate-options-drawer-shell");
-      await expectOverlayContract(page, optionsDrawer);
-      await optionsDrawer.getByRole("button", { name: "关闭生成选项" }).click();
+      await page.locator(".generate-context-summary").click();
+      const contextDrawer = page.locator(".ws-scrollable-drawer").filter({ has: page.locator(".generate-context-panel") });
+      await expectOverlayContract(page, contextDrawer);
+      await contextDrawer.getByRole("button", { name: "关闭生成上下文" }).click();
     });
   }
 });
@@ -415,12 +415,11 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await planPeek.getByRole("button", { name: "关闭此正文大纲" }).click();
 
   await gotoSettled("/articles/article-main/outlines/outline-current/generate");
-  await page.getByRole("button", { name: "打开生成选项" }).click();
   await page.locator(".generate-first-appearance-edit").click();
   const appearance = page.locator(".first-appearance-dialog");
   await expectOverlayContract(page, appearance);
   await appearance.getByRole("button", { name: "关闭首次出场人物编辑" }).click();
-  await page.getByRole("button", { name: "管理常用指令" }).click();
+  await page.getByRole("button", { name: "管理预设" }).click();
   const presets = page.locator(".generate-preset-dialog");
   await expectOverlayContract(page, presets);
   await presets.getByRole("button", { name: "关闭预设管理" }).click();
@@ -585,29 +584,21 @@ test("model candidates can be assigned as independent task defaults", async ({ p
 test("generate controls and context drawer fit the desktop viewport", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  const optionsTrigger = page.getByRole("button", { name: "打开生成选项" });
-  await expect(optionsTrigger).toBeVisible();
-  await expect(optionsTrigger).toContainText(/5,?000 字/);
-  await expect(page.getByLabel("正文目标字数")).toHaveCount(0);
+  await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
+  await expect(page.getByLabel("同时生成大纲名")).not.toBeChecked();
   await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("radio", { name: /改写正文/ })).toBeEnabled();
   await expect(page.getByRole("radio", { name: /续写正文/ })).toBeEnabled();
   await page.getByRole("radio", { name: /改写正文/ }).click();
-  await optionsTrigger.click();
-  await expect(page.getByRole("dialog").getByText("生成选项", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
-  await expect(page.getByLabel("同时生成大纲名")).not.toBeChecked();
   const retention = page.getByRole("slider", { name: "原文保留度" });
   await expect(retention).toBeVisible();
   await expect(page.getByText("平衡 · 平衡改写", { exact: true })).toBeVisible();
   await retention.focus();
   await retention.press("End");
   await expect(page.getByText("高保留 · 轻度润色", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "关闭生成选项" }).click();
   await page.getByRole("radio", { name: /全新生成/ }).click();
   await expect(retention).toHaveCount(0);
   await expect(page.getByText("补充指令（可选）", { exact: false })).toBeVisible();
-  await optionsTrigger.click();
   const firstAppearance = page.locator(".generate-first-appearance-edit");
   await expect(firstAppearance).toContainText("1");
   await firstAppearance.click();
@@ -619,11 +610,12 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   await appearanceDialog.getByLabel("顾屿首次出场").uncheck();
   await appearanceDialog.getByRole("button", { name: "完成" }).click();
   await expect(firstAppearance).toContainText("1");
-  await expect(page.getByRole("dialog").getByText("上下文与人物", { exact: true })).toBeVisible();
+  await page.locator(".generate-context-summary").click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText("本次生成上下文", { exact: true })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("前面大纲", { exact: false })).toBeVisible();
   await expect(page.getByText("全新生成不发送", { exact: true })).toBeVisible();
   await expect(page.getByText("本章全部大纲", { exact: false })).toHaveCount(0);
-  await page.getByText("查看当前大纲", { exact: true }).click();
   await expect(page.locator(".context-preview").getByText("当前大纲", { exact: true })).toBeVisible();
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -665,7 +657,6 @@ test("first appearance editor is usable on mobile", async ({ page }, testInfo) =
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await page.getByRole("radio", { name: /改写正文/ }).click();
-  await page.getByRole("button", { name: "打开生成选项" }).click();
   const retention = page.getByRole("slider", { name: "原文保留度" });
   await expect(retention).toBeVisible();
   const retentionBounds = await page.locator(".rewrite-retention-control").boundingBox();
@@ -687,7 +678,7 @@ test("first appearance editor is usable on mobile", async ({ page }, testInfo) =
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
   await dialog.getByLabel("顾屿首次出场").uncheck();
   await dialog.getByRole("button", { name: "完成" }).click();
-  await expect(firstAppearance).toHaveText("首次出场人物");
+  await expect(firstAppearance).toHaveText("人物出场");
 });
 
 test("AI Generate controls keep mobile touch sizes and allow an unlimited word target", async ({ page, request }, testInfo) => {
@@ -701,9 +692,6 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(initialSubmit!.y).toBeGreaterThanOrEqual(0);
   expect(initialSubmit!.y + initialSubmit!.height).toBeLessThanOrEqual(initialViewport.height);
 
-  const optionsTrigger = page.getByRole("button", { name: "打开生成选项" });
-  await expect(optionsTrigger).toBeVisible();
-  await optionsTrigger.click();
   const wordTarget = page.getByRole("textbox", { name: "正文目标字数" });
   await wordTarget.scrollIntoViewIfNeeded();
   const wordBounds = await wordTarget.boundingBox();
@@ -711,13 +699,47 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(wordBounds!.width).toBeGreaterThanOrEqual(150);
   expect(wordBounds!.height).toBeGreaterThanOrEqual(44);
 
-  const optionsDrawer = page.locator(".generate-options-drawer");
-  const optionMetrics = await optionsDrawer.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+  const optionBar = page.locator(".generate-option-bar");
+  const optionMetrics = await optionBar.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
   expect(optionMetrics.scrollWidth).toBeLessThanOrEqual(optionMetrics.clientWidth);
-  const outlineTitleToggle = page.locator(".generate-outline-title-toggle");
-  const toggleBounds = await outlineTitleToggle.boundingBox();
-  expect(toggleBounds).not.toBeNull();
-  expect(toggleBounds!.height).toBeGreaterThanOrEqual(44);
+  for (const selector of [".generate-excellent-fragments-toggle", ".generate-outline-title-toggle"]) {
+    const bounds = await page.locator(selector).boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.height).toBeGreaterThanOrEqual(44);
+  }
+
+  const submit = page.getByRole("button", { name: "开始生成" });
+  const submitBounds = await submit.boundingBox();
+  expect(submitBounds).not.toBeNull();
+  expect(submitBounds!.width).toBeGreaterThanOrEqual(250);
+  expect(submitBounds!.height).toBeGreaterThanOrEqual(48);
+
+  await page.locator(".generate-prompt-label textarea").fill("移动端补充指令");
+  const saveInstruction = page.getByRole("button", { name: "保存指令" });
+  await saveInstruction.scrollIntoViewIfNeeded();
+  const saveInstructionBounds = await saveInstruction.boundingBox();
+  expect(saveInstructionBounds).not.toBeNull();
+  expect(saveInstructionBounds!.height).toBeGreaterThanOrEqual(40);
+
+  const singleLineText = page.locator([
+    ".generate-mode-description",
+    ".generate-excellent-fragments-toggle .ui-label",
+    ".generate-excellent-fragments-toggle small",
+    ".generate-outline-title-toggle .ui-label",
+    ".generate-outline-title-toggle small",
+    ".generate-context-copy .ui-title",
+    ".generate-auto-apply-note",
+  ].join(","));
+  const textMetrics = await singleLineText.evaluateAll((elements) => elements.map((element) => {
+    const style = getComputedStyle(element);
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2;
+    return { height: element.getBoundingClientRect().height, lineHeight, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+  }));
+  expect(textMetrics.length).toBeGreaterThan(0);
+  for (const metric of textMetrics) {
+    expect(metric.height).toBeLessThanOrEqual(metric.lineHeight + 2);
+    expect(metric.scrollWidth).toBeLessThanOrEqual(metric.clientWidth + 1);
+  }
 
   await wordTarget.fill("0");
   await wordTarget.press("Tab");
@@ -741,34 +763,6 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
     const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
     return payload.data.settings.generateTargetWords;
   }).toBe(0);
-
-  await page.getByRole("button", { name: "关闭生成选项" }).click();
-  const submit = page.getByRole("button", { name: "开始生成" });
-  const submitBounds = await submit.boundingBox();
-  expect(submitBounds).not.toBeNull();
-  expect(submitBounds!.width).toBeGreaterThanOrEqual(250);
-  expect(submitBounds!.height).toBeGreaterThanOrEqual(48);
-
-  await page.locator(".generate-prompt-label textarea").fill("移动端补充指令");
-  const saveInstruction = page.getByRole("button", { name: "保存指令" });
-  await saveInstruction.scrollIntoViewIfNeeded();
-  const saveInstructionBounds = await saveInstruction.boundingBox();
-  expect(saveInstructionBounds).not.toBeNull();
-  expect(saveInstructionBounds!.height).toBeGreaterThanOrEqual(40);
-
-  const singleLineText = page.locator([
-    ".generate-mode-description",
-    ".generate-options-summary-copy > .ui-title",
-    ".generate-options-summary-chips em",
-    ".generate-auto-apply-note",
-  ].join(","));
-  const textMetrics = await singleLineText.evaluateAll((elements) => elements.map((element) => {
-    const style = getComputedStyle(element);
-    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.2;
-    return { height: element.getBoundingClientRect().height, lineHeight };
-  }));
-  expect(textMetrics.length).toBeGreaterThan(0);
-  for (const metric of textMetrics) expect(metric.height).toBeLessThanOrEqual(metric.lineHeight + 2);
 });
 
 test("mobile supplementary instruction save sends one compact outline patch", async ({ page }, testInfo) => {
@@ -1279,11 +1273,12 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
   await page.getByRole("tab", { name: "AI Generate" }).click();
-  await page.getByRole("button", { name: "打开生成选项" }).click();
-  const excellentOption = page.locator(".generate-options-drawer").getByLabel("参考优秀片段");
+  await expect(page.locator(".generate-excellent-fragments-toggle input")).not.toBeChecked();
+  await page.locator(".generate-context-summary").click();
+  const excellentOption = page.locator(".generate-context-panel").getByLabel("参考优秀片段");
   await expect(excellentOption).not.toBeChecked();
   await excellentOption.check();
-  await expect(page.locator(".generate-options-drawer")).toContainText("1 个");
+  await expect(page.locator(".generate-context-panel")).toContainText("1 个");
 });
 
 test("selecting body text automatically opens the appreciation menu on desktop and mobile", async ({ page, request }, testInfo) => {

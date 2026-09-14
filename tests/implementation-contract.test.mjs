@@ -373,7 +373,7 @@ test("shared component framework owns responsive overlays and form controls", as
   assert.match(app, /function VersionDrawer[\s\S]*<ScrollableDrawer/);
   assert.match(app, /function TaskPanel[\s\S]*<ScrollableDrawer/);
   assert.match(app, /function ChapterActionSheet[\s\S]*<MobileActionSheet/);
-  assert.match(app, /opened=\{optionsOpen\}[\s\S]*title=\{<div className="ws-drawer-title">[\s\S]*生成选项[\s\S]*position=\{compact \? "bottom" : "right"\}/);
+  assert.match(app, /title="本次生成上下文"[\s\S]*position=\{compact \? "bottom" : "right"\}/);
   assert.match(overlays, /data-ui-overlay="drawer"/);
   assert.match(overlays, /data-ui-overlay="modal"/);
   assert.match(overlays, /data-ui-overlay-scroll/);
@@ -466,9 +466,6 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /contentMode: generationMode/);
   assert.match(app, /rewriteRetention/);
   assert.match(app, /补充指令（可选）/);
-  assert.match(app, /className="generate-options-summary"/);
-  assert.match(app, /opened=\{optionsOpen\}/);
-  assert.match(app, /生成选项/);
   assert.match(app, /const storedPromptAtOpen = studio\.currentOutline\.generateInstruction/);
   assert.match(app, />保存指令<\/Button>/);
   assert.match(state, /generateInstruction: task\.prompt\.slice\(0, 20000\)/);
@@ -488,7 +485,7 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(ai, /<rewrite_retention level=/);
   assert.match(ai, /REWRITE_RETENTION_INSTRUCTIONS/);
   for (const removedPreset of ["续写当前场景", "加强冲突", "补充细节", "调整语气", "收束本段"]) assert.doesNotMatch(app, new RegExp(`const quickPrompts[\\s\\S]*${removedPreset}`));
-  assert.match(app, /上下文与人物/);
+  assert.match(app, /本次生成上下文/);
   assert.doesNotMatch(app, /候选版本对比/);
   assert.doesNotMatch(app, /className="generation-card candidate-card"/);
   assert.match(app, /完成后更新当前正文，旧版本保留/);
@@ -506,8 +503,6 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(runtime, /version\.prompt/);
   assert.match(runtime, /version\.taskId/);
   assert.match(styles, /\.generate-context-scrim/);
-  assert.match(styles, /\.generate-options-summary \{/);
-  assert.match(styles, /\.generate-options-drawer \{/);
   assert.match(styles, /\.generate-preset-dialog \{[\s\S]*background: var\(--surface\);[\s\S]*box-shadow:/);
   assert.match(styles, /\.generate-outline-editor textarea/);
 });
