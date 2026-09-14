@@ -2463,7 +2463,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const [savedPrompt, setSavedPrompt] = useState(storedPromptAtOpen);
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptSaveFailed, setPromptSaveFailed] = useState(false);
-  const [contextOpen, setContextOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [appearanceEditorOpen, setAppearanceEditorOpen] = useState(false);
   const [appearanceOverrides, setAppearanceOverrides] = useState<Record<string, boolean>>({});
   const [includePrevious, setIncludePrevious] = useState(true);
@@ -2520,11 +2520,6 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
       return selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", { includeExcellentFragments: true }).excellentFragments.map((fragment) => fragment.id);
     } catch { return []; }
   }, [includeExcellentFragments, studio.currentArticle, studio.currentOutline.id]);
-  const availableExcellentFragmentCount = useMemo(() => {
-    try {
-      return selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", { includeExcellentFragments: true }).excellentFragments.length;
-    } catch { return 0; }
-  }, [studio.currentArticle, studio.currentOutline.id]);
   const summary = useMemo(() => generateContextSummary(studio.currentArticle, { ...studio.currentOutline, plan: outlinePlanDraft }, prompt, includePrevious, includeCharacters, "content", generationMode, firstAppearanceCharacterIds, includeExcellentFragments, excellentFragmentIds), [studio.currentArticle, studio.currentOutline, outlinePlanDraft, prompt, includePrevious, includeCharacters, generationMode, firstAppearanceCharacterIds, includeExcellentFragments, excellentFragmentIds]);
   const outlineTasks = studio.data.tasks.filter((task) => task.outlineId === studio.currentOutline.id && task.target === "正文");
   const activeTasks = outlineTasks.filter((task) => task.state === "waiting" || task.state === "running").sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -2536,6 +2531,16 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     ...(selectedModelReference && !selectedRecord ? [{ value: selectedModelReference, label: selectedModelReference }] : []),
     ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
   ];
+  const optionSummary = [
+    targetWords ? `${targetWords.toLocaleString("zh-CN")} 字` : "不限字数",
+    dialogueDensityLabel(dialogueDensity),
+    generationMode === "rewrite" ? rewriteRetentionOption.shortLabel : null,
+    `${summary.total.toLocaleString("zh-CN")} 字符上下文`,
+    firstAppearanceCharacters.length ? `${firstAppearanceCharacters.length} 位首次出场` : null,
+    includeExcellentFragments ? `优秀片段 ${excellentFragmentIds.length}` : null,
+    includeOutlineTitle ? "生成大纲名" : null,
+    reviewMaxRounds > 0 ? `审校 ${reviewMaxRounds} 轮` : null,
+  ].filter((item): item is string => Boolean(item));
 
   function selectGenerateModel(model: string) {
     studio.updateSettings({ generateModel: model });
@@ -2683,47 +2688,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
             {generationMode === "rewrite" && <p className="generate-mode-hint">原正文：{resolvedOutlineContentName(studio.currentOutline)}</p>}
             {!hasCurrentContent && <p className="generate-mode-hint">当前正文为空，只能使用全新生成。</p>}
           </section>
-          {generationMode === "rewrite" && <section className="rewrite-retention-control" aria-labelledby="rewrite-retention-heading">
-            <div className="rewrite-retention-heading">
-              <div><span id="rewrite-retention-heading">原文保留度</span><small>控制改写幅度，不代表精确相似度</small></div>
-              <strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong>
-            </div>
-            <Slider
-              thumbLabel="原文保留度"
-              thumbValueText={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
-              min={0}
-              max={rewriteRetentionOptions.length - 1}
-              step={1}
-              marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))}
-              value={rewriteRetentionIndex}
-              label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
-              onChange={(value) => setRewriteRetention(rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL)}
-            />
-            <p>{rewriteRetentionOption.description}</p>
-            {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
-          </section>}
-          <section className="dialogue-density-control" aria-labelledby="dialogue-density-heading">
-            <div className="dialogue-density-heading"><span id="dialogue-density-heading">对话密度</span></div>
-            <div className="dialogue-density-options" role="radiogroup" aria-label="对话密度" aria-describedby="dialogue-density-description">
-              {DIALOGUE_DENSITY_OPTIONS.map((item) => <label className={dialogueDensity === item.value ? "selected" : ""} key={item.value}>
-                <input type="radio" name="generate-dialogue-density" value={item.value} checked={dialogueDensity === item.value} onChange={() => setDialogueDensity(item.value)} />
-                <span>{item.label}</span>
-              </label>)}
-            </div>
-            <span id="dialogue-density-description" className="sr-only">{DIALOGUE_DENSITY_OPTIONS.find((item) => item.value === dialogueDensity)?.description}</span>
-            {generationMode === "continue" && <small>仅影响新增正文，已有正文保持原样。</small>}
-            {generationMode === "rewrite" && rewriteRetention === "high" && dialogueDensity !== "auto" && <small>优先保留原文结构，对话密度只作有限调整。</small>}
-            {!selectedModelReference && dialogueDensity !== "auto" && <small>本地演示引擎不执行对话密度控制，使用配置的模型后生效。</small>}
-          </section>
-          <div className="generate-option-bar">
-            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) studio.updateSettings({ generateTargetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); studio.updateSettings({ generateTargetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : ""); }} />
-            <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
-          </div>
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
-          <div className="generate-reference-bar" aria-label="生成参考设置">
-            <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</small></span><Icon name="chevron" /></button>
-            <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>人物出场{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
-          </div>
           <div className="generate-prompt-label">
             <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
             <Textarea maxLength={20000} autosize minRows={3} maxRows={6} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
@@ -2732,30 +2697,14 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
             </div>}
           </div>
-          <section className="generate-review-settings" aria-labelledby="generate-review-heading">
-            <div className="generate-section-heading"><span id="generate-review-heading">生成后审校</span><strong>{reviewMaxRounds > 0 ? `${reviewMaxRounds} 轮` : "关闭"}</strong></div>
-            <div className="generate-review-settings-body">
-              <NumberInput label="最多修正次数" aria-label="审校循环次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={reviewMaxRounds} onChange={(value) => studio.updateSettings({ generateReviewMaxRounds: normalizeReviewRounds(value) })} />
-              {reviewMaxRounds > 0 && <>
-                <Textarea label="本次 Review 指令" aria-label="本次 Review 指令" value={reviewInstruction} maxLength={MAX_REVIEW_RULE_CHARACTERS} onChange={(event) => setReviewInstruction(event.currentTarget.value)} autosize minRows={2} maxRows={6} placeholder="例如：重点检查人物对白，并压缩重复描写" />
-                <section className="generate-review-rules-panel"><span className="ui-label">文章 Review 规则</span><div className="generate-review-rules"><ReviewRuleSnapshotView snapshot={createReviewRuleSnapshot(studio.currentArticle)} showInstruction={false} /></div></section>
-              </>}
-            </div>
-          </section>
-          <section className="generate-advanced-options" aria-labelledby="generate-reference-heading">
-            <div className="generate-section-heading"><span id="generate-reference-heading">参考与推理</span></div>
-            <div className="generate-advanced-options-body">
-              <label className="generate-excellent-fragments-toggle">
-                <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => setIncludeExcellentFragments(event.currentTarget.checked)} />
-                <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
-              </label>
-              <label className="generate-outline-title-toggle">
-                <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => setIncludeOutlineTitle(event.currentTarget.checked)} />
-                <span><span className="ui-label">同时生成大纲名</span><small>遵循大纲命名设置</small></span>
-              </label>
-              <div className="generate-reasoning-options"><TaskReasoningSettings kind="generate" model={selectedRecord} /></div>
-            </div>
-          </section>
+          <button className="generate-options-summary" type="button" aria-label="打开生成选项" aria-haspopup="dialog" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(true)}>
+            <span className="generate-options-summary-icon"><Icon name="settings" /></span>
+            <span className="generate-options-summary-copy">
+              <span className="ui-title">生成选项</span>
+              <span className="generate-options-summary-chips">{optionSummary.map((item) => <em key={item}>{item}</em>)}</span>
+            </span>
+            <Icon name="chevron" />
+          </button>
           <div className="generate-submit-zone">
             <div className="generate-submit-row">
               <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
@@ -2767,19 +2716,86 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
 
         <ScrollableDrawer
           scrollMode="content"
-          opened={contextOpen}
-          onClose={() => setContextOpen(false)}
-          closeButtonProps={{ "aria-label": "关闭生成上下文" }}
-          title="本次生成上下文"
+          opened={optionsOpen}
+          onClose={() => setOptionsOpen(false)}
+          closeButtonProps={{ "aria-label": "关闭生成选项" }}
+          title={<div className="ws-drawer-title"><span>AI Generate</span><span className="ui-title">生成选项</span></div>}
           position={compact ? "bottom" : "right"}
-          size={compact ? "80dvh" : 430}
-          classNames={{ content: "ws-drawer-content", header: "ws-drawer-header", body: "ws-drawer-body" }}
+          size={compact ? "min(90dvh, 760px)" : 520}
+          classNames={{ content: "ws-drawer-content generate-options-drawer-shell", header: "ws-drawer-header", body: "ws-drawer-body generate-options-drawer-body" }}
           overlayProps={{ backgroundOpacity: 0.42, blur: 2 }}
         >
-          <div className="generate-context-panel" data-ui-overlay-scroll aria-label="正文生成上下文">
-            <Text size="xs" c="dimmed">预计发送 {summary.total.toLocaleString("zh-CN")} 字符</Text>
-            <ContextCard summary={summary} contentMode={generationMode} includePrevious={includePrevious} includeCharacters={includeCharacters} includeExcellentFragments={includeExcellentFragments} onPrevious={setIncludePrevious} onCharacters={setIncludeCharacters} onExcellentFragments={setIncludeExcellentFragments} />
-            <div className="context-preview"><span>当前大纲</span><span className="ui-title">{displayTitle}</span><p>{outlinePlanDraft || "尚未填写大纲内容"}</p></div>
+          <div className="generate-options-drawer" data-ui-overlay-scroll aria-label="生成选项">
+            <section className="generate-options-section" aria-labelledby="generate-output-heading">
+              <div className="generate-options-section-heading"><div><span className="ui-title" id="generate-output-heading">输出控制</span><small>控制正文长度、对话比例与改写幅度</small></div><strong>{targetWords ? `${targetWords.toLocaleString("zh-CN")} 字` : "不限字数"}</strong></div>
+              <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) studio.updateSettings({ generateTargetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) studio.updateSettings({ generateTargetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); studio.updateSettings({ generateTargetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(studio.data.settings.generateTargetWords > 0 ? String(studio.data.settings.generateTargetWords) : ""); }} />
+              <section className="dialogue-density-control" aria-labelledby="dialogue-density-heading">
+                <div className="dialogue-density-heading"><span id="dialogue-density-heading">对话密度</span><small>{dialogueDensityLabel(dialogueDensity)}</small></div>
+                <div className="dialogue-density-options" role="radiogroup" aria-label="对话密度" aria-describedby="dialogue-density-description">
+                  {DIALOGUE_DENSITY_OPTIONS.map((item) => <label className={dialogueDensity === item.value ? "selected" : ""} key={item.value}>
+                    <input type="radio" name="generate-dialogue-density" value={item.value} checked={dialogueDensity === item.value} onChange={() => setDialogueDensity(item.value)} />
+                    <span>{item.label}</span>
+                  </label>)}
+                </div>
+                <span id="dialogue-density-description" className="sr-only">{DIALOGUE_DENSITY_OPTIONS.find((item) => item.value === dialogueDensity)?.description}</span>
+                {generationMode === "continue" && <small>仅影响新增正文，已有正文保持原样。</small>}
+                {generationMode === "rewrite" && rewriteRetention === "high" && dialogueDensity !== "auto" && <small>优先保留原文结构，对话密度只作有限调整。</small>}
+                {!selectedModelReference && dialogueDensity !== "auto" && <small>本地演示引擎不执行对话密度控制，使用配置的模型后生效。</small>}
+              </section>
+              {generationMode === "rewrite" && <section className="rewrite-retention-control" aria-labelledby="rewrite-retention-heading">
+                <div className="rewrite-retention-heading">
+                  <div><span id="rewrite-retention-heading">原文保留度</span><small>控制改写幅度，不代表精确相似度</small></div>
+                  <strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong>
+                </div>
+                <Slider
+                  thumbLabel="原文保留度"
+                  thumbValueText={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
+                  min={0}
+                  max={rewriteRetentionOptions.length - 1}
+                  step={1}
+                  marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))}
+                  value={rewriteRetentionIndex}
+                  label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
+                  onChange={(value) => setRewriteRetention(rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL)}
+                />
+                <p>{rewriteRetentionOption.description}</p>
+                {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
+              </section>}
+            </section>
+
+            <section className="generate-options-section" aria-labelledby="generate-context-heading">
+              <div className="generate-options-section-heading"><div><span className="ui-title" id="generate-context-heading">上下文与人物</span><small>选择本次生成允许参考的资料</small></div><strong>{summary.total.toLocaleString("zh-CN")} 字符</strong></div>
+              <div className="generate-context-panel" aria-label="正文生成上下文">
+                <ContextCard summary={summary} contentMode={generationMode} includePrevious={includePrevious} includeCharacters={includeCharacters} includeExcellentFragments={includeExcellentFragments} onPrevious={setIncludePrevious} onCharacters={setIncludeCharacters} onExcellentFragments={setIncludeExcellentFragments} />
+                <details className="generate-options-context-preview"><summary>查看当前大纲</summary><div className="context-preview"><span>当前大纲</span><span className="ui-title">{displayTitle}</span><p>{outlinePlanDraft || "尚未填写大纲内容"}</p></div></details>
+              </div>
+              <div className="generate-options-inline-actions">
+                <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>首次出场人物{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
+                <label className="generate-outline-title-toggle">
+                  <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => setIncludeOutlineTitle(event.currentTarget.checked)} />
+                  <span><span className="ui-label">同时生成大纲名</span><small>遵循大纲命名设置</small></span>
+                </label>
+              </div>
+            </section>
+
+            <section className="generate-options-section generate-review-settings" aria-labelledby="generate-review-heading">
+              <div className="generate-options-section-heading"><div><span className="ui-title" id="generate-review-heading">生成后审校</span><small>生成完成后按文章规则自动检查和修正</small></div><strong>{reviewMaxRounds > 0 ? `${reviewMaxRounds} 轮` : "关闭"}</strong></div>
+              <div className="generate-review-settings-body">
+                <NumberInput label="最多修正次数" aria-label="审校循环次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={reviewMaxRounds} onChange={(value) => studio.updateSettings({ generateReviewMaxRounds: normalizeReviewRounds(value) })} />
+                {reviewMaxRounds > 0 && <>
+                  <Textarea label="本次 Review 指令" aria-label="本次 Review 指令" value={reviewInstruction} maxLength={MAX_REVIEW_RULE_CHARACTERS} onChange={(event) => setReviewInstruction(event.currentTarget.value)} autosize minRows={2} maxRows={6} placeholder="例如：重点检查人物对白，并压缩重复描写" />
+                  <section className="generate-review-rules-panel"><span className="ui-label">文章 Review 规则</span><div className="generate-review-rules"><ReviewRuleSnapshotView snapshot={createReviewRuleSnapshot(studio.currentArticle)} showInstruction={false} /></div></section>
+                </>}
+              </div>
+            </section>
+
+            <section className="generate-options-section" aria-labelledby="generate-reasoning-heading">
+              <div className="generate-options-section-heading"><div><span className="ui-title" id="generate-reasoning-heading">推理与预设</span><small>通常沿用模型设置即可</small></div></div>
+              <div className="generate-reasoning-options"><TaskReasoningSettings kind="generate" model={selectedRecord} /></div>
+              <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理常用指令</Button>
+            </section>
+
+            <div className="generate-options-drawer-footer"><Button fullWidth type="button" onClick={() => setOptionsOpen(false)}>完成</Button></div>
           </div>
         </ScrollableDrawer>
 
