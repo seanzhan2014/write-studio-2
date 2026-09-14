@@ -8230,7 +8230,7 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   flex: 0 0 auto;
   font-size: var(--font-meta);
   font-style: normal;
-  line-height: 1;
+  line-height: 1.35;
   padding: 4px 7px;
   white-space: nowrap;
 }
@@ -8254,6 +8254,7 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .generate-options-drawer {
   display: block;
   flex: 1 1 auto;
+  line-height: 1.5;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -8277,14 +8278,18 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .generate-options-section-heading > div {
   display: grid;
   gap: 3px;
+  min-width: 0;
 }
 
 .generate-options-section-heading .ui-title {
+  display: block;
   font-size: var(--font-ui);
+  line-height: 1.45;
 }
 
 .generate-options-section-heading small {
   color: var(--text-secondary);
+  display: block;
   font-size: var(--font-meta);
   line-height: 1.45;
 }
@@ -8293,7 +8298,20 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   color: var(--accent);
   font-size: var(--font-meta);
   font-weight: var(--weight-strong);
+  line-height: 1.45;
+  padding-top: 1px;
   white-space: nowrap;
+}
+
+.generate-options-drawer .mantine-InputWrapper-label,
+.generate-options-drawer .mantine-InputWrapper-description,
+.generate-options-drawer .mantine-InputWrapper-error,
+.generate-options-drawer .mantine-Button-label,
+.generate-options-drawer .dialogue-density-heading,
+.generate-options-drawer .dialogue-density-options label,
+.generate-options-drawer .rewrite-retention-heading,
+.generate-options-drawer .rewrite-retention-control .mantine-Slider-markLabel {
+  line-height: 1.45;
 }
 
 .generate-options-section .generate-word-count {
@@ -8310,6 +8328,18 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   gap: 12px;
   overflow: visible;
   padding: 0;
+}
+
+.generate-options-drawer .context-card > div,
+.generate-options-drawer .context-card label {
+  line-height: 1.45;
+  min-height: 0;
+  padding-block: 6px;
+}
+
+.generate-options-drawer .context-card > div span,
+.generate-options-drawer .context-card label span {
+  line-height: 1.45;
 }
 
 .generate-options-context-preview {
@@ -8347,6 +8377,13 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   border-radius: 9px;
   min-height: 48px;
   padding: 8px 10px;
+}
+
+.generate-options-inline-actions .generate-outline-title-toggle .ui-label,
+.generate-options-inline-actions .generate-outline-title-toggle small {
+  display: block;
+  line-height: 1.45;
+  white-space: normal;
 }
 
 .generate-options-drawer .generate-review-settings {
