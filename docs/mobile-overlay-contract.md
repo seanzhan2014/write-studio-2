@@ -18,6 +18,7 @@
    - 固定工具栏或底部操作栏使用 `scrollMode="content"`，并在实际滚动节点添加 `data-ui-overlay-scroll`。
 5. 移动端底部操作区必须包含 `env(safe-area-inset-bottom)`。
 6. 不得在手机样式中复用依赖桌面侧栏宽度、固定 `top/left` 或 `vh` 的定位规则；使用 `dvh` 和统一组件。
+7. `ResponsiveModal` 的非全屏形态必须可通过标题栏拖动，并限制在当前视口内；全屏形态固定不移动。标题栏同时支持方向键移动，双击恢复居中。
 
 ## 必测视口
 

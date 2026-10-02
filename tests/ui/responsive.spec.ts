@@ -209,6 +209,45 @@ test("simplified story and character settings stay clear on desktop and mobile",
   await expectInsideViewport(page, dialog);
 });
 
+test("non-fullscreen modal windows move while fullscreen windows stay fixed", async ({ page }, testInfo) => {
+  await page.goto("/articles/article-main/info/characters");
+  await page.locator(".character-card").first().getByRole("button", { name: "编辑", exact: true }).click();
+
+  const dialog = page.getByRole("dialog", { name: "编辑人物" });
+  const modalRoot = dialog.locator("xpath=ancestor::*[@data-ui-overlay='modal']");
+  await expect(dialog).toBeVisible();
+  await expectInsideViewport(page, dialog);
+  const before = await dialog.boundingBox();
+  expect(before).not.toBeNull();
+
+  if (testInfo.project.name === "desktop-chromium") {
+    await expect(modalRoot).toHaveAttribute("data-ui-draggable", "true");
+    const handle = dialog.locator(".ws-modal-drag-title");
+    await expect(handle).toHaveAttribute("tabindex", "0");
+    const handleBounds = await handle.boundingBox();
+    expect(handleBounds).not.toBeNull();
+    await page.mouse.move(handleBounds!.x + 24, handleBounds!.y + handleBounds!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBounds!.x + 104, handleBounds!.y + handleBounds!.height / 2, { steps: 5 });
+    await page.mouse.up();
+
+    const moved = await dialog.boundingBox();
+    expect(moved).not.toBeNull();
+    expect(moved!.x).toBeGreaterThan(before!.x + 55);
+    await expectInsideViewport(page, dialog);
+
+    await handle.dblclick();
+    await expect.poll(async () => (await dialog.boundingBox())?.x).toBeCloseTo(before!.x, 0);
+  } else if (testInfo.project.name === "mobile-chromium") {
+    await expect(modalRoot).toHaveAttribute("data-ui-draggable", "false");
+    await expect(dialog.locator(".ws-modal-drag-title")).toHaveCount(0);
+    await expect(dialog).not.toHaveClass(/ws-modal-draggable/);
+    const viewport = page.viewportSize();
+    expect(before!.width).toBeCloseTo(viewport!.width, 0);
+    expect(before!.height).toBeCloseTo(viewport!.height, 0);
+  }
+});
+
 test("outline settings inherit the previous outline and keep long story fields collapsed", async ({ page, request }, testInfo) => {
   const current = await request.get("/api/state");
   const state = await current.json() as { revision: number };

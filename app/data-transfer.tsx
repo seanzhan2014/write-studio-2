@@ -1,7 +1,6 @@
 "use client";
 
-import { Alert, Button, Group, Modal, Stack } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
+import { Alert, Button, Group, Stack } from "@mantine/core";
 import { createContext, useContext, useEffect, useState } from "react";
 import {
   createTransferEnvelope,
@@ -17,6 +16,7 @@ import {
   type TransferEnvelope,
 } from "@/lib/data-transfer";
 import { useStudio, wordCount, type AiTask, type Article, type Outline, type StudioSettings } from "./studio-state";
+import { ResponsiveModal } from "./ui/overlays";
 
 type StoredProvider = Omit<PortableAiProvider, "hadApiKey"> & { hasSecret: boolean; modelCount: number; createdAt?: string; updatedAt?: string };
 type StoredModel = PortableAiModel & { hasSecret: boolean; providerName: string; baseUrl: string; timeoutMs: number; createdAt?: string; updatedAt?: string };
@@ -167,7 +167,6 @@ function remapSettings(settings: StudioSettings, maps: { idMap: Map<string, stri
 
 export function DataTransferProvider({ children }: { children: React.ReactNode }) {
   const studio = useStudio();
-  const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [pending, setPending] = useState<PendingImport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -317,12 +316,10 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
 
   return <DataTransferContext.Provider value={value}>
     {children}
-    <Modal
+    <ResponsiveModal
       opened={Boolean(pending)}
       onClose={() => { if (!busy) setPending(null); }}
       title={pending?.title ?? "确认导入"}
-      fullScreen={compact}
-      centered={!compact}
       closeOnClickOutside={!busy}
       closeOnEscape={!busy}
       classNames={{ content: "ws-modal-content", header: "ws-modal-header", body: "transfer-import-modal" }}
@@ -334,7 +331,7 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
         {error && <Alert color="red" role="alert">{error}</Alert>}
         <Group justify="flex-end"><Button variant="default" disabled={busy} onClick={() => setPending(null)}>取消</Button><Button loading={busy} onClick={() => void confirmImport()}>{pending.confirmLabel}</Button></Group>
       </Stack>}
-    </Modal>
+    </ResponsiveModal>
     {error && !pending && <div className="toast transfer-toast error" role="alert"><span>!</span>{error}<button type="button" aria-label="关闭错误" onClick={() => setError("")}>×</button></div>}
     {notice && <div className="toast transfer-toast" role="status"><span>✓</span>{notice}<button type="button" aria-label="关闭提示" onClick={() => setNotice("")}>×</button></div>}
   </DataTransferContext.Provider>;

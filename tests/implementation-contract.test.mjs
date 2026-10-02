@@ -352,10 +352,11 @@ test("empty outline titles derive a single-line display name from outline conten
 });
 
 test("shared component framework owns responsive overlays and form controls", async () => {
-  const [pkg, layout, app, overlays, styles, vite, overlayGuide, pullRequestTemplate] = await Promise.all([
+  const [pkg, layout, app, dataTransfer, overlays, styles, vite, overlayGuide, pullRequestTemplate] = await Promise.all([
     read("package.json"),
     read("app/layout.tsx"),
     read("app/WriterStudioApp.tsx"),
+    read("app/data-transfer.tsx"),
     read("app/ui/overlays.tsx"),
     read("app/globals.css"),
     read("vite.config.ts"),
@@ -366,7 +367,7 @@ test("shared component framework owns responsive overlays and form controls", as
   assert.match(layout, /@mantine\/core\/styles\.css/);
   assert.match(layout, /<MantineProvider/);
   for (const primitive of ["MobileActionSheet", "ScrollableDrawer", "ResponsiveModal"]) assert.match(overlays, new RegExp(`export function ${primitive}`));
-  assert.doesNotMatch(app, /<(?:Modal|Drawer)\b/);
+  assert.doesNotMatch(`${app}\n${dataTransfer}`, /<(?:Modal|Drawer)\b/);
   assert.doesNotMatch(app, /className="(?:modal-layer|outline-sheet-layer|desktop-action-layer)"/);
   assert.match(app, /<ResponsiveModal[\s\S]*opened=\{providerFormOpen\}/);
   assert.match(app, /<ResponsiveModal[\s\S]*opened=\{modelFormOpen\}/);
@@ -376,10 +377,13 @@ test("shared component framework owns responsive overlays and form controls", as
   assert.match(app, /title="本次生成上下文"[\s\S]*position=\{compact \? "bottom" : "right"\}/);
   assert.match(overlays, /data-ui-overlay="drawer"/);
   assert.match(overlays, /data-ui-overlay="modal"/);
+  assert.match(overlays, /data-ui-draggable=\{draggable \? "true" : "false"\}/);
+  assert.match(overlays, /function useModalDrag/);
   assert.match(overlays, /data-ui-overlay-scroll/);
   assert.match(styles, /\.ws-overlay-surface \{[\s\S]*max-height: calc\(100dvh/);
   assert.match(styles, /\.ws-overlay-body--scroll,[\s\S]*overflow-y: auto/);
   assert.match(styles, /\.ws-overlay-body--contained \{[\s\S]*overflow: hidden/);
+  assert.match(styles, /\.ws-modal-draggable \{[\s\S]*translate: var\(--ws-modal-drag-x/);
   assert.match(styles, /\.studio-shell,[\s\S]*\.main-area \{[\s\S]*height: 100dvh;/);
   for (const viewport of ["390 × 844", "320 × 568", "667 × 375", "390 × 480"]) {
     assert.match(overlayGuide, new RegExp(viewport));

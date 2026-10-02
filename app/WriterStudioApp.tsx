@@ -5016,6 +5016,7 @@ function NamingProfileEditor({ title, profile, fallback, onChange }: { title: st
 
 function Characters() {
   const studio = useStudio();
+  const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -5035,7 +5036,20 @@ function Characters() {
     <div className="list-toolbar"><label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物…" /></label><button className="primary-compact" type="button" onClick={openCreate}><Icon name="plus" />新建人物</button></div>
     <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}>{person.name[0]}</div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     {!visible.length && <div className="empty-inline">没有符合条件的人物。</div>}
-    {formOpen && <div className="character-edit-layer"><button className="modal-scrim" type="button" aria-label="关闭人物编辑" onClick={() => setFormOpen(false)} /><div className="dialog-card character-edit-dialog" role="dialog" aria-modal="true" aria-label={editingId ? "编辑人物" : "新建人物"}><header><h2>{editingId ? "编辑人物" : "新建人物"}</h2><IconButton name="close" label="关闭人物编辑" onClick={() => setFormOpen(false)} /></header><div className="character-edit-scroll"><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div><footer><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer></div></div>}
+    <ResponsiveModal
+      opened={formOpen}
+      onClose={() => setFormOpen(false)}
+      closeButtonProps={{ "aria-label": "关闭人物编辑" }}
+      title={editingId ? "编辑人物" : "新建人物"}
+      size={720}
+      fullScreen={compact}
+      centered={!compact}
+      scrollMode="content"
+      classNames={{ content: "character-edit-dialog", body: "character-edit-dialog-body" }}
+    >
+      <div className="character-edit-scroll" data-ui-overlay-scroll><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div>
+      <footer className="character-edit-actions"><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer>
+    </ResponsiveModal>
   </>;
 }
 

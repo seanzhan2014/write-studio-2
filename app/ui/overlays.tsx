@@ -2,7 +2,8 @@
 
 import { Drawer, Modal } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import type { ComponentProps, ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ComponentProps, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 type OverlayClassNames = Partial<Record<
   "root" | "overlay" | "inner" | "content" | "header" | "title" | "close" | "body",
@@ -26,12 +27,111 @@ function drawerClasses(classNames: OverlayClassNames | undefined, scrollMode: Sc
   };
 }
 
-function modalClasses(classNames: OverlayClassNames | undefined, scrollMode: ScrollMode) {
+function modalClasses(classNames: OverlayClassNames | undefined, scrollMode: ScrollMode, draggable: boolean) {
   return {
     ...classNames,
-    content: classes("ws-overlay-surface", "ws-modal-content", "ws-responsive-modal", classNames?.content),
-    header: classes("ws-overlay-header", "ws-modal-header", classNames?.header),
+    content: classes("ws-overlay-surface", "ws-modal-content", "ws-responsive-modal", draggable && "ws-modal-draggable", classNames?.content),
+    header: classes("ws-overlay-header", "ws-modal-header", draggable && "ws-modal-drag-handle", classNames?.header),
     body: classes("ws-overlay-body", scrollMode === "body" ? "ws-overlay-body--scroll" : "ws-overlay-body--contained", classNames?.body),
+  };
+}
+
+type DragPosition = { x: number; y: number };
+
+function viewportSafeDelta(bounds: DOMRect, deltaX: number, deltaY: number) {
+  const safeGap = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--overlay-safe-gap")) || 8;
+  const width = document.documentElement.clientWidth;
+  const height = document.documentElement.clientHeight;
+  return {
+    x: Math.min(Math.max(deltaX, safeGap - bounds.left), width - safeGap - bounds.right),
+    y: Math.min(Math.max(deltaY, safeGap - bounds.top), height - safeGap - bounds.bottom),
+  };
+}
+
+function useModalDrag(opened: boolean, enabled: boolean) {
+  const [position, setPosition] = useState<DragPosition>({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const positionRef = useRef(position);
+  const dragRef = useRef<{
+    bounds: DOMRect;
+    origin: DragPosition;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  const moveTo = useCallback((next: DragPosition) => {
+    positionRef.current = next;
+    setPosition(next);
+  }, []);
+
+  const reset = useCallback(() => moveTo({ x: 0, y: 0 }), [moveTo]);
+
+  useEffect(() => {
+    dragRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      reset();
+      setDragging(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [enabled, opened, reset]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    window.addEventListener("resize", reset);
+    return () => window.removeEventListener("resize", reset);
+  }, [enabled, reset]);
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!enabled || event.button !== 0) return;
+    const surface = event.currentTarget.closest<HTMLElement>(".ws-modal-content");
+    if (!surface) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      bounds: surface.getBoundingClientRect(),
+      origin: positionRef.current,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    setDragging(true);
+  }, [enabled]);
+
+  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const delta = viewportSafeDelta(drag.bounds, event.clientX - drag.startX, event.clientY - drag.startY);
+    moveTo({ x: drag.origin.x + delta.x, y: drag.origin.y + delta.y });
+  }, [moveTo]);
+
+  const stopDragging = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    dragRef.current = null;
+    setDragging(false);
+  }, []);
+
+  const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!enabled || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    const surface = event.currentTarget.closest<HTMLElement>(".ws-modal-content");
+    if (!surface) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 40 : 10;
+    const requested = {
+      x: event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
+      y: event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
+    };
+    const delta = viewportSafeDelta(surface.getBoundingClientRect(), requested.x, requested.y);
+    moveTo({ x: positionRef.current.x + delta.x, y: positionRef.current.y + delta.y });
+  }, [enabled, moveTo]);
+
+  return {
+    dragging,
+    position,
+    reset,
+    titleProps: { onKeyDown, onPointerCancel: stopDragging, onPointerDown, onPointerMove, onPointerUp: stopDragging },
   };
 }
 
@@ -62,17 +162,35 @@ export function ResponsiveModal({
   mobileFullScreen = true,
   overlayProps,
   scrollMode = "body",
+  style,
+  title,
   ...props
 }: ResponsiveModalProps) {
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const useFullScreen = fullScreen ?? (mobileFullScreen && compact);
+  const draggable = !useFullScreen;
+  const drag = useModalDrag(props.opened, draggable);
   return <Modal
     {...props}
     data-ui-overlay="modal"
+    data-ui-draggable={draggable ? "true" : "false"}
+    data-ws-dragging={drag.dragging ? "true" : undefined}
     centered={centered ?? !useFullScreen}
     fullScreen={useFullScreen}
-    classNames={modalClasses(classNames, scrollMode)}
+    classNames={modalClasses(classNames, scrollMode, draggable)}
     overlayProps={{ backgroundOpacity: 0.42, blur: 2, ...overlayProps }}
+    style={[style, {
+      "--ws-modal-drag-x": `${drag.position.x}px`,
+      "--ws-modal-drag-y": `${drag.position.y}px`,
+    }]}
+    title={draggable && title ? <div
+      {...drag.titleProps}
+      aria-description="可拖动窗口；使用方向键也可移动，双击恢复居中。"
+      className="ws-modal-drag-title"
+      onDoubleClick={drag.reset}
+      tabIndex={0}
+      title="拖动窗口（也可用方向键移动）"
+    >{title}</div> : title}
   />;
 }
 
