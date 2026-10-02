@@ -72,10 +72,21 @@ test("SQLite snapshot lifecycle", { skip: !baseUrl }, async (t) => {
     await t.test(`${mode}: create, read, save again does not invent changes or advance revision`, async () => {
       const before = await reset();
       const local = structuredClone(before.data);
+      local.articles[0].aiGenerateSettings = {
+        ...local.articles[0].aiGenerateSettings,
+        targetWords: 6400,
+        includePrevious: false,
+        proseControls: { ...local.articles[0].aiGenerateSettings.proseControls, dialogueDensity: "high" },
+      };
       local.articles[0].storySettings = { location: "雾港", negativeConstraints: "不能用梦解释" };
       local.articles[0].characters[0].profile = { age: "29 岁", appearance: "短发", immutableTraits: "一定验证证据" };
       local.articles[0].chapters[0].settings = { story: { location: { value: "旧码头", scope: "ongoing" } }, characters: { "character-lin": { start: { appearance: { value: "披着雨衣", scope: "chapter" } }, end: { age: "30 岁" } } }, relationships: {} };
       local.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current").settings = { story: { summary: { value: "码头冲突升级", scope: "chapter" } }, characters: {}, relationships: {} };
+      local.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current").generateOptions = {
+        ...local.articles[0].aiGenerateSettings,
+        targetWords: 7200,
+        contentMode: "rewrite",
+      };
       local.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current").versions[0].settingSnapshot = {
         chapterId: "chapter-main",
         story: { summary: "失序的海港", location: "旧码头", style: "克制", negativeConstraints: "不能用梦解释" },

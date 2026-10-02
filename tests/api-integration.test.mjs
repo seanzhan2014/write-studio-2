@@ -231,6 +231,12 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const chapter = article.chapters[0];
     const before = chapter.outlines.find((item) => item.id === "outline-current");
     const instruction = "只保存这一条补充指令";
+    const generateOptions = {
+      ...article.aiGenerateSettings,
+      targetWords: 7300,
+      includePrevious: false,
+      proseControls: { ...article.aiGenerateSettings.proseControls, narrativePace: "fast" },
+    };
     const changes = {
       version: 2,
       articles: { upsert: [], delete: [] },
@@ -241,7 +247,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
           id: before.id,
           articleId: article.id,
           chapterId: chapter.id,
-          outline: { generateInstruction: instruction, updatedAt: "2026-07-28T16:01:00.000Z" },
+          outline: { generateInstruction: instruction, generateOptions, updatedAt: "2026-07-28T16:01:00.000Z" },
         }],
         delete: [],
       },
@@ -257,10 +263,21 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     const loaded = await api("/api/state");
     const after = loaded.data.data.articles[0].chapters[0].outlines.find((item) => item.id === before.id);
     assert.equal(after.generateInstruction, instruction);
+    assert.equal(after.generateOptions.targetWords, 7300);
+    assert.equal(after.generateOptions.includePrevious, false);
+    assert.equal(after.generateOptions.proseControls.narrativePace, "fast");
     assert.equal(after.content, before.content);
     assert.equal(after.currentVersionId, before.currentVersionId);
     assert.deepEqual(after.versions, before.versions);
     assert.deepEqual(after.chat, before.chat);
+
+    const clearOverride = structuredClone(changes);
+    clearOverride.outlines.patch[0].outline = { generateOptions: null, updatedAt: "2026-07-28T16:02:00.000Z" };
+    const cleared = await api("/api/state/mutations", { method: "POST", headers: { "If-Match": String(loaded.data.revision) }, body: { changes: clearOverride } });
+    assert.equal(cleared.response.status, 200, cleared.text);
+    revision = cleared.data.revision;
+    const inherited = await api("/api/state");
+    assert.equal(inherited.data.data.articles[0].chapters[0].outlines.find((item) => item.id === before.id).generateOptions, null);
 
     const malformed = structuredClone(changes);
     malformed.outlines.patch[0].outline = { unknownField: "must be rejected" };
@@ -973,7 +990,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
   });
 
   await t.test("makes task creation idempotent", async () => {
-    const body = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "", targetWords: 6800, model: "捕获模型" };
+    const body = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "", targetWords: 6800, model: "捕获模型", generateOptions: null };
     const first = await api("/api/ai/tasks", { method: "POST", headers: { "Idempotency-Key": "same-task-key" }, body });
     assert.equal(first.response.status, 200, first.text);
     const revisionAfterFirst = first.data.revision;
@@ -985,6 +1002,8 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(second.data.data.contextOptions.contentMode, "fresh");
     assert.deepEqual(second.data.data.contextOptions.firstAppearanceCharacterIds, ["character-gu"]);
     assert.equal(second.data.revision, revisionAfterFirst, "duplicate must not write or advance revision");
+    const inheritedOutline = (await api("/api/state")).data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+    assert.equal(inheritedOutline.generateOptions, null, "using an article preset must not silently create an outline override");
     const cancelled = await api(`/api/ai/tasks/${first.data.data.id}/cancel`, { method: "POST" });
     assert.equal(cancelled.response.status, 200, cancelled.text);
     revision = cancelled.data.revision;

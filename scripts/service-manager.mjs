@@ -2,7 +2,7 @@ import "./load-service-config.mjs";
 import { appendFile, mkdir } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { ServiceController, DEFAULT_MANAGER_PORT, DEFAULT_SERVICE_PORT } from "./service-manager-core.mjs";
+import { ServiceController, buildProduction, DEFAULT_MANAGER_PORT, DEFAULT_SERVICE_PORT } from "./service-manager-core.mjs";
 import { managerPage } from "./service-manager-ui.mjs";
 
 const workspace = process.cwd();
@@ -44,6 +44,7 @@ const controller = new ServiceController({
   managerPort,
   env: { WRITER_STUDIO_RUNTIME_MODE: serviceMode },
   onLog: (message) => void log(message),
+  rebuild: serviceMode === "production" ? () => buildProduction({ workspace, onLog: (message) => void log(message) }) : null,
 });
 
 function json(response, statusCode, body) {
@@ -63,7 +64,7 @@ const server = http.createServer(async (request, response) => {
 
   if (url.pathname === "/" && isAllowedMethod(request, "GET")) {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    response.end(managerPage());
+    response.end(managerPage(serviceMode));
     return;
   }
 
@@ -79,6 +80,15 @@ const server = http.createServer(async (request, response) => {
 
   const action = url.pathname.match(/^\/api\/(start|stop|restart)$/)?.[1];
   if (action && isAllowedMethod(request, "POST")) {
+    if (controller.operation) {
+      json(response, 409, { ok: false, code: "MANAGER_BUSY", message: "服务管理器正在执行其他操作" });
+      return;
+    }
+    if (action === "restart") {
+      void controller.restart().then((result) => void log(`RESTART result: ${result.message}`)).catch((error) => void log(`RESTART error: ${error.stack ?? error.message}`));
+      json(response, 202, { ok: true, accepted: true, message: serviceMode === "production" ? "正在重新构建最新源码并重启 3002" : "正在重启 3002" });
+      return;
+    }
     const result = await controller[action]();
     json(response, result.ok ? 200 : 409, result);
     return;

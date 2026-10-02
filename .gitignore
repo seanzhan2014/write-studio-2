@@ -37,6 +37,8 @@ yarn-error.log*
 # local/private configuration and data
 .env*
 .dev.vars*
+/writer-studio.env
+/.codex-enable-rdp.ps1
 /.openai/hosting.json
 /.wrangler/
 *.sqlite

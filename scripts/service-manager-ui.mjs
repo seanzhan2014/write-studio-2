@@ -1,4 +1,5 @@
-export function managerPage() {
+export function managerPage(serviceMode = "production") {
+  const production = serviceMode === "production";
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -44,16 +45,18 @@ export function managerPage() {
       <div class="actions">
         <button data-action="start">启动 3002</button>
         <button data-action="stop" class="danger">停止 3002</button>
-        <button data-action="restart" class="secondary">重启 3002</button>
+        <button data-action="restart" class="secondary">${production ? "重新构建并重启 3002" : "重启 3002"}</button>
       </div>
       <div id="message" role="status"></div>
-      <div class="foot">页面每 2 秒自动刷新。只有由本管理服务启动的进程才能被停止或重启。</div>
+      <div class="foot">${production ? "生产模式重启会从当前工作目录重新构建源码；构建失败时恢复旧版本。" : "开发模式只重启进程。"}页面每 2 秒自动刷新。</div>
     </section>
   </main>
   <script>
     const labels = { running: "运行中", starting: "启动中", stopped: "已停止", external: "端口被其他进程占用" };
+    const phases = { stopping: "正在停止旧服务…", building: "正在构建最新源码…", starting: "正在启动新版本…", restoring: "构建失败，正在恢复旧版本…" };
     const $ = (id) => document.getElementById(id);
     const setMessage = (text, error = false) => { $("message").textContent = text || ""; $("message").style.color = error ? "#c33f49" : "#2864d7"; };
+    let pendingRestart = false;
     async function refresh() {
       try {
         const response = await fetch("/api/status", { cache: "no-store" });
@@ -66,14 +69,20 @@ export function managerPage() {
         $("port").textContent = service.portState + (service.portStatusCode ? " (HTTP " + service.portStatusCode + ")" : "");
         $("started").textContent = service.startedAt ? new Date(service.startedAt).toLocaleString() : "—";
         $("checked").textContent = new Date(data.checkedAt).toLocaleTimeString();
+        if (pendingRestart && data.operation === "busy") setMessage(phases[data.operationPhase] || "正在重启…");
+        if (pendingRestart && data.operation === "idle") {
+          setMessage(service.lastError || (service.state === "running" ? "服务已重启并运行" : "重启未完成，请检查服务日志"), Boolean(service.lastError || service.state !== "running"));
+          pendingRestart = false;
+        }
       } catch (error) { setMessage("无法连接 3003 管理服务", true); }
     }
     async function action(name) {
       document.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-      setMessage(name === "restart" ? "正在重启…" : name === "stop" ? "正在停止…" : "正在启动…");
+      setMessage(name === "restart" ? "正在重新构建并重启…" : name === "stop" ? "正在停止…" : "正在启动…");
       try {
         const response = await fetch("/api/" + name, { method: "POST" });
         const data = await response.json();
+        if (name === "restart" && data.ok) pendingRestart = true;
         setMessage(data.message || data.error || "操作完成", !data.ok);
       } catch (error) { setMessage("操作失败，请检查 3003 服务日志", true); }
       await refresh();

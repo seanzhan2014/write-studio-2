@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -66,6 +67,55 @@ test("service controller starts, monitors, stops, and restarts its child", async
 
   await controller.stop();
   await waitFor(async () => (await controller.status()).service.state === "stopped");
+});
+
+test("production restart rebuilds from source and restores the previous build on failure", async () => {
+  const isolatedWorkspace = await mkdtemp(path.join(os.tmpdir(), "writer-service-restart-"));
+  const entry = path.join(isolatedWorkspace, "dist", "server", "index.js");
+  const servicePort = await freePort();
+  const fakeService = "import http from 'node:http'; const server = http.createServer((request, response) => response.end('ok')); server.listen(Number(process.env.WRITER_STUDIO_PORT), '127.0.0.1'); setInterval(() => {}, 1000);";
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(entry, "old build");
+  let shouldFail = false;
+  let builds = 0;
+  const controller = new ServiceController({
+    workspace: isolatedWorkspace,
+    servicePort,
+    serviceHost: "127.0.0.1",
+    probeHost: "127.0.0.1",
+    command: process.execPath,
+    args: ["--input-type=module", "-e", fakeService],
+    stdio: "ignore",
+    rebuild: async () => {
+      builds += 1;
+      await mkdir(path.dirname(entry), { recursive: true });
+      await writeFile(entry, shouldFail ? "partial build" : "new build");
+      return shouldFail ? { ok: false, message: "simulated build failure" } : { ok: true };
+    },
+  });
+
+  try {
+    await controller.start();
+    await waitFor(async () => (await controller.status()).service.state === "running");
+    const firstPid = (await controller.status()).service.pid;
+    const deployed = await controller.restart();
+    assert.equal(deployed.ok, true);
+    assert.equal(await readFile(entry, "utf8"), "new build");
+    assert.notEqual((await controller.status()).service.pid, firstPid);
+    assert.equal(builds, 1);
+
+    shouldFail = true;
+    const failed = await controller.restart();
+    assert.equal(failed.ok, false);
+    assert.equal(failed.code, "BUILD_FAILED");
+    assert.match(failed.message, /已恢复旧版本/);
+    assert.equal(await readFile(entry, "utf8"), "new build");
+    assert.equal((await controller.status()).service.state, "running");
+    assert.equal(builds, 2);
+  } finally {
+    await controller.stop();
+    await rm(isolatedWorkspace, { recursive: true, force: true });
+  }
 });
 
 test("service controller runs the production build with local SQLite", async () => {

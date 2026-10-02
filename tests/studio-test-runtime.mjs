@@ -12,6 +12,7 @@ import * as outlineTitle from "../lib/outline-title.ts";
 import * as contentName from "../lib/content-name.mjs";
 import * as taskHistory from "../lib/task-history.ts";
 import * as storySettings from "../lib/story-settings.ts";
+import * as appearanceSettings from "../lib/appearance.mjs";
 import * as conflict from "../app/studio-conflict.mjs";
 import { fullStudioFixture } from "./fixtures.mjs";
 
@@ -29,7 +30,7 @@ const context = {
   ...generateOptions, ...namingOptions, ...nameVersions, ...reviewOptions,
   ...reviewRules, ...generateReview, ...excellentFragments, ...outlineTitle,
   ...contentName, ...taskHistory, ...conflict, now: "2026-07-28T14:32:00.000Z", seedData: fullStudioFixture(),
-  ...storySettings,
+  ...storySettings, ...appearanceSettings,
 };
 export const { normalizeStudioData, reconcileTaskPoll, durableSnapshot, serializeDurable } = Function(
   ...Object.keys(context), `${code}\nreturn { normalizeStudioData, reconcileTaskPoll, durableSnapshot, serializeDurable };`,

@@ -8,7 +8,7 @@ import type { ReasoningEffort } from "@/lib/reasoning-options";
 
 import { drainChatCompletions } from "@/lib/chat-client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeDialogueDensity, type DialogueDensityLevel, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { DEFAULT_AI_GENERATE_OPTIONS, DEFAULT_GENERATE_TARGET_WORDS, normalizeAiGenerateOptions, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
@@ -100,6 +100,7 @@ export type Outline = {
   titleGenerationPending: boolean;
   plan: string;
   generateInstruction: string;
+  generateOptions: AiGenerateOptions | null;
   settings?: OutlineSettings;
   content: string;
   contentName?: string;
@@ -163,6 +164,7 @@ export type Article = {
   reviewRuleItems?: ReviewRule[];
   chapterNaming: NamingProfile;
   outlineNaming: NamingProfile;
+  aiGenerateSettings: AiGenerateOptions;
   createdAt: string;
   updatedAt: string;
   lastOutlineId: string;
@@ -208,6 +210,8 @@ export type AiTask = {
     targetWords?: number;
     contentMode?: ContentGenerationMode;
     rewriteRetention?: RewriteRetentionLevel;
+    proseControls?: ProseControls;
+    /** @deprecated Legacy task snapshot; use proseControls.dialogueDensity. */
     dialogueDensity?: DialogueDensityLevel;
     reviewMaxRounds?: number;
     reviewRules?: string;
@@ -295,7 +299,7 @@ function emptyChat(outlineId: string, messages: Message[] = []): Outline["chat"]
 }
 
 function outline(id: string, title: string, plan: string, content: string, state: Outline["state"] = "saved"): Outline {
-  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, generateInstruction: "", settings: { ...EMPTY_CHAPTER_SETTINGS }, content, contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title, plan }, state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
+  return { id, title, titleGenerationPending: !normalizeOutlineTitle(title), plan, generateInstruction: "", generateOptions: null, settings: { ...EMPTY_CHAPTER_SETTINGS }, content, contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title, plan }, state, archived: false, updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat(id) };
 }
 
 const openingContent = "雨从凌晨开始落，到清晨也没有停下来的意思。\n\n林澈推开修理铺的百叶门时，海风正沿着旧街一路灌进来，带着盐、铁锈和昨夜没有散尽的雾。门后的铜铃只响了半声，像被谁在梦里按住。\n\n工作台上多了一封信。\n\n信封是最普通的牛皮纸，边缘却被海水泡得发白。她翻到背面，没有邮票，也没有寄件人的名字，只有一行熟悉得让她停住呼吸的字：给二〇三三年的林澈。\n\n那是她自己的笔迹。\n\n她没有立刻拆开。墙上的挂钟走到八点十七分，老旧的秒针轻轻颤了一下。远处，港口的雾笛在看不见的海面上响起，低沉得像某种迟到了很多年的回答。";
@@ -333,6 +337,7 @@ const seedData: StudioData = {
       },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
+      aiGenerateSettings: DEFAULT_AI_GENERATE_OPTIONS,
       createdAt: "2026-07-12T09:00:00.000Z",
       updatedAt: now,
       lastOutlineId: "outline-1",
@@ -383,6 +388,7 @@ const seedData: StudioData = {
       storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
+      aiGenerateSettings: DEFAULT_AI_GENERATE_OPTIONS,
       createdAt: "2026-06-02T09:00:00.000Z",
       updatedAt: "2026-07-20T12:00:00.000Z",
       lastOutlineId: "south-outline-1",
@@ -399,6 +405,7 @@ const seedData: StudioData = {
       storySettings: { ...EMPTY_ARTICLE_STORY_SETTINGS },
       chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
       outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
+      aiGenerateSettings: DEFAULT_AI_GENERATE_OPTIONS,
       createdAt: "2026-05-18T09:00:00.000Z",
       updatedAt: "2026-07-18T12:00:00.000Z",
       lastOutlineId: "summer-outline-1",
@@ -442,7 +449,7 @@ type StudioContextValue = {
   setCurrentOutline: (outlineId: string) => void;
   createArticle: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => string;
   duplicateArticle: (articleId: string, options: ArticleCopyOptions) => { articleId: string; outlineId: string } | null;
-  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "storySettings" | "reviewRules" | "reviewRuleItems" | "chapterNaming" | "outlineNaming">>) => void;
+  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "storySettings" | "reviewRules" | "reviewRuleItems" | "chapterNaming" | "outlineNaming" | "aiGenerateSettings">>) => void;
   deleteArticle: (articleId: string) => void;
   createChapter: (title?: string) => string;
   updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived" | "settings">>) => void;
@@ -454,10 +461,11 @@ type StudioContextValue = {
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
-  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "settings" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
+  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "generateOptions" | "settings" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
+  createBlankContent: (outlineId: string) => Promise<boolean>;
   saveCurrentContent: (outlineId: string, text: string, sourceVersionId?: string) => Promise<boolean>;
   commitContentEdit: (outlineId: string, text: string) => Promise<boolean>;
   preserveContentDraft: (outlineId: string, text: string, savedAt?: string) => Promise<boolean>;
@@ -773,13 +781,14 @@ function normalizeCharacter(source: unknown): Character {
 function normalizeAiTask(task: AiTask): AiTask {
   const phase = task.phase ?? (task.state === "waiting" ? "queued" : task.state === "success" ? "completed" : task.state === "failed" ? "failed" : task.state === "cancelled" ? "cancelled" : "generating");
   const contentMode = task.target === "正文" ? normalizeContentGenerationMode(task.contextOptions?.contentMode) : undefined;
+  const proseControls = task.target === "正文" ? normalizeProseControls(task.contextOptions?.proseControls, task.contextOptions?.dialogueDensity) : undefined;
   return {
     ...task,
     history: parseTaskHistory(task.history),
     executionOrigin: task.executionOrigin === "cloud" ? "cloud" : "local",
     contextOptions: task.contextOptions ? {
       ...task.contextOptions,
-      ...(task.target === "正文" ? { contentMode, dialogueDensity: normalizeDialogueDensity(task.contextOptions.dialogueDensity), rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
+      ...(task.target === "正文" ? { contentMode, proseControls, dialogueDensity: proseControls!.dialogueDensity, rewriteRetention: contentMode === "rewrite" ? normalizeRewriteRetentionLevel(task.contextOptions.rewriteRetention) : undefined } : {}),
       firstAppearanceCharacterIds: Array.isArray(task.contextOptions.firstAppearanceCharacterIds)
         ? [...new Set(task.contextOptions.firstAppearanceCharacterIds.map(String))].slice(0, 200)
         : undefined,
@@ -819,14 +828,20 @@ function reconcileTaskPoll(current: StudioData, tasks: AiTask[], runningOutlineI
 }
 
 const emptyChapter: Chapter = { id: "", title: "", archived: false, settings: EMPTY_CHAPTER_SETTINGS, outlines: [] };
-const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", generateInstruction: "", content: "", contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
-const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", storySettings: EMPTY_ARTICLE_STORY_SETTINGS, chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
+const emptyOutline: Outline = { id: "", title: "", titleGenerationPending: false, plan: "", generateInstruction: "", generateOptions: null, content: "", contentName: timestampContentName(now), currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: now, excellentFragments: [], versions: [], chat: emptyChat("empty") };
+const emptyArticle: Article = { id: "", title: "", summary: "", type: "", style: "", storySettings: EMPTY_ARTICLE_STORY_SETTINGS, chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE, outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE, aiGenerateSettings: DEFAULT_AI_GENERATE_OPTIONS, createdAt: now, updatedAt: now, lastOutlineId: "", chapters: [], characters: [], relationships: [] };
 
 function emptyStudioData(settings: StudioSettings): StudioData {
   return { version: 1, currentArticleId: "", currentOutlineId: "", articles: [], tasks: [], settings };
 }
 
 function normalizeStudioData(source: StudioData): StudioData {
+  const legacyGenerateSettings = normalizeAiGenerateOptions({
+    model: source.settings?.generateModel,
+    reasoningEffort: source.settings?.generateReasoningEffort,
+    targetWords: source.settings?.generateTargetWords,
+    reviewMaxRounds: source.settings?.generateReviewMaxRounds,
+  });
   return {
     ...source,
     tasks: (source.tasks ?? []).map(normalizeAiTask),
@@ -841,7 +856,10 @@ function normalizeStudioData(source: StudioData): StudioData {
       reviewPresets: normalizeReviewPresets(source.settings?.reviewPresets),
       generateReviewMaxRounds: normalizeReviewRounds(source.settings?.generateReviewMaxRounds),
     },
-    articles: source.articles.map((article) => ({
+    articles: source.articles.map((article) => {
+      const hasArticleGenerateSettings = Boolean(article.aiGenerateSettings && typeof article.aiGenerateSettings === "object" && Object.keys(article.aiGenerateSettings).length);
+      const aiGenerateSettings = normalizeAiGenerateOptions(article.aiGenerateSettings, hasArticleGenerateSettings ? DEFAULT_AI_GENERATE_OPTIONS : legacyGenerateSettings);
+      return {
       ...article,
       summary: normalizedArticleSummary(article),
       type: "",
@@ -850,6 +868,7 @@ function normalizeStudioData(source: StudioData): StudioData {
       reviewRuleItems: articleReviewRules(article),
       chapterNaming: normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
+      aiGenerateSettings,
       characters: (article.characters ?? []).map(normalizeCharacter),
       chapters: article.chapters.map((chapter) => {
         const chapterNameState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
@@ -882,6 +901,7 @@ function normalizeStudioData(source: StudioData): StudioData {
             ...outlineNameState,
             title: normalizedTitle,
             generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
+            generateOptions: item.generateOptions == null ? null : normalizeAiGenerateOptions(item.generateOptions, DEFAULT_AI_GENERATE_OPTIONS),
             settings: normalizeChapterSettings(item.settings),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
             currentVersionId,
@@ -909,7 +929,8 @@ function normalizeStudioData(source: StudioData): StudioData {
         }),
       };
       }),
-    })),
+    };
+    }),
   };
 }
 
@@ -1412,6 +1433,12 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         reviewRuleItems: createDefaultReviewRules(articleId, createdAt),
         chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
         outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
+        aiGenerateSettings: normalizeAiGenerateOptions({
+          model: dataRef.current.settings.generateModel,
+          reasoningEffort: dataRef.current.settings.generateReasoningEffort,
+          targetWords: dataRef.current.settings.generateTargetWords,
+          reviewMaxRounds: dataRef.current.settings.generateReviewMaxRounds,
+        }),
         createdAt,
         updatedAt: createdAt,
         lastOutlineId: outlineId,
@@ -1694,6 +1721,40 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     clearContentDraft(outlineId) {
       window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
       void deleteOfflineContentDraft(outlineId);
+    },
+    createBlankContent(outlineId) {
+      const updatedAt = new Date().toISOString();
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
+        if (item.id !== outlineId) return item;
+        const preserveDirectContent = !currentOutlineVersion(item) && item.content.length > 0;
+        const preservedVersion: Version | undefined = preserveDirectContent ? {
+          id: makeId("version"),
+          name: item.contentName?.trim() || timestampContentName(item.updatedAt),
+          content: item.content,
+          source: "手动",
+          createdAt: updatedAt,
+          outlineSnapshot: item.contentOutlineSnapshot ?? { title: item.title, plan: item.plan },
+          settingSnapshot: resolveOutlineSettings(article, item.id),
+          manualExcellent: item.manualExcellent === true,
+          excellentFragments: cloneExcellentFragments(item.content, item.excellentFragments ?? []),
+        } : undefined;
+        return {
+          ...item,
+          content: "",
+          contentName: timestampContentName(updatedAt),
+          currentVersionId: null,
+          contentOutlineSnapshot: { title: item.title, plan: item.plan },
+          manualExcellent: false,
+          excellentFragments: [],
+          updatedAt,
+          versions: preservedVersion ? [preservedVersion, ...item.versions] : item.versions,
+        };
+      }) })) })) };
+      dataRef.current = snapshot;
+      setData(snapshot);
+      window.sessionStorage.removeItem(`${draftPrefix}${outlineId}`);
+      void deleteOfflineContentDraft(outlineId);
+      return enqueueSave(snapshot);
     },
     saveCurrentContent(outlineId, text, sourceVersionId) {
       const updatedAt = new Date().toISOString();

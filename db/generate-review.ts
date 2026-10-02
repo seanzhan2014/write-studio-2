@@ -34,7 +34,7 @@ export async function generateWithReview(task: AiTask, runnerId: string, model: 
     reasoningEffort: taskReasoningEffort(options),
     outlineId: task.outlineId, model, context: options.promptContext,
     instruction: task.prompt, targetWords: options.targetWords, contentMode: options.contentMode,
-    dialogueDensity: options.dialogueDensity, rewriteRetention: options.rewriteRetention,
+    proseControls: options.proseControls, dialogueDensity: options.dialogueDensity, rewriteRetention: options.rewriteRetention,
     rules: reviewRulesText(ruleSnapshot), reviewInstruction: ruleSnapshot.instruction, ruleSnapshot,
   };
   return runGenerateReview({

@@ -685,6 +685,22 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await expect(page.getByText("正在使用文章 AI Generate 预设", { exact: true })).toHaveCount(0);
+  const outlinePlan = page.locator("#generate-outline-plan");
+  await expect(outlinePlan).toHaveAttribute("rows", "6");
+  const defaultRowsHeight = await outlinePlan.evaluate((element) => {
+    const clone = element.cloneNode() as HTMLTextAreaElement;
+    clone.style.height = "auto";
+    clone.style.position = "absolute";
+    clone.style.visibility = "hidden";
+    element.parentElement!.append(clone);
+    const height = clone.getBoundingClientRect().height;
+    clone.remove();
+    return height;
+  });
+  const expandedHeight = (await outlinePlan.boundingBox())!.height;
+  expect(expandedHeight).toBeGreaterThanOrEqual(defaultRowsHeight * 2.95);
+  expect(expandedHeight).toBeLessThanOrEqual(defaultRowsHeight * 3.05);
 
   const initialSubmit = await page.getByRole("button", { name: "开始生成" }).boundingBox();
   const initialViewport = page.viewportSize()!;
@@ -746,23 +762,131 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   await expect(wordTarget).toHaveValue("");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
-    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
-    return payload.data.settings.generateTargetWords;
+    const payload = await response.json() as { data: StudioData };
+    return payload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.generateOptions?.targetWords;
   }).toBe(0);
 
   await wordTarget.fill("500");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
-    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
-    return payload.data.settings.generateTargetWords;
+    const payload = await response.json() as { data: StudioData };
+    return payload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.generateOptions?.targetWords;
   }).toBe(500);
   await wordTarget.fill("");
   await wordTarget.press("Tab");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
-    const payload = await response.json() as { data: { settings: { generateTargetWords: number } } };
-    return payload.data.settings.generateTargetWords;
+    const payload = await response.json() as { data: StudioData };
+    return payload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.generateOptions?.targetWords;
   }).toBe(0);
+});
+
+test("mobile AI Generate replaces a stored old default but keeps a custom outline height", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const outlinePlan = page.locator("#generate-outline-plan");
+  const expandedHeight = Math.round((await outlinePlan.boundingBox())!.height);
+  const oldDefaultHeight = await outlinePlan.evaluate((element) => {
+    const clone = element.cloneNode() as HTMLTextAreaElement;
+    clone.style.height = "auto";
+    clone.style.position = "absolute";
+    element.parentElement!.append(clone);
+    const height = Math.round(clone.getBoundingClientRect().height);
+    clone.remove();
+    return height;
+  });
+  await page.evaluate((height) => {
+    localStorage.setItem("writer-studio:generate-textarea-heights:v1", JSON.stringify({ "outline-current": { outlinePlan: height } }));
+  }, oldDefaultHeight);
+  await page.reload();
+  expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(expandedHeight);
+
+  await outlinePlan.evaluate((element) => { element.style.height = "318px"; });
+  await expect.poll(async () => page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("writer-studio:generate-textarea-heights:v1") ?? "{}") as Record<string, { outlinePlan?: number }>;
+    return stored["outline-current"]?.outlinePlan;
+  })).toBe(318);
+  await page.reload();
+  expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(318);
+});
+
+test("mobile AI Generate divider resizes the outline by touch and remembers its height", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-chromium", "mobile touch layout");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const outlinePlan = page.locator("#generate-outline-plan");
+  const divider = page.locator(".generate-outline-resize-divider");
+  const handle = page.getByRole("button", { name: "拖动横线中段调整大纲输入框高度" });
+  const initialHeight = Math.round((await outlinePlan.boundingBox())!.height);
+  await handle.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  const dividerBounds = (await divider.boundingBox())!;
+  const handleBounds = (await handle.boundingBox())!;
+  expect(handleBounds.width).toBeLessThan(dividerBounds.width / 2);
+  const lineY = dividerBounds.y + dividerBounds.height / 2;
+  const sideX = dividerBounds.x + 12;
+  const centerX = handleBounds.x + handleBounds.width / 2;
+  const hitRegions = await page.evaluate(({ x1, x2, x3, y }) => [x1, x2, x3].map((x) =>
+    Boolean((document.elementFromPoint(x, y) as HTMLElement | null)?.closest(".generate-outline-resize-handle"))), {
+    x1: sideX,
+    x2: centerX,
+    x3: dividerBounds.x + dividerBounds.width - 12,
+    y: lineY,
+  });
+  expect(hitRegions).toEqual([false, true, false]);
+  const session = await page.context().newCDPSession(page);
+  const dragLine = async (x: number, y: number) => {
+    const point = (positionY: number) => ({ x, y: positionY, radiusX: 2, radiusY: 2, force: 0.7, id: 9 });
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point(y)] });
+    await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(y - 45)] });
+    await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(y - 90)] });
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  let resizedHeight: number;
+  try {
+    await dragLine(sideX, lineY);
+    expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(initialHeight);
+    await handle.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    const refreshedBounds = (await handle.boundingBox())!;
+    await dragLine(refreshedBounds.x + refreshedBounds.width / 2, refreshedBounds.y + refreshedBounds.height / 2);
+    resizedHeight = Math.round((await outlinePlan.boundingBox())!.height);
+  } finally {
+    await session.detach();
+  }
+  expect(resizedHeight).toBeLessThanOrEqual(initialHeight - 80);
+  await expect.poll(async () => page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("writer-studio:generate-textarea-heights:v1") ?? "{}") as Record<string, { outlinePlan?: number }>;
+    return stored["outline-current"]?.outlinePlan;
+  })).toBe(resizedHeight);
+  await page.reload();
+  expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(resizedHeight);
+});
+
+test("AI Generate remembers both textarea heights locally for each outline", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop resize behavior");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const revisionBefore = (await (await request.get("/api/state")).json() as { revision: number }).revision;
+  const outlinePlan = page.locator("#generate-outline-plan");
+  const instruction = page.locator(".generate-prompt-label textarea");
+  await outlinePlan.evaluate((element) => { element.style.height = "318px"; });
+  await instruction.evaluate((element) => { element.style.height = "276px"; });
+
+  await expect.poll(async () => page.evaluate(() => {
+    const stored = JSON.parse(localStorage.getItem("writer-studio:generate-textarea-heights:v1") ?? "{}") as Record<string, { outlinePlan?: number; instruction?: number }>;
+    return stored["outline-current"];
+  })).toEqual({ outlinePlan: 318, instruction: 276 });
+  const revisionAfter = (await (await request.get("/api/state")).json() as { revision: number }).revision;
+  expect(revisionAfter).toBe(revisionBefore);
+
+  await page.reload();
+  await expect.poll(async () => Math.round((await outlinePlan.boundingBox())?.height ?? 0)).toBe(318);
+  await expect.poll(async () => Math.round((await instruction.boundingBox())?.height ?? 0)).toBe(276);
+
+  await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).not.toBe(318);
+  await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).not.toBe(276);
+
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).toBe(318);
+  await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).toBe(276);
 });
 
 test("mobile supplementary instruction save sends one compact outline patch", async ({ page }, testInfo) => {
@@ -833,6 +957,67 @@ test("AI Generate reuses supplementary instructions only within the same outline
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("前序灯塔自己的补充指令");
 });
 
+test("article AI Generate presets flow into outlines until an outline keeps its own options", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop state behavior");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture() as unknown as StudioData;
+  const article = fixture.articles[0];
+  article.aiGenerateSettings = {
+    ...article.aiGenerateSettings,
+    targetWords: 6400,
+    includePrevious: false,
+    proseControls: { ...article.aiGenerateSettings.proseControls, dialogueDensity: "high" },
+  };
+  const previous = article.chapters[0].outlines.find((item) => item.id === "outline-previous")!;
+  previous.generateOptions = { ...article.aiGenerateSettings, targetWords: 7100, includePrevious: true };
+  const saved = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(saved.ok()).toBeTruthy();
+
+  const numericValue = async (label: string) => Number((await page.getByRole("textbox", { name: label }).inputValue()).replace(/[^\d-]/g, ""));
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
+
+  await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await expect(page.locator(".generate-settings-source")).toContainText("正在使用此大纲最近的 Generate 设置");
+  await expect.poll(() => numericValue("正文目标字数")).toBe(7100);
+  await page.getByRole("textbox", { name: "正文目标字数" }).fill("7200");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: StudioData };
+    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions?.targetWords;
+  }).toBe(7200);
+  await page.reload();
+  await expect.poll(() => numericValue("正文目标字数")).toBe(7200);
+
+  await page.getByRole("button", { name: "恢复文章预设" }).click();
+  await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: StudioData };
+    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions;
+  }).toBeNull();
+
+  await page.goto("/articles/article-main/info/ai-tasks");
+  await expect(page.getByRole("heading", { name: "AI Generate" })).toBeVisible();
+  const articleTarget = page.getByRole("textbox", { name: "文章 AI Generate 默认目标字数" });
+  await articleTarget.fill("6800");
+  await articleTarget.press("Tab");
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: StudioData };
+    return state.data.articles[0].aiGenerateSettings.targetWords;
+  }).toBe(6800);
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await expect.poll(() => numericValue("正文目标字数")).toBe(6800);
+});
+
 test("AI Generate shows the configured model and no longer lists candidate bodies", async ({ page, request }) => {
   await page.route("**/api/models", async (route) => {
     await route.fulfill({
@@ -863,8 +1048,8 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   await expect(model).toHaveValue("Remote Provider-Remote Writer");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
-    const payload = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
-    return payload.data.settings.generateModel;
+    const payload = await response.json() as { data: StudioData };
+    return payload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.generateOptions?.model;
   }).toBe("model-remote");
   await page.reload();
   await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Provider-Remote Writer");
@@ -934,6 +1119,77 @@ test("desktop writing menu can save the current body as a named version", async 
     defaultVersionId: outline.defaultVersionId,
     versionCount: outline.versions.length,
   }).toEqual({ name: "定稿版本", source: "手动", currentVersionId: null, defaultVersionId: null, versionCount: 2 });
+});
+
+test("version drawer creates a blank body and saves a selected version as a copy", async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
+  const current = await request.get("/api/state");
+  const payload = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.versions.push(...Array.from({ length: 10 }, (_, index) => ({
+    id: `version-scroll-${index}`,
+    name: `滚动版本 ${index + 1}`,
+    content: `用于验证滚动行为的正文 ${index + 1}`,
+    source: "手动",
+    createdAt: new Date(Date.UTC(2026, 7, 10, 0, index)).toISOString(),
+    outlineSnapshot: { title: target.title, plan: target.plan },
+  })));
+  const seeded = await request.put("/api/state", {
+    headers: { "If-Match": String(payload.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(seeded.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "版本", exact: true }).click();
+  const versionList = page.locator(".version-list");
+  const create = page.getByRole("button", { name: "新建", exact: true });
+  await expect(create).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存当前正文为新版本", exact: true })).toHaveCount(0);
+  expect(await create.evaluate((element) => element.closest(".version-list") !== null)).toBe(true);
+  const createTop = await create.evaluate((element) => element.getBoundingClientRect().top);
+  await versionList.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  expect(await versionList.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await create.evaluate((element) => element.getBoundingClientRect().top)).toBeLessThan(createTop);
+  await versionList.evaluate((element) => { element.scrollTop = 0; });
+  await expect(create).toBeVisible();
+
+  const source = page.locator(".version-list article").filter({ hasText: "手动快照" });
+  let dialogMessage = "";
+  let dialogDefault = "";
+  page.once("dialog", async (dialog) => { dialogMessage = dialog.message(); dialogDefault = dialog.defaultValue(); await dialog.accept("手动快照副本"); });
+  await source.getByRole("button", { name: "另存", exact: true }).click();
+  expect(dialogMessage).toBe("另存为正文版本");
+  expect(dialogDefault).toBe("手动快照-复制");
+  await expect(page.locator(".toast")).toContainText("已另存为「手动快照副本」");
+  await expect(page.locator(".version-list article").filter({ hasText: "手动快照副本" })).toBeVisible();
+
+  await create.click();
+  await expect(page.locator(".toast")).toContainText("已新建空白正文");
+  await expect(page.locator(".version-drawer")).toHaveCount(0);
+  await expect.poll(async () => {
+    const response = await request.get("/api/state");
+    const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
+    const outline = state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+    const original = outline.versions.find((item) => item.id === "version-manual");
+    const copy = outline.versions.find((item) => item.name === "手动快照副本");
+    return {
+      content: outline.content,
+      currentVersionId: outline.currentVersionId,
+      originalContent: original?.content,
+      copyContent: copy?.content,
+      copySource: copy?.source,
+      preservedPreviousBody: outline.versions.some((item) => item.content === "林澈看向顾屿，确认潮汐表上的时间。"),
+    };
+  }).toEqual({
+    content: "",
+    currentVersionId: null,
+    originalContent: "不可变版本正文",
+    copyContent: "不可变版本正文",
+    copySource: "手动",
+    preservedPreviousBody: true,
+  });
 });
 
 test("desktop writing save updates the current body without creating a version or duplicate default", async ({ page, request }, testInfo) => {
@@ -1721,8 +1977,9 @@ test("mobile outline swipe archives and restores without opening the more menu",
 
 test("full outline editor shows every plan in one auto-growing document", async ({ page, request }) => {
   await page.goto("/articles/article-main/outlines/edit-all");
-  const editor = page.locator(".continuous-document-editor.outline");
+  const editor = page.locator(".continuous-document-editor.mode-outline");
   await expect(editor).toBeVisible();
+  await expect(editor).toHaveCSS("outline-style", "none");
   await expect(editor.getByLabel("第 1 章标题")).toHaveValue("第一章");
 
   const plan = editor.getByLabel("大纲内容：当前码头");
@@ -1757,7 +2014,7 @@ test("unified editor keeps article, chapter, and outline settings inline and inh
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/edit-all");
-  const editor = page.locator(".continuous-document-editor.outline");
+  const editor = page.locator(".continuous-document-editor.mode-outline");
   const articleToggle = editor.locator(".page-header").getByRole("button", { name: "设定", exact: true });
   await expect(articleToggle).toHaveAttribute("aria-expanded", "false");
   await articleToggle.click();
@@ -1961,9 +2218,9 @@ test("full outline editor copies every visible chapter and plan in document orde
   });
   await page.goto("/articles/article-main/outlines/edit-all");
 
-  const copy = page.locator(".continuous-document-editor.outline").getByRole("button", { name: "复制", exact: true });
+  const copy = page.locator(".continuous-document-editor.mode-outline").getByRole("button", { name: "复制", exact: true });
   await expect(copy).toBeVisible();
-  const articleTitle = page.locator(".continuous-document-editor.outline .page-header h1");
+  const articleTitle = page.locator(".continuous-document-editor.mode-outline .page-header h1");
   const [copyBounds, titleBounds] = await Promise.all([copy.boundingBox(), articleTitle.boundingBox()]);
   expect(copyBounds!.x).toBeGreaterThan(titleBounds!.x + titleBounds!.width);
   const copyCenterY = copyBounds!.y + copyBounds!.height / 2;
@@ -1985,7 +2242,7 @@ test("full outline editor copies every visible chapter and plan in document orde
 
 test("full outline editor keeps core actions visible and groups structural actions in a menu", async ({ page, request }) => {
   await page.goto("/articles/article-main/outlines/edit-all");
-  const editor = page.locator(".continuous-document-editor.outline");
+  const editor = page.locator(".continuous-document-editor.mode-outline");
   const current = editor.locator('[data-continuous-outline-id="outline-current"]');
   const drag = current.getByRole("button", { name: "拖动排序：当前码头" });
   const properties = current.getByRole("button", { name: "打开「当前码头」属性" });
@@ -2090,7 +2347,7 @@ test("full outline editor keeps the active outline anchored when leaving and ret
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await page.getByRole("button", { name: "章节与大纲", exact: true }).click();
-  const editor = page.locator(".continuous-document-editor.outline");
+  const editor = page.locator(".continuous-document-editor.mode-outline");
   const target = editor.locator('[data-continuous-outline-id="outline-after"]');
   const targetPlan = editor.getByLabel("大纲内容：绝密后续大纲");
   await targetPlan.scrollIntoViewIfNeeded();
@@ -2101,7 +2358,7 @@ test("full outline editor keeps the active outline anchored when leaving and ret
   });
 
   await page.getByRole("button", { name: "全文编辑", exact: true }).click();
-  await expect(page.locator(".continuous-document-editor.content")).toBeVisible();
+  await expect(page.locator(".continuous-document-editor.mode-content")).toBeVisible();
   await page.getByRole("button", { name: "章节与大纲", exact: true }).click();
   await expect(editor).toBeVisible();
   await editor.locator('[data-continuous-outline-id="outline-current"]').evaluate((element) => {
@@ -2132,7 +2389,7 @@ test("full content editor saves the current body without creating a version", as
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/edit");
-  const editor = page.locator(".continuous-document-editor.content");
+  const editor = page.locator(".continuous-document-editor.mode-content");
   const body = editor.getByLabel("正文：当前码头");
   await expect(body).toHaveValue("不可变版本正文");
   const nextContent = "码头的风从仓库缝隙灌进来。\n\n林澈合上怀表，沿着水痕走向暗门。";
@@ -2157,7 +2414,7 @@ test("full content editor saves the current body without creating a version", as
   expect(dimensions.clientHeight).toBeGreaterThanOrEqual(dimensions.scrollHeight - 2);
   expect(dimensions.overflowY).toBe("hidden");
   await page.reload();
-  const reloadedEditor = page.locator(".continuous-document-editor.content");
+  const reloadedEditor = page.locator(".continuous-document-editor.mode-content");
   await expect(reloadedEditor.getByLabel("正文：当前码头")).toHaveValue(nextContent);
   await expect(reloadedEditor.getByRole("button", { name: "选择正文版本：当前码头" })).toContainText(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
 });
@@ -2171,7 +2428,7 @@ test("full content title row respects AI Review visibility and keeps article rul
     });
   });
   await page.goto("/articles/article-main/edit");
-  const editor = page.locator(".continuous-document-editor.content");
+  const editor = page.locator(".continuous-document-editor.mode-content");
   const title = editor.getByRole("heading", { name: "严格测试文章" });
   const review = editor.getByRole("button", { name: "AI Review" });
   if (!STANDALONE_AI_REVIEW_ENABLED) {
@@ -2222,7 +2479,7 @@ test("each body in full content editing can preview and independently set curren
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/edit");
-  const editor = page.locator(".continuous-document-editor.content");
+  const editor = page.locator(".continuous-document-editor.mode-content");
   const body = editor.getByLabel("正文：当前码头");
   await expect(body).toHaveValue("不可变版本正文");
   await editor.getByRole("button", { name: "选择正文版本：当前码头" }).click();
@@ -2241,8 +2498,8 @@ test("each body in full content editing can preview and independently set curren
     return { currentVersionId: outline.currentVersionId, defaultVersionId: outline.defaultVersionId };
   }).toEqual({ currentVersionId: "version-manual", defaultVersionId: "version-ai-candidate" });
   await page.reload();
-  await expect(page.locator(".continuous-document-editor.content").getByLabel("正文：当前码头")).toHaveValue("不可变版本正文");
-  const reloadedEditor = page.locator(".continuous-document-editor.content");
+  await expect(page.locator(".continuous-document-editor.mode-content").getByLabel("正文：当前码头")).toHaveValue("不可变版本正文");
+  const reloadedEditor = page.locator(".continuous-document-editor.mode-content");
   await reloadedEditor.getByRole("button", { name: "选择正文版本：当前码头" }).click();
   await page.getByRole("menuitem").filter({ hasText: "AI 候选稿" }).click();
   await reloadedEditor.getByRole("button", { name: "将“AI 候选稿”设为当前正文" }).click();
@@ -2252,13 +2509,13 @@ test("each body in full content editing can preview and independently set curren
     return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")?.currentVersionId;
   }).toBe("version-ai-candidate");
   await page.reload();
-  await expect(page.locator(".continuous-document-editor.content").getByLabel("正文：当前码头")).toHaveValue("潮声越过防波堤，林澈在暗门前停下脚步。");
+  await expect(page.locator(".continuous-document-editor.mode-content").getByLabel("正文：当前码头")).toHaveValue("潮声越过防波堤，林澈在暗门前停下脚步。");
 });
 
 test("full outline editor supports keyboard reordering from its explicit handle", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop keyboard layout");
   await page.goto("/articles/article-main/outlines/edit-all");
-  const editor = page.locator(".continuous-document-editor.outline");
+  const editor = page.locator(".continuous-document-editor.mode-outline");
   const handle = editor.getByRole("button", { name: "拖动排序：当前码头" });
   await handle.focus();
   await page.keyboard.press("Space");
@@ -2654,8 +2911,8 @@ test("unified chapter and outline editor generates individual names as selectabl
   await page.locator(".page-header").getByRole("button", { name: "名称", exact: true }).click();
 
   const outlineBlock = page.locator('[data-continuous-outline-id="outline-current"]');
-  await outlineBlock.getByRole("button", { name: "名称", exact: true }).click();
-  const outlineRow = outlineBlock.locator(".unified-naming-editor");
+  await outlineBlock.getByRole("button", { name: "选择「当前码头」的大纲名称" }).click();
+  const outlineRow = page.locator(".continuous-outline-properties-drawer .unified-naming-editor");
   await expect(outlineRow.getByLabel(/新增大纲名版本/)).toBeVisible();
   const originalOutline = outlineRow.getByRole("radio", { name: /当前码头/ });
   await expect(originalOutline).toHaveAttribute("aria-checked", "true");
@@ -2667,9 +2924,10 @@ test("unified chapter and outline editor generates individual names as selectabl
   expect(requests[0]).not.toHaveProperty("content");
   await outlineCandidate.click();
   await expect(outlineCandidate).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "关闭大纲属性" }).click();
 
   const chapterRow = page.locator(".continuous-chapter").first();
-  await chapterRow.locator(".continuous-chapter-heading").getByRole("button", { name: "名称", exact: true }).click();
+  await chapterRow.locator(".continuous-chapter-heading").getByRole("button", { name: "选择「第一章」的章节名称" }).click();
   const chapterNaming = chapterRow.locator(".chapter-inline-panel .unified-naming-editor");
   const originalChapter = chapterNaming.getByRole("radio", { name: /第一章/ });
   await expect(originalChapter).toHaveAttribute("aria-checked", "true");
@@ -2685,10 +2943,110 @@ test("unified chapter and outline editor generates individual names as selectabl
   await page.reload();
   const reloadedChapter = page.locator(".continuous-chapter").first();
   const reloadedOutline = page.locator('[data-continuous-outline-id="outline-current"]');
-  await reloadedChapter.locator(".continuous-chapter-heading").getByRole("button", { name: "名称", exact: true }).click();
-  await reloadedOutline.getByRole("button", { name: "名称", exact: true }).click();
-  await expect(reloadedOutline.getByRole("radio").filter({ has: page.getByText("七码头潮汐密钥", { exact: true }) })).toHaveAttribute("aria-checked", "true");
+  await reloadedChapter.locator(".continuous-chapter-heading").getByRole("button", { name: "选择「潮汐密钥」的章节名称" }).click();
+  await reloadedOutline.getByRole("button", { name: "选择「七码头潮汐密钥」的大纲名称" }).click();
+  await expect(page.locator(".continuous-outline-properties-drawer").getByRole("radio").filter({ has: page.getByText("七码头潮汐密钥", { exact: true }) })).toHaveAttribute("aria-checked", "true");
   await expect(reloadedChapter.locator(".chapter-inline-panel").getByRole("radio").filter({ has: page.getByText("潮汐密钥", { exact: true }) })).toHaveAttribute("aria-checked", "true");
+});
+
+test("chapter naming generates one candidate for the chapter and every eligible outline", async ({ page, request }, testInfo) => {
+  test.skip(!["desktop-chromium", "mobile-chromium"].includes(testInfo.project.name), "chapter naming workflow");
+  test.setTimeout(60_000);
+  await page.goto("/articles/article-main/outlines/edit-all");
+  const chapter = page.locator(".continuous-chapter").first();
+  const chapterNames = chapter.locator(".continuous-chapter-heading").getByRole("button", { name: "选择「第一章」的章节名称" });
+  await expect(chapterNames).toHaveText("");
+  expect(await chapterNames.evaluate((button) => button.nextElementSibling?.classList.contains("continuous-chapter-more"))).toBe(true);
+  await chapterNames.click();
+  const naming = chapter.locator(".chapter-inline-panel");
+  await expect(naming.getByRole("button", { name: "生成整章候选（含大纲）" })).toHaveCount(0);
+  const calls: Record<string, unknown>[] = [];
+  page.on("request", (outgoing) => {
+    if (outgoing.url().endsWith("/api/ai/names")) calls.push(outgoing.postDataJSON() as Record<string, unknown>);
+  });
+  await chapter.locator(".continuous-chapter-heading").getByRole("button", { name: "第一章更多操作" }).click();
+  await page.getByRole("button", { name: "生成整章名称（含大纲）" }).click();
+  await expect(naming.getByRole("radio", { name: /AI 候选/ })).toHaveCount(1);
+  await expect(naming.getByRole("radio", { name: /第一章/ })).toHaveAttribute("aria-checked", "true");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: ["outline-previous", "outline-current", "outline-after"] });
+
+  const state = await (await request.get("/api/state")).json() as { data: StudioData };
+  const savedChapter = state.data.articles[0].chapters[0];
+  expect(savedChapter.title).toBe("第一章");
+  expect(savedChapter.outlines.filter((outline) => !outline.archived).every((outline) => outline.nameVersions?.some((version) => version.source === "ai"))).toBe(true);
+  expect(savedChapter.outlines.find((outline) => outline.id === "outline-archived")?.nameVersions?.some((version) => version.source === "ai")).toBeFalsy();
+
+  const outlineBlock = page.locator('[data-continuous-outline-id="outline-current"]');
+  const chooseName = outlineBlock.getByRole("button", { name: "选择「当前码头」的大纲名称" });
+  await expect(chooseName).toHaveText("");
+  await expect(chooseName).toHaveAttribute("aria-expanded", "false");
+  expect(await chooseName.evaluate((button) => button.nextElementSibling?.classList.contains("continuous-outline-more"))).toBe(true);
+  await chooseName.click();
+  await expect(chooseName).toHaveAttribute("aria-expanded", "true");
+  const drawer = page.getByRole("dialog").filter({ has: page.getByRole("tab", { name: "名称", exact: true }) });
+  await expect(drawer.getByRole("tab", { name: "名称", exact: true })).toHaveAttribute("aria-selected", "true");
+  const candidate = drawer.getByRole("radio", { name: /AI 候选/ });
+  await expect(candidate).toHaveCount(1);
+  await expect(candidate).toHaveAttribute("aria-checked", "false");
+  await candidate.click();
+  await expect(candidate).toHaveAttribute("aria-checked", "true");
+});
+
+test("chapter three-dot menu generates whole-chapter candidates on the home and sidebar", async ({ page, request }, testInfo) => {
+  test.skip(!["desktop-chromium", "mobile-chromium"].includes(testInfo.project.name), "chapter menu workflow");
+  test.setTimeout(60_000);
+  await page.goto(testInfo.project.name === "mobile-chromium" ? "/" : "/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "第一章更多操作", exact: true }).click();
+  await expect(page.getByRole("button", { name: "生成整章名称（含大纲）" })).toBeVisible();
+  await page.getByRole("button", { name: "生成整章名称（含大纲）" }).click();
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/state")).json() as { data: StudioData };
+    const chapter = state.data.articles[0].chapters[0];
+    return { chapterTitle: chapter.title, chapterCandidates: chapter.nameVersions?.filter((name) => name.source === "ai").length ?? 0, outlineCandidates: chapter.outlines.filter((outline) => !outline.archived && outline.nameVersions?.some((name) => name.source === "ai")).length };
+  }).toEqual({ chapterTitle: "第一章", chapterCandidates: 1, outlineCandidates: 3 });
+});
+
+test("chapter candidate names can be deleted from the icon beside the three-dot menu", async ({ page, request }, testInfo) => {
+  test.skip(!["desktop-chromium", "mobile-chromium"].includes(testInfo.project.name), "chapter naming workflow");
+  const current = await request.get("/api/state");
+  const state = await current.json() as { revision: number };
+  const fixture = fullStudioFixture();
+  const chapter = fixture.articles[0].chapters[0];
+  chapter.nameVersions = [
+    { id: "name-chapter-candidate", title: "潮汐候选", source: "ai", createdAt: chapter.updatedAt },
+    { id: "name-chapter-default", title: "第一章", source: "manual", createdAt: chapter.updatedAt },
+  ];
+  chapter.defaultNameVersionId = "name-chapter-default";
+  const seeded = await request.put("/api/state", {
+    headers: { "If-Match": String(state.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  });
+  expect(seeded.ok()).toBeTruthy();
+
+  await page.goto("/articles/article-main/outlines/edit-all");
+  const chapterRow = page.locator(".continuous-chapter").first();
+  await chapterRow.getByRole("button", { name: "选择「第一章」的章节名称" }).click();
+  const candidate = chapterRow.locator(".chapter-inline-panel .name-version-item").filter({ hasText: "潮汐候选" });
+  const deleteButton = candidate.getByRole("button", { name: "删除章节名「潮汐候选」" });
+  if (testInfo.project.name === "mobile-chromium") {
+    await expect(candidate.locator(".name-version-delete")).toHaveCSS("visibility", "hidden");
+    await swipeNameVersion(candidate.locator(".name-version-option"), "left");
+    await expect(candidate.locator(".name-version-delete")).toHaveCSS("visibility", "visible");
+  } else {
+    await expect(deleteButton).toBeVisible();
+  }
+  const saved = page.waitForResponse((response) => response.url().endsWith("/api/state/mutations") && response.request().method() === "POST" && response.ok());
+  await deleteButton.click();
+  await saved;
+  await expect(candidate).toHaveCount(0);
+  await expect(chapterRow.locator(".chapter-inline-panel").getByRole("radio", { name: /第一章/ })).toHaveAttribute("aria-checked", "true");
+
+  await page.reload();
+  const reloadedChapter = page.locator(".continuous-chapter").first();
+  await reloadedChapter.getByRole("button", { name: "选择「第一章」的章节名称" }).click();
+  await expect(reloadedChapter.locator(".chapter-inline-panel .name-version-item")).toHaveCount(1);
+  await expect(reloadedChapter.locator(".chapter-inline-panel .name-version-delete button")).toBeDisabled();
 });
 
 test("desktop unified editor deletes the default name and persists its fallback", async ({ page, request }, testInfo) => {
@@ -2710,8 +3068,8 @@ test("desktop unified editor deletes the default name and persists its fallback"
 
   await page.goto("/articles/article-main/chapters/edit-all");
   const outlineBlock = page.locator('[data-continuous-outline-id="outline-current"]');
-  await outlineBlock.getByRole("button", { name: "名称", exact: true }).click();
-  const currentItem = outlineBlock.locator(".name-version-item").filter({ hasText: "当前码头" });
+  await outlineBlock.getByRole("button", { name: "选择「当前码头」的大纲名称" }).click();
+  const currentItem = page.locator(".continuous-outline-properties-drawer .name-version-item").filter({ hasText: "当前码头" });
   await expect(currentItem.getByRole("button", { name: "删除大纲名「当前码头」" })).toBeVisible();
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/state/mutations") && response.request().method() === "POST" && response.ok());
   await currentItem.getByRole("button", { name: "删除大纲名「当前码头」" }).click();
@@ -2721,9 +3079,9 @@ test("desktop unified editor deletes the default name and persists its fallback"
 
   await page.reload();
   const reloadedOutline = page.locator('[data-continuous-outline-id="outline-current"]');
-  await reloadedOutline.getByRole("button", { name: "名称", exact: true }).click();
+  await reloadedOutline.getByRole("button", { name: "选择「七码头候选」的大纲名称" }).click();
   await expect(page.getByText("当前码头", { exact: true })).toHaveCount(0);
-  await expect(reloadedOutline.getByRole("radio", { name: /七码头候选/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(".continuous-outline-properties-drawer").getByRole("radio", { name: /七码头候选/ })).toHaveAttribute("aria-checked", "true");
 });
 
 test("mobile unified editor swipes both ways before deleting a name", async ({ page, request }, testInfo) => {
@@ -2745,8 +3103,8 @@ test("mobile unified editor swipes both ways before deleting a name", async ({ p
 
   await page.goto("/articles/article-main/chapters/edit-all");
   const outlineBlock = page.locator('[data-continuous-outline-id="outline-current"]');
-  await outlineBlock.getByRole("button", { name: "名称", exact: true }).click();
-  const item = outlineBlock.locator(".name-version-item").filter({ hasText: "待删除候选" });
+  await outlineBlock.getByRole("button", { name: "选择「当前码头」的大纲名称" }).click();
+  const item = page.locator(".continuous-outline-properties-drawer .name-version-item").filter({ hasText: "待删除候选" });
   const option = item.locator(".name-version-option");
   const deleteAction = item.locator(".name-version-delete");
   await expect(deleteAction).toHaveCSS("visibility", "hidden");
@@ -2762,9 +3120,9 @@ test("mobile unified editor swipes both ways before deleting a name", async ({ p
 
   await page.reload();
   const reloadedOutline = page.locator('[data-continuous-outline-id="outline-current"]');
-  await reloadedOutline.getByRole("button", { name: "名称", exact: true }).click();
+  await reloadedOutline.getByRole("button", { name: "选择「当前码头」的大纲名称" }).click();
   await expect(page.getByText("待删除候选", { exact: true })).toHaveCount(0);
-  await expect(reloadedOutline.getByRole("radio", { name: /当前码头/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator(".continuous-outline-properties-drawer").getByRole("radio", { name: /当前码头/ })).toHaveAttribute("aria-checked", "true");
 });
 
 test("unified editor queues one background task for every chapter and outline", async ({ page, request }, testInfo) => {
@@ -2892,7 +3250,8 @@ test("mobile writing view previews a selected version and explicitly saves or di
   await page.getByRole("button", { name: "选择正文版本" }).click();
   await expect(page.getByText("正文版本", { exact: true })).toBeVisible();
   await expect(page.locator(".version-list article.current em")).toContainText("当前");
-  await expect(page.getByRole("button", { name: "保存当前正文为新版本" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "新建", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存当前正文为新版本" })).toHaveCount(0);
   const candidate = page.locator(".version-list article").filter({ hasText: "手动快照" });
   await candidate.locator(".version-preview-main").click();
   await expect(page.getByLabel("手动快照正文内容")).toContainText("不可变版本正文");

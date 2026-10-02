@@ -7,7 +7,7 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { selectAiContext } from "@/lib/ai-context";
 import { findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
-import { isDialogueDensity, normalizeDialogueDensity, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
@@ -93,7 +93,9 @@ export async function POST(request: Request) {
     if (target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return json({ error: "原文保留度无效" }, 400);
     const rewriteRetention = target === "content" && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
     if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
-    const dialogueDensity = normalizeDialogueDensity(body.dialogueDensity);
+    if (target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return json({ error: "正文控制参数无效" }, 400);
+    const proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
+    const dialogueDensity = proseControls.dialogueDensity;
     const rawTargetWords = body.targetWords == null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0 ? undefined : Number(body.targetWords);
     if (target === "content" && rawTargetWords !== undefined && (!Number.isInteger(rawTargetWords) || rawTargetWords < MIN_GENERATE_TARGET_WORDS || rawTargetWords > MAX_GENERATE_TARGET_WORDS)) return json({ error: `目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数` }, 400);
 
@@ -110,7 +112,7 @@ export async function POST(request: Request) {
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
     const reviewRuleSnapshot = createReviewRuleSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, reviewInstruction);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
-    if (reviewMaxRounds > 0 && !hasReviewRules(reviewRuleSnapshot)) return json({ error: "没有有效规则或本次 Review 指令，无需审校；请添加规则或将审校循环次数设为 0" }, 422);
+    if (reviewMaxRounds > 0 && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls)) return json({ error: "没有有效规则、本次 Review 指令或非自动正文表达控制，无需审校；请添加一项要求或将审校循环次数设为 0" }, 422);
     const executionOrigin = currentTaskExecutionOrigin();
     const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
     if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
@@ -127,6 +129,10 @@ export async function POST(request: Request) {
 
     const createdAt = new Date().toISOString();
     const submittedPlan = target === "content" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
+    const hasSubmittedGenerateOptions = target === "content" && Object.prototype.hasOwnProperty.call(body, "generateOptions");
+    const submittedGenerateOptions = hasSubmittedGenerateOptions && body.generateOptions && typeof body.generateOptions === "object"
+      ? normalizeAiGenerateOptions(body.generateOptions)
+      : null;
     const estimate = Number(body.estimatedCharacters ?? 0);
     const activeCharacterResult = target === "content" ? await db.prepare("SELECT id FROM characters WHERE article_id=? AND archived=0").bind(articleId).all<Record<string, unknown>>() : { results: [] };
     const activeCharacterIds = new Set((activeCharacterResult.results ?? []).map((row) => String(row.id)));
@@ -172,6 +178,7 @@ export async function POST(request: Request) {
         rewriteRetention,
         rewriteSourceId,
         rewriteSourceName,
+        ...(body.proseControls !== undefined ? { proseControls } : {}),
         dialogueDensity,
         ...(reviewMaxRounds > 0 ? { reviewMaxRounds, reviewInstruction, reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
         includeOutlineTitle: body.includeOutlineTitle === true || undefined,
@@ -212,7 +219,7 @@ export async function POST(request: Request) {
     };
     const statements = [];
     if (target === "content") {
-      statements.push(db.prepare("UPDATE outlines SET summary=COALESCE(?,summary),generate_instruction=?,title_generation_pending=CASE WHEN ? IS NOT NULL AND ?<>summary THEN 1 ELSE title_generation_pending END,updated_at=?,revision=revision+1 WHERE id=?").bind(submittedPlan ?? null, instruction, submittedPlan ?? null, submittedPlan ?? null, createdAt, outlineId));
+      statements.push(db.prepare("UPDATE outlines SET summary=COALESCE(?,summary),generate_instruction=?,generate_options_json=CASE WHEN ?=1 THEN ? ELSE generate_options_json END,title_generation_pending=CASE WHEN ? IS NOT NULL AND ?<>summary THEN 1 ELSE title_generation_pending END,updated_at=?,revision=revision+1 WHERE id=?").bind(submittedPlan ?? null, instruction, hasSubmittedGenerateOptions ? 1 : 0, submittedGenerateOptions ? JSON.stringify(submittedGenerateOptions) : null, submittedPlan ?? null, submittedPlan ?? null, createdAt, outlineId));
       statements.push(db.prepare("UPDATE articles SET updated_at=?,revision=revision+1 WHERE id=?").bind(createdAt, articleId));
     }
     statements.push(db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,received_characters,timeout_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, articleId, chapterId, outlineId, target, instruction, task.model, executionOrigin, JSON.stringify(contextOptions), task.id, "queued", 0, "queued", 0, task.timeoutMs, createdAt));

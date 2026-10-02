@@ -7,7 +7,7 @@ export function fullStudioFixture() {
     createdAt: `2026-07-28T08:${String(index).padStart(2, "0")}:00.000Z`,
   }));
   const makeOutline = (id, title, plan, content = "") => ({
-    id, title, titleGenerationPending: false, plan, content, currentVersionId: null, defaultVersionId: null,
+    id, title, titleGenerationPending: false, plan, generateInstruction: "", generateOptions: null, content, currentVersionId: null, defaultVersionId: null,
     contentOutlineSnapshot: { title, plan }, archived: false, state: "saved", updatedAt: now,
     versions: [], chat: { sessions: [{ id: `chat:${id}`, title: "主会话", messages: [], draft: "", includePrevious: true, includeCharacters: true, lastReadMessageId: null, createdAt: now, updatedAt: now }], activeSessionId: `chat:${id}` },
   });
@@ -32,6 +32,12 @@ export function fullStudioFixture() {
     currentOutlineId: "outline-current",
     articles: [{
       id: "article-main", title: "严格测试文章", summary: "用于真实 SQLite 和 API 回归测试。", type: "悬疑", style: "克制",
+      aiGenerateSettings: {
+        model: "", targetWords: 5000, contentMode: "fresh", rewriteRetention: "balanced",
+        proseControls: { dialogueDensity: "auto", introspectionDensity: "auto", descriptionDetail: "auto", narrativePace: "auto", paragraphLength: "auto" },
+        includePrevious: true, includeCharacters: true, includeExcellentFragments: false, includeOutlineTitle: false,
+        reviewMaxRounds: 0, reviewInstruction: "", firstAppearanceOverrides: {},
+      },
       createdAt: now, updatedAt: now, lastOutlineId: "outline-current",
       chapters: [
         { id: "chapter-main", title: "第一章", archived: false, outlines: [previous, current, after, archived] },

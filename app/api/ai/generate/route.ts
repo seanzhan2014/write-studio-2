@@ -1,6 +1,6 @@
 import { reasoningEffortError } from "@/lib/reasoning-options";
 import { AiInputError, generateText } from "@/db/ai";
-import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, normalizeDialogueDensity, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
   try {
@@ -16,7 +16,9 @@ export async function POST(request: Request) {
     if (body.target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return Response.json({ error: "原文保留度无效" }, { status: 400 });
     body.rewriteRetention = body.target === "content" && body.contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
     if (body.target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return Response.json({ error: "对话密度无效" }, { status: 400 });
-    body.dialogueDensity = body.target === "content" ? normalizeDialogueDensity(body.dialogueDensity) : undefined;
+    if (body.target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return Response.json({ error: "正文控制参数无效" }, { status: 400 });
+    body.proseControls = body.target === "content" ? normalizeProseControls(body.proseControls, body.dialogueDensity) : undefined;
+    body.dialogueDensity = body.proseControls?.dialogueDensity;
     body.includeExcellentFragments = body.target === "content" && body.includeExcellentFragments === true;
     body.excellentFragmentIds = body.includeExcellentFragments && Array.isArray(body.excellentFragmentIds) ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200) : undefined;
     const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;

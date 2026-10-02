@@ -29,7 +29,7 @@ async function waitFor(check, child, output, timeoutMs = 20_000) {
   throw new Error(`等待服务重启超时：\n${output.join("")}`);
 }
 
-test("application restart endpoint restarts its managed production service", { timeout: 30_000 }, async () => {
+test("application restart endpoint rebuilds and restarts its managed production service", { timeout: 180_000 }, async () => {
   const servicePort = await freePort();
   const managerPort = await freePort();
   const databasePath = path.join(".test-data", `restart-${process.pid}.sqlite`);
@@ -81,7 +81,7 @@ test("application restart endpoint restarts its managed production service", { t
       if (!response.ok) return null;
       const status = await response.json();
       return status.service?.state === "running" && status.service?.startedAt !== initial.service.startedAt ? status : null;
-    }, manager, output);
+    }, manager, output, 150_000);
     assert.equal(restarted.service.managed, true);
   } finally {
     await fetch(`${managerUrl}/api/stop`, { method: "POST" }).catch(() => null);

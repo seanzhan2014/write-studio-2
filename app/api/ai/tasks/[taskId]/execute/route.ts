@@ -162,6 +162,7 @@ async function executeTask(taskId: string) {
               excellentFragmentIds: initialTask.contextOptions?.excellentFragmentIds,
               contentMode: initialTask.contextOptions?.contentMode,
               rewriteRetention: initialTask.contextOptions?.rewriteRetention,
+              proseControls: initialTask.contextOptions?.proseControls,
               dialogueDensity: initialTask.contextOptions?.dialogueDensity,
               firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
               includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
