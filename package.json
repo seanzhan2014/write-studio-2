@@ -10,6 +10,7 @@
     "service": "node scripts/service-manager.mjs",
     "service:manager": "node scripts/service-manager.mjs",
     "dev:test": "node scripts/dev-test-server.mjs",
+    "dev:task-preview": "node scripts/task-preview.mjs",
     "build": "vinext build",
     "start": "node scripts/prod-server.mjs",
     "test": "npm run build && node scripts/run-tests.mjs && npm run test:ui",
