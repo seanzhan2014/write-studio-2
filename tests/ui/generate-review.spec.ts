@@ -94,29 +94,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
   });
 }
 
-async function dragMobileTaskDrawerClosed(target: import("@playwright/test").Locator) {
-  await target.evaluate((element) => {
-    const bounds = element.getBoundingClientRect();
-    const x = bounds.left + bounds.width / 2;
-    const startY = bounds.top + bounds.height / 2;
-    const pointer = (type: string, y: number, buttons: number) => element.dispatchEvent(new PointerEvent(type, {
-      bubbles: true,
-      cancelable: true,
-      pointerId: 19,
-      pointerType: "touch",
-      isPrimary: true,
-      buttons,
-      clientX: x,
-      clientY: y,
-    }));
-    pointer("pointerdown", startY, 1);
-    pointer("pointermove", startY + 48, 1);
-    pointer("pointermove", startY + 132, 1);
-    pointer("pointerup", startY + 132, 0);
-  });
-}
-
 test("Generate review settings, server loop and durable report work together", async ({ page, request }) => {
+  test.setTimeout(60_000);
   const fake = await reviewModelServer();
   try {
     const current = await (await request.get("/api/state")).json();
@@ -125,6 +104,8 @@ test("Generate review settings, server loop and durable report work together", a
     const latest = await (await request.get("/api/state")).json();
     const data = fullStudioFixture() as unknown as StudioData;
     data.settings.generateModel = model.id;
+    data.articles[0].aiGenerateSettings!.model = model.id;
+    data.settings.preparationMaxRounds = 0;
     expect((await request.put("/api/state", { headers: { "If-Match": String(latest.revision ?? current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/info/review-rules");
     await page.getByRole("button", { name: "新增规则", exact: true }).click();
@@ -141,8 +122,9 @@ test("Generate review settings, server loop and durable report work together", a
     await page.getByLabel("本次 Review 指令", { exact: true }).fill("保持雨后场景");
     await expect(page.locator(".generate-review-rules")).toContainText("人物必须十八岁");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
+    await page.getByRole("button", { name: "确认准备稿并写正文", exact: true }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 25000 }).toBe("success");
-    expect(fake.control.calls.map((item) => item.kind)).toEqual(["generate", "review", "revise", "review"]);
+    expect(fake.control.calls.map((item) => item.kind)).toEqual(["prepare", "generate", "review", "revise", "review"]);
     await page.goto("/");
     await page.getByRole("button", { name: "AI 任务", exact: true }).click();
     await page.getByRole("button", { name: "查看任务详情：当前码头" }).click();
@@ -182,9 +164,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
     await page.getByRole("button", { name: "打开生成版本", exact: true }).scrollIntoViewIfNeeded();
     await expect(page.getByRole("button", { name: "打开生成版本", exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
-    const dragHandle = page.getByRole("button", { name: "下滑关闭 AI 任务", exact: true });
-    await expect(dragHandle).toBeVisible();
-    await dragMobileTaskDrawerClosed(dragHandle);
-    await expect(page.locator(".task-drawer-shell")).toHaveCount(0);
+    await page.getByRole("button", { name: "关闭 AI 任务", exact: true }).click();
+    await expect(page.locator(".task-workspace")).toHaveCount(0);
   });
 }

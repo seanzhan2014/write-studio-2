@@ -1,5 +1,6 @@
 import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { parseTaskHistory } from "@/lib/task-history";
+import { normalizePreparationRounds } from "@/lib/writing-preparation";
 import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
 import { normalizeReviewRounds, normalizeReviewRules, type GenerateReviewReport } from "@/lib/generate-review.mjs";
@@ -727,7 +728,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
 
 const defaultSettings: StudioData["settings"] = {
   ...DEFAULT_APPEARANCE,
-  outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2,
+  outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2, preparationMaxRounds: 3,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
 };
@@ -744,6 +745,7 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
     generateReviewMaxRounds: normalizeReviewRounds(settings.generateReviewMaxRounds),
+    preparationMaxRounds: normalizePreparationRounds(settings.preparationMaxRounds),
   };
 }
 
@@ -909,7 +911,7 @@ function updateByKey(db: SqliteDatabase, table: string, key: string, id: string,
   return db.prepare(sql).bind(...assignments.map(([, value]) => value), id);
 }
 
-export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string; taskRunnerId?: string }) {
+export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string; taskRunnerId?: string; taskInteractionId?: string }) {
   await ensureDatabase();
   const db = getDatabase();
   const currentRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
@@ -1123,8 +1125,8 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
   // retry and transfer use their dedicated state endpoint instead.
   for (const task of changes.tasks.upsert.slice(0, 20)) {
     statements.push(insert(db, `INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,outline_id=excluded.outline_id,target=excluded.target,instruction=excluded.instruction,model_id=excluded.model_id,execution_origin=excluded.execution_origin,context_options_json=excluded.context_options_json,status=excluded.status,attempt=excluded.attempt,result_text=excluded.result_text,result_version_id=excluded.result_version_id,error_message=excluded.error_message,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,phase=excluded.phase,last_progress_at=excluded.last_progress_at,received_characters=excluded.received_characters,timeout_ms=excluded.timeout_ms,runner_id=excluded.runner_id,lease_until=excluded.lease_until,started_at=excluded.started_at,completed_at=excluded.completed_at,history_json=CASE WHEN json_array_length(excluded.history_json)>=json_array_length(ai_tasks.history_json) THEN excluded.history_json ELSE ai_tasks.history_json END WHERE COALESCE(json_extract(ai_tasks.context_options_json,'$.serverManaged'),0)=0 OR ai_tasks.runner_id=?`,
-    [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history)), options?.taskRunnerId ?? null]));
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,chapter_id=excluded.chapter_id,outline_id=excluded.outline_id,target=excluded.target,instruction=excluded.instruction,model_id=excluded.model_id,execution_origin=excluded.execution_origin,context_options_json=excluded.context_options_json,status=excluded.status,attempt=excluded.attempt,result_text=excluded.result_text,result_version_id=excluded.result_version_id,error_message=excluded.error_message,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,phase=excluded.phase,last_progress_at=excluded.last_progress_at,received_characters=excluded.received_characters,timeout_ms=excluded.timeout_ms,runner_id=excluded.runner_id,lease_until=excluded.lease_until,started_at=excluded.started_at,completed_at=excluded.completed_at,history_json=CASE WHEN json_array_length(excluded.history_json)>=json_array_length(ai_tasks.history_json) THEN excluded.history_json ELSE ai_tasks.history_json END WHERE COALESCE(json_extract(ai_tasks.context_options_json,'$.serverManaged'),0)=0 OR ai_tasks.runner_id=? OR (ai_tasks.id=? AND ai_tasks.status='queued' AND ai_tasks.runner_id IS NULL)`,
+    [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history)), options?.taskRunnerId ?? null, options?.taskInteractionId ?? null]));
   }
 
   if (changes.settings) statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(changes.settings) }), now]));

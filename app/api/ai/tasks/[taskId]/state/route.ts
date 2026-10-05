@@ -15,7 +15,7 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
     if (body.action !== "cancel" && body.action !== "retry" && body.action !== "transfer") return json({ error: "任务状态操作无效" }, 400);
     await ensureDatabase();
     const db = getDatabase();
-    const row = await db.prepare("SELECT status,target,outline_id,lease_until,execution_origin FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
+    const row = await db.prepare("SELECT status,target,outline_id,lease_until,execution_origin,context_options_json FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
     if (!row) return json({ error: "任务不存在" }, 404);
     if (row.target === "chat") {
       if (body.action !== "cancel") return json({ error: "聊天任务请返回会话再次发送" }, 409);
@@ -44,6 +44,13 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
       if (String(row.target) === "chat" || (!stale && !["queued", "error", "cancelled"].includes(String(row.status)))) return json({ error: "只有等待、失败、已取消或中断的生成任务可以转移" }, 409);
       patch = { state: "waiting", phase: "queued", executionOrigin, attempt: 0, startedAt: undefined, completedAt: undefined, lastProgressAt: undefined, receivedCharacters: 0, runnerId: undefined, leaseUntil: undefined, error: undefined };
       statements.push(db.prepare("UPDATE ai_tasks SET status='queued',phase='queued',execution_origin=?,attempt=0,started_at=NULL,completed_at=NULL,last_progress_at=NULL,received_characters=0,runner_id=NULL,lease_until=NULL,error_message=NULL WHERE id=?").bind(executionOrigin, taskId));
+    }
+    if (body.action !== "cancel") {
+      const workflow = JSON.parse(String(row.context_options_json ?? "{}")).writingPreparation;
+      if (workflow?.stage === "awaiting_author" || workflow?.stage === "awaiting_confirmation") {
+        patch.phase = workflow.stage;
+        statements.push(db.prepare("UPDATE ai_tasks SET phase=? WHERE id=?").bind(workflow.stage, taskId));
+      }
     }
     statements.push(db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key IN ('state_revision','database_version')").bind(now));
     await db.batch(statements);

@@ -22,7 +22,7 @@ export function startGenerateReviewRunner() {
       await ensureDatabase();
       const db = getDatabase();
       const origin = currentTaskExecutionOrigin();
-      const rows = (await db.prepare("SELECT id,outline_id,target,status,lease_until,context_options_json FROM ai_tasks WHERE execution_origin=? AND target<>'chat' AND status IN ('queued','running') ORDER BY created_at,id").bind(origin).all<Record<string, unknown>>()).results ?? [];
+      const rows = (await db.prepare("SELECT id,outline_id,target,status,phase,lease_until,context_options_json FROM ai_tasks WHERE execution_origin=? AND target<>'chat' AND status IN ('queued','running') ORDER BY created_at,id").bind(origin).all<Record<string, unknown>>()).results ?? [];
       const now = new Date().toISOString();
       const running = rows.filter((row) => row.status === "running" && row.lease_until && String(row.lease_until) > now);
       const settingsJson = await db.prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json");
@@ -35,7 +35,8 @@ export function startGenerateReviewRunner() {
         if (chosen.length >= capacity) break;
         if (running.includes(row) || (row.target === "content" && occupied.has(row.outline_id))) continue;
         const options = JSON.parse(String(row.context_options_json ?? "{}"));
-        if (reviewsOnly && (row.target !== "content" || !options.reviewMaxRounds)) continue;
+        if (["awaiting_author", "awaiting_confirmation"].includes(String(row.phase))) { if (row.target === "content") occupied.add(row.outline_id); continue; }
+        if (reviewsOnly && (row.target !== "content" || (!options.reviewMaxRounds && !options.writingPreparation))) continue;
         chosen.push(String(row.id));
         if (row.target === "content") occupied.add(row.outline_id);
       }

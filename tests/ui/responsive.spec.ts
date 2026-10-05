@@ -364,7 +364,7 @@ test("mobile overlays stay reachable across the supported viewport matrix", asyn
       await expectInsideViewport(page, outlineActions.last());
       await outlineDrawer.getByRole("button", { name: "关闭大纲操作" }).click();
 
-      await page.locator(".mobile-chapter-card > header .icon-button").first().click();
+      await page.locator(".mobile-chapter-card > header").first().getByRole("button", { name: "第一章更多操作", exact: true }).click();
       const chapterSheet = page.locator(".ws-action-sheet--mobile");
       await expectOverlayContract(page, chapterSheet);
       const chapterActions = chapterSheet.locator(".ws-action-sheet-list > button");
@@ -374,7 +374,7 @@ test("mobile overlays stay reachable across the supported viewport matrix", asyn
       await chapterSheet.getByRole("button", { name: "关闭章节菜单" }).click();
 
       await page.locator('[data-outline-id="outline-current"] .icon-button').click();
-      await page.locator(".outline-action-drawer .ws-action-sheet-list > button").first().click();
+      await page.locator(".outline-action-drawer").getByRole("button", { name: "编辑大纲", exact: true }).click();
       const editDrawer = page.locator(".outline-edit-drawer");
       await expectOverlayContract(page, editDrawer);
       await editDrawer.getByRole("button", { name: "保存大纲" }).scrollIntoViewIfNeeded();
@@ -428,8 +428,8 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await newArticle.getByRole("button", { name: "关闭新建文章" }).click();
 
   await page.getByRole("button", { name: "AI 任务", exact: true }).click();
-  const tasks = page.locator(".task-drawer-shell");
-  await expectOverlayContract(page, tasks);
+  const tasks = page.locator(".task-workspace");
+  await expectInsideViewport(page, tasks);
   await tasks.getByRole("button", { name: "关闭 AI 任务" }).click();
 
   await page.locator('[data-outline-id="outline-current"] .icon-button').click();
@@ -1094,7 +1094,7 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Provider-Remote Writer");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
-  await expect(page.getByText("完成后更新当前正文，旧版本保留。", { exact: true })).toBeVisible();
+  await expect(page.locator(".generate-auto-apply-note")).toContainText("确认后生成正文");
 });
 
 test("workspace AI tabs render before a background save finishes and reuse the preloaded model list", async ({ page }, testInfo) => {
@@ -1708,7 +1708,7 @@ test("mobile starts at outline and separates article and global entry points", a
   await page.getByRole("button", { name: "关闭大纲操作" }).click();
 
   await page.getByRole("button", { name: "AI 任务" }).click();
-  await expect(page.getByRole("dialog").getByText("AI 任务", { exact: true })).toBeVisible();
+  await expect(page.locator(".task-workspace > header")).toContainText("AI 任务");
   await page.getByRole("button", { name: "关闭 AI 任务", exact: true }).click();
   await page.getByRole("button", { name: "设置" }).click();
   for (const name of ["常规", "外观与编辑器", "AI 服务", "AI 任务", "数据管理", "系统与诊断"]) await expect(page.getByRole("button", { name })).toBeVisible();

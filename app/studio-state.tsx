@@ -185,7 +185,7 @@ export type AiTask = {
   model: string;
   executionOrigin: TaskExecutionOrigin;
   state: "waiting" | "running" | "success" | "failed" | "cancelled";
-  phase?: "queued" | "preparing" | "connecting" | "generating" | "receiving" | "reviewing" | "revising" | "verifying" | "saving" | "retrying" | "completed" | "failed" | "cancelled";
+  phase?: import("@/lib/task-history").TaskPhase;
   history?: import("@/lib/task-history").TaskHistoryEntry[];
   attempt?: number;
   createdAt: string;
@@ -202,6 +202,7 @@ export type AiTask = {
   resultText?: string;
   error?: string;
   contextOptions?: {
+    writingPreparation?: import("@/lib/writing-preparation").WritingPreparation;
     reasoningEffort?: ReasoningEffort | null;
     resolvedReasoningEffort?: ReasoningEffort | null;
     includePrevious: boolean;
@@ -254,6 +255,7 @@ export type StudioSettings = AppearanceSettings & {
   showArchived: boolean;
   openLastArticle: boolean;
   taskConcurrency: number;
+  preparationMaxRounds?: number;
   chatModel: string;
   generateModel: string;
   generateReasoningEffort?: ReasoningEffort | null;
@@ -424,6 +426,7 @@ const seedData: StudioData = {
     showArchived: false,
     openLastArticle: true,
     taskConcurrency: 2,
+    preparationMaxRounds: 3,
     chatModel: "",
     generateModel: "",
     namingModelMode: "inherit",

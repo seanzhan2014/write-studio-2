@@ -1,4 +1,5 @@
 import { parseTaskHistory } from "@/lib/task-history";
+import { createWritingPreparation, MAX_PREPARATION_ROUNDS } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
 import type { AiTask } from "@/app/studio-state";
@@ -84,6 +85,8 @@ export async function POST(request: Request) {
     const target = body.target;
     if (!articleId || !chapterId || !outlineId || !target || !["content", "outline", "chapter-title", "all-names"].includes(target)) return json({ error: "任务目标无效" }, 400);
     const instruction = String(body.instruction ?? "").trim().slice(0, 20_000);
+    const preparationRounds = body.preparationRounds;
+    if (preparationRounds !== undefined && (target !== "content" || typeof preparationRounds !== "number" || !Number.isInteger(preparationRounds) || preparationRounds < 0 || preparationRounds > MAX_PREPARATION_ROUNDS)) return json({ error: `写作互动轮次必须为 0–${MAX_PREPARATION_ROUNDS}` }, 400);
     if (target !== "content" && target !== "all-names" && !instruction) return json({ error: "生成指令不能为空" }, 400);
     if (target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return json({ error: "正文生成模式无效" }, 400);
     const contentMode = normalizeContentGenerationMode(body.contentMode);
@@ -120,6 +123,7 @@ export async function POST(request: Request) {
     const requestedModel = String(body.model ?? "").trim();
     const configuredModel = requestedModel ? await findModel(requestedModel) : null;
     if (requestedModel && !configuredModel) return json({ error: "所选模型不存在，请重新选择" }, 422);
+    if (preparationRounds !== undefined && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "写作准备需要配置可用模型，请先选择模型" }, 422);
     if (reviewMaxRounds > 0 && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "自动审校需要配置可用模型；循环次数为 0 时可使用本地引擎" }, 422);
     let promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
     const expectedKind = target === "content" ? "content" : target === "outline" ? "outline" : target === "chapter-title" ? "chapter-title" : undefined;
@@ -144,7 +148,7 @@ export async function POST(request: Request) {
     }
     let reviewSourceContent: string | undefined;
     let reviewSourceVersionId: string | null | undefined;
-    if (reviewMaxRounds > 0) {
+    if (reviewMaxRounds > 0 || preparationRounds !== undefined) {
       const snapshot = await readStudioState();
       const sourceOutline = snapshot.data?.articles.find((article) => article.id === articleId)?.chapters.find((chapter) => chapter.id === chapterId)?.outlines.find((outline) => outline.id === outlineId);
       if (!snapshot.data || !sourceOutline) return json({ error: "生成正文已不存在" }, 409);
@@ -173,6 +177,7 @@ export async function POST(request: Request) {
       includeCharacters: body.includeCharacters !== false,
       estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
       ...(target === "content" ? {
+        ...(preparationRounds !== undefined ? { writingPreparation: createWritingPreparation(preparationRounds as number), reviewSourceContent, reviewSourceVersionId } : {}),
         targetWords: rawTargetWords,
         contentMode,
         rewriteRetention,

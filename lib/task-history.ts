@@ -2,6 +2,7 @@ export const taskPhaseLabels = {
   queued: "等待调度", preparing: "准备上下文", connecting: "等待模型响应", generating: "模型生成中",
   receiving: "接收结果", reviewing: "初稿审校", revising: "按问题修正", verifying: "修正后复检",
   saving: "保存结果", retrying: "准备重试", completed: "已保存", failed: "执行失败", cancelled: "已取消",
+  preparing_brief: "整理写作准备稿", awaiting_author: "等待作者回答", awaiting_confirmation: "等待确认准备稿",
 };
 
 export type TaskPhase = keyof typeof taskPhaseLabels;

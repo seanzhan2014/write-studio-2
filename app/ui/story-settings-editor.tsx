@@ -157,7 +157,7 @@ export function ScopedSettingsInline({ level, targetId }: { level: ScopedSetting
   const levelLabel = level === "chapter" ? "本章" : "本大纲";
   const inheritedLabel = level === "chapter"
     ? resolved.inheritedFromChapter?.title ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"
-    : "inheritedFromOutline" in resolved && resolved.inheritedFromOutline?.title ? `继承${resolved.inheritedFromOutline.title}` : "继承章节设定";
+    : "inheritedFromOutline" in resolved && resolved.inheritedFromOutline && typeof resolved.inheritedFromOutline === "object" && "title" in resolved.inheritedFromOutline ? `继承${String(resolved.inheritedFromOutline.title)}` : "继承章节设定";
   const changeCount = level === "chapter" ? countChapterSettingChanges(settings) : countOutlineSettingChanges(settings);
   const inheritedStoryCount = STORY_FIELD_KEYS.filter((key) => !settings.story[key]).length;
 
@@ -338,7 +338,7 @@ export function OutlineSettingsDrawer({ outlineId, opened = true, onClose }: { o
   const [onlyChanges, setOnlyChanges] = useState(false);
   const [query, setQuery] = useState("");
   const [lastChange, setLastChange] = useState<{ settings: ChapterSettings; label: string } | null>(null);
-  const resolved = useMemo(() => outline ? resolveOutlineSettings(studio.currentArticle, outline.id) : null, [studio.currentArticle, outline]);
+  const resolved = outline ? resolveOutlineSettings(studio.currentArticle, outline.id) : null;
   if (!chapter || !outline || !resolved) return null;
 
   const settings = normalizeChapterSettings(outline.settings);

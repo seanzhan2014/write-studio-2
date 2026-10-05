@@ -3,7 +3,7 @@ import { taskReasoningEffort } from "@/lib/reasoning-options";
 import { generateWithReview } from "@/db/generate-review";
 import { normalizeReviewRounds, type GenerateReviewDraft, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import type { AiTask, StudioData, Version } from "@/app/studio-state";
-import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, type ArticleNameGenerationResult } from "@/db/ai";
+import { AiInputError, AiUpstreamCompletionError, findModel, generateArticleNames, generateText, generateWritingPreparation, type ArticleNameGenerationResult } from "@/db/ai";
 import { applyStudioChanges, ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
@@ -108,6 +108,9 @@ async function executeTask(taskId: string) {
     const initialTask = initialRow ? taskFromRow(initialRow) : null;
     if (!initialTask) return json({ error: "任务不存在" }, 404);
     if (initialTask.target === "AI Chat") return json({ error: "AI Chat 由流式会话执行" }, 400);
+    const preparation = initialTask.contextOptions?.writingPreparation;
+    if (preparation && (preparation.stage === "awaiting_author" || preparation.stage === "awaiting_confirmation")) return json({ accepted: false, reason: "awaiting_author" }, 202);
+    if (preparation?.stage === "writing" && !preparation.confirmedAt) return json({ error: "准备稿尚未确认" }, 409);
     const executionOrigin = currentTaskExecutionOrigin();
     if (initialTask.executionOrigin !== executionOrigin) return json({ accepted: false, reason: "foreign_origin", executionOrigin: initialTask.executionOrigin }, 202);
     const model = await findModel(initialTask.contextOptions?.configuredModelId ?? initialTask.model);
@@ -149,6 +152,51 @@ async function executeTask(taskId: string) {
     }, 5_000);
 
     try {
+      if (preparation?.stage === "preparing") {
+        let prepared: Awaited<ReturnType<typeof generateWritingPreparation>> | undefined;
+        let preparationError: unknown;
+        for (let attempt = Math.max(1, (initialTask.attempt ?? 0) + 1); attempt <= 3; attempt += 1) {
+          if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: attempt > 1 ? "retrying" : "preparing_brief", attempt, error: preparationError instanceof Error ? preparationError.message : undefined })) return json({ accepted: true, cancelled: true }, 202);
+          try {
+            prepared = await generateWritingPreparation({
+              outlineId: initialTask.outlineId, target: "content", model: executionModelReference, instruction: initialTask.prompt,
+              reasoningEffort: taskReasoningEffort(initialTask.contextOptions), context: initialTask.contextOptions?.promptContext,
+              includePrevious: initialTask.contextOptions?.includePrevious, includeCharacters: initialTask.contextOptions?.includeCharacters,
+              contentMode: initialTask.contextOptions?.contentMode, targetWords: initialTask.contextOptions?.targetWords,
+              rewriteRetention: initialTask.contextOptions?.rewriteRetention, proseControls: initialTask.contextOptions?.proseControls,
+            }, preparation, upstreamController.signal);
+            break;
+          } catch (error) {
+            preparationError = error;
+            if (upstreamController.signal.aborted) return json({ accepted: true, cancelled: true }, 202);
+            if (error instanceof AiInputError || (error instanceof AiUpstreamCompletionError && !error.retryable)) break;
+          }
+        }
+        if (!prepared) throw preparationError instanceof Error ? preparationError : new Error("准备稿生成失败");
+        const output = prepared;
+        const saved = await mutateState((data) => {
+          const task = findTask(data, taskId);
+          const workflow = task?.contextOptions?.writingPreparation;
+          if (!task || !workflow || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
+          workflow.brief = output.brief;
+          workflow.round = workflow.history.length;
+          workflow.questions = workflow.round < workflow.maxRounds && !workflow.finishAfterReply ? output.questions : [];
+          workflow.stage = workflow.questions.length ? "awaiting_author" : "awaiting_confirmation";
+          workflow.revision += 1;
+          task.state = "waiting";
+          task.phase = workflow.stage;
+          task.lastProgressAt = new Date().toISOString();
+          task.inputTokens = (task.inputTokens ?? 0) + (output.inputTokens ?? 0);
+          task.outputTokens = (task.outputTokens ?? 0) + (output.outputTokens ?? 0);
+          task.runnerId = undefined;
+          task.leaseUntil = undefined;
+          task.error = undefined;
+          const found = findOutline(data, task.outlineId);
+          if (found) found.outline.state = "saved";
+          return { changed: true, value: true };
+        }, runnerId);
+        return json({ accepted: true, awaitingAuthor: saved });
+      }
       let result: GenerateReviewDraft | null = null;
       let reviewReport: GenerateReviewReport | undefined;
       let articleNameResult: ArticleNameGenerationResult | null = null;
@@ -167,6 +215,7 @@ async function executeTask(taskId: string) {
               firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
               includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
               context: initialTask.contextOptions?.promptContext,
+              writingBrief: preparation?.stage === "writing" ? preparation.brief : undefined,
             }, upstreamController.signal);
       if (reviewEnabled) {
         const reviewed = await generateWithReview(initialTask, runnerId, executionModelReference, initialRow?.review_state_json, generate, upstreamController.signal);
@@ -265,7 +314,7 @@ async function executeTask(taskId: string) {
         } else if (task.target === "正文" && found && result) {
           const completedAt = new Date().toISOString();
           const previousOutlineSnapshot = resolvedOutlineSnapshot(found.outline);
-          const sourceChanged = reviewEnabled && (resolvedOutlineContent(found.outline) !== initialTask.contextOptions?.reviewSourceContent || found.outline.currentVersionId !== initialTask.contextOptions?.reviewSourceVersionId);
+          const sourceChanged = (reviewEnabled || Boolean(preparation)) && (resolvedOutlineContent(found.outline) !== initialTask.contextOptions?.reviewSourceContent || found.outline.currentVersionId !== initialTask.contextOptions?.reviewSourceVersionId);
           const generatedTitle = normalizeOutlineTitle(result.outlineTitle);
           if (!sourceChanged && task.contextOptions?.includeOutlineTitle && generatedTitle && found.outline.plan === task.contextOptions?.outlinePlanSnapshot && found.outline.title === task.contextOptions?.outlineTitleSnapshot) {
             found.outline.title = generatedTitle;
@@ -313,6 +362,7 @@ async function executeTask(taskId: string) {
             generatedOutlineTitle: result.outlineTitle,
             generatedOutlineTitleError: result.outlineTitleError,
             ...(reviewReport ? { reviewReport, reviewRound: reviewReport.completedRounds, reviewCandidateOnly: sourceChanged } : {}),
+            ...(preparation ? { reviewCandidateOnly: sourceChanged } : {}),
           };
         } else if (found && result) {
           found.outline.state = "saved";
@@ -328,7 +378,8 @@ async function executeTask(taskId: string) {
         Object.assign(task, {
           state: "success", phase: "completed", completedAt, lastProgressAt: completedAt,
           receivedCharacters, resultText,
-          inputTokens, outputTokens,
+          inputTokens: preparation ? (task.inputTokens ?? 0) + (inputTokens ?? 0) : inputTokens,
+          outputTokens: preparation ? (task.outputTokens ?? 0) + (outputTokens ?? 0) : outputTokens,
           runnerId: undefined, leaseUntil: undefined, error: undefined,
         } satisfies Partial<AiTask>);
         return { changed: true, value: true };
