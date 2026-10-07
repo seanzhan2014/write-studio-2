@@ -10,7 +10,7 @@ import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingP
 import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
 import { modelSelectionLabel } from "../lib/model-label";
 import type { ResolvedOutlineSettings } from "../lib/story-settings";
-import { PREPARATION_SECTIONS, parsePreparationResponse, type WritingPreparation } from "../lib/writing-preparation";
+import { PREPARATION_SECTIONS, parsePreparationResponse, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, type WritingPreparation } from "../lib/writing-preparation";
 
 export type AiProviderRecord = {
   id: string;
@@ -1130,9 +1130,13 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   const model = await findModel(input.model);
   if (!model) throw new AiInputError("请选择可用模型后重新执行写作准备任务");
   const source = suppliedPromptContext(input.context, input.outlineId, "content") ?? await selectPromptContext(input.outlineId, "content", input);
-  const schema = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, `${title}：详细准备内容`])), questions: [{ id: "question-1", title: "需作者决定的问题", reason: "该选择对写作的具体影响", options: [{ id: "a", label: "方案一", description: "具体影响" }, { id: "b", label: "方案二", description: "具体影响" }] }] };
-  const system = `${composeSystemPrompt("你是写作准备助手。只整理写作准备稿并向作者提问，此阶段禁止输出最终正文。", model.systemPrompt)}\n写作前准备任务：必须只返回有效 JSON，格式为 ${JSON.stringify(schema)}。brief 九项缺一不可。questions 最多三题，每题最多四个选项，也可不提供选项让作者自由回答。选项不要预先代作者决定。\n从大纲、前文和人物资料区分事实、推测和未知项，明确人物目标、知道和不知道的事项、认知变化所需证据及行动顺序。未知事实不能编造，作者尚未决定的事项必须在准备稿中标明。整合之前准备稿及所有作者回答（包括自由文字与手动修改）。如已无重要问题可返回空 questions；达到互动上限时必须返回空 questions 并在稿中保留未决项。`;
-  const instruction = `${input.instruction ?? "按大纲准备写作"}\n\n<preparation_progress>\n${escapeXml(JSON.stringify({ maxRounds: preparation.maxRounds, answeredRounds: preparation.history.length, previousBrief: preparation.brief, history: preparation.history }))}\n</preparation_progress>`;
+  const strategy = normalizePreparationStrategy(preparation.strategy);
+  const strategyRules = strategy === "minimal"
+    ? "最少条件型讨论：只询问阻碍写出连贯正文的关键未知、事实矛盾或需要作者决定的重要情节。只要目标、行动因果、人物认知边界及必要约束足够明确，就必须返回空 questions。可由正常写作处理的措辞、动作细节和非必要偏好，不向作者提问。"
+    : "最大探索型讨论：在轮次上限内主动探索人物动机、情节分支、关系、伏笔、视角和表达的有价值选择。每题必须说明新增选择如何改变本篇写作；没有有价值的新问题时必须返回空 questions。不要推翻作者已经明确的决定。";
+  const schema = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, `${title}：详细准备内容`])), questions: [] };
+  const system = `${composeSystemPrompt("你是写作准备助手。只整理写作准备稿并向作者提问，此阶段禁止输出最终正文。", model.systemPrompt)}\n写作前准备任务：必须只返回有效 JSON，格式为 ${JSON.stringify(schema)}。brief 九项缺一不可。需要提问时 questions 每项为 {id,title,reason,options:[{id,label,description}]}，最多三题，每题最多四个选项，也可不提供选项让作者自由回答。选项不要预先代作者决定。\n${strategyRules}\n两种策略都允许提前结束。最大轮次只是上限，不是目标；禁止为用满次数而提问，禁止重复已经回答的问题。达到上限或作者选择提前结束时，必须返回空 questions，并在准备稿中保留未决项，说明正文如何留白或避开未确认事实。\n从大纲、前文和人物资料区分事实、推测和未知项，明确人物目标、知道和不知道的事项、认知变化所需证据及行动顺序。未知事实不能编造，作者尚未决定的事项必须在准备稿中标明。整合之前准备稿及所有作者回答（包括自由文字与手动修改）。`;
+  const instruction = `${input.instruction ?? "按大纲准备写作"}\n\n<preparation_progress>\n${escapeXml(JSON.stringify({ strategy: PREPARATION_STRATEGY_LABELS[strategy], maxRounds: preparation.maxRounds, answeredRounds: preparation.history.length, finishAfterReply: preparation.finishAfterReply === true, previousBrief: preparation.brief, history: preparation.history }))}\n</preparation_progress>`;
   const prompt = generatePrompt(source, instruction, "content", system, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity);
   const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: model.maxOutput ?? 16384 }, input.reasoningEffort);
   const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;

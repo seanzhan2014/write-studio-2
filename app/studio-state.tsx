@@ -256,6 +256,8 @@ export type StudioSettings = AppearanceSettings & {
   openLastArticle: boolean;
   taskConcurrency: number;
   preparationMaxRounds?: number;
+  preparationStrategy?: import("@/lib/writing-preparation").PreparationStrategy;
+  preparationRequireConfirmation?: boolean;
   chatModel: string;
   generateModel: string;
   generateReasoningEffort?: ReasoningEffort | null;
@@ -427,6 +429,8 @@ const seedData: StudioData = {
     openLastArticle: true,
     taskConcurrency: 2,
     preparationMaxRounds: 3,
+    preparationStrategy: "minimal",
+    preparationRequireConfirmation: false,
     chatModel: "",
     generateModel: "",
     namingModelMode: "inherit",

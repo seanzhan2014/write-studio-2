@@ -5,20 +5,35 @@ export const PREPARATION_SECTIONS = [
 ] as const;
 export type PreparationQuestion = { id: string; title: string; reason: string; options: Array<{ id: string; label: string; description: string }> };
 export type PreparationReply = { answers: Record<string, string>; note: string };
+export type PreparationStrategy = "minimal" | "explore";
+export const PREPARATION_STRATEGY_LABELS = { minimal: "最少条件型讨论", explore: "最大探索型讨论" } as const;
+export function normalizePreparationStrategy(value: unknown): PreparationStrategy {
+  return value === "explore" ? "explore" : "minimal";
+}
 export type WritingPreparation = {
   version: 1; revision: number; maxRounds: number; round: number;
+  strategy?: PreparationStrategy;
+  /** Missing on older tasks, which continue to require author confirmation. */
+  requireConfirmation?: boolean;
   stage: "preparing" | "awaiting_author" | "awaiting_confirmation" | "writing";
   brief: string; questions: PreparationQuestion[]; draft: PreparationReply;
   history: Array<{ round: number; brief: string; questions: PreparationQuestion[]; reply: PreparationReply; at: string }>;
   confirmedAt?: string;
+  autoApprovedAt?: string;
   finishAfterReply?: boolean;
 };
 export const MAX_PREPARATION_ROUNDS = 5;
 export function normalizePreparationRounds(value: unknown, fallback = 3) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_PREPARATION_ROUNDS ? value : fallback;
 }
-export function createWritingPreparation(maxRounds: number): WritingPreparation {
-  return { version: 1, revision: 0, maxRounds, round: 0, stage: "preparing", brief: "", questions: [], draft: { answers: {}, note: "" }, history: [] };
+export function createWritingPreparation(maxRounds: number, options: { strategy?: PreparationStrategy; requireConfirmation?: boolean } = {}): WritingPreparation {
+  return { version: 1, revision: 0, maxRounds, round: 0, strategy: normalizePreparationStrategy(options.strategy), requireConfirmation: options.requireConfirmation === true, stage: "preparing", brief: "", questions: [], draft: { answers: {}, note: "" }, history: [] };
+}
+export function preparationNeedsConfirmation(preparation: WritingPreparation) {
+  return preparation.requireConfirmation !== false || preparation.finishAfterReply === true;
+}
+export function canWritePreparedProse(preparation: WritingPreparation) {
+  return preparation.stage === "writing" && Boolean(preparation.brief.trim()) && Boolean(preparation.confirmedAt || (!preparationNeedsConfirmation(preparation) && preparation.autoApprovedAt));
 }
 export function isTaskAwaitingAuthor(task: { state: string; phase?: string }) {
   return task.state === "waiting" && (task.phase === "awaiting_author" || task.phase === "awaiting_confirmation");

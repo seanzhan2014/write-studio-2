@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { preparationModelServer } from "./writing-preparation-model.mjs";
-import { parsePreparationResponse, PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
+import { parsePreparationResponse, PREPARATION_SECTIONS, createWritingPreparation, canWritePreparedProse, preparationNeedsConfirmation } from "../lib/writing-preparation.ts";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method = "GET", data, headers = {}) {
@@ -28,24 +28,134 @@ test("writing preparation requires nine sections and valid questions", () => {
   assert.throws(() => parsePreparationResponse(JSON.stringify({ brief, questions: Array(4).fill({}) })));
 });
 
+test("automatic writing requires a completed brief and recorded transition; legacy tasks still require confirmation", () => {
+  const workflow = createWritingPreparation(3);
+  assert.equal(workflow.strategy, "minimal");
+  assert.equal(workflow.requireConfirmation, false);
+  workflow.stage = "writing";
+  workflow.autoApprovedAt = new Date().toISOString();
+  assert.equal(canWritePreparedProse(workflow), false);
+  workflow.brief = "写作所需事实、行动与约束。";
+  assert.equal(canWritePreparedProse(workflow), true);
+  workflow.finishAfterReply = true;
+  assert.equal(canWritePreparedProse(workflow), false);
+  delete workflow.finishAfterReply;
+  delete workflow.requireConfirmation;
+  assert.equal(preparationNeedsConfirmation(workflow), true);
+  assert.equal(canWritePreparedProse(workflow), false);
+  workflow.confirmedAt = new Date().toISOString();
+  assert.equal(canWritePreparedProse(workflow), true);
+});
+
 test("durable preparation, author discussion and final writing", async (t) => {
   const fake = await preparationModelServer();
   try {
     const provider = await api("/api/providers", "POST", { name: "Preparation integration", baseUrl: fake.baseUrl, secret: "fake-key" });
     const model = await api("/api/models", "POST", { providerId: provider.id, name: "Preparation integration", modelId: "preparation-test", maxInputCharacters: 120000 });
-    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; }
-    const create = async (rounds = 2) => (await api("/api/ai/tasks", "POST", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: rounds, instruction: "让人物发现异常，先讨论再写正文", reasoningEffort: "low" }, { "Idempotency-Key": crypto.randomUUID() })).data;
+    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; fake.control.ask = true; }
+    const create = async (rounds = 2, options = { preparationRequireConfirmation: true }) => (await api("/api/ai/tasks", "POST", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: rounds, instruction: "让人物发现异常，先讨论再写正文", reasoningEffort: "low", ...options }, { "Idempotency-Key": crypto.randomUUID() })).data;
     const paused = (task) => task.phase === "awaiting_author" || task.phase === "awaiting_confirmation" || task.state === "failed";
     const interact = async (task, action, extra = {}) => (await api(`/api/ai/tasks/${task.id}/interaction`, "POST", { action, revision: task.contextOptions.writingPreparation.revision, ...extra })).task;
 
     await t.test("global interaction rounds persist through settings API and normalize invalid values", async () => {
       await reset();
       let current = await api("/api/state");
-      await api("/api/settings", "PUT", { preparationMaxRounds: 5 }, { "If-Match": String(current.revision) });
+      assert.equal(current.data.settings.preparationStrategy, "minimal");
+      assert.equal(current.data.settings.preparationRequireConfirmation, false);
+      await api("/api/settings", "PUT", { preparationMaxRounds: 5, preparationStrategy: "explore", preparationRequireConfirmation: true }, { "If-Match": String(current.revision) });
       current = await api("/api/state");
       assert.equal(current.data.settings.preparationMaxRounds, 5);
-      await api("/api/settings", "PUT", { preparationMaxRounds: 99 }, { "If-Match": String(current.revision) });
-      assert.equal((await api("/api/state")).data.settings.preparationMaxRounds, 3);
+      assert.equal(current.data.settings.preparationStrategy, "explore");
+      assert.equal(current.data.settings.preparationRequireConfirmation, true);
+      await api("/api/settings", "PUT", { preparationMaxRounds: 99, preparationStrategy: "invalid", preparationRequireConfirmation: false }, { "If-Match": String(current.revision) });
+      current = await api("/api/state");
+      assert.equal(current.data.settings.preparationMaxRounds, 3);
+      assert.equal(current.data.settings.preparationStrategy, "minimal");
+      assert.equal(current.data.settings.preparationRequireConfirmation, false);
+    });
+
+    for (const strategy of ["minimal", "explore"]) await t.test(`${strategy} stops before the cap and automatically writes when no questions remain`, async () => {
+      await reset(); fake.control.ask = false;
+      const created = await create(5, { preparationStrategy: strategy });
+      const task = await waitTask(created.id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      const workflow = task.contextOptions.writingPreparation;
+      assert.equal(workflow.round, 0);
+      assert.equal(workflow.strategy, strategy);
+      assert.equal(workflow.requireConfirmation, false);
+      assert.ok(workflow.autoApprovedAt);
+      assert.equal(workflow.confirmedAt, undefined);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "write"]);
+      assert.equal(task.attempt, 1);
+      assert.equal(task.inputTokens, 24);
+      assert.equal(task.outputTokens, 48);
+      const prompt = fake.control.calls[0].body.messages[0].content;
+      assert.match(prompt, strategy === "minimal" ? /最少条件型讨论：只询问阻碍/ : /最大探索型讨论：在轮次上限内主动探索/);
+      assert.match(prompt, /最大轮次只是上限，不是目标/);
+      assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /confirmed_writing_brief/);
+      assert.equal(task.history.some((entry) => entry.phase === "awaiting_confirmation"), false);
+    });
+
+    await t.test("zero rounds automatically writes by default", async () => {
+      await reset();
+      const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "write"]);
+      assert.equal(task.contextOptions.writingPreparation.questions.length, 0);
+    });
+
+    await t.test("opt-in confirmation pauses a question-free brief and remains frozen when the global switch is turned off", async () => {
+      await reset(); fake.control.ask = false;
+      let task = await waitTask((await create(5)).id, paused);
+      assert.equal(task.phase, "awaiting_confirmation");
+      assert.equal(task.contextOptions.writingPreparation.questions.length, 0);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare"]);
+      const current = await api("/api/state");
+      await api("/api/settings", "PUT", { preparationRequireConfirmation: false }, { "If-Match": String(current.revision) });
+      await api(`/api/ai/tasks/${task.id}/execute`, "POST", {});
+      assert.equal(fake.control.calls.length, 1);
+      task = await interact(task, "confirm");
+      task = await waitTask(task.id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      assert.ok(task.contextOptions.writingPreparation.confirmedAt);
+      assert.equal(task.contextOptions.writingPreparation.autoApprovedAt, undefined);
+    });
+
+    await t.test("changing global settings does not interrupt automatic writing after a reply", async () => {
+      await reset(); let task = await waitTask((await create(1, {})).id, paused);
+      assert.equal(task.phase, "awaiting_author");
+      const current = await api("/api/state");
+      await api("/api/settings", "PUT", { preparationStrategy: "explore", preparationRequireConfirmation: true }, { "If-Match": String(current.revision) });
+      task = await interact(task, "reply", { draft: { answers: { discovery: "suspect" }, note: "只保留怀疑" } });
+      task = await waitTask(task.id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      assert.equal(task.contextOptions.writingPreparation.strategy, "minimal");
+      assert.equal(task.contextOptions.writingPreparation.requireConfirmation, false);
+      assert.equal(task.contextOptions.writingPreparation.round, 1);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "write"]);
+      assert.match(fake.control.calls[1].body.messages.at(-1).content, /只保留怀疑/);
+      assert.equal(task.contextOptions.writingPreparation.history[0].reply.note, "只保留怀疑");
+      const newTask = await create(0, {});
+      assert.equal(newTask.contextOptions.writingPreparation.strategy, "explore");
+      assert.equal(newTask.contextOptions.writingPreparation.requireConfirmation, true);
+      assert.equal((await waitTask(newTask.id, paused)).phase, "awaiting_confirmation");
+    });
+
+    await t.test("manual early finish still waits for inspection with automatic writing enabled", async () => {
+      await reset(); let task = await waitTask((await create(5, {})).id, paused);
+      task = await interact(task, "finish", { draft: { answers: {}, note: "先检查这份准备稿" } });
+      task = await waitTask(task.id, (item) => item.phase === "awaiting_confirmation");
+      assert.equal(task.contextOptions.writingPreparation.requireConfirmation, false);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare"]);
+    });
+
+    await t.test("invalid discussion preferences are rejected before calling the model", async () => {
+      await reset();
+      for (const options of [{ preparationStrategy: ["explore"] }, { preparationStrategy: "invalid" }, { preparationRequireConfirmation: "false" }]) {
+        const response = await fetch(`${baseUrl}/api/ai/tasks`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: 3, ...options }) });
+        assert.equal(response.status, 400);
+      }
+      assert.equal(fake.control.calls.length, 0);
     });
 
     await t.test("initial preparation pauses without a body/version or live lease", async () => {

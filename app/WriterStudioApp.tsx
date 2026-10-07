@@ -10,7 +10,7 @@ import { createReviewRuleSnapshot, hasReviewRules, type ReviewRuleSnapshot } fro
 import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
 import { TaskHistory } from "@/app/ui/task-history";
 import { TaskInteraction, OutlineTaskIndicator } from "@/app/ui/task-interaction";
-import { isTaskAwaitingAuthor, normalizePreparationRounds, MAX_PREPARATION_ROUNDS } from "@/lib/writing-preparation";
+import { isTaskAwaitingAuthor, normalizePreparationRounds, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, MAX_PREPARATION_ROUNDS, type PreparationStrategy } from "@/lib/writing-preparation";
 import { StudioThemeProvider } from "@/app/ui/studio-theme";
 import { AppearancePanel } from "@/app/ui/appearance-settings";
 import { taskPhaseLabels } from "@/lib/task-history";
@@ -188,6 +188,8 @@ function chapterIsEmpty(chapter: Chapter) {
 
 type ServerTaskInput = {
   preparationRounds?: number;
+  preparationStrategy?: PreparationStrategy;
+  preparationRequireConfirmation?: boolean;
   reasoningEffort?: ReasoningEffort | null;
   reviewRuleSnapshot?: ReviewRuleSnapshot;
   reviewMaxRounds?: number;
@@ -228,7 +230,11 @@ async function createServerTask(studio: ReturnType<typeof useStudio>, input: Ser
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
-    body: JSON.stringify({ ...input, preparationRounds: input.target === "content" && input.model.trim() ? input.preparationRounds ?? normalizePreparationRounds(studio.data.settings.preparationMaxRounds) : undefined }),
+    body: JSON.stringify({ ...input, ...(input.target === "content" && input.model.trim() ? {
+      preparationRounds: input.preparationRounds ?? normalizePreparationRounds(studio.data.settings.preparationMaxRounds),
+      preparationStrategy: input.preparationStrategy ?? normalizePreparationStrategy(studio.data.settings.preparationStrategy),
+      preparationRequireConfirmation: input.preparationRequireConfirmation ?? studio.data.settings.preparationRequireConfirmation === true,
+    } : { preparationRounds: undefined, preparationStrategy: undefined, preparationRequireConfirmation: undefined }) }),
   });
   const payload = await response.json() as { data?: AiTask; revision?: number; message?: string; error?: string };
   if (!response.ok || !payload.data || payload.revision === undefined) throw new Error(payload.message || payload.error || "AI 任务创建失败");
@@ -3030,7 +3036,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
               <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
             </div>
-            <p className="generate-auto-apply-note">{selectedModelReference ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
+            <p className="generate-auto-apply-note">{selectedModelReference ? studio.data.settings.preparationRequireConfirmation === true ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "先整理写作准备稿，无待答问题后自动写正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
           </div>
         </section>
 
@@ -5386,7 +5392,23 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
   </>;
 }
 
-function TaskSettings() { const studio = useStudio(); return <SettingSection title="任务队列"><SettingRow title="并发任务数"><select value={studio.data.settings.taskConcurrency} onChange={(event) => studio.updateSettings({ taskConcurrency: Number(event.target.value) })}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></SettingRow><SettingRow title="写作前最多互动轮次"><select aria-label="写作前最多互动轮次" value={normalizePreparationRounds(studio.data.settings.preparationMaxRounds)} onChange={(event) => studio.updateSettings({ preparationMaxRounds: Number(event.target.value) })}>{Array.from({ length: MAX_PREPARATION_ROUNDS + 1 }, (_, value) => <option key={value} value={value}>{value} 轮</option>)}</select><span className="readonly-value">新任务生效；0 轮仍整理准备稿并等待确认</span></SettingRow><SettingRow title="自动重试"><span className="readonly-value">2 次</span></SettingRow><SettingRow title="任务记录"><button className="secondary-button" type="button" onClick={() => studio.data.tasks.filter((task) => ["success", "failed", "cancelled"].includes(task.state)).forEach((task) => studio.removeTask(task.id))}>清除终态任务</button></SettingRow></SettingSection>; }
+function TaskSettings() {
+  const studio = useStudio();
+  const strategy = normalizePreparationStrategy(studio.data.settings.preparationStrategy);
+  return <>
+    <SettingSection title="写作准备与讨论">
+      <SettingRow title="讨论策略"><select aria-label="写作讨论策略" value={strategy} onChange={(event) => studio.updateSettings({ preparationStrategy: normalizePreparationStrategy(event.target.value) })}>{Object.entries(PREPARATION_STRATEGY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="readonly-value">{strategy === "minimal" ? "只讨论影响写作的必要条件，条件足够后结束。" : "探索人物、情节和表达的更多可能，没有有价值的新问题时结束。"}</span></SettingRow>
+      <SettingRow title="写作前最多互动轮次"><select aria-label="写作前最多互动轮次" value={normalizePreparationRounds(studio.data.settings.preparationMaxRounds)} onChange={(event) => studio.updateSettings({ preparationMaxRounds: Number(event.target.value) })}>{Array.from({ length: MAX_PREPARATION_ROUNDS + 1 }, (_, value) => <option key={value} value={value}>{value} 轮</option>)}</select><span className="readonly-value">两种策略都可提前结束；0 轮仍整理准备稿。</span></SettingRow>
+      <SettingRow title="准备稿无问题时仍需确认"><Checkbox aria-label="准备稿无问题时仍需确认" checked={studio.data.settings.preparationRequireConfirmation === true} onChange={(event) => studio.updateSettings({ preparationRequireConfirmation: event.currentTarget.checked })} /><span className="readonly-value">关闭后自动写正文；开启后等待作者确认。</span></SettingRow>
+      <p className="form-foot">以上设置对新任务生效。主动选择“结束讨论，检查准备稿”时，仍会等待确认。</p>
+    </SettingSection>
+    <SettingSection title="任务队列">
+      <SettingRow title="并发任务数"><select value={studio.data.settings.taskConcurrency} onChange={(event) => studio.updateSettings({ taskConcurrency: Number(event.target.value) })}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></SettingRow>
+      <SettingRow title="自动重试"><span className="readonly-value">2 次</span></SettingRow>
+      <SettingRow title="任务记录"><button className="secondary-button" type="button" onClick={() => studio.data.tasks.filter((task) => ["success", "failed", "cancelled"].includes(task.state)).forEach((task) => studio.removeTask(task.id))}>清除终态任务</button></SettingRow>
+    </SettingSection>
+  </>;
+}
 
 function DatabaseSettings() {
   const studio = useStudio();

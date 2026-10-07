@@ -122,7 +122,6 @@ test("Generate review settings, server loop and durable report work together", a
     await page.getByLabel("本次 Review 指令", { exact: true }).fill("保持雨后场景");
     await expect(page.locator(".generate-review-rules")).toContainText("人物必须十八岁");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
-    await page.getByRole("button", { name: "确认准备稿并写正文", exact: true }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 25000 }).toBe("success");
     expect(fake.control.calls.map((item) => item.kind)).toEqual(["prepare", "generate", "review", "revise", "review"]);
     await page.goto("/");

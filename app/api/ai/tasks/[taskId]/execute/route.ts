@@ -1,4 +1,5 @@
 import { parseTaskHistory } from "@/lib/task-history";
+import { canWritePreparedProse, preparationNeedsConfirmation } from "@/lib/writing-preparation";
 import { taskReasoningEffort } from "@/lib/reasoning-options";
 import { generateWithReview } from "@/db/generate-review";
 import { normalizeReviewRounds, type GenerateReviewDraft, type GenerateReviewReport } from "@/lib/generate-review.mjs";
@@ -110,7 +111,7 @@ async function executeTask(taskId: string) {
     if (initialTask.target === "AI Chat") return json({ error: "AI Chat 由流式会话执行" }, 400);
     const preparation = initialTask.contextOptions?.writingPreparation;
     if (preparation && (preparation.stage === "awaiting_author" || preparation.stage === "awaiting_confirmation")) return json({ accepted: false, reason: "awaiting_author" }, 202);
-    if (preparation?.stage === "writing" && !preparation.confirmedAt) return json({ error: "准备稿尚未确认" }, 409);
+    if (preparation?.stage === "writing" && !canWritePreparedProse(preparation)) return json({ error: "准备稿尚未确认或完成" }, 409);
     const executionOrigin = currentTaskExecutionOrigin();
     if (initialTask.executionOrigin !== executionOrigin) return json({ accepted: false, reason: "foreign_origin", executionOrigin: initialTask.executionOrigin }, 202);
     const model = await findModel(initialTask.contextOptions?.configuredModelId ?? initialTask.model);
@@ -177,15 +178,18 @@ async function executeTask(taskId: string) {
         const saved = await mutateState((data) => {
           const task = findTask(data, taskId);
           const workflow = task?.contextOptions?.writingPreparation;
-          if (!task || !workflow || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
+          if (!task || !workflow || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: { saved: false, awaitingAuthor: false } };
           workflow.brief = output.brief;
           workflow.round = workflow.history.length;
           workflow.questions = workflow.round < workflow.maxRounds && !workflow.finishAfterReply ? output.questions : [];
-          workflow.stage = workflow.questions.length ? "awaiting_author" : "awaiting_confirmation";
+          workflow.stage = workflow.questions.length ? "awaiting_author" : preparationNeedsConfirmation(workflow) ? "awaiting_confirmation" : "writing";
+          const readyAt = new Date().toISOString();
+          if (workflow.stage === "writing") workflow.autoApprovedAt = readyAt;
           workflow.revision += 1;
           task.state = "waiting";
-          task.phase = workflow.stage;
-          task.lastProgressAt = new Date().toISOString();
+          task.phase = workflow.stage === "writing" ? "queued" : workflow.stage;
+          if (workflow.stage === "writing") task.attempt = 0;
+          task.lastProgressAt = readyAt;
           task.inputTokens = (task.inputTokens ?? 0) + (output.inputTokens ?? 0);
           task.outputTokens = (task.outputTokens ?? 0) + (output.outputTokens ?? 0);
           task.runnerId = undefined;
@@ -193,9 +197,9 @@ async function executeTask(taskId: string) {
           task.error = undefined;
           const found = findOutline(data, task.outlineId);
           if (found) found.outline.state = "saved";
-          return { changed: true, value: true };
+          return { changed: true, value: { saved: true, awaitingAuthor: workflow.stage !== "writing" } };
         }, runnerId);
-        return json({ accepted: true, awaitingAuthor: saved });
+        return json({ accepted: true, preparationSaved: saved.saved, awaitingAuthor: saved.awaitingAuthor });
       }
       let result: GenerateReviewDraft | null = null;
       let reviewReport: GenerateReviewReport | undefined;

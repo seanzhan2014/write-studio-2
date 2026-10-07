@@ -1,5 +1,5 @@
 import { parseTaskHistory } from "@/lib/task-history";
-import { createWritingPreparation, MAX_PREPARATION_ROUNDS } from "@/lib/writing-preparation";
+import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationStrategy, type WritingPreparation } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
 import type { AiTask } from "@/app/studio-state";
@@ -87,6 +87,8 @@ export async function POST(request: Request) {
     const instruction = String(body.instruction ?? "").trim().slice(0, 20_000);
     const preparationRounds = body.preparationRounds;
     if (preparationRounds !== undefined && (target !== "content" || typeof preparationRounds !== "number" || !Number.isInteger(preparationRounds) || preparationRounds < 0 || preparationRounds > MAX_PREPARATION_ROUNDS)) return json({ error: `写作互动轮次必须为 0–${MAX_PREPARATION_ROUNDS}` }, 400);
+    if (body.preparationStrategy !== undefined && (preparationRounds === undefined || (body.preparationStrategy !== "minimal" && body.preparationStrategy !== "explore"))) return json({ error: "写作讨论策略无效" }, 400);
+    if (body.preparationRequireConfirmation !== undefined && (preparationRounds === undefined || typeof body.preparationRequireConfirmation !== "boolean")) return json({ error: "准备稿确认设置必须为布尔值" }, 400);
     if (target !== "content" && target !== "all-names" && !instruction) return json({ error: "生成指令不能为空" }, 400);
     if (target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return json({ error: "正文生成模式无效" }, 400);
     const contentMode = normalizeContentGenerationMode(body.contentMode);
@@ -148,10 +150,15 @@ export async function POST(request: Request) {
     }
     let reviewSourceContent: string | undefined;
     let reviewSourceVersionId: string | null | undefined;
+    let writingPreparation: WritingPreparation | undefined;
     if (reviewMaxRounds > 0 || preparationRounds !== undefined) {
       const snapshot = await readStudioState();
       const sourceOutline = snapshot.data?.articles.find((article) => article.id === articleId)?.chapters.find((chapter) => chapter.id === chapterId)?.outlines.find((outline) => outline.id === outlineId);
       if (!snapshot.data || !sourceOutline) return json({ error: "生成正文已不存在" }, 409);
+      if (preparationRounds !== undefined) writingPreparation = createWritingPreparation(preparationRounds as number, {
+        strategy: normalizePreparationStrategy(body.preparationStrategy ?? snapshot.data.settings.preparationStrategy),
+        requireConfirmation: (body.preparationRequireConfirmation ?? snapshot.data.settings.preparationRequireConfirmation) === true,
+      });
       reviewSourceContent = resolvedOutlineContent(sourceOutline);
       reviewSourceVersionId = sourceOutline.currentVersionId;
       promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
@@ -177,7 +184,7 @@ export async function POST(request: Request) {
       includeCharacters: body.includeCharacters !== false,
       estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
       ...(target === "content" ? {
-        ...(preparationRounds !== undefined ? { writingPreparation: createWritingPreparation(preparationRounds as number), reviewSourceContent, reviewSourceVersionId } : {}),
+        ...(writingPreparation ? { writingPreparation, reviewSourceContent, reviewSourceVersionId } : {}),
         targetWords: rawTargetWords,
         contentMode,
         rewriteRetention,

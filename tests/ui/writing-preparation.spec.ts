@@ -27,11 +27,18 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/settings/tasks");
     await expect(page.getByLabel("写作前最多互动轮次")).toHaveValue("3");
+    await expect(page.getByLabel("写作讨论策略")).toHaveValue("minimal");
+    await expect(page.getByLabel("准备稿无问题时仍需确认")).not.toBeChecked();
+    await page.getByLabel("写作讨论策略").selectOption("explore");
+    await page.getByLabel("准备稿无问题时仍需确认").check();
     await page.getByLabel("写作前最多互动轮次").selectOption("1");
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationMaxRounds).toBe(1);
+    await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationRequireConfirmation).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const inline = page.locator(".task-interaction.inline");
+    await expect(inline).toContainText("最大探索型讨论");
     await expect(inline.getByText("人物在此处了解到哪一步？", { exact: false })).toBeVisible();
     expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare"]);
     await expect(page.getByLabel("AI 任务需要作者处理").filter({ visible: true }).first()).toBeVisible();
@@ -80,6 +87,35 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await expect(page.getByLabel("AI 任务已完成").filter({ visible: true }).first().locator(".state-dot")).toHaveCSS("background-color", "rgb(88, 137, 202)");
     expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare", "write"]);
     expect(fake.control.calls.at(-1).body.messages.at(-1).content).toContain("结尾不要解释档案被修改的原因");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  } finally { await fake.close(); }
+});
+
+test("default preparation automatically writes without spending discussion rounds or asking for final confirmation", async ({ page, request }) => {
+  const fake = await preparationModelServer();
+  fake.control.ask = false;
+  try {
+    const provider = await (await request.post("/api/providers", { data: { name: "UI automatic preparation", baseUrl: fake.baseUrl, secret: "fake-key" } })).json();
+    const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "UI automatic preparation", modelId: "prep-auto-ui", maxInputCharacters: 120000 } })).json();
+    const current = await (await request.get("/api/state")).json();
+    const data = fullStudioFixture() as unknown as StudioData;
+    data.settings.generateModel = model.id;
+    data.articles[0].aiGenerateSettings!.model = model.id;
+    expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
+    await page.goto("/articles/article-main/outlines/outline-current/generate");
+    await expect(page.locator(".generate-auto-apply-note")).toContainText("无待答问题后自动写正文");
+    await page.getByRole("button", { name: "开始生成", exact: true }).click();
+    const inline = page.locator(".task-interaction.inline");
+    await expect(inline).toContainText("正文已完成", { timeout: 25_000 });
+    await expect(inline).toContainText("最少条件型讨论");
+    await expect(page.getByRole("button", { name: "确认准备稿并写正文", exact: true })).toHaveCount(0);
+    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "write"]);
+    const task = (await (await request.get("/api/ai/tasks")).json()).tasks[0];
+    expect(task.contextOptions.writingPreparation.round).toBe(0);
+    expect(task.contextOptions.writingPreparation.autoApprovedAt).toBeTruthy();
+    await inline.getByRole("button", { name: "打开完整任务 →" }).click();
+    await expect(page.locator(".task-interaction.full")).toContainText("正文已完成");
+    await fitsViewport(page, page.locator(".task-workspace"));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   } finally { await fake.close(); }
 });
