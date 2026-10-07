@@ -3,7 +3,7 @@ import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationS
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
 import type { AiTask } from "@/app/studio-state";
-import { MAX_REVIEW_ROUNDS, normalizeReviewRules } from "@/lib/generate-review.mjs";
+import { MAX_REVIEW_ROUNDS, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { selectAiContext } from "@/lib/ai-context";
 import { findModel } from "@/db/ai";
@@ -94,7 +94,10 @@ export async function POST(request: Request) {
     const contentMode = normalizeContentGenerationMode(body.contentMode);
     const reviewMaxRounds = Number(body.reviewMaxRounds ?? 0);
     if (!Number.isInteger(reviewMaxRounds) || reviewMaxRounds < 0 || reviewMaxRounds > MAX_REVIEW_ROUNDS || (target !== "content" && reviewMaxRounds !== 0)) return json({ error: `审校循环次数必须是 0–${MAX_REVIEW_ROUNDS} 的整数，仅支持正文生成` }, 400);
-    const reviewInstruction = normalizeReviewRules(body.reviewInstruction);
+    let reviewInstruction = normalizeReviewRules(body.reviewInstruction);
+    if (body.reviewStrategy !== undefined && body.reviewStrategy !== "minimal" && body.reviewStrategy !== "explore") return json({ error: "审校类型无效" }, 400);
+    if (body.reviewModelMode !== undefined && body.reviewModelMode !== "inherit" && body.reviewModelMode !== "fixed") return json({ error: "审校模型设置无效" }, 400);
+    if (body.reviewModel !== undefined && typeof body.reviewModel !== "string") return json({ error: "审校模型无效" }, 400);
     if (target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return json({ error: "原文保留度无效" }, 400);
     const rewriteRetention = target === "content" && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
     if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
@@ -111,13 +114,16 @@ export async function POST(request: Request) {
       const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
       return json({ data: taskFromRow(existing), revision });
     }
+    const snapshot = await readStudioState();
+    const reviewStrategy = normalizeReviewStrategy(body.reviewStrategy ?? snapshot.data?.settings.generateReviewStrategy);
+    if (body.reviewInstruction === undefined) reviewInstruction = normalizeReviewRules(snapshot.data?.settings.generateReviewInstruction);
     const outlineRow = await db.prepare(`SELECT o.summary,o.title,o.title_generation_pending,o.archived,c.archived AS chapter_archived,a.chapter_naming_json,a.outline_naming_json,a.review_rules,a.review_rule_items_json,a.created_at AS article_created_at
       FROM outlines o JOIN chapters c ON c.id=o.chapter_id JOIN articles a ON a.id=o.article_id
       WHERE o.id=? AND o.article_id=? AND o.chapter_id=?`).bind(outlineId, articleId, chapterId).first<Record<string, unknown>>();
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
     const reviewRuleSnapshot = createReviewRuleSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, reviewInstruction);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
-    if (reviewMaxRounds > 0 && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls)) return json({ error: "没有有效规则、本次 Review 指令或非自动正文表达控制，无需审校；请添加一项要求或将审校循环次数设为 0" }, 422);
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls)) return json({ error: "没有有效规则、审校指令或非自动正文表达控制；请在文章 AI 任务设定中添加规则，或在设置 → AI 任务中关闭审校" }, 422);
     const executionOrigin = currentTaskExecutionOrigin();
     const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
     if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
@@ -127,6 +133,10 @@ export async function POST(request: Request) {
     if (requestedModel && !configuredModel) return json({ error: "所选模型不存在，请重新选择" }, 422);
     if (preparationRounds !== undefined && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "写作准备需要配置可用模型，请先选择模型" }, 422);
     if (reviewMaxRounds > 0 && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "自动审校需要配置可用模型；循环次数为 0 时可使用本地引擎" }, 422);
+    const reviewModelMode = (body.reviewModelMode ?? snapshot.data?.settings.reviewModelMode) === "fixed" ? "fixed" : "inherit";
+    const reviewModelReference = String(body.reviewModel ?? snapshot.data?.settings.reviewModel ?? "").trim();
+    const reviewModel = reviewMaxRounds > 0 ? reviewModelMode === "fixed" ? reviewModelReference ? await findModel(reviewModelReference) : null : configuredModel : null;
+    if (reviewMaxRounds > 0 && (!reviewModel || !reviewModel.hasSecret)) return json({ error: "审校模型不可用，请在设置 → AI 任务中重新选择，或跟随 AI Generate 模型" }, 422);
     let promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
     const expectedKind = target === "content" ? "content" : target === "outline" ? "outline" : target === "chapter-title" ? "chapter-title" : undefined;
     if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedKind || JSON.stringify(promptContext).length > 200_000)) return json({ error: "AI 上下文与任务目标不匹配或过大" }, 422);
@@ -145,14 +155,13 @@ export async function POST(request: Request) {
     const requestedFirstAppearanceIds = uniqueStrings(body.firstAppearanceCharacterIds)?.filter((characterId) => activeCharacterIds.has(characterId));
     let firstAppearanceCharacterIds = requestedFirstAppearanceIds;
     if (target === "content" && body.includeCharacters !== false && firstAppearanceCharacterIds === undefined) {
-      const state = await readStudioState();
+      const state = snapshot;
       firstAppearanceCharacterIds = state.data ? detectFirstAppearanceCharacters(state.data, outlineId, { instruction, currentPlan: submittedPlan ?? String(outlineRow.summary) }).filter((item) => item.firstAppearance).map((item) => item.characterId) : [];
     }
     let reviewSourceContent: string | undefined;
     let reviewSourceVersionId: string | null | undefined;
     let writingPreparation: WritingPreparation | undefined;
     if (reviewMaxRounds > 0 || preparationRounds !== undefined) {
-      const snapshot = await readStudioState();
       const sourceOutline = snapshot.data?.articles.find((article) => article.id === articleId)?.chapters.find((chapter) => chapter.id === chapterId)?.outlines.find((outline) => outline.id === outlineId);
       if (!snapshot.data || !sourceOutline) return json({ error: "生成正文已不存在" }, 409);
       if (preparationRounds !== undefined) writingPreparation = createWritingPreparation(preparationRounds as number, {
@@ -192,7 +201,7 @@ export async function POST(request: Request) {
         rewriteSourceName,
         ...(body.proseControls !== undefined ? { proseControls } : {}),
         dialogueDensity,
-        ...(reviewMaxRounds > 0 ? { reviewMaxRounds, reviewInstruction, reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
+        ...(reviewMaxRounds > 0 && reviewModel ? { reviewMaxRounds, reviewInstruction, reviewStrategy, reviewConfiguredModelId: reviewModel.id, reviewModelId: reviewModel.modelId, reviewModelName: modelSelectionLabel(reviewModel), reviewResolvedReasoningEffort: resolveReasoningEffort(reviewModel, reviewModelMode === "inherit" ? body.reasoningEffort : snapshot.data?.settings.reviewReasoningEffort), reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
         includeOutlineTitle: body.includeOutlineTitle === true || undefined,
         includeExcellentFragments: body.includeExcellentFragments === true || undefined,
         excellentFragmentIds: body.includeExcellentFragments === true ? uniqueStrings(body.excellentFragmentIds) : undefined,

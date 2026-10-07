@@ -4,7 +4,7 @@ import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { normalizeReasoningEffort, resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
 
-import { MAX_REVIEW_ROUNDS, MAX_REVIEW_RULE_CHARACTERS, normalizeReviewRounds, normalizeReviewRules } from "@/lib/generate-review.mjs";
+import { MAX_REVIEW_ROUNDS, MAX_REVIEW_RULE_CHARACTERS, normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy, REVIEW_STRATEGY_LABELS } from "@/lib/generate-review.mjs";
 import { ArticleReviewRulesPage, ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 import { createReviewRuleSnapshot, hasReviewRules, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
@@ -230,7 +230,13 @@ async function createServerTask(studio: ReturnType<typeof useStudio>, input: Ser
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
-    body: JSON.stringify({ ...input, ...(input.target === "content" && input.model.trim() ? {
+    body: JSON.stringify({ ...input, ...(input.target === "content" ? {
+      reviewMaxRounds: normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds),
+      reviewInstruction: normalizeReviewRules(studio.data.settings.generateReviewInstruction),
+      reviewStrategy: normalizeReviewStrategy(studio.data.settings.generateReviewStrategy),
+      reviewModelMode: studio.data.settings.reviewModelMode === "fixed" ? "fixed" : "inherit",
+      reviewModel: studio.data.settings.reviewModel,
+    } : {}), ...(input.target === "content" && input.model.trim() ? {
       preparationRounds: input.preparationRounds ?? normalizePreparationRounds(studio.data.settings.preparationMaxRounds),
       preparationStrategy: input.preparationStrategy ?? normalizePreparationStrategy(studio.data.settings.preparationStrategy),
       preparationRequireConfirmation: input.preparationRequireConfirmation ?? studio.data.settings.preparationRequireConfirmation === true,
@@ -2674,10 +2680,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     proseControls,
     model: selectedModel,
     reasoningEffort,
-    reviewMaxRounds,
-    reviewInstruction,
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
+  const reviewMaxRounds = normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds);
+  const reviewInstruction = normalizeReviewRules(studio.data.settings.generateReviewInstruction);
+  const reviewStrategy = normalizeReviewStrategy(studio.data.settings.generateReviewStrategy);
   const [prompt, setPrompt] = useState(() => initialPrompt || storedPromptAtOpen);
   const [savedPrompt, setSavedPrompt] = useState(storedPromptAtOpen);
   const [promptSaving, setPromptSaving] = useState(false);
@@ -2833,11 +2840,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
-    if (reviewMaxRounds > 0 && !hasReviewRules(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction))) && !hasActiveProseControls(proseControls)) { setNotice("没有有效规则、本次 Review 指令或非自动正文表达控制，无需审校。请添加一项要求或将审校循环次数设为 0。"); return; }
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction))) && !hasActiveProseControls(proseControls)) { setNotice("请在文章 AI 任务设定中添加审校规则，或在设置 → AI 任务中添加审校指令、关闭审校。"); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)))) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)))) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
       const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
@@ -2888,7 +2895,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, hasCurrentContent, outlinePlanDraft, generateOptions, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -3007,16 +3014,6 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
             </div>}
           </div>
-          <section className="generate-review-settings" aria-labelledby="generate-review-heading">
-            <div className="generate-section-heading"><span id="generate-review-heading">生成后审校</span><strong>{reviewMaxRounds > 0 ? `${reviewMaxRounds} 轮` : "关闭"}</strong></div>
-            <div className="generate-review-settings-body">
-              <NumberInput label="最多修正次数" aria-label="审校循环次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={reviewMaxRounds} onChange={(value) => rememberGenerateOptions({ reviewMaxRounds: normalizeReviewRounds(value) })} />
-              {reviewMaxRounds > 0 && <>
-                <Textarea label="本次 Review 指令" aria-label="本次 Review 指令" value={reviewInstruction} maxLength={MAX_REVIEW_RULE_CHARACTERS} onChange={(event) => rememberGenerateOptions({ reviewInstruction: event.currentTarget.value })} autosize minRows={2} maxRows={6} placeholder="例如：重点检查人物对白，并压缩重复描写" />
-                <section className="generate-review-rules-panel"><span className="ui-label">文章 Review 规则</span><div className="generate-review-rules"><ReviewRuleSnapshotView snapshot={createReviewRuleSnapshot(studio.currentArticle)} showInstruction={false} /></div></section>
-              </>}
-            </div>
-          </section>
           <section className="generate-advanced-options" aria-labelledby="generate-reference-heading">
             <div className="generate-section-heading"><span id="generate-reference-heading">参考与推理</span></div>
             <div className="generate-advanced-options-body">
@@ -4988,13 +4985,6 @@ function ArticleGenerateSettings() {
         <Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={(event) => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} />
       </div>
     </section>
-    <section className="article-generate-block article-generate-review" aria-labelledby="article-generate-review-title">
-      <div className="generate-section-heading"><span id="article-generate-review-title">生成后审校</span><strong>{settings.reviewMaxRounds > 0 ? `${settings.reviewMaxRounds} 轮` : "关闭"}</strong></div>
-      <div className="article-generate-review-grid">
-        <NumberInput label="默认最多修正次数" aria-label="文章 AI Generate 默认审校循环次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={settings.reviewMaxRounds} onChange={(value) => patchSettings({ reviewMaxRounds: normalizeReviewRounds(value) })} />
-        {settings.reviewMaxRounds > 0 && <Textarea label="默认 Review 指令（可选）" value={settings.reviewInstruction} maxLength={MAX_REVIEW_RULE_CHARACTERS} autosize minRows={2} maxRows={6} onChange={(event) => patchSettings({ reviewInstruction: event.currentTarget.value })} />}
-      </div>
-    </section>
     <section className="article-generate-block article-generate-reasoning" aria-label="文章 AI Generate 推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>
     <div className="form-foot"><span>{overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
   </section>;
@@ -5287,7 +5277,7 @@ function ModelSettings() {
       if (modelMatchesReference(model, studio.data.settings.chatModel)) studio.updateSettings({ chatModel: "" });
       if (modelMatchesReference(model, studio.data.settings.generateModel)) studio.updateSettings({ generateModel: "" });
       if (studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel)) studio.updateSettings({ namingModelMode: "inherit", namingModel: "" });
-      if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "" });
+      if (modelMatchesReference(model, studio.data.settings.reviewModel)) studio.updateSettings({ reviewModel: "", reviewModelMode: "inherit" });
   }
   async function removeModel(model: Model) {
     if (!window.confirm(`删除模型「${model.name}」？`)) return;
@@ -5366,13 +5356,13 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
                 const isGenerateDefault = modelMatchesReference(model, studio.data.settings.generateModel);
                 const isNamingDefault = studio.data.settings.namingModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.namingModel);
                 const isChatDefault = modelMatchesReference(model, studio.data.settings.chatModel);
-                const isReviewDefault = STANDALONE_AI_REVIEW_ENABLED && modelMatchesReference(model, studio.data.settings.reviewModel);
+                const isReviewDefault = studio.data.settings.reviewModelMode === "fixed" && modelMatchesReference(model, studio.data.settings.reviewModel);
                 const hasDefault = isGenerateDefault || isNamingDefault || isChatDefault || isReviewDefault;
                 return <article className="provider-model-row" data-provider-model-id={model.id} key={model.id}>
                   <div className="provider-model-main"><h4>{model.name}</h4><p>{model.modelId}</p></div>
                   <div className="model-default-tags provider-model-defaults">{isGenerateDefault && <em>默认 AI Generate</em>}{isNamingDefault && <em>默认名称生成</em>}{isChatDefault && <em>默认 AI Chat</em>}{isReviewDefault && <em>默认 AI Review</em>}{!hasDefault && <span className="provider-model-no-default">—</span>}</div>
                   <span className="provider-model-limit">{model.maxInputCharacters.toLocaleString("zh-CN")} 字符</span>
-                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={isGenerateDefault} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={isNamingDefault} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={isChatDefault} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item>{STANDALONE_AI_REVIEW_ENABLED && <Menu.Item disabled={isReviewDefault} onClick={() => studio.updateSettings({ reviewModel: model.id })}>设为 Review 默认</Menu.Item>}<Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
+                  <div className="model-card-actions provider-model-actions"><Button variant="subtle" size="xs" onClick={() => openEditModel(model)}>编辑</Button><Menu position="bottom-end" withinPortal><Menu.Target><Button variant="default" size="xs">更多</Button></Menu.Target><Menu.Dropdown><Menu.Item disabled={isGenerateDefault} onClick={() => studio.updateSettings({ generateModel: model.id })}>设为 Generate 默认</Menu.Item><Menu.Item disabled={isNamingDefault} onClick={() => studio.updateSettings({ namingModelMode: "fixed", namingModel: model.id })}>设为名称生成默认</Menu.Item><Menu.Item disabled={isChatDefault} onClick={() => studio.updateSettings({ chatModel: model.id })}>设为 Chat 默认</Menu.Item>{<Menu.Item disabled={isReviewDefault} onClick={() => studio.updateSettings({ reviewModelMode: "fixed", reviewModel: model.id })}>设为审校模型</Menu.Item>}<Menu.Divider /><Menu.Item color="red" onClick={() => void removeModel(model)}>删除模型</Menu.Item></Menu.Dropdown></Menu></div>
                 </article>;
               })}
               {!providerModels.length && <div className="provider-model-empty">这个 Provider 还没有模型</div>}
@@ -5394,13 +5384,23 @@ ${failed.map(({ model, error }) => `${model.name}（${model.modelId}）：${erro
 
 function TaskSettings() {
   const studio = useStudio();
+  const models = useConfiguredModels();
   const strategy = normalizePreparationStrategy(studio.data.settings.preparationStrategy);
+  const reviewStrategy = normalizeReviewStrategy(studio.data.settings.generateReviewStrategy);
+  const reviewModelReference = studio.data.settings.reviewModelMode === "fixed" ? studio.data.settings.reviewModel : "__inherit__";
   return <>
     <SettingSection title="写作准备与讨论">
       <SettingRow title="讨论策略"><select aria-label="写作讨论策略" value={strategy} onChange={(event) => studio.updateSettings({ preparationStrategy: normalizePreparationStrategy(event.target.value) })}>{Object.entries(PREPARATION_STRATEGY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="readonly-value">{strategy === "minimal" ? "只讨论影响写作的必要条件，条件足够后结束。" : "探索人物、情节和表达的更多可能，没有有价值的新问题时结束。"}</span></SettingRow>
       <SettingRow title="写作前最多互动轮次"><select aria-label="写作前最多互动轮次" value={normalizePreparationRounds(studio.data.settings.preparationMaxRounds)} onChange={(event) => studio.updateSettings({ preparationMaxRounds: Number(event.target.value) })}>{Array.from({ length: MAX_PREPARATION_ROUNDS + 1 }, (_, value) => <option key={value} value={value}>{value} 轮</option>)}</select><span className="readonly-value">两种策略都可提前结束；0 轮仍整理准备稿。</span></SettingRow>
       <SettingRow title="准备稿无问题时仍需确认"><Checkbox aria-label="准备稿无问题时仍需确认" checked={studio.data.settings.preparationRequireConfirmation === true} onChange={(event) => studio.updateSettings({ preparationRequireConfirmation: event.currentTarget.checked })} /><span className="readonly-value">关闭后自动写正文；开启后等待作者确认。</span></SettingRow>
       <p className="form-foot">以上设置对新任务生效。主动选择“结束讨论，检查准备稿”时，仍会等待确认。</p>
+    </SettingSection>
+    <SettingSection title="生成后审校">
+      <SettingRow title="最多修正次数"><NumberInput aria-label="审校最多修正次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds)} onChange={(value) => studio.updateSettings({ generateReviewMaxRounds: normalizeReviewRounds(value) })} /><span className="readonly-value">0 表示关闭；每次修正后仍会复检。</span></SettingRow>
+      <SettingRow title="审校模型"><select aria-label="审校模型" value={reviewModelReference} onChange={(event) => studio.updateSettings(event.target.value === "__inherit__" ? { reviewModelMode: "inherit" } : { reviewModelMode: "fixed", reviewModel: event.target.value })}><option value="__inherit__">跟随本次 AI Generate 模型</option>{!reviewModelReference && <option value="" disabled>请选择审校模型</option>}{reviewModelReference && reviewModelReference !== "__inherit__" && !configuredModelForReference(models, reviewModelReference) && <option value={reviewModelReference}>原审校模型不可用</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></SettingRow>
+      <SettingRow title="审校类型"><select aria-label="审校类型" value={reviewStrategy} onChange={(event) => studio.updateSettings({ generateReviewStrategy: normalizeReviewStrategy(event.target.value) })}>{Object.entries(REVIEW_STRATEGY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="readonly-value">{reviewStrategy === "minimal" ? "满足明确规则和必要条件后结束。" : "继续寻找人物、情节和表达中有依据的改进。"}</span></SettingRow>
+      <SettingRow title="审校补充指令"><Textarea aria-label="审校补充指令" value={studio.data.settings.generateReviewInstruction ?? ""} maxLength={MAX_REVIEW_RULE_CHARACTERS} autosize minRows={2} maxRows={6} onChange={(event) => studio.updateSettings({ generateReviewInstruction: event.currentTarget.value })} placeholder="例如：重点检查人物对白，压缩重复描写" /></SettingRow>
+      <p className="form-foot">新任务使用以上设置；两种类型都可提前结束。文章专用规则在“文章资料 → AI 任务设定”中管理。</p>
     </SettingSection>
     <SettingSection title="任务队列">
       <SettingRow title="并发任务数"><select value={studio.data.settings.taskConcurrency} onChange={(event) => studio.updateSettings({ taskConcurrency: Number(event.target.value) })}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></SettingRow>

@@ -3,7 +3,7 @@ import { parseTaskHistory } from "@/lib/task-history";
 import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/writing-preparation";
 import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
-import { normalizeReviewRounds, normalizeReviewRules, type GenerateReviewReport } from "@/lib/generate-review.mjs";
+import { normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import { startGenerateReviewRunner } from "@/db/generate-runner";
 import type { StudioData } from "@/app/studio-state";
 import { timestampContentName } from "@/lib/content-name.mjs";
@@ -729,7 +729,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
 const defaultSettings: StudioData["settings"] = {
   ...DEFAULT_APPEARANCE,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: 2, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
-  chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
+  chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
 };
 
@@ -745,6 +745,9 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
     generateReviewMaxRounds: normalizeReviewRounds(settings.generateReviewMaxRounds),
+    generateReviewStrategy: normalizeReviewStrategy(settings.generateReviewStrategy),
+    generateReviewInstruction: normalizeReviewRules(settings.generateReviewInstruction),
+    reviewModelMode: settings.reviewModelMode === "fixed" ? "fixed" : "inherit",
     preparationMaxRounds: normalizePreparationRounds(settings.preparationMaxRounds),
     preparationStrategy: normalizePreparationStrategy(settings.preparationStrategy),
     preparationRequireConfirmation: settings.preparationRequireConfirmation === true,

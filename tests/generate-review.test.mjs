@@ -48,6 +48,22 @@ test("a clean initial draft never invokes revision", async () => {
   assert.equal(result.report.stopReason, "passed");
 });
 
+test("minimum review stops at required conditions while exploration fixes optional improvements", async () => {
+  for (const strategy of ["minimal", "explore"]) {
+    const { options, calls } = harness(5);
+    options.review = async (_text, _issues, round) => {
+      calls.push(`review-${round}`);
+      return { issues: [{ ...issue(round ? "resolved" : "open"), kind: "improvement" }] };
+    };
+    const result = await runGenerateReview({ ...options, strategy });
+    assert.deepEqual(calls, strategy === "minimal" ? ["generate", "review-0"] : ["generate", "review-0", "revise-1", "review-1"]);
+    assert.equal(result.report.strategy, strategy);
+    assert.equal(result.report.completedRounds, strategy === "minimal" ? 0 : 1);
+    assert.equal(result.report.stopReason, "passed");
+    assert.ok(result.report.issues.every((item) => item.status === "resolved"));
+  }
+});
+
 test("the last allowed revision is still verified and unresolved issues are reported", async () => {
   const { options, calls } = harness(2);
   options.revise = async (text, _issues, round) => { calls.push(`revise-${round}`); return { text }; };

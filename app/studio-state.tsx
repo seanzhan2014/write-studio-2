@@ -215,6 +215,11 @@ export type AiTask = {
     /** @deprecated Legacy task snapshot; use proseControls.dialogueDensity. */
     dialogueDensity?: DialogueDensityLevel;
     reviewMaxRounds?: number;
+    reviewStrategy?: import("@/lib/generate-review.mjs").ReviewStrategy;
+    reviewConfiguredModelId?: string;
+    reviewModelId?: string;
+    reviewModelName?: string;
+    reviewResolvedReasoningEffort?: ReasoningEffort | null;
     reviewRules?: string;
     reviewRuleSnapshot?: ReviewRuleSnapshot;
     reviewInstruction?: string;
@@ -268,6 +273,9 @@ export type StudioSettings = AppearanceSettings & {
   namingModel: string;
   reviewModel: string;
   generateReviewMaxRounds?: number;
+  generateReviewStrategy?: import("@/lib/generate-review.mjs").ReviewStrategy;
+  generateReviewInstruction?: string;
+  reviewModelMode?: "inherit" | "fixed";
   generateTargetWords: number;
   generatePresets: string[];
   reviewPresets: string[];
@@ -436,6 +444,10 @@ const seedData: StudioData = {
     namingModelMode: "inherit",
     namingModel: "",
     reviewModel: "",
+    reviewModelMode: "inherit",
+    generateReviewMaxRounds: 0,
+    generateReviewStrategy: "minimal",
+    generateReviewInstruction: "",
     generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS,
     generatePresets: [],
     reviewPresets: [],

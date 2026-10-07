@@ -41,6 +41,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
     createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined,
     completedAt: row.completed_at ? String(row.completed_at) : undefined, lastProgressAt: row.last_progress_at ? String(row.last_progress_at) : undefined,
     receivedCharacters: row.received_characters == null ? undefined : Number(row.received_characters), timeoutMs: row.timeout_ms == null ? undefined : Number(row.timeout_ms),
+    inputTokens: row.input_tokens == null ? undefined : Number(row.input_tokens), outputTokens: row.output_tokens == null ? undefined : Number(row.output_tokens),
     runnerId: row.runner_id ? String(row.runner_id) : undefined, leaseUntil: row.lease_until ? String(row.lease_until) : undefined,
     resultText: row.result_text ? String(row.result_text) : undefined, resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
     history: parseTaskHistory(row.history_json),
@@ -382,8 +383,8 @@ async function executeTask(taskId: string) {
         Object.assign(task, {
           state: "success", phase: "completed", completedAt, lastProgressAt: completedAt,
           receivedCharacters, resultText,
-          inputTokens: preparation ? (task.inputTokens ?? 0) + (inputTokens ?? 0) : inputTokens,
-          outputTokens: preparation ? (task.outputTokens ?? 0) + (outputTokens ?? 0) : outputTokens,
+          inputTokens: preparation ? reviewEnabled ? task.inputTokens : (task.inputTokens ?? 0) + (inputTokens ?? 0) : inputTokens,
+          outputTokens: preparation ? reviewEnabled ? task.outputTokens : (task.outputTokens ?? 0) + (outputTokens ?? 0) : outputTokens,
           runnerId: undefined, leaseUntil: undefined, error: undefined,
         } satisfies Partial<AiTask>);
         return { changed: true, value: true };

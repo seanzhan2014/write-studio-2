@@ -1,4 +1,4 @@
-import type { GenerateReviewReport } from "@/lib/generate-review.mjs";
+import { REVIEW_STRATEGY_LABELS, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import { ReviewRuleSnapshotView } from "./review-rules";
 
 export function GenerateReviewReportView({ report }: { report: GenerateReviewReport }) {
@@ -6,10 +6,11 @@ export function GenerateReviewReportView({ report }: { report: GenerateReviewRep
   const resolved = report.issues.filter((issue) => issue.status === "resolved");
   return <details className="generate-review-report">
     <summary>审校报告 · {remaining.length ? `剩余 ${remaining.length} 项问题` : "未发现剩余问题"}</summary>
+    {(report.strategy || report.modelName) && <p>{report.strategy && REVIEW_STRATEGY_LABELS[report.strategy]}{report.modelName && ` · ${report.modelName}`}</p>}
     <p>已修正 {report.completedRounds} / {report.maxRounds} 次 · {report.stopReason === "passed" ? "按本次规则复检通过" : "达到循环上限"}</p>
     <p>已解决 {resolved.length} 项；未解决或无法确认 {remaining.length} 项。</p>
     {remaining.length > 0 && <ul>{remaining.map((issue) => <li key={issue.id}>
-      <strong>{issue.id} · {issue.status === "uncertain" ? "无法确认" : "未解决"}：{issue.description}</strong>
+      <strong>{issue.id} · {issue.kind === "improvement" ? "改进项 · " : ""}{issue.status === "uncertain" ? "无法确认" : "未解决"}：{issue.description}</strong>
       <p>规则：{issue.rule}</p>{issue.evidence && <blockquote>{issue.evidence}</blockquote>}
       <p>{issue.reason}</p>{issue.suggestion && <p>建议：{issue.suggestion}</p>}
     </li>)}</ul>}

@@ -6,6 +6,7 @@ import { fetchServerAction } from "@/lib/browser-network";
 import { isTaskAwaitingAuthor, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, preparationNeedsConfirmation, type PreparationReply } from "@/lib/writing-preparation";
 import { TaskHistory } from "./task-history";
 import { GenerateReviewReportView } from "./generate-review-report";
+import { REVIEW_STRATEGY_LABELS, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 
 const drafts = new Map<string, PreparationReply>();
 const draftBases = new Map<string, string>();
@@ -118,7 +119,7 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
         {workflow.brief && <details className="discussion-brief"><summary>查看最新准备稿 · v{workflow.round + 1}</summary><div className="writing-brief-text">{workflow.brief}</div></details>}
         {task.contextOptions?.reviewCandidateOnly && <p className="task-interaction-warning">原正文已有修改，终稿已保存为候选版本，没有替换当前正文。</p>}
         {task.contextOptions?.reviewReport && <GenerateReviewReportView report={task.contextOptions.reviewReport} />}
-        {!!task.contextOptions?.reviewMaxRounds && !task.contextOptions.reviewReport && workflow.stage === "writing" && <p>生成后审校：已修正 {task.contextOptions.reviewRound ?? 0} / {task.contextOptions.reviewMaxRounds} 次。{task.state === "failed" ? "重试将从保存的审校进度继续。" : ""}</p>}
+        {!!task.contextOptions?.reviewMaxRounds && !task.contextOptions.reviewReport && workflow.stage === "writing" && <p>生成后审校：{REVIEW_STRATEGY_LABELS[normalizeReviewStrategy(task.contextOptions.reviewStrategy)]}{task.contextOptions.reviewModelName && ` · ${task.contextOptions.reviewModelName}`}。已修正 {task.contextOptions.reviewRound ?? 0} / {task.contextOptions.reviewMaxRounds} 次。{task.state === "failed" ? "重试将从保存的审校进度继续。" : ""}</p>}
         {task.state === "success" && task.resultText && <details><summary>查看生成正文</summary><div className="writing-brief-text">{task.resultText}</div></details>}
         <div ref={end} />
       </div>}

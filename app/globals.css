@@ -3349,7 +3349,11 @@ kbd {
   height: 32px;
   min-width: 130px;
   padding: 0 8px;
+  max-width: 100%;
 }
+
+.setting-row .mantine-NumberInput-root { width: 130px; }
+.setting-row .mantine-Textarea-root { min-width: 0; width: min(100%, 420px); }
 
 .setting-row input[type="range"] {
   accent-color: var(--accent);
