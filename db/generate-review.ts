@@ -38,6 +38,7 @@ export async function generateWithReview(task: AiTask, runnerId: string, model: 
     reviewStrategy: options.reviewStrategy,
     instruction: task.prompt, targetWords: options.targetWords, contentMode: options.contentMode,
     proseControls: options.proseControls, dialogueDensity: options.dialogueDensity, rewriteRetention: options.rewriteRetention,
+    writingBrief: options.writingPreparation?.stage === "writing" ? options.writingPreparation.brief : undefined,
     rules: reviewRulesText(ruleSnapshot), reviewInstruction: ruleSnapshot.instruction, ruleSnapshot,
   };
   const result = await runGenerateReview({

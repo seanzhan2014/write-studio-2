@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { articleReviewRules, createReviewRuleSnapshot, hasReviewRules, normalizeReviewRuleItems, normalizeReviewRuleSnapshot } from "../lib/review-rules.mjs";
+import { articleReviewRules, createReviewRuleSnapshot, hasReviewRules, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, DEFAULT_REVIEW_RULES } from "../lib/review-rules.mjs";
 import { mergeStudioConflict } from "../app/studio-conflict.mjs";
 
 const article = () => ({ id: "article-a", createdAt: "2026-09-07T00:00:00.000Z", reviewRules: "保留雨景。\n对白简短。" });
@@ -8,10 +8,52 @@ const article = () => ({ id: "article-a", createdAt: "2026-09-07T00:00:00.000Z",
 test("legacy migration preserves prose and uses stable IDs on every device", () => {
   const source = article();
   const rules = articleReviewRules(source);
-  assert.equal(rules.filter((rule) => rule.origin === "default").length, 5);
+  assert.equal(rules.filter((rule) => rule.origin === "default").length, DEFAULT_REVIEW_RULES.length);
   assert.equal(rules.at(-1).content, source.reviewRules);
   assert.deepEqual(articleReviewRules(source), rules);
   assert.deepEqual(articleReviewRules({ ...source, reviewRuleItems: rules }), rules);
+});
+
+function previousDefaults() {
+  return articleReviewRules(article()).filter((rule) => !rule.id.endsWith(":narrative-craft")).map((rule) => rule.id.endsWith(":story-consistency")
+    ? { ...rule, content: "遵守生成要求、大纲和人物事实；不新增、删除或改变情节事实、人物关系和叙事顺序。" } : rule);
+}
+
+test("untouched defaults upgrade once with stable identities and preserve historical snapshots", () => {
+  const oldRules = previousDefaults();
+  const snapshot = normalizeReviewRuleSnapshot({ version: 1, rules: oldRules.map(({ id, title, content, revision }) => ({ id, title, content, revision })), instruction: "" });
+  const upgraded = normalizeReviewRuleItems(oldRules, "article-a");
+  const consistency = upgraded.find((rule) => rule.id.endsWith(":story-consistency"));
+  assert.equal(consistency.revision, 2);
+  assert.equal(consistency.updatedAt, oldRules.find((rule) => rule.id === consistency.id).updatedAt);
+  assert.equal(upgraded.filter((rule) => rule.id.endsWith(":narrative-craft")).length, 1);
+  assert.deepEqual(normalizeReviewRuleItems(upgraded, "article-a"), upgraded);
+  assert.deepEqual(normalizeReviewRuleSnapshot(snapshot), snapshot);
+  assert.equal(snapshot.rules.find((rule) => rule.id === consistency.id).revision, 1);
+  const deleted = upgraded.filter((rule) => !rule.id.endsWith(":narrative-craft"));
+  assert.deepEqual(normalizeReviewRuleItems(deleted, "article-a"), deleted);
+});
+
+test("default upgrades respect edits, archive, removed rules and intentionally empty lists", () => {
+  for (const change of [
+    (rules) => { rules[0].content = "保留英文对白"; rules[0].revision = 2; },
+    (rules) => { rules[0].archived = true; },
+    (rules) => { rules.shift(); },
+  ]) {
+    const rules = previousDefaults(); change(rules);
+    const upgraded = normalizeReviewRuleItems(rules, "article-a");
+    assert.equal(upgraded.some((rule) => rule.id.endsWith(":narrative-craft")), false);
+    assert.deepEqual(upgraded.filter((rule) => !rule.id.endsWith(":story-consistency")), rules.filter((rule) => !rule.id.endsWith(":story-consistency")));
+  }
+  for (const change of [
+    (rule) => { rule.content = "保留全部原叙事顺序"; rule.revision = 2; },
+    (rule) => { rule.archived = true; },
+    (rule) => { rule.origin = "custom"; },
+  ]) {
+    const rules = previousDefaults(); change(rules.find((rule) => rule.id.endsWith(":story-consistency")));
+    assert.deepEqual(normalizeReviewRuleItems(rules, "article-a"), rules);
+  }
+  assert.deepEqual(normalizeReviewRuleItems([], "article-a"), []);
 });
 
 test("explicit deletion and archive never fall back to default or legacy rules", () => {

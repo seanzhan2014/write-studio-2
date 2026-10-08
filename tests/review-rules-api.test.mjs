@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { reviewModelServer } from "./review-model.mjs";
-import { createReviewRuleSnapshot } from "../lib/review-rules.mjs";
+import { createReviewRuleSnapshot, DEFAULT_REVIEW_RULES } from "../lib/review-rules.mjs";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function request(path, method = "GET", data, headers = {}) {
@@ -51,7 +51,7 @@ test("article rules persist and both review paths use only frozen effective rule
 
     await t.test("legacy rules migrate once; CRUD, archive and empty collections survive reload", async () => {
       const article = await reset();
-      assert.equal(article.reviewRuleItems.length, 6);
+      assert.equal(article.reviewRuleItems.length, DEFAULT_REVIEW_RULES.length + 1);
       assert.equal(article.reviewRuleItems.at(-1).content, article.reviewRules);
       const rule = { ...article.reviewRuleItems[0], title: "允许英文对白", content: "保留所有英文对白", revision: 2 };
       await saveRules([rule]);

@@ -92,6 +92,10 @@ test("durable preparation, author discussion and final writing", async (t) => {
       const prompt = fake.control.calls[0].body.messages[0].content;
       assert.match(prompt, strategy === "minimal" ? /最少条件型讨论：只询问阻碍/ : /最大探索型讨论：在轮次上限内主动探索/);
       assert.match(prompt, /最大轮次只是上限，不是目标/);
+      assert.match(prompt, /开场透露的信息、暂缓解释、可用铺垫、揭示时机与触发点/);
+      assert.match(prompt, /读者从前文已经知道/);
+      assert.match(prompt, /普通表达选择由写作准备自行处理/);
+      assert.match(fake.control.calls.at(-1).body.messages[0].content, /事件因果|事实、因果/);
       assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /confirmed_writing_brief/);
       assert.equal(task.history.some((entry) => entry.phase === "awaiting_confirmation"), false);
     });

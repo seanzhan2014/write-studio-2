@@ -62,6 +62,13 @@ test("Generate review API executes durable loops and reports the final draft", a
         assert.ok(fake.control.calls.every((item) => item.body.model === "review-integration" && item.body.reasoning_effort === "low"));
         assert.ok(reviewer.control.calls.every((item) => item.body.model === "separate-review" && item.body.reasoning_effort === "high"));
         assert.match(reviewer.control.calls[0].body.messages[0].content, /最大探索型审校/);
+        const brief = completed.contextOptions.writingPreparation.brief;
+        assert.ok(brief);
+        for (const call of [...fake.control.calls.filter((item) => item.kind === "generate"), ...reviewer.control.calls]) {
+          const prompt = call.body.messages.at(-1).content;
+          const encodedBrief = prompt.match(/<confirmed_writing_brief>([\s\S]*?)<\/confirmed_writing_brief>/)?.[1].trim();
+          assert.equal(encodedBrief, brief, `${call.kind} must receive the same completed preparation brief`);
+        }
         assert.equal(completed.contextOptions.reviewReport.strategy, "explore");
         assert.equal(completed.contextOptions.reviewReport.modelId, "separate-review");
         assert.equal(completed.contextOptions.reviewReport.instruction, "保留作者的雨后场景");

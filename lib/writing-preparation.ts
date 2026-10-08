@@ -3,6 +3,17 @@ export const PREPARATION_SECTIONS = [
   ["actions", "人物目标与行动"], ["knowledge", "认知与信息边界"], ["perspective", "视角与信息揭示"],
   ["emotion", "情绪与关系"], ["constraints", "事实与约束"], ["expression", "表现与篇幅"],
 ] as const;
+export const PREPARATION_SECTION_GUIDANCE: Record<(typeof PREPARATION_SECTIONS)[number][0], string> = {
+  purpose: "本段核心冲突、在全篇中的作用及读者体验目标。",
+  boundaries: "开场切入的具体状态、承接前文的方式、结尾动作或局势变化。",
+  scenes: "逐场列出作用、有效行动、冲突或转折、结束后的变化；标明展开与概述的节点。",
+  actions: "人物目标、阻力、行动因果、关键选择及后果。",
+  knowledge: "区分作者掌握、视角人物知道、读者已经知道的事实，以及各自未知项。",
+  perspective: "每场视角、开场透露的信息、暂缓解释、可用铺垫、揭示时机与触发点；允许直接交代。",
+  emotion: "情绪与关系的变化，以及承载这些变化的行动、对白潜台词和必要内心活动。",
+  constraints: "必须保留的事实、因果、作者明确的讲述顺序、负面约束与未决项。",
+  expression: "适合本场景的具体手法、有意义的细节、关键节点篇幅和自然收束方式。",
+};
 export type PreparationQuestion = { id: string; title: string; reason: string; options: Array<{ id: string; label: string; description: string }> };
 export type PreparationReply = { answers: Record<string, string>; note: string };
 export type PreparationStrategy = "minimal" | "explore";
