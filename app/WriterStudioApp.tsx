@@ -13,6 +13,7 @@ import { TaskInteraction, OutlineTaskIndicator } from "@/app/ui/task-interaction
 import { isTaskAwaitingAuthor, normalizePreparationRounds, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, MAX_PREPARATION_ROUNDS, type PreparationStrategy } from "@/lib/writing-preparation";
 import { StudioThemeProvider } from "@/app/ui/studio-theme";
 import { AppearancePanel } from "@/app/ui/appearance-settings";
+import { IllustrationGenerator } from "@/app/ui/illustration-generator";
 import { taskPhaseLabels } from "@/lib/task-history";
 
 import { sendChatCompletion } from "@/lib/chat-client";
@@ -2159,6 +2160,7 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
   const [settingDefault, setSettingDefault] = useState(false);
   const [settingExcellent, setSettingExcellent] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null);
+  const [illustrationSource, setIllustrationSource] = useState<{ content: string; excerpt: string } | null>(null);
   const writingScrollRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
@@ -2211,7 +2213,7 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
     if (!selected || !selection?.rangeCount) return false;
     const bounds = selection.getRangeAt(0).getBoundingClientRect();
     const menuWidth = 124;
-    const menuHeight = 48;
+    const menuHeight = 98;
     const desiredLeft = point?.x ?? bounds.left + bounds.width / 2 - menuWidth / 2;
     const below = (point?.y ?? bounds.bottom) + 8;
     const desiredTop = below + menuHeight <= window.innerHeight ? below : bounds.top - menuHeight - 8;
@@ -2544,14 +2546,15 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
             <div className="editor-tools">{editing ? <>
               <div className="desktop-edit-tools"><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></div>
               <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button></div>}</div>
-            </> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
+            </> : <><Button variant="subtle" size="compact-sm" disabled={!displayedContent.trim()} onClick={() => setIllustrationSource({ content: displayedContent, excerpt: "" })}>生成插图</Button><span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span></>}</div>
           </div>
           {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
           {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
       </div>
-      {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" style={{ left: selectionMenu.left, top: selectionMenu.top }}><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button></div>}
+      {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" style={{ left: selectionMenu.left, top: selectionMenu.top }}><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button><button type="button" role="menuitem" onClick={() => { setIllustrationSource({ content: displayedContent, excerpt: displayedContent.slice(selectionMenu.start, selectionMenu.end) }); setSelectionMenu(null); window.getSelection()?.removeAllRanges(); }}>生成插图</button></div>}
+      {illustrationSource && <IllustrationGenerator outlineId={studio.currentOutline.id} content={illustrationSource.content} selectedExcerpt={illustrationSource.excerpt} defaultModel={studio.data.settings.generateModel} onClose={() => setIllustrationSource(null)} />}
       {planPeek && <ScrollableDrawer
         opened
         onClose={() => setPlanPeek(false)}

@@ -1750,6 +1750,12 @@ button:disabled {
   color: #8a6500;
 }
 
+.illustration-generator { min-width: 0; }
+.illustration-generator .mantine-Group-root { flex-wrap: wrap; }
+.illustration-result { display: grid; gap: 12px; margin: 0; min-width: 0; }
+.illustration-result img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.illustration-result figcaption { font-size: 13px; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .chat-composer textarea::-webkit-scrollbar { display: none; }
 
 .find-bar {
