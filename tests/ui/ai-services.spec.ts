@@ -3,7 +3,8 @@ import { fullStudioFixture } from "../fixtures.mjs";
 
 const textMetadata = { source: "provider", inputModalities: ["text"], outputModalities: ["text"] };
 const imageMetadata = { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"] };
-test.beforeEach(async ({ request }) => {
+test.beforeEach(async ({ request, page }) => {
+  await page.route("**/api/connectivity", route => route.fulfill({ status: 204 }));
   const state = await (await request.get("/api/state")).json();
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });

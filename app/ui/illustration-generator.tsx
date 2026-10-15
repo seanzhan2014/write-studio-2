@@ -8,7 +8,7 @@ import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage, type IllustrationPrompt } from "@/lib/image-generation";
 
-type Model = { metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
+type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; onClose: () => void };
 
 export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, onClose }: Props) {
@@ -18,6 +18,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [imageModel, setImageModel] = useState(defaultImageModel ?? "");
   const [size, setSize] = useState("");
   const [quality, setQuality] = useState("");
+  const [aspectRatio, setAspectRatio] = useState("");
+  const [resolution, setResolution] = useState("");
   const [excerpt, setExcerpt] = useState(selectedExcerpt);
   const [style, setStyle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -46,6 +48,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const imageRecord = models.find((model) => model.id === imageModel);
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
+  const nativeImageOptions = imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
+  const ratios = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "aspect_ratio") : [];
+  const resolutions = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "resolution") : [];
   const excerptValid = !excerpt.trim() || (content.includes(excerpt.trim()) && excerpt.trim().length <= MAX_ILLUSTRATION_EXCERPT);
 
   function cancel() {
@@ -66,7 +71,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify(action === "prompt"
           ? { action, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, model: textModel }
-          : { action, outlineId, prompt, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}) }),
+          : { action, outlineId, prompt, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
       });
       const payload = await response.json() as IllustrationPrompt & IllustrationImage & { error?: string };
       if (requestId !== requestIdRef.current) return;
@@ -96,9 +101,11 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Textarea label="画面要求（可选）" placeholder="例如：水彩插图，冷色调，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。" value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
-      <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setSize(""); setQuality(""); }} disabled={Boolean(busy)} searchable />
+      <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setSize(""); setQuality(""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} searchable />
       {!modelError && models.length > 0 && !models.some(supportsImages) && <Alert color="yellow">尚未配置图像生成模型，请到“设置 → AI 服务”添加或编辑模型能力。</Alert>}
-      {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => setSize(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
+      {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { setSize(value ?? ""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
+      {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { setAspectRatio(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
+      {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => { setResolution(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {qualities.length > 0 && <Select label="图片画质" data={[{ value: "", label: "模型默认" }, ...qualities]} value={quality} onChange={(value) => setQuality(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
       <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim()} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
       {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成图片，请稍候…"}</Text><Button variant="subtle" onClick={cancel}>取消请求</Button></Group>}

@@ -5,11 +5,12 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 const excerpt = "林澈看向顾屿";
 
 test.beforeEach(async ({ page, request }) => {
+  await page.route("**/api/connectivity", route => route.fulfill({ status: 204 }));
   const current = await (await request.get("/api/state")).json();
   await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fullStudioFixture() } });
   await page.route("**/api/models", (route) => route.fulfill({ json: { models: [
     { id: "text", name: "文本测试模型", modelId: "text", providerName: "测试", hasSecret: true },
-    { metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"] }, id: "image", name: "图片测试模型", modelId: "image", providerName: "测试", hasSecret: true },
+    { adapterKind: "openrouter", metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { aspect_ratio: { type: "enum", values: ["16:9"] }, resolution: { type: "enum", values: ["2K"] } } }, id: "image", name: "图片测试模型", modelId: "image", providerName: "测试", hasSecret: true },
   ] } }));
 });
 
@@ -33,13 +34,17 @@ test("illustration workflow permits prompt edits, image retry and download witho
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("编辑后的水彩插图 prompt");
   await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
   await page.getByRole("option", { name: /图片测试模型/ }).click();
+  await dialog.getByRole("combobox", { name: "画面比例", exact: true }).click();
+  await page.getByRole("option", { name: "16:9", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "图像分辨率", exact: true }).click();
+  await page.getByRole("option", { name: "2K", exact: true }).click();
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("图片服务暂时不可用");
   await expect(dialog.getByRole("textbox", { name: "图片 prompt", exact: true })).toHaveValue("编辑后的水彩插图 prompt");
   fail = false;
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
-  expect(bodies.at(-1)).toMatchObject({ action: "image", model: "image", prompt: "编辑后的水彩插图 prompt" });
+  expect(bodies.at(-1)).toMatchObject({ action: "image", model: "image", prompt: "编辑后的水彩插图 prompt", aspectRatio: "16:9", resolution: "2K" });
   await expect(dialog.getByRole("link", { name: "下载图片" })).toHaveAttribute("download", "writer-studio-illustration.png");
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
   await expect(page.getByRole("region", { name: "正文内容", exact: true })).toContainText("林澈看向顾屿，确认潮汐表上的时间。");

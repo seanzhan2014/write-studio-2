@@ -719,7 +719,7 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 }
 
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; model: string; size?: string; quality?: string }, signal?: AbortSignal) {
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
   await assertAiTargetAvailable(input.outlineId);
@@ -728,16 +728,20 @@ export async function generateIllustrationImage(input: { outlineId: string; prom
   return requestModelImage(model, input.prompt.trim(), input, signal);
 }
 
-async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string } = {}, signal?: AbortSignal) {
+async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;
-  const size = options.size || supportedSizes.find((value) => /^\d+x\d+$/.test(value)) || (openRouter && knownParameters && !Array.isArray(knownParameters) && !("size" in knownParameters) ? undefined : "1024x1024");
+  const size = options.size || (!options.aspectRatio && !options.resolution ? supportedSizes.find((value) => /^\d+x\d+$/.test(value)) || (openRouter && knownParameters && !Array.isArray(knownParameters) && !("size" in knownParameters) ? undefined : "1024x1024") : undefined);
   if (size && (!/^\d{2,5}x\d{2,5}$/.test(size) || Number(size.split("x")[0]) > 8192 || Number(size.split("x")[1]) > 8192)) throw new AiInputError("图片尺寸无效");
   const sizes = imageParameterValues(model, "size");
   if (options.size && sizes.length && !sizes.includes(options.size)) throw new AiInputError("此模型不支持所选尺寸");
+  for (const [field, value] of [["aspect_ratio", options.aspectRatio], ["resolution", options.resolution]] as const) {
+    if (value && (!openRouter || !imageParameterValues(model, field).includes(value))) throw new AiInputError("此接口或模型不支持所选图像参数");
+  }
+  if (options.size && (options.aspectRatio || options.resolution)) throw new AiInputError("尺寸与比例、分辨率请分别选择一种方式");
   const qualities = imageParameterValues(model, "quality");
   if (options.quality && !(qualities.length ? qualities : ["auto", "low", "medium", "high"]).includes(options.quality)) throw new AiInputError("此模型不支持所选画质");
   const controller = new AbortController();
@@ -749,7 +753,7 @@ async function requestModelImage(model: AiModelRecord, prompt: string, options: 
     const response = await fetch(model.baseUrl.replace(/\/$/, "") + (openRouter ? "/images" : "/images/generations"), {
       method: "POST", signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({ model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}) }),
+      body: JSON.stringify({ model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) }),
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret).join("[REDACTED]");

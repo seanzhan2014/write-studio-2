@@ -1,3 +1,4 @@
+import { fullStudioFixture } from "./fixtures.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -8,7 +9,7 @@ const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 test("catalog discovery, bulk enable, capability-specific tests and refresh preserve configured models", { skip: !baseUrl, timeout: 60000 }, async (t) => {
   const calls = []; let omitText = false, failImageDirectory = false;
   const text = { id: "writer", name: "Writer", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, context_length: 64000 };
-  const image = { id: "painter", name: "Painter", architecture: { input_modalities: ["text", "image"], output_modalities: ["image"] }, supported_parameters: { size: { type: "enum", values: ["1024x1024", "1536x1024"] }, quality: { type: "enum", values: ["high"] } } };
+  const image = { id: "painter", name: "Painter", architecture: { input_modalities: ["text", "image"], output_modalities: ["image"] }, supported_parameters: { size: { type: "enum", values: ["1024x1024", "1536x1024"] }, aspect_ratio: { type: "enum", values: ["16:9"] }, resolution: { type: "enum", values: ["2K"] }, quality: { type: "enum", values: ["high"] } } };
   const server = http.createServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = raw ? JSON.parse(raw) : null;
@@ -24,12 +25,14 @@ test("catalog discovery, bulk enable, capability-specific tests and refresh pres
     response.statusCode = 404; response.end(JSON.stringify({ error: "wrong adapter path" }));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
-  async function api(path, body, method = body === undefined ? "GET" : "POST") {
-    const response = await fetch(baseUrl + path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  async function api(path, body, method = body === undefined ? "GET" : "POST", headers = {}) {
+    const response = await fetch(baseUrl + path, { method, headers: { "Content-Type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
     const raw = await response.text(); return { response, value: raw ? JSON.parse(raw) : null };
   }
+  const original = (await api("/api/state")).value;
+  await api("/api/state", { data: fullStudioFixture() }, "PUT", { "If-Match": String(original.revision) });
   let provider; const created = [];
-  t.after(async () => { try { for (const model of created) await api(`/api/models/${model.id}`, undefined, "DELETE"); if (provider) await api(`/api/providers/${provider.id}`, undefined, "DELETE"); } finally { server.closeAllConnections(); server.close(); } });
+  t.after(async () => { try { for (const model of created) await api(`/api/models/${model.id}`, undefined, "DELETE"); if (provider) await api(`/api/providers/${provider.id}`, undefined, "DELETE"); const current = (await api("/api/state")).value; await api("/api/state", { data: original.data }, "PUT", { "If-Match": String(current.revision) }); } finally { server.closeAllConnections(); server.close(); } });
   const p = await api("/api/providers", { name: "Catalog integration", adapterKind: "openrouter", baseUrl: `http://127.0.0.1:${server.address().port}/v1`, secret: "catalog-test-secret" });
   assert.equal(p.response.status, 201); provider = p.value;
   const path = `/api/providers/${provider.id}/discover`;
@@ -53,6 +56,9 @@ test("catalog discovery, bulk enable, capability-specific tests and refresh pres
   const generated = await api(`/api/models/${painter.id}/test`, { operation: "image" });
   assert.equal(generated.response.status, 200); assert.ok(generated.value.preview.src.startsWith("data:image/png;base64,"));
   assert.equal(calls.at(-1).url, "/v1/images"); assert.equal(calls.at(-1).authorization, "Bearer catalog-test-secret");
+  const landscape = await api("/api/ai/illustrations", { action: "image", outlineId: "outline-current", model: painter.id, prompt: "A landscape", aspectRatio: "16:9", resolution: "2K" });
+  assert.equal(landscape.response.status, 200);
+  assert.equal(calls.at(-1).body.aspect_ratio, "16:9"); assert.equal(calls.at(-1).body.resolution, "2K"); assert.equal(calls.at(-1).body.size, undefined);
   const listed = (await api("/api/models")).value.models;
   assert.equal(listed.find((model) => model.id === painter.id).metadata.tests.image.ok, true);
   assert.equal(listed.find((model) => model.id === painter.id).metadata.tests.text.ok, false);
