@@ -17,6 +17,9 @@ test("capability filters keep image models out of writing defaults and persist i
   await page.route("**/api/models", route => route.fulfill({ json: { models } }));
   await page.route("**/api/providers/p/discover", route => route.fulfill({ json: null }));
   await page.goto("/settings/models");
+  if (info.project.name === "desktop-chromium") {
+    for (const label of ["章节与大纲", "全文编辑", "文章资料"]) await expect(page.locator(".sidebar .quick-links").getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
   await page.getByRole("combobox", { name: "正文生成", exact: true }).click();
   await expect(page.getByRole("option", { name: "创作服务-Painter", exact: true })).toHaveCount(0);
   await page.getByRole("option", { name: "创作服务-Writer", exact: true }).click();

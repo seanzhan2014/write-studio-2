@@ -1156,12 +1156,12 @@ function Sidebar({
     <>
       <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`} aria-label="文章导航" aria-hidden={mobileLayout ? true : undefined} inert={mobileLayout ? true : undefined}>
         <div className="sidebar-head">
-          <button className="article-switcher" type="button" onClick={onToggleArticle} aria-expanded={articleMenu}>
+          <button className="article-switcher" type="button" aria-label={articleTitle} onClick={onToggleArticle} aria-expanded={articleMenu}>
             <span className="article-mark">{articleTitle[0]}</span>
             <span className="article-name">{articleTitle}</span>
             <Icon name="chevron" />
           </button>
-          <IconButton name="menu" label={sidebarCollapsed ? "展开侧栏" : "折叠侧栏"} className="sidebar-collapse" onClick={() => view.startsWith("settings-") ? onGo("write") : setCollapsed((value) => !value)} />
+          <IconButton name="menu" label={view.startsWith("settings-") ? "返回写作" : sidebarCollapsed ? "展开侧栏" : "折叠侧栏"} className="sidebar-collapse" onClick={() => view.startsWith("settings-") ? onGo("write") : setCollapsed((value) => !value)} />
         </div>
 
         {articleMenu && !mobileLayout && (
@@ -1181,9 +1181,9 @@ function Sidebar({
 
         <div className="sidebar-primary">
           <nav className="quick-links" aria-label="文章功能">
-            <button className={view === "outline-edit" ? "active" : ""} onClick={() => onGo("outline-edit")} type="button"><Icon name="edit" /><span>章节与大纲</span></button>
-            <button className={view === "read" ? "active" : ""} onClick={() => onGo("read")} type="button"><Icon name="read" /><span>全文编辑</span></button>
-            <button className={view.startsWith("info-") ? "active" : ""} onClick={() => onGo("info-basic")} type="button"><Icon name="info" /><span>文章资料</span></button>
+            <button className={view === "outline-edit" ? "active" : ""} onClick={() => onGo("outline-edit")} type="button" aria-label="章节与大纲" title="章节与大纲"><Icon name="edit" /><span>章节与大纲</span></button>
+            <button className={view === "read" ? "active" : ""} onClick={() => onGo("read")} type="button" aria-label="全文编辑" title="全文编辑"><Icon name="read" /><span>全文编辑</span></button>
+            <button className={view.startsWith("info-") ? "active" : ""} onClick={() => onGo("info-basic")} type="button" aria-label="文章资料" title="文章资料"><Icon name="info" /><span>文章资料</span></button>
           </nav>
         </div>
 
@@ -1237,8 +1237,8 @@ function Sidebar({
         </DndContext>
 
         <div className="sidebar-footer">
-          <button className={view.startsWith("settings-") ? "active" : ""} type="button" onClick={() => onGo("settings-general")}><Icon name="settings" /><span>设置</span></button>
-          <button type="button" onClick={onTask}><Icon name="tasks" /><span>AI 任务</span>{studio.data.tasks.some((task) => task.state === "waiting" || task.state === "running") && <span className="task-count-badge ui-emphasis">{studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length}</span>}</button>
+          <button className={view.startsWith("settings-") ? "active" : ""} type="button" aria-label="设置" title="设置" onClick={() => onGo("settings-general")}><Icon name="settings" /><span>设置</span></button>
+          <button type="button" aria-label="AI 任务" title="AI 任务" onClick={onTask}><Icon name="tasks" /><span>AI 任务</span>{studio.data.tasks.some((task) => task.state === "waiting" || task.state === "running") && <span className="task-count-badge ui-emphasis">{studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length}</span>}</button>
         </div>
         <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整侧栏宽度" onPointerDown={startResize} />
       </aside>
