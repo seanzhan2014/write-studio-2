@@ -61,10 +61,11 @@ test("appearance updates colors and fonts across preview, writing and portals an
   await expect(page.getByRole("region", { name: "正文内容" })).toHaveCSS("font-family", /monospace/);
   await expect(page.getByRole("region", { name: "正文内容" })).toHaveCSS("font-size", "18px");
   await page.goto("/settings/models");
-  await page.getByRole("button", { name: "新建 Provider" }).click();
-  await expect(page.locator(".ws-modal-content")).toBeVisible();
-  await expect(page.locator(".ws-modal-content")).toHaveCSS("--accent", accent);
-  await expect(page.locator(".ws-modal-content")).toHaveCSS("font-family", /KaiTi/);
+  await page.getByRole("button", { name: /服务连接管理|管理接口地址与 API Key/ }).click();
+  await page.getByRole("button", { name: "添加服务连接", exact: true }).click();
+  await expect(page.locator(".ai-service-modal")).toBeVisible();
+  await expect(page.locator(".ai-service-modal")).toHaveCSS("--accent", accent);
+  await expect(page.locator(".ai-service-modal")).toHaveCSS("font-family", /KaiTi/);
 });
 
 test("system mode follows changes and reset restores appearance without changing writing data", async ({ page, request }) => {

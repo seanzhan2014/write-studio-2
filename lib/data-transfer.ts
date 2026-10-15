@@ -1,3 +1,4 @@
+import type { ModelMetadata } from "./ai-model-capabilities";
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
 import type { NameVersion } from "@/lib/name-versions";
@@ -13,13 +14,14 @@ export type TransferScope = "outline" | "article" | "articles" | "system-config"
 export type PortableAiProvider = {
   id: string;
   name: string;
-  adapterKind: "openai-compatible";
+  adapterKind: "openai-compatible" | "openrouter";
   baseUrl: string;
   timeoutMs: number;
   hadApiKey: boolean;
 };
 
 export type PortableAiModel = {
+  metadata?: ModelMetadata;
   id: string;
   providerId: string;
   name: string;
@@ -559,13 +561,14 @@ export function duplicateArticlesForImport(articles: Article[], tasks: AiTask[],
 
 export function portableProviders(providers: Array<Omit<PortableAiProvider, "hadApiKey"> & { hadApiKey?: boolean; hasSecret?: boolean }>): PortableAiProvider[] {
   return providers.map((provider) => ({
-    id: String(provider.id), name: String(provider.name), adapterKind: "openai-compatible",
+    id: String(provider.id), name: String(provider.name), adapterKind: provider.adapterKind === "openrouter" ? "openrouter" : "openai-compatible",
     baseUrl: String(provider.baseUrl), timeoutMs: Number(provider.timeoutMs), hadApiKey: Boolean(provider.hadApiKey ?? provider.hasSecret),
   }));
 }
 
 export function portableModels(models: Array<PortableAiModel & { timeoutMs?: number }>): PortableAiModel[] {
   return models.map((model) => ({
+    ...(model.metadata ? { metadata: { ...model.metadata, tests: undefined } } : {}),
     id: String(model.id),
     providerId: String(model.providerId),
     name: String(model.name),

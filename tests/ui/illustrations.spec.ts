@@ -9,7 +9,7 @@ test.beforeEach(async ({ page, request }) => {
   await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fullStudioFixture() } });
   await page.route("**/api/models", (route) => route.fulfill({ json: { models: [
     { id: "text", name: "文本测试模型", modelId: "text", providerName: "测试", hasSecret: true },
-    { id: "image", name: "图片测试模型", modelId: "image", providerName: "测试", hasSecret: true },
+    { metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"] }, id: "image", name: "图片测试模型", modelId: "image", providerName: "测试", hasSecret: true },
   ] } }));
 });
 

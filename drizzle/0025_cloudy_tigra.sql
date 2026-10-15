@@ -1,0 +1,1 @@
+ALTER TABLE `ai_models` ADD `metadata_json` text DEFAULT '{}' NOT NULL;

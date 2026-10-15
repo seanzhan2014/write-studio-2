@@ -265,6 +265,8 @@ export type StudioSettings = AppearanceSettings & {
   preparationRequireConfirmation?: boolean;
   chatModel: string;
   generateModel: string;
+  illustrationPromptModel?: string;
+  illustrationImageModel?: string;
   generateReasoningEffort?: ReasoningEffort | null;
   chatReasoningEffort?: ReasoningEffort | null;
   namingReasoningEffort?: ReasoningEffort | null;

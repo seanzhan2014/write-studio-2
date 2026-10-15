@@ -130,6 +130,7 @@ async function importModels(models: PortableAiModel[], providerMap: Map<string, 
       modelId: model.modelId,
       systemPrompt: model.systemPrompt,
       reasoningEffort: model.reasoningEffort ?? null,
+      ...(model.metadata ? { metadata: model.metadata } : {}),
       temperature: model.temperature,
       maxOutput: model.maxOutput,
       maxInputCharacters: model.maxInputCharacters,
@@ -162,6 +163,8 @@ function remapSettings(settings: StudioSettings, maps: { idMap: Map<string, stri
     generateModel: reference(settings.generateModel),
     namingModel: reference(settings.namingModel),
     reviewModel: reference(settings.reviewModel),
+    ...(settings.illustrationPromptModel !== undefined ? { illustrationPromptModel: reference(settings.illustrationPromptModel) } : {}),
+    ...(settings.illustrationImageModel !== undefined ? { illustrationImageModel: reference(settings.illustrationImageModel) } : {}),
   };
 }
 

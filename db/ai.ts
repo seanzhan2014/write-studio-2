@@ -1,3 +1,4 @@
+import { catalogEntry, normalizeModelMetadata, supportsText, supportsImages, imageParameterValues, type ModelMetadata, type ModelCatalog, type CatalogModel, type ModelTestResult } from "../lib/ai-model-capabilities";
 import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, type ReasoningEffort, type ReasoningOptions } from "../lib/reasoning-options";
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
@@ -17,7 +18,7 @@ import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PR
 export type AiProviderRecord = {
   id: string;
   name: string;
-  adapterKind: "openai-compatible";
+  adapterKind: "openai-compatible" | "openrouter";
   baseUrl: string;
   timeoutMs: number;
   hasSecret: boolean;
@@ -27,10 +28,11 @@ export type AiProviderRecord = {
 };
 
 export type AiModelRecord = {
+  metadata?: ModelMetadata;
   id: string;
   providerId: string;
   providerName: string;
-  adapterKind: "openai-compatible";
+  adapterKind: "openai-compatible" | "openrouter";
   name: string;
   baseUrl: string;
   modelId: string;
@@ -67,12 +69,17 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
 }
 
+function modelConfigurationMetadata(value: unknown) {
+  const metadata = normalizeModelMetadata(value); delete metadata.tests; return metadata;
+}
+
 function modelFromRow(row: Record<string, unknown>): AiModelRecord {
   const providerTimeoutMs = boundedNumber(row.provider_timeout_ms, 120000, 5000, 600000);
   const timeoutOverrideMs = row.timeout_override_ms == null ? null : boundedNumber(row.timeout_override_ms, providerTimeoutMs, 5000, 600000);
   return {
     id: String(row.id), providerId: String(row.provider_id), providerName: String(row.provider_name),
-    adapterKind: "openai-compatible", name: String(row.name), baseUrl: String(row.provider_base_url), modelId: String(row.model_id),
+    metadata: normalizeModelMetadata(JSON.parse(String(row.metadata_json || "{}"))),
+    adapterKind: providerAdapterKind(row.provider_adapter_kind), name: String(row.name), baseUrl: String(row.provider_base_url), modelId: String(row.model_id),
     systemPrompt: String(row.system_prompt), temperature: row.temperature == null ? null : Number(row.temperature),
     reasoningEffort: normalizeReasoningEffort(row.reasoning_effort),
     maxOutput: row.max_output == null ? null : Number(row.max_output), maxInputCharacters: normalizeMaxInputCharacters(row.max_input_characters),
@@ -83,7 +90,7 @@ function modelFromRow(row: Record<string, unknown>): AiModelRecord {
 
 function providerFromRow(row: Record<string, unknown>): AiProviderRecord {
   return {
-    id: String(row.id), name: String(row.name), adapterKind: "openai-compatible",
+    id: String(row.id), name: String(row.name), adapterKind: providerAdapterKind(row.adapter_kind),
     baseUrl: String(row.base_url), timeoutMs: boundedNumber(row.timeout_ms, 120000, 5000, 600000),
     hasSecret: Number(row.has_secret) === 1, modelCount: Number(row.model_count ?? 0),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
@@ -122,9 +129,9 @@ function providerNameFromUrl(value: string) {
   try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
 }
 
-function providerAdapterKind(value: unknown): "openai-compatible" {
+function providerAdapterKind(value: unknown): "openai-compatible" | "openrouter" {
   const normalized = String(value ?? "openai-compatible").trim();
-  if (normalized !== "openai-compatible") throw new Error("暂不支持该 Provider 协议");
+  if (normalized !== "openai-compatible" && normalized !== "openrouter") throw new Error("暂不支持该 Provider 协议");
   return normalized;
 }
 
@@ -148,6 +155,13 @@ export async function createProvider(input: Partial<AiProviderRecord> & { secret
   return provider;
 }
 
+async function invalidateProviderDiagnostics(id: string) {
+  await getDatabase().batch([
+    getDatabase().prepare("DELETE FROM app_settings WHERE key=?").bind(`ai_catalog:${id}`),
+    getDatabase().prepare("UPDATE ai_models SET metadata_json=json_remove(metadata_json,'$.tests') WHERE provider_id=?").bind(id),
+  ]);
+}
+
 export async function updateProvider(id: string, input: Partial<AiProviderRecord>) {
   const existing = await findProvider(id);
   if (!existing) throw new Error("Provider 不存在");
@@ -160,6 +174,7 @@ export async function updateProvider(id: string, input: Partial<AiProviderRecord
   if (!updated.name) throw new Error("Provider 名称不能为空");
   await getDatabase().prepare("UPDATE ai_providers SET name=?,adapter_kind=?,base_url=?,timeout_ms=?,updated_at=? WHERE id=?")
     .bind(updated.name, updated.adapterKind, updated.baseUrl, updated.timeoutMs, updated.updatedAt, id).run();
+  if (updated.baseUrl !== existing.baseUrl || updated.adapterKind !== existing.adapterKind) await invalidateProviderDiagnostics(id);
   return updated;
 }
 
@@ -167,6 +182,7 @@ export async function deleteProvider(id: string) {
   const provider = await findProvider(id);
   if (!provider) throw new Error("Provider 不存在");
   if (provider.modelCount) throw new Error(`该 Provider 仍关联 ${provider.modelCount} 个模型，请先删除或移动这些模型`);
+  await invalidateProviderDiagnostics(id);
   await getDatabase().prepare("DELETE FROM ai_providers WHERE id=?").bind(id).run();
 }
 
@@ -175,19 +191,21 @@ export async function setProviderSecret(id: string, secret: string) {
   if (!provider) throw new Error("Provider 不存在");
   if (!secret.trim()) throw new Error("密钥不能为空");
   const stored = await encryptAiSecret(secret.trim());
+  await invalidateProviderDiagnostics(id);
   await getDatabase().prepare("UPDATE ai_providers SET secret=?,has_secret=1,updated_at=? WHERE id=?").bind(stored, new Date().toISOString(), id).run();
 }
 
 export async function clearProviderSecret(id: string) {
   const provider = await findProvider(id);
   if (!provider) throw new Error("Provider 不存在");
+  await invalidateProviderDiagnostics(id);
   await getDatabase().prepare("UPDATE ai_providers SET secret=NULL,has_secret=0,updated_at=? WHERE id=?").bind(new Date().toISOString(), id).run();
 }
 
 export async function exportModelsForSync(includeSecrets: boolean): Promise<AiModelSyncRecord[]> {
   const models = await listModels();
   return Promise.all(models.map(async (record) => {
-    const model = { ...record };
+    const model = { ...record, metadata: modelConfigurationMetadata(record.metadata) };
     Reflect.deleteProperty(model, "hasSecret");
     return {
       ...model,
@@ -233,6 +251,7 @@ export async function replaceModelsFromSync(records: AiModelSyncRecord[], includ
       : existingSecrets.get(providerId) ?? "";
     return {
       id,
+      metadata: normalizeModelMetadata(record.metadata),
       providerId,
       providerName: String(record.providerName ?? providerNameFromUrl(baseUrl)).trim().slice(0, 80),
       adapterKind: providerAdapterKind(record.adapterKind),
@@ -271,8 +290,8 @@ export async function replaceModelsFromSync(records: AiModelSyncRecord[], includ
     db.prepare("DELETE FROM ai_providers"),
     ...providers.map((provider) => db.prepare("INSERT INTO ai_providers(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
       .bind(provider.providerId, provider.providerName, provider.adapterKind, provider.baseUrl, provider.providerTimeoutMs, provider.storedSecret ? 1 : 0, provider.storedSecret || null, provider.createdAt, provider.updatedAt)),
-    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutOverrideMs ?? model.providerTimeoutMs, model.timeoutOverrideMs, 0, null, model.createdAt, model.updatedAt, model.reasoningEffort)),
+    ...prepared.map((model) => db.prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+      .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutOverrideMs ?? model.providerTimeoutMs, model.timeoutOverrideMs, 0, null, model.createdAt, model.updatedAt, model.reasoningEffort, JSON.stringify(model.metadata ?? {}))),
   ]);
   return { models: prepared.length, secretsReplaced: includeSecrets };
 }
@@ -313,6 +332,8 @@ export async function createModels(input: {
   providerId?: unknown;
   existingModelId?: unknown;
   modelIds?: unknown;
+  metadataByModelId?: Record<string, ModelMetadata>;
+  metadata?: ModelMetadata;
   secret?: unknown;
   systemPrompt?: unknown;
   reasoningEffort?: unknown;
@@ -349,6 +370,7 @@ export async function createModels(input: {
   const maxInputCharacters = normalizeMaxInputCharacters(input.maxInputCharacters ?? sourceModel?.maxInputCharacters);
   const timeoutOverrideMs = input.timeoutMs == null ? sourceModel?.timeoutOverrideMs ?? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const models: AiModelRecord[] = modelIds.map((modelId) => ({
+    metadata: modelConfigurationMetadata(input.metadataByModelId?.[modelId] ?? input.metadata ?? sourceModel?.metadata),
     id: crypto.randomUUID(),
     providerId: provider.id,
     providerName: provider.name,
@@ -368,8 +390,8 @@ export async function createModels(input: {
     createdAt: now,
     updatedAt: now,
   }));
-  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort)));
+  await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort, JSON.stringify(model.metadata ?? {}))));
   return { models, skippedModelIds };
 }
 
@@ -382,6 +404,7 @@ export async function createModel(input: Partial<AiModelRecord> & { secret?: unk
     ? input.timeoutOverrideMs == null ? null : boundedNumber(input.timeoutOverrideMs, provider.timeoutMs, 5000, 600000)
     : input.timeoutMs == null ? null : boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000);
   const model: AiModelRecord = {
+    metadata: modelConfigurationMetadata(input.metadata),
     id: crypto.randomUUID(), providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind,
     name: String(input.name ?? "未命名模型").trim().slice(0, 80), baseUrl: provider.baseUrl,
     modelId: String(input.modelId ?? "").trim(), systemPrompt: String(input.systemPrompt ?? ""),
@@ -394,8 +417,8 @@ export async function createModel(input: Partial<AiModelRecord> & { secret?: unk
   };
   if (!model.name || !model.modelId) throw new Error("模型名称和模型 ID 不能为空");
   await ensureDatabase();
-  await getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort).run();
+  await getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort, JSON.stringify(model.metadata ?? {})).run();
   return model;
 }
 
@@ -415,6 +438,7 @@ export async function updateModel(id: string, input: Partial<AiModelRecord>) {
     : input.timeoutMs !== undefined ? boundedNumber(input.timeoutMs, provider.timeoutMs, 5000, 600000) : existing.timeoutOverrideMs;
   const updated: AiModelRecord = {
     ...existing, ...input, id,
+    metadata: { ...modelConfigurationMetadata(input.metadata ?? existing.metadata), tests: existing.metadata?.tests },
     providerId: provider.id, providerName: provider.name, adapterKind: provider.adapterKind, baseUrl: provider.baseUrl,
     name: String(input.name ?? existing.name).trim().slice(0, 80),
     modelId: String(input.modelId ?? existing.modelId).trim(),
@@ -427,8 +451,11 @@ export async function updateModel(id: string, input: Partial<AiModelRecord>) {
     updatedAt: new Date().toISOString(), hasSecret: provider.hasSecret,
   };
   if (!updated.name || !updated.modelId) throw new Error("模型名称和模型 ID 不能为空");
-  await getDatabase().prepare("UPDATE ai_models SET provider_id=?,name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,timeout_override_ms=?,has_secret=0,secret=NULL,updated_at=?,reasoning_effort=? WHERE id=?")
-    .bind(updated.providerId, updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.timeoutOverrideMs, updated.updatedAt, updated.reasoningEffort, id).run();
+  if (updated.providerId !== existing.providerId || updated.modelId !== existing.modelId || JSON.stringify(updated.metadata?.outputModalities) !== JSON.stringify(existing.metadata?.outputModalities)) {
+    updated.metadata = { ...normalizeModelMetadata(updated.metadata), tests: {} };
+  }
+  await getDatabase().prepare("UPDATE ai_models SET provider_id=?,name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,timeout_override_ms=?,has_secret=0,secret=NULL,updated_at=?,reasoning_effort=?,metadata_json=? WHERE id=?")
+    .bind(updated.providerId, updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.timeoutOverrideMs, updated.updatedAt, updated.reasoningEffort, JSON.stringify(updated.metadata ?? {}), id).run();
   return updated;
 }
 
@@ -449,60 +476,76 @@ export async function clearModelSecret(id: string) {
   await clearProviderSecret(model.providerId);
 }
 
-async function discoverConnection(baseUrl: string, secret: string) {
+
+function isOpenRouter(provider: { adapterKind?: string; baseUrl: string }) {
+  return provider.adapterKind === "openrouter" || new URL(provider.baseUrl).hostname === "openrouter.ai";
+}
+
+async function discoverConnection(baseUrl: string, secret: string, openRouter = false): Promise<ModelCatalog> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), 15000);
-  try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-      signal: controller.signal,
-      headers: secret ? { Authorization: `Bearer ${secret}` } : undefined,
-    });
+  const warnings: string[] = [];
+  async function request(path: string) {
+    const response = await fetch(baseUrl.replace(/\/$/, "") + path, { signal: controller.signal, headers: secret ? { Authorization: `Bearer ${secret}` } : undefined });
     if (!response.ok) {
-      const unsafeDetail = (await response.text()).slice(0, 500);
-      const detail = unsafeDetail.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret || "\0").join("[REDACTED]");
-      throw new Error(`获取模型列表失败（${response.status}）：${detail || response.statusText}`);
+      const detail = (await response.text()).slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret || "\0").join("[REDACTED]");
+      throw new Error(`获取模型目录失败（${response.status}）：${detail || response.statusText}`);
     }
     const raw = await response.text();
-    if (raw.length > 2_000_000) throw new Error("模型列表响应过大");
-    const payload = JSON.parse(raw) as { data?: Array<{ id?: unknown; name?: unknown }>; models?: Array<{ id?: unknown; name?: unknown } | string> };
-    const candidates = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
-    const ids = [...new Set(candidates.map((item) => typeof item === "string" ? item : String(item.id ?? item.name ?? "")).map((item) => item.trim()).filter(Boolean))]
-      .map((item) => item.slice(0, 300)).sort((a, b) => a.localeCompare(b)).slice(0, 500);
-    if (!ids.length) throw new Error("接口没有返回可选择的模型");
-    return ids;
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error("获取模型列表超时");
-    if (error instanceof SyntaxError) throw new Error("模型列表不是有效 JSON");
-    throw readableNetworkError(error, "获取模型列表");
-  } finally {
-    clearTimeout(timeout);
+    if (raw.length > 5_000_000) throw new Error("模型目录响应过大");
+    const payload = JSON.parse(raw) as { data?: unknown[]; models?: unknown[] };
+    return (Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : []).map(catalogEntry).filter((entry): entry is CatalogModel => entry !== null);
   }
+  try {
+    const entries = await request(openRouter ? "/models?output_modalities=all" : "/models");
+    if (openRouter) {
+      try {
+        const images = await request("/images/models");
+        for (const image of images) { const index = entries.findIndex((entry) => entry.id === image.id); if (index >= 0) { const previous = entries[index]; entries[index] = { ...image, metadata: { ...previous.metadata, ...image.metadata, inputModalities: [...new Set([...previous.metadata.inputModalities, ...image.metadata.inputModalities])], outputModalities: [...new Set([...previous.metadata.outputModalities, ...image.metadata.outputModalities])] } }; } else entries.push(image); }
+      } catch (error) { warnings.push(error instanceof Error ? error.message : "图像目录暂时无法获取"); }
+    }
+    const catalog = [...new Map(entries.map((entry) => [entry.id, entry])).values()].sort((a,b) => a.id.localeCompare(b.id));
+    if (!catalog.length) throw new Error("接口没有返回可选择的模型，可使用手动添加");
+    return { catalog, syncedAt: new Date().toISOString(), warnings };
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("获取模型目录超时");
+    if (error instanceof SyntaxError) throw new Error("模型目录不是有效 JSON");
+    throw readableNetworkError(error, "获取模型目录");
+  } finally { clearTimeout(timeout); }
 }
 
-export async function discoverProviderModelIds(id: string) {
+export async function readProviderCatalog(id: string): Promise<ModelCatalog | null> {
+  if (!await findProvider(id)) throw new Error("服务连接不存在");
+  const row = await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key=?").bind(`ai_catalog:${id}`).first<{ value_json: string }>();
+  if (!row) return null;
+  try { return JSON.parse(row.value_json) as ModelCatalog; } catch { return null; }
+}
+export async function discoverProviderCatalog(id: string) {
   const provider = await findProvider(id);
-  if (!provider) throw new Error("Provider 不存在");
-  return discoverConnection(provider.baseUrl, await readProviderSecret(provider.id));
+  if (!provider) throw new Error("服务连接不存在");
+  const result = await discoverConnection(provider.baseUrl, await readProviderSecret(id), isOpenRouter(provider));
+  await getDatabase().prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)").bind(`ai_catalog:${id}`, JSON.stringify(result), result.syncedAt).run();
+  return result;
 }
-
+export async function discoverProviderModelIds(id: string) { return (await discoverProviderCatalog(id)).catalog.map((entry) => entry.id); }
 export async function testProvider(id: string) {
   const started = Date.now();
   const models = await discoverProviderModelIds(id);
-  return { ok: true, latencyMs: Date.now() - started, modelCount: models.length };
+  return { ok: true, checkedAt: new Date().toISOString(), latencyMs: Date.now() - started, modelCount: models.length, message: "模型目录获取成功" };
 }
-
 export async function discoverModelIds(input: { providerId?: unknown; baseUrl?: unknown; secret?: unknown; existingModelId?: unknown }) {
   const providerId = String(input.providerId ?? "").trim();
   if (providerId) return discoverProviderModelIds(providerId);
   const existingId = String(input.existingModelId ?? "").trim();
   const existing = existingId ? await findModel(existingId) : null;
-  if (existingId && (!existing || existing.id !== existingId)) throw new Error("模型不存在");
+  if (existingId && !existing) throw new Error("模型不存在");
   const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
   const secret = String(input.secret ?? "").trim() || (existing ? await readProviderSecret(existing.providerId) : "");
-  return discoverConnection(baseUrl, secret);
+  return (await discoverConnection(baseUrl, secret, new URL(baseUrl).hostname === "openrouter.ai")).catalog.map((entry) => entry.id);
 }
 
 function endpoint(model: AiModelRecord) {
+  if (!supportsText(model)) throw new AiInputError("此模型不支持文字生成，请选择文字模型");
   return `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
 }
 
@@ -675,45 +718,69 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
   return parseIllustrationPrompt(completionResult(payload, handle, "插图提示词生成").content, input.content, excerpt);
 }
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; model: string }, signal?: AbortSignal) {
+
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; model: string; size?: string; quality?: string }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
   await assertAiTargetAvailable(input.outlineId);
   const model = await illustrationModel(input.model);
+  if (!supportsImages(model)) throw new AiInputError("请选择已标记图像生成能力的模型");
+  return requestModelImage(model, input.prompt.trim(), input, signal);
+}
+
+async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
-  if (!secret) throw new AiInputError(`Provider「${model.providerName}」尚未设置可用的 API 密钥`);
+  if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
+  const openRouter = isOpenRouter(model);
+  const supportedSizes = imageParameterValues(model, "size");
+  const knownParameters = model.metadata?.supportedParameters;
+  const size = options.size || supportedSizes.find((value) => /^\d+x\d+$/.test(value)) || (openRouter && knownParameters && !Array.isArray(knownParameters) && !("size" in knownParameters) ? undefined : "1024x1024");
+  if (size && (!/^\d{2,5}x\d{2,5}$/.test(size) || Number(size.split("x")[0]) > 8192 || Number(size.split("x")[1]) > 8192)) throw new AiInputError("图片尺寸无效");
+  const sizes = imageParameterValues(model, "size");
+  if (options.size && sizes.length && !sizes.includes(options.size)) throw new AiInputError("此模型不支持所选尺寸");
+  const qualities = imageParameterValues(model, "quality");
+  if (options.quality && !(qualities.length ? qualities : ["auto", "low", "medium", "high"]).includes(options.quality)) throw new AiInputError("此模型不支持所选画质");
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), model.timeoutMs);
   const cancel = () => controller.abort("cancelled");
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    const response = await fetch(`${model.baseUrl.replace(/\/$/, "")}/images/generations`, {
+    const response = await fetch(model.baseUrl.replace(/\/$/, "") + (openRouter ? "/images" : "/images/generations"), {
       method: "POST", signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({ model: model.modelId, prompt: input.prompt.trim(), n: 1, size: "1024x1024" }),
+      body: JSON.stringify({ model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}) }),
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret).join("[REDACTED]");
-      throw new Error(`文生图模型返回 ${response.status}：${detail || response.statusText}`);
+      throw new Error(`图像生成返回 ${response.status}：${detail || response.statusText}`);
     }
     return parseIllustrationImage(await response.json());
   } catch (error) {
-    if (controller.signal.aborted) throw new Error(controller.signal.reason === "timeout" ? "文生图请求超时，可在模型设置中增加超时时间" : "文生图请求已取消");
-    throw readableNetworkError(error, "文生图");
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener("abort", cancel);
-  }
+    if (controller.signal.aborted) throw new Error(controller.signal.reason === "timeout" ? "图像生成超时，可在连接设置中增加超时时间" : "图像请求已取消");
+    throw readableNetworkError(error, "图像生成");
+  } finally { clearTimeout(timeout); signal?.removeEventListener("abort", cancel); }
 }
 
-export async function testModel(id: string) {
+export async function testModel(id: string, operation: "text" | "image" = "text") {
   const model = await findModel(id);
   if (!model || model.id !== id) throw new Error("模型不存在");
   const started = Date.now();
-  const handle = await upstream(model, [{ role: "user", content: "只回复 OK" }], undefined, false);
-  completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "模型连接测试");
-  return { ok: true, latencyMs: Date.now() - started };
+  let preview: Awaited<ReturnType<typeof requestModelImage>> | undefined;
+  let failure: unknown;
+  try {
+    if (operation === "image") {
+      if (!supportsImages(model)) throw new Error("模型未配置图像生成能力");
+      preview = await requestModelImage(model, "A simple blue circle on a white background, no text.");
+    } else {
+      if (!supportsText(model)) throw new Error("模型不支持文字生成");
+      const handle = await upstream(model, [{ role: "user", content: "只回复 OK" }], undefined, false);
+      completionResult(await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload, handle, "文字调用测试");
+    }
+  } catch (error) { failure = error; }
+  const result: ModelTestResult = { ok: !failure, checkedAt: new Date().toISOString(), latencyMs: Date.now() - started, message: failure instanceof Error ? failure.message : failure ? "调用失败" : operation === "image" ? "图片生成成功" : "文字调用成功" };
+  await getDatabase().prepare("UPDATE ai_models SET metadata_json=json_set(metadata_json,?,json(?)) WHERE id=?").bind(`$.tests.${operation}`, JSON.stringify(result), id).run();
+  return { ...result, operation, ...(preview ? { preview } : {}) };
 }
 
 function trimCurrent(text: string, maximum = 30000) {

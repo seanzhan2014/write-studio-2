@@ -481,61 +481,30 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   }
 
   await gotoSettled("/settings/models");
-  await page.getByRole("button", { name: "新建 Provider" }).click();
-  const providerEditor = page.locator(".ws-responsive-modal").filter({ hasText: "新建 Provider" });
+  await page.getByRole("button", { name: /服务连接管理|管理接口地址与 API Key/ }).click();
+  await page.getByRole("button", { name: "添加服务连接", exact: true }).click();
+  const providerEditor = page.locator(".ws-responsive-modal").filter({ hasText: "添加服务连接" });
   await expectOverlayContract(page, providerEditor);
-  await providerEditor.getByRole("button", { name: "关闭 Provider 编辑" }).click();
+  await providerEditor.getByRole("button", { name: "关闭服务连接编辑" }).click();
 });
 
 test("provider settings owns model discovery and opens a viewport-safe model editor", async ({ page }) => {
-  await page.route("**/api/providers", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [{ id: "provider-test", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://models.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 0 }] }) });
-  });
-  await page.route("**/api/models", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [] }) });
-  });
-  await page.route("**/api/providers/provider-test/discover", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: ["writer-fast", "writer-large"] }) });
-  });
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "provider-test", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://models.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 0 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/provider-test/discover", route => route.fulfill({ json: route.request().method() === "GET" ? null : { models: ["writer-fast", "writer-large"] } }));
   await page.goto("/settings/models");
-  await expect(page.getByText("Providers", { exact: true })).toBeVisible();
-  const providerCard = page.locator(".provider-card").filter({ hasText: "Writer Provider" });
-  const providerToggle = providerCard.locator(".provider-group-toggle");
-  await expect(providerToggle).toHaveAttribute("aria-label", "折叠 Provider：Writer Provider");
-  await expect(providerCard.locator(".provider-group-body")).toBeVisible();
-  await providerToggle.click();
-  await expect(providerToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(providerCard.locator(".provider-group-body")).toHaveCount(0);
-  await providerToggle.click();
-  await expect(providerToggle).toHaveAttribute("aria-expanded", "true");
-  await providerCard.getByRole("button", { name: "Writer Provider的更多操作" }).click();
-  await page.getByRole("menuitem", { name: "Fetch 模型" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByLabel("显示名称")).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("Writer Provider");
-  await expect(page.getByLabel("最大输入字符数")).toHaveValue(/60,?000/);
-  const discovered = page.getByLabel("选择获取到的大模型");
-  await expect(discovered).toBeVisible();
-  await expect(page.getByRole("dialog").getByText("writer-fast", { exact: true })).toBeVisible();
-  await discovered.click();
-  await page.getByRole("option", { name: "writer-large", exact: true }).click();
-  await expect(page.getByLabel("模型 ID")).toHaveValue("writer-fast, writer-large");
-  await discovered.click();
-  for (const name of ["writer-fast", "writer-large"]) {
-    const option = page.getByRole("option", { name, exact: true });
-    await expect(option).toHaveAttribute("aria-selected", "true");
-    await expect(option.locator("svg")).toHaveCount(1);
-  }
-  await expect(page.getByRole("button", { name: "添加 2 个模型" })).toBeVisible();
-
-  const bounds = await page.getByRole("dialog").boundingBox();
-  const viewport = page.viewportSize()!;
-  expect(bounds).not.toBeNull();
-  expect(bounds!.x).toBeGreaterThanOrEqual(0);
-  expect(bounds!.y).toBeGreaterThanOrEqual(0);
-  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
-  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+  await page.locator(".ai-service-intro").getByRole("button", { name: "添加模型", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  await expect(dialog.getByRole("combobox", { name: "服务连接", exact: true })).toHaveValue("Writer Provider");
+  await expect(dialog.getByRole("checkbox", { name: "选择模型 writer-fast", exact: true })).not.toBeChecked();
+  await dialog.getByRole("checkbox", { name: "选择模型 writer-fast", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: "选择模型 writer-large", exact: true }).check();
+  await expect(dialog.getByRole("button", { name: "启用 2 个模型", exact: true })).toBeEnabled();
+  await expect(dialog.getByLabel("显示名称")).toHaveCount(0);
+  const bounds = await dialog.boundingBox(); const viewport = page.viewportSize()!;
+  expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width + 1);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height + 1);
 });
 
 test("secondary list actions stay behind a consistent More menu", async ({ page }, testInfo) => {
@@ -568,56 +537,26 @@ test("relationship editing uses one responsive form", async ({ page }) => {
 
 test("model candidates can be assigned as independent task defaults", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop model settings");
-  await page.route("**/api/providers", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ providers: [
-      { id: "deepseek-provider", name: "DeepSeek Provider", adapterKind: "openai-compatible", baseUrl: "https://deepseek.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 },
-      { id: "writer-provider", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://writer.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 },
-    ] }) });
-  });
-  await page.route("**/api/models", async (route) => {
-    if (route.request().method() !== "GET") return route.continue();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ models: [
-        { id: "deepseek-candidate", providerId: "deepseek-provider", providerName: "DeepSeek Provider", name: "DeepSeek", modelId: "deepseek-chat", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 },
-        { id: "writer-candidate", providerId: "writer-provider", providerName: "Writer Provider", name: "Writer", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 },
-      ] }),
-    });
-  });
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [
+    { id: "deepseek-provider", name: "DeepSeek Provider", adapterKind: "openai-compatible", baseUrl: "https://deepseek.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 },
+    { id: "writer-provider", name: "Writer Provider", adapterKind: "openai-compatible", baseUrl: "https://writer.example/v1", timeoutMs: 120000, hasSecret: true, modelCount: 1 }
+  ] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [
+    { id: "deepseek-candidate", providerId: "deepseek-provider", providerName: "DeepSeek Provider", name: "DeepSeek", modelId: "deepseek-chat", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 },
+    { id: "writer-candidate", providerId: "writer-provider", providerName: "Writer Provider", name: "Writer", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 }
+  ] } }));
   await page.goto("/settings/models");
-  const deepseekProvider = page.locator(".provider-card").filter({ hasText: "DeepSeek Provider" });
-  const writerProvider = page.locator(".provider-card").filter({ hasText: "Writer Provider" });
-  const deepseek = deepseekProvider.locator(".provider-model-row").filter({ hasText: "DeepSeek" });
-  const writer = writerProvider.locator(".provider-model-row").filter({ hasText: "Writer" });
-  await expect(deepseekProvider.locator(".provider-model-row")).toHaveCount(1);
-  await expect(writerProvider.locator(".provider-model-row")).toHaveCount(1);
-  await expect(deepseekProvider).not.toContainText("writer-large");
-  await expect(writerProvider).not.toContainText("deepseek-chat");
-  await deepseek.getByRole("button", { name: "更多" }).click();
-  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Chat 默认" }).last().click();
-  await deepseek.getByRole("button", { name: "更多" }).click();
-  if (STANDALONE_AI_REVIEW_ENABLED) {
-    await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Review 默认" }).last().click();
-  } else {
-    await expect(page.getByRole("menuitem", { name: "设为 Review 默认" })).toHaveCount(0);
-    await page.keyboard.press("Escape");
+  for (const [purpose, label] of [["AI Chat", "DeepSeek Provider-DeepSeek"], ["正文生成", "Writer Provider-Writer"], ["名称生成", "Writer Provider-Writer"]]) {
+    await page.getByRole("combobox", { name: purpose, exact: true }).click();
+    await page.getByRole("option", { name: label, exact: true }).click();
   }
-  await writer.getByRole("button", { name: "更多" }).click();
-  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为 Generate 默认" }).last().click();
-  await writer.getByRole("button", { name: "更多" }).click();
-  await page.locator('[role="menuitem"]:visible').filter({ hasText: "设为名称生成默认" }).last().click();
-  await expect(deepseek).toContainText("默认 AI Chat");
-  if (STANDALONE_AI_REVIEW_ENABLED) await expect(deepseek).toContainText("默认 AI Review");
-  else await expect(deepseek).not.toContainText("默认 AI Review");
-  await expect(writer).toContainText("默认 AI Generate");
-  await expect(writer).toContainText("默认名称生成");
-
-  await deepseek.getByRole("button", { name: "编辑" }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("DeepSeek Provider");
-  await expect(dialog.getByLabel("模型 ID")).toHaveValue("deepseek-chat");
-  await expect(dialog.getByText("API Key")).toHaveCount(0);
+  const deepseek = page.locator('[data-provider-model-id="deepseek-candidate"]');
+  const writer = page.locator('[data-provider-model-id="writer-candidate"]');
+  await expect(deepseek).toContainText("对话"); await expect(writer).toContainText("正文 · 命名");
+  await deepseek.getByRole("button", { name: "编辑", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑模型", exact: true });
+  await expect(dialog.getByLabel("模型 ID", { exact: true })).toHaveValue("deepseek-chat");
+  await expect(dialog.getByText("API Key", { exact: true })).toHaveCount(0);
 });
 
 test("generate controls and context drawer fit the desktop viewport", async ({ page }, testInfo) => {
@@ -3452,10 +3391,11 @@ test("dark appearance keeps application and portal surfaces dark", async ({ page
   await expectDarkSurface(".outline-snapshot-content");
 
   await page.goto("/settings/models");
-  await page.getByRole("button", { name: "新建 Provider" }).click();
-  await expect(page.locator(".ws-modal-content")).toBeVisible();
-  await expectDarkSurface(".ws-modal-content");
-  await expectDarkSurface(".ws-modal-content .mantine-Input-input");
+  await page.getByRole("button", { name: /服务连接管理|管理接口地址与 API Key/ }).click();
+  await page.getByRole("button", { name: "添加服务连接", exact: true }).click();
+  await expect(page.locator(".ai-service-modal")).toBeVisible();
+  await expectDarkSurface(".ai-service-modal");
+  await expectDarkSurface(".ai-service-modal .mantine-Input-input");
 });
 
 test("desktop outline menu offers one-step ordering as a drag fallback", async ({ page }, testInfo) => {

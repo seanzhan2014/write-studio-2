@@ -145,7 +145,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "12";
+const RUNTIME_SCHEMA_VERSION = "13";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -196,6 +196,10 @@ export async function ensureDatabase() {
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
       await ensureAiProviderShape(db);
+      const modelColumns = await db.prepare("PRAGMA table_info(ai_models)").all<{ name: string }>();
+      if (!modelColumns.results?.some((column) => column.name === "metadata_json")) {
+        await db.prepare("ALTER TABLE ai_models ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'").run();
+      }
       await ensureArticleNamingColumns(db);
       await ensureAiGenerateSettingsColumns(db);
       await ensureCharacterDescriptionShape(db);
@@ -741,6 +745,8 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
     ...normalizeAppearance(settings),
     namingModelMode: settings.namingModelMode === "fixed" ? "fixed" : "inherit",
     namingModel: String(settings.namingModel ?? ""),
+    illustrationPromptModel: String(settings.illustrationPromptModel ?? ""),
+    illustrationImageModel: String(settings.illustrationImageModel ?? ""),
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),

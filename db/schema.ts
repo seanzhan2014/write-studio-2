@@ -212,6 +212,7 @@ export const aiProviders = sqliteTable("ai_providers", {
 });
 
 export const aiModels = sqliteTable("ai_models", {
+  metadataJson: text("metadata_json").notNull().default("{}"),
   id: text("id").primaryKey(),
   providerId: text("provider_id").references(() => aiProviders.id, { onDelete: "restrict" }),
   name: text("name").notNull(),

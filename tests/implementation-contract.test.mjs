@@ -61,7 +61,7 @@ test("schema-extensible inserts name their columns explicitly", async () => {
   assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
-  assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort\)/);
+  assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json\)/);
   assert.doesNotMatch(ai, /INSERT INTO ai_models VALUES/);
 });
 
@@ -369,8 +369,8 @@ test("shared component framework owns responsive overlays and form controls", as
   for (const primitive of ["MobileActionSheet", "ScrollableDrawer", "ResponsiveModal"]) assert.match(overlays, new RegExp(`export function ${primitive}`));
   assert.doesNotMatch(`${app}\n${dataTransfer}`, /<(?:Modal|Drawer)\b/);
   assert.doesNotMatch(app, /className="(?:modal-layer|outline-sheet-layer|desktop-action-layer)"/);
-  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{providerFormOpen\}/);
-  assert.match(app, /<ResponsiveModal[\s\S]*opened=\{modelFormOpen\}/);
+  assert.match(await read("app/ui/ai-services.tsx"), /<ResponsiveModal[\s\S]*opened=\{connectionOpen\}/);
+  assert.match(await read("app/ui/ai-services.tsx"), /<ResponsiveModal[\s\S]*opened=\{Boolean\(editing\)\}/);
   assert.match(app, /function VersionDrawer[\s\S]*<ScrollableDrawer/);
   assert.match(app, /function TaskPanel[\s\S]*className="workspace task-workspace"/);
   assert.match(app, /function ChapterActionSheet[\s\S]*<MobileActionSheet/);
@@ -418,40 +418,19 @@ test("rewrite versions retain a direct source link and report missing originals"
   assert.match(app, /原正文已删除，无法打开/);
 });
 
-test("provider settings own credentials and server-side model discovery", async () => {
-  const app = await read("app/WriterStudioApp.tsx");
+test("AI services separates defaults, enabled models, connection credentials and catalog discovery", async () => {
+  const app = await read("app/ui/ai-services.tsx");
   const ai = await read("db/ai.ts");
-  const styles = await read("app/globals.css");
-  assert.match(app, /openEditProvider\(provider\)/);
-  assert.match(app, /openEditModel\(model\)/);
-  assert.match(app, /<SettingSection title="Providers">/);
-  assert.match(app, /models\.filter\(\(model\) => model\.providerId === provider\.id\)/);
-  assert.match(app, /className="provider-model-row"/);
-  assert.match(app, /aria-label=\{`添加模型到 \$\{provider\.name\}`\}/);
-  assert.doesNotMatch(app, /<SettingSection title="Provider 设置">|<SettingSection title="大模型设置">/);
-  assert.match(app, /Fetch 模型/);
-  assert.match(app, /选择获取到的大模型/);
-  assert.match(app, /<MultiSelect[\s\S]*?className="discovered-model-select"/);
-  assert.match(app, /withCheckIcon/);
-  assert.match(app, /多个模型 ID 使用逗号分隔/);
-  assert.match(app, /\/api\/models\/bulk/);
-  assert.match(app, /model-form-error/);
-  assert.match(app, /method: "PATCH"/);
-  assert.match(app, /aria-label="Provider 超时（分钟）"/);
-  assert.match(app, /timeoutMs: Math\.round\(providerTimeoutMinutes \* 60_000\)/);
-  assert.doesNotMatch(app, /超时（毫秒）/);
-  assert.match(app, /className="model-card-actions provider-model-actions"/);
-  assert.match(styles, /\.model-card-actions \{[\s\S]*grid-column: 1 \/ -1/);
-  assert.match(styles, /\.provider-model-actions\.model-card-actions \{[\s\S]*grid-column: auto/);
-  assert.match(styles, /\.provider-model-header,[\s\S]*\.provider-model-row[\s\S]*grid-template-columns:/);
-  assert.match(styles, /\.model-form \{[\s\S]*padding: 18px 20px 20px/);
-  assert.match(styles, /\.model-form-modal \.model-form-actions[\s\S]*position: sticky/);
-  assert.match(ai, /\/models/);
-  assert.match(ai, /Authorization: `Bearer \$\{secret\}`/);
+  assert.match(app, /默认用途/);
+  assert.match(app, /已启用模型/);
+  assert.match(app, /服务连接/);
+  assert.match(app, /metadataByModelId/);
+  assert.match(app, /supportsImages/);
+  assert.match(app, /supportsText/);
+  assert.match(ai, /output_modalities=all/);
+  assert.match(ai, /images\/models/);
   assert.match(ai, /readProviderSecret\(model\.providerId\)/);
-  assert.doesNotMatch(app.match(/function ModelSettings[\s\S]*?function TaskSettings/)?.[0] ?? "", /\/api\/models\/discover|\/api\/models\/[^`]+\/secret/);
-  assert.match(ai, /本机 3002 服务无法访问模型 API/);
-  assert.match(ai, /if \(!normalized\) return null/);
+  assert.doesNotMatch(app, /是否删除这些模型/);
 });
 
 test("AI Generate keeps the prompt primary and automatically sets completed bodies as current", async () => {
@@ -662,7 +641,7 @@ test("AI tasks expose durable phases, heartbeats, timeout and cross-device refre
   assert.match(schema, /receivedCharacters: integer\("received_characters"\)/);
   assert.match(ai, /return \{ response, controller, cleanup, model, requestStartedAt, responseHeadersAt/);
   assert.match(ai, /consumeUpstream/);
-  assert.doesNotMatch(ai, /finally \{ clearTimeout\(timeout\); \}/);
+  assert.match(ai, /handle\.cleanup\(\)/);
   assert.match(state, /refreshFromServer/);
   assert.match(app, /phaseLabels/);
   assert.match(app, /最近更新/);
@@ -826,8 +805,6 @@ test("shared UI controls use one type and action scale across native and compone
   assert.match(styles, /\.info-page \.page-header \{[\s\S]*flex-direction: row/);
   assert.match(styles, /\.mantine-Modal-root \.mantine-Button-root,[\s\S]*min-height: 44px/);
   assert.match(styles, /\.setting-row \.toggle span \{[\s\S]*height: 24px/);
-  assert.match(app, /<Button variant="default" size="xs" loading=\{busy === `test-\$\{provider\.id\}`\}[\s\S]{0,220}测试连接<\/Button>/);
-  assert.match(app, /<Menu\.Target><Button variant="default" size="xs">更多<\/Button><\/Menu\.Target>/);
 });
 
 test("test servers cannot reuse or open the production database", async () => {

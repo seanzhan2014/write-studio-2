@@ -20,12 +20,14 @@ export function parseIllustrationPrompt(raw: string, content: string, selectedEx
 }
 
 export function parseIllustrationImage(payload: unknown): IllustrationImage {
-  const value = payload as { data?: Array<{ b64_json?: unknown; url?: unknown; revised_prompt?: unknown }>; output_format?: string } | null;
+  const value = payload as { data?: Array<{ b64_json?: unknown; url?: unknown; revised_prompt?: unknown; media_type?: unknown }>; output_format?: string } | null;
   const image = value?.data?.[0];
   if (!image) throw new Error("文生图模型没有返回图片，请检查模型是否支持图片生成");
   let src = "";
   if (typeof image.b64_json === "string" && image.b64_json.length > 0 && image.b64_json.length <= 28_000_000 && /^[A-Za-z0-9+/]+={0,2}$/.test(image.b64_json)) {
-    const format = value?.output_format === "jpeg" ? "jpeg" : value?.output_format === "webp" ? "webp" : "png";
+    const mime = typeof image.media_type === "string" ? image.media_type : "";
+    const format = mime === "image/jpeg" || value?.output_format === "jpeg" ? "jpeg" : mime === "image/webp" || value?.output_format === "webp" ? "webp" : "png";
+    if (mime && !["image/png", "image/jpeg", "image/webp"].includes(mime)) throw new Error("暂不支持此图片格式，请选择 PNG、JPEG 或 WebP");
     src = `data:image/${format};base64,${image.b64_json}`;
   } else if (typeof image.url === "string") {
     try {

@@ -62,7 +62,7 @@ test("real illustration API uses separate text/image requests and preserves pros
   provider = await api("/api/providers", { name: "插图回归 Provider", baseUrl: `http://127.0.0.1:${server.address().port}/v1`, secret: "fake-illustration-secret" });
   const textModel = await api("/api/models", { providerId: provider.id, name: "文本模型", modelId: "text-model" });
   createdModels.push(textModel);
-  const imageModel = await api("/api/models", { providerId: provider.id, name: "图片模型", modelId: "image-model", temperature: 0.4, reasoningEffort: "high" });
+  const imageModel = await api("/api/models", { providerId: provider.id, name: "图片模型", modelId: "image-model", metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"] }, temperature: 0.4, reasoningEffort: "high" });
   createdModels.push(imageModel);
   const send = (body) => fetch(`${baseUrl}/api/ai/illustrations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId: "outline-current", ...body }) });
   const before = await api("/api/state");
