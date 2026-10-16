@@ -119,6 +119,15 @@ test("SpicyAPI image model exposes its native aspect ratio and resolution choice
 });
 
 test("illustration workflow permits prompt edits, image retry and download without modifying prose", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis.crypto, "randomUUID", { value: undefined, configurable: true });
+  });
+  const requestKeys: string[] = [];
+  page.on("request", request => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/ai/illustrations") {
+      requestKeys.push(request.headers()["idempotency-key"]);
+    }
+  });
   const { bodies, control } = await mockIllustrations(page);
   control.failImage = true;
   await page.goto("/articles/article-main/outlines/outline-current/write");
@@ -143,6 +152,9 @@ test("illustration workflow permits prompt edits, image retry and download witho
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
   expect(bodies.at(-1)).toMatchObject({ action: "image", model: "image", prompt: "编辑后的水彩插图 prompt", aspectRatio: "16:9", resolution: "2K" });
+  expect(requestKeys).toHaveLength(3);
+  expect(requestKeys.every(key => typeof key === "string" && key.length > 0)).toBeTruthy();
+  expect(new Set(requestKeys).size).toBe(requestKeys.length);
   await expect(dialog.getByRole("link", { name: "下载图片" })).toHaveAttribute("href", /\/image\?download=1$/);
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
   await expect(page.getByRole("region", { name: "正文内容", exact: true })).toContainText("林澈看向顾屿，确认潮汐表上的时间。");

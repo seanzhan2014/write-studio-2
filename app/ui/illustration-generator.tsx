@@ -115,8 +115,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     if (busy) return;
     setBusy(action); setError(""); setNotice("");
     try {
+      const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
       const response = await fetchServerAction("/api/ai/illustrations", {
-        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
+        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
           ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, model: textModel }
           : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
