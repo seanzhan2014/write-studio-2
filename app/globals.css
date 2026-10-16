@@ -1751,6 +1751,10 @@ button:disabled {
 }
 
 .illustration-generator { min-width: 0; }
+.illustration-generator .mantine-Tabs-list { flex-wrap: wrap; }
+.illustration-history-card { min-width: 0; }
+.illustration-history-prompt { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; }
+.illustration-history-image { display: block; width: 100%; max-height: 360px; object-fit: contain; border-radius: 8px; }
 .illustration-generator .mantine-Group-root { flex-wrap: wrap; }
 .illustration-result { display: grid; gap: 12px; margin: 0; min-width: 0; }
 .illustration-result img { display: block; width: 100%; height: auto; border-radius: 8px; }

@@ -3,6 +3,8 @@ import { parseTaskHistory } from "@/lib/task-history";
 import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/writing-preparation";
 import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
+import { illustrationSchema, preserveIllustrationHistorySql, restoreIllustrationHistorySql, clearIllustrationHistoryBackupSql } from "./illustration-schema";
+import { startIllustrationRunner } from "./illustration-runner";
 import { normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import { startGenerateReviewRunner } from "@/db/generate-runner";
 import type { StudioData } from "@/app/studio-state";
@@ -145,7 +147,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "13";
+const RUNTIME_SCHEMA_VERSION = "14";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -193,6 +195,7 @@ export async function ensureDatabase() {
       if (await hasCurrentRuntimeSchema(db)) return;
 
       await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+      if (!isCloudDatabase()) await db.batch(illustrationSchema.map((statement) => db.prepare(statement)));
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
       await ensureAiProviderShape(db);
@@ -237,6 +240,7 @@ export async function ensureDatabase() {
   }
   await initialized;
   startGenerateReviewRunner();
+  startIllustrationRunner();
 }
 
 function rows<T>(result: SqliteResult<T>) {
@@ -846,6 +850,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   const nextDatabaseVersion = currentDatabaseVersion + 1;
   const statements: SqliteStatement[] = [
     db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
+    db.prepare(preserveIllustrationHistorySql),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
@@ -888,6 +893,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
       statements.push(insert(db, "INSERT INTO relationships(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?)", [relationship.id, article.id, low, high, relationship.description, now, now, nextRevision]));
     });
   }
+  statements.push(db.prepare(restoreIllustrationHistorySql), db.prepare(clearIllustrationHistoryBackupSql));
   for (const task of data.tasks.slice(0, 20)) {
     statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history))]));
   }

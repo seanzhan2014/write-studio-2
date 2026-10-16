@@ -21,6 +21,7 @@ function setCloudDatabase(database: D1DatabaseLike | undefined) {
 }
 
 interface Env {
+  ILLUSTRATIONS?: unknown;
   ASSETS: { fetch(request: Request): Promise<Response> };
   DB: D1DatabaseLike;
   IMAGES: {
@@ -40,6 +41,7 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env | undefined, ctx: ExecutionContext): Promise<Response> {
     setCloudDatabase(env?.DB);
+    (globalThis as Record<symbol, unknown>)[Symbol.for("writer-studio.illustration-bucket")] = env?.ILLUSTRATIONS;
     const url = new URL(request.url);
     if (url.pathname === "/_vinext/image" && env?.ASSETS && env.IMAGES) {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

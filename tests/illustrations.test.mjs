@@ -40,12 +40,15 @@ test("real illustration API uses separate text/image requests and preserves pros
   const original = await api("/api/state");
   await api("/api/state", { data: fullStudioFixture() }, "PUT", { "If-Match": String(original.revision) });
   const calls = [];
-  let invalidSelection = false, failImage = false;
+  let invalidSelection = false, failImage = false, remoteImage = false, delayImage = false;
+  let imageGate;
   const server = http.createServer(async (request, response) => {
+    if (request.url === "/generated.png") { response.writeHead(200, { "Content-Type": "image/png" }); response.end(Buffer.from(png, "base64")); return; }
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw); calls.push({ path: request.url, body, authorization: request.headers.authorization });
+    if (delayImage && request.url.endsWith("/images/generations")) await new Promise(resolve => { imageGate = resolve; });
     response.writeHead(failImage && request.url.endsWith("/images/generations") ? 503 : 200, { "Content-Type": "application/json" });
-    if (request.url.endsWith("/images/generations")) response.end(JSON.stringify(failImage ? { error: "fake-illustration-secret" } : { data: [{ b64_json: png }] }));
+    if (request.url.endsWith("/images/generations")) response.end(JSON.stringify(failImage ? { error: "fake-illustration-secret" } : { data: [remoteImage ? { url: `http://127.0.0.1:${server.address().port}/generated.png` } : { b64_json: png }] }));
     else response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ excerpt: invalidSelection ? "不属于正文" : excerpt, prompt }) } }] }));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
@@ -53,6 +56,12 @@ test("real illustration API uses separate text/image requests and preserves pros
   const createdModels = [];
   t.after(async () => {
     try {
+      imageGate?.();
+      const history = await api("/api/ai/illustrations?outlineId=outline-current");
+      for (const record of history.records) {
+        if (["queued", "running"].includes(record.status)) await api(`/api/ai/illustrations/${record.id}`, { action: "cancel" }, "PATCH");
+        await api(`/api/ai/illustrations/${record.id}`, undefined, "DELETE");
+      }
       for (const model of createdModels) await api(`/api/models/${model.id}`, undefined, "DELETE");
       if (provider) await api(`/api/providers/${provider.id}`, undefined, "DELETE");
       const current = await api("/api/state");
@@ -88,5 +97,65 @@ test("real illustration API uses separate text/image requests and preserves pros
   const failed = await send({ action: "image", prompt, model: imageModel.id }); assert.equal(failed.status, 502);
   assert.ok(!JSON.stringify(await failed.json()).includes("fake-illustration-secret"));
   failImage = false; assert.equal((await send({ action: "image", prompt, model: imageModel.id })).status, 200);
+
+  // Library records live independently of the prose snapshot and revisions.
+  const manual = (await api("/api/ai/illustrations", { action: "save-prompt", outlineId: "outline-current", prompt, excerpt, style: "水彩" })).record;
+  assert.equal(manual.status, "success");
+  assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "archive" }, "PATCH")).record.archived, true);
+  assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "restore" }, "PATCH")).record.archived, false);
+  const key = crypto.randomUUID();
+  const backgroundBody = { action: "prompt", background: true, outlineId: "outline-current", content, excerpt, model: textModel.id };
+  const job = (await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record;
+  assert.equal((await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record.id, job.id);
+  const waitFor = async (id, status) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const record = (await api(`/api/ai/illustrations/${id}`)).record;
+      if (record.status === status) return record;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.fail(`Task ${id} did not reach ${status}`);
+  };
+  // No browser or execute request is needed for self-hosted background work.
+  const savedPrompt = await waitFor(job.id, "success");
+  assert.equal(savedPrompt.prompt, prompt);
+  remoteImage = true;
+  const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, model: imageModel.id })).record;
+  const callsBefore = calls.length;
+  await Promise.all([1, 2].map(() => fetch(`${baseUrl}/api/ai/illustrations/${imageJob.id}/execute`, { method: "POST" }).then(response => response.text())));
+  const savedImage = await waitFor(imageJob.id, "success");
+  assert.ok(calls.length <= callsBefore + 1, "Concurrent dispatch must not duplicate model calls");
+  assert.ok(savedImage.src.startsWith("/api/ai/illustrations/"));
+  const imageResponse = await fetch(`${baseUrl}${savedImage.src}?download=1`);
+  assert.equal(imageResponse.headers.get("content-type"), "image/png");
+  assert.match(imageResponse.headers.get("content-disposition"), /attachment/);
+  assert.deepEqual(Buffer.from(await imageResponse.arrayBuffer()), Buffer.from(png, "base64"));
+  const imageFileCount = (await import("node:fs")).readdirSync(new URL("illustrations/", `file:///${process.env.WRITER_STUDIO_TEST_DB_PATH.replaceAll("\\", "/")}`));
+  assert.ok(imageFileCount.length > 0);
+  await api(`/api/ai/illustrations/${savedImage.id}`, undefined, "DELETE");
+  assert.equal((await fetch(`${baseUrl}${savedImage.src}`)).status, 404);
+  const remainingFiles = (await import("node:fs")).readdirSync(new URL("illustrations/", `file:///${process.env.WRITER_STUDIO_TEST_DB_PATH.replaceAll("\\", "/")}`));
+  assert.equal(remainingFiles.length, imageFileCount.length - 1, "Delete must remove stored bytes");
+
+  failImage = true; remoteImage = false;
+  const failedJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt, model: imageModel.id })).record;
+  const failure = await waitFor(failedJob.id, "error");
+  assert.ok(!failure.error.includes("fake-illustration-secret"));
+  failImage = false;
+  const retried = (await api(`/api/ai/illustrations/${failedJob.id}`, { action: "retry" }, "PATCH")).record;
+  assert.notEqual(retried.id, failedJob.id);
+  await waitFor(retried.id, "success");
+  delayImage = true;
+  const cancelled = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt, model: imageModel.id })).record;
+  await waitFor(cancelled.id, "running");
+  assert.equal((await api(`/api/ai/illustrations/${cancelled.id}`, { action: "cancel" }, "PATCH")).record.status, "cancelled");
+  imageGate?.(); delayImage = false;
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await api(`/api/ai/illustrations/${cancelled.id}`)).record.status, "cancelled");
+  const history = await api("/api/ai/illustrations?outlineId=outline-current");
+  assert.ok(history.records.some(record => record.id === job.id && record.prompt === prompt));
   const after = await api("/api/state"); assert.deepEqual(after.data, before.data); assert.equal(after.revision, before.revision);
+  const revised = structuredClone(after.data);
+  revised.articles[0].summary += "插图历史持久化回归";
+  await api("/api/state", { data: revised }, "PUT", { "If-Match": String(after.revision) });
+  assert.equal((await api(`/api/ai/illustrations/${manual.id}`)).record.prompt, prompt, "Saving a full studio snapshot must preserve library history");
 });

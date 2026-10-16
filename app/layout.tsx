@@ -4,6 +4,7 @@ import { ColorSchemeScript } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "./globals.css";
 import OfflineBootstrap from "./offline-bootstrap";
+import IllustrationBackground from "./illustration-background";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <head><ColorSchemeScript defaultColorScheme="auto" /></head>
       <body>
         <OfflineBootstrap />
+        <IllustrationBackground />
         {children}
       </body>
     </html>

@@ -244,3 +244,19 @@ export const syncChangeLog = sqliteTable("sync_change_log", {
   changeJson: text("change_json").notNull(),
   createdAt: text("created_at").notNull(),
 });
+
+export const illustrationHistory = sqliteTable("illustration_history", {
+  id: text("id").primaryKey(),
+  outlineId: text("outline_id").notNull().references(() => outlines.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(), status: text("status").notNull(),
+  prompt: text("prompt").notNull().default(""), excerpt: text("excerpt").notNull().default(""),
+  style: text("style").notNull().default(""), modelId: text("model_id").notNull().default(""),
+  modelName: text("model_name").notNull().default(""), archived: integer("archived").notNull().default(0),
+  inputJson: text("input_json").notNull().default("{}"), assetKey: text("asset_key"),
+  mimeType: text("mime_type"), revisedPrompt: text("revised_prompt"), errorMessage: text("error_message"),
+  runnerId: text("runner_id"), leaseUntil: text("lease_until"),
+  createdAt: text("created_at").notNull(), completedAt: text("completed_at"),
+}, (table) => [
+  index("illustration_history_outline_created_idx").on(table.outlineId, table.createdAt),
+  index("illustration_history_status_idx").on(table.status),
+]);
