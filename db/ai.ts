@@ -1,4 +1,5 @@
 import { catalogEntry, normalizeModelMetadata, supportsText, supportsImages, imageParameterValues, type ModelMetadata, type ModelCatalog, type CatalogModel, type ModelTestResult } from "../lib/ai-model-capabilities";
+import { discoverSpicyImageCatalog, generateSpicyImage, isSpicyApi, spicyChatBaseUrl } from "../lib/spicy-api";
 import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, type ReasoningEffort, type ReasoningOptions } from "../lib/reasoning-options";
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
@@ -18,7 +19,7 @@ import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PR
 export type AiProviderRecord = {
   id: string;
   name: string;
-  adapterKind: "openai-compatible" | "openrouter";
+  adapterKind: "openai-compatible" | "openrouter" | "spicyapi";
   baseUrl: string;
   timeoutMs: number;
   hasSecret: boolean;
@@ -32,7 +33,7 @@ export type AiModelRecord = {
   id: string;
   providerId: string;
   providerName: string;
-  adapterKind: "openai-compatible" | "openrouter";
+  adapterKind: "openai-compatible" | "openrouter" | "spicyapi";
   name: string;
   baseUrl: string;
   modelId: string;
@@ -129,9 +130,9 @@ function providerNameFromUrl(value: string) {
   try { return new URL(value).host || "AI Provider"; } catch { return "AI Provider"; }
 }
 
-function providerAdapterKind(value: unknown): "openai-compatible" | "openrouter" {
+function providerAdapterKind(value: unknown): AiProviderRecord["adapterKind"] {
   const normalized = String(value ?? "openai-compatible").trim();
-  if (normalized !== "openai-compatible" && normalized !== "openrouter") throw new Error("暂不支持该 Provider 协议");
+  if (normalized !== "openai-compatible" && normalized !== "openrouter" && normalized !== "spicyapi") throw new Error("暂不支持该 Provider 协议");
   return normalized;
 }
 
@@ -523,7 +524,8 @@ export async function readProviderCatalog(id: string): Promise<ModelCatalog | nu
 export async function discoverProviderCatalog(id: string) {
   const provider = await findProvider(id);
   if (!provider) throw new Error("服务连接不存在");
-  const result = await discoverConnection(provider.baseUrl, await readProviderSecret(id), isOpenRouter(provider));
+  const secret = await readProviderSecret(id);
+  const result = isSpicyApi(provider) ? await discoverSpicyImageCatalog(provider.baseUrl, secret) : await discoverConnection(provider.baseUrl, secret, isOpenRouter(provider));
   await getDatabase().prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)").bind(`ai_catalog:${id}`, JSON.stringify(result), result.syncedAt).run();
   return result;
 }
@@ -541,12 +543,12 @@ export async function discoverModelIds(input: { providerId?: unknown; baseUrl?: 
   if (existingId && !existing) throw new Error("模型不存在");
   const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
   const secret = String(input.secret ?? "").trim() || (existing ? await readProviderSecret(existing.providerId) : "");
-  return (await discoverConnection(baseUrl, secret, new URL(baseUrl).hostname === "openrouter.ai")).catalog.map((entry) => entry.id);
+  return (await (isSpicyApi({ baseUrl }) ? discoverSpicyImageCatalog(baseUrl, secret) : discoverConnection(baseUrl, secret, new URL(baseUrl).hostname === "openrouter.ai"))).catalog.map((entry) => entry.id);
 }
 
 function endpoint(model: AiModelRecord) {
   if (!supportsText(model)) throw new AiInputError("此模型不支持文字生成，请选择文字模型");
-  return `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  return `${isSpicyApi(model) ? spicyChatBaseUrl(model.baseUrl) : model.baseUrl.replace(/\/$/, "")}/chat/completions`;
 }
 
 function readableNetworkError(error: unknown, action: string) {
@@ -731,6 +733,7 @@ export async function generateIllustrationImage(input: { outlineId: string; prom
 async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
+  if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;

@@ -3,6 +3,7 @@
 import { Alert, Badge, Button, Card, Group, Select, Stack, Tabs, Text, Textarea, TextInput } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supportsText, supportsImages, imageParameterValues, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { isSpicyApi } from "@/lib/spicy-api";
 import { ResponsiveModal } from "./overlays";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
@@ -101,7 +102,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const imageRecord = models.find((model) => model.id === imageModel);
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
-  const nativeImageOptions = imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
+  const spicyImage = Boolean(imageRecord && isSpicyApi(imageRecord));
+  const nativeImageOptions = spicyImage || imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
   const ratios = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "aspect_ratio") : [];
   const resolutions = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "resolution") : [];
   const excerptValid = !excerpt.trim() || (content.includes(excerpt.trim()) && excerpt.trim().length <= MAX_ILLUSTRATION_EXCERPT);
@@ -201,6 +203,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
       <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setSize(""); setQuality(""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} searchable />
+      {spicyImage && <Text size="xs" c="dimmed">SpicyAPI 图片生成后会自动保存到插图历史。提交后的远程任务无法取消，停止等待后仍可能产生费用。</Text>}
       {!modelError && models.length > 0 && !models.some(supportsImages) && <Alert color="yellow">尚未配置图像生成模型，请到“设置 → AI 服务”添加或编辑模型能力。</Alert>}
       {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { setSize(value ?? ""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { setAspectRatio(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}

@@ -60,6 +60,28 @@ test.beforeEach(async ({ page, request }) => {
   ] } }));
 });
 
+test("SpicyAPI image model exposes its native aspect ratio and resolution choices", async ({ page }) => {
+  const { bodies } = await mockIllustrations(page);
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [
+    { id: "wan", name: "Wan 2.7 Pro", modelId: "alibaba/wan-2.7-pro/text-to-image", providerName: "spicy", hasSecret: true, adapterKind: "spicyapi", baseUrl: "https://api.spicyapi.ai/api/v1", metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { aspect_ratio: { type: "string", values: ["1:1", "16:9"] }, resolution: { type: "string", values: ["1k", "2k"] } } } },
+  ] } }));
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "生成插图", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "从正文生成插图" });
+  await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩画，一座海边的灯塔。");
+  await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
+  await page.getByRole("option", { name: "spicy-Wan 2.7 Pro", exact: true }).click();
+  await expect(dialog.getByText(/提交后的远程任务无法取消/)).toBeVisible();
+  await dialog.getByRole("combobox", { name: "画面比例", exact: true }).click();
+  await page.getByRole("option", { name: "16:9", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "图像分辨率", exact: true }).click();
+  await page.getByRole("option", { name: "2k", exact: true }).click();
+  await expect(dialog.getByRole("combobox", { name: "图片尺寸", exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
+  await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
+  expect(bodies.at(-1)).toMatchObject({ model: "wan", aspectRatio: "16:9", resolution: "2k" });
+});
+
 test("illustration workflow permits prompt edits, image retry and download without modifying prose", async ({ page, request }) => {
   const { bodies, control } = await mockIllustrations(page);
   control.failImage = true;
