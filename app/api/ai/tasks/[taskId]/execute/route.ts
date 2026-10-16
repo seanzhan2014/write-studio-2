@@ -418,8 +418,8 @@ export async function POST(_request: Request, context: RouteContext) {
   await ensureDatabase();
   const target = await getDatabase().prepare("SELECT target FROM ai_tasks WHERE id=?").bind(taskId).first<string>("target");
   if (isIllustrationTarget(target)) {
-    const { POST: executeIllustration } = await import("@/app/api/ai/illustrations/[id]/execute/route");
-    return executeIllustration(_request, { params: Promise.resolve({ id: taskId }) });
+    const { illustrationExecutionResponse } = await import("@/app/api/ai/illustrations/execute");
+    return illustrationExecutionResponse(taskId);
   }
   if (!isCloudDatabase() && process.env.WRITER_STUDIO_TEST_MODE !== "1") {
     // A browser navigation closes its HTTP response, but a local generation

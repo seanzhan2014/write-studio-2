@@ -76,12 +76,13 @@ test("real illustration API uses separate text/image requests and preserves pros
   createdModels.push(imageModel);
   const send = (body) => fetch(`${baseUrl}/api/ai/illustrations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId: "outline-current", ...body }) });
   const before = await api("/api/state");
-  const selected = await send({ action: "prompt", content, excerpt, model: textModel.id, style: "水彩" });
+  const selected = await send({ action: "prompt", content, excerpt, model: textModel.id, stylePreset: "watercolor", style: "冷色调" });
   assert.equal(selected.status, 200); assert.deepEqual(await selected.json(), { excerpt, prompt });
   assert.equal(calls.at(-1).path, "/v1/chat/completions");
   assert.equal(calls.at(-1).body.model, "text-model");
   const source = JSON.parse(calls.at(-1).body.messages.at(-1).content);
   assert.equal(source.content, content); assert.equal(source.selectedExcerpt, excerpt);
+  assert.match(source.visualDirection, /水彩插画/); assert.match(source.visualDirection, /冷色调/);
   assert.ok(!JSON.stringify(source).includes("后续正文秘密"));
   const auto = await send({ action: "prompt", content, model: textModel.id });
   assert.equal(auto.status, 200);
@@ -89,7 +90,12 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.equal(generated.status, 200); assert.equal((await generated.json()).src, `data:image/png;base64,${png}`);
   assert.deepEqual(calls.at(-1).body, { model: "image-model", prompt: `${prompt} 额外编辑`, n: 1, size: "1024x1024" });
   assert.equal(calls.at(-1).authorization, "Bearer fake-illustration-secret");
-  for (const body of [{ action: "prompt", content: "", model: textModel.id }, { action: "prompt", content, excerpt: "不存在", model: textModel.id }, { action: "image", prompt, model: "" }, { action: "other" }]) {
+  const styledImage = await send({ action: "image", prompt, stylePreset: "ink", style: "淡青色", model: imageModel.id });
+  assert.equal(styledImage.status, 200);
+  assert.ok(calls.at(-1).body.prompt.startsWith(prompt));
+  assert.match(calls.at(-1).body.prompt, /国风水墨/); assert.match(calls.at(-1).body.prompt, /淡青色/);
+  assert.match(calls.at(-1).body.prompt, /以此处为准/);
+  for (const body of [{ action: "prompt", content: "", model: textModel.id }, { action: "prompt", content, excerpt: "不存在", model: textModel.id }, { action: "image", prompt, model: "" }, { action: "prompt", content, stylePreset: "unknown", model: textModel.id }, { action: "image", prompt, stylePreset: "unknown", model: imageModel.id }, { action: "image", prompt, style: "长".repeat(2001), model: imageModel.id }, { action: "save-prompt", prompt, stylePreset: "unknown" }, { action: "other" }]) {
     const count = calls.length; assert.equal((await send(body)).status, 400); assert.equal(calls.length, count);
   }
   invalidSelection = true;
@@ -100,12 +106,14 @@ test("real illustration API uses separate text/image requests and preserves pros
   failImage = false; assert.equal((await send({ action: "image", prompt, model: imageModel.id })).status, 200);
 
   // Library records live independently of the prose snapshot and revisions.
-  const manual = (await api("/api/ai/illustrations", { action: "save-prompt", outlineId: "outline-current", prompt, excerpt, style: "水彩" })).record;
+  const manual = (await api("/api/ai/illustrations", { action: "save-prompt", outlineId: "outline-current", prompt, excerpt, style: "淡青色", stylePreset: "ink" })).record;
   assert.equal(manual.status, "success");
+  assert.equal(manual.stylePreset, "ink");
+  assert.equal((await api(`/api/ai/illustrations/${manual.id}`)).record.stylePreset, "ink");
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "archive" }, "PATCH")).record.archived, true);
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "restore" }, "PATCH")).record.archived, false);
   const key = crypto.randomUUID();
-  const backgroundBody = { action: "prompt", background: true, outlineId: "outline-current", content, excerpt, model: textModel.id };
+  const backgroundBody = { action: "prompt", background: true, outlineId: "outline-current", content, excerpt, stylePreset: "anime", model: textModel.id };
   const job = (await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record;
   assert.equal((await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record.id, job.id);
   const waitFor = async (id, status) => {
@@ -119,11 +127,16 @@ test("real illustration API uses separate text/image requests and preserves pros
   // No browser or execute request is needed for self-hosted background work.
   const savedPrompt = await waitFor(job.id, "success");
   assert.equal(savedPrompt.prompt, prompt);
+  assert.equal(savedPrompt.stylePreset, "anime");
+  assert.match(JSON.parse(calls.at(-1).body.messages.at(-1).content).visualDirection, /日系动漫/);
   remoteImage = true;
-  const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, model: imageModel.id })).record;
+  const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, stylePreset: "flat", model: imageModel.id })).record;
   const callsBefore = calls.length;
   await Promise.all([1, 2].map(() => fetch(`${baseUrl}/api/ai/illustrations/${imageJob.id}/execute`, { method: "POST" }).then(response => response.text())));
   const savedImage = await waitFor(imageJob.id, "success");
+  assert.equal(savedImage.stylePreset, "flat");
+  assert.equal(savedImage.prompt, prompt, "Style selection must preserve the editable prompt");
+  assert.match(calls.at(-1).body.prompt, /扁平插画/);
   assert.ok(calls.length <= callsBefore + 1, "Concurrent dispatch must not duplicate model calls");
   assert.ok(savedImage.src.startsWith("/api/ai/illustrations/"));
   const imageResponse = await fetch(`${baseUrl}${savedImage.src}?download=1`);
@@ -138,7 +151,7 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.equal(remainingFiles.length, imageFileCount.length - 1, "Delete must remove stored bytes");
 
   failImage = true; remoteImage = false;
-  const failedJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt, model: imageModel.id })).record;
+  const failedJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt, stylePreset: "watercolor", model: imageModel.id })).record;
   const failure = await waitFor(failedJob.id, "error");
   assert.ok(!failure.error.includes("fake-illustration-secret"));
   failImage = false;
@@ -146,7 +159,8 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.equal(retryResponse.task.state, "waiting");
   const retried = { id: failedJob.id };
   assert.equal(retried.id, failedJob.id);
-  await waitFor(retried.id, "success");
+  assert.equal((await waitFor(retried.id, "success")).stylePreset, "watercolor");
+  assert.match(calls.at(-1).body.prompt, /水彩插画/);
   delayImage = true;
   const cancelled = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt, model: imageModel.id })).record;
   await waitFor(cancelled.id, "running");

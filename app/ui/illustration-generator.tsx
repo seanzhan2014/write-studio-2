@@ -10,6 +10,7 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
 import { illustrationIsActive, illustrationStatusLabels, type IllustrationRecord } from "@/lib/illustration-history";
 import { useStudio } from "@/app/studio-state";
+import { DEFAULT_ILLUSTRATION_STYLE, ILLUSTRATION_STYLES, isIllustrationStylePreset, type IllustrationStylePreset } from "@/lib/illustration-styles";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
@@ -26,6 +27,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [resolution, setResolution] = useState("");
   const [excerpt, setExcerpt] = useState(selectedExcerpt);
   const [style, setStyle] = useState("");
+  const [stylePreset, setStylePreset] = useState<IllustrationStylePreset>(DEFAULT_ILLUSTRATION_STYLE);
   const [prompt, setPrompt] = useState("");
   const [image, setImage] = useState<IllustrationImage | null>(null);
   const [busy, setBusy] = useState<"prompt" | "image" | null>(null);
@@ -119,8 +121,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
-          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, model: textModel }
-          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
+          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, model: textModel }
+          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "插图生成失败");
@@ -136,6 +138,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   function usePrompt(record: IllustrationRecord) {
     setPrompt(record.prompt); setStyle(record.style);
+    setStylePreset(record.stylePreset ?? "auto");
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
     setSelectedPrompt(record.kind === "prompt" ? record.id : null); setTab("generate");
     setNotice("已载入历史 prompt，可编辑后生成插图。");
@@ -162,7 +165,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     try {
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style }),
+        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "保存失败");
@@ -207,7 +210,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => setTextModel(value ?? "")} disabled={Boolean(busy)} searchable />
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
-      <Textarea label="画面要求（可选）" placeholder="例如：水彩插图，冷色调，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
+      <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={ILLUSTRATION_STYLES.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) setStylePreset(value); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
+      <Text size="xs" c="dimmed">{ILLUSTRATION_STYLES.find(item => item.value === stylePreset)?.description}</Text>
+      <Textarea label="画面要求（可选）" description="可补充自定义风格、色调、光线与构图要求。" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
@@ -236,6 +241,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         {visibleRecords.map(record => <Card key={record.id} withBorder padding="md" className="illustration-history-card"><Stack gap="sm">
           <Group justify="space-between"><Text size="sm" fw={600}>{record.kind === "prompt" ? "Prompt" : "插图"} · {record.outlineTitle}</Text><Group gap="xs"><Badge color={record.status === "error" ? "red" : illustrationIsActive(record) ? "blue" : "gray"}>{illustrationStatusLabels[record.status]}</Badge>{record.archived && <Badge color="gray">已归档</Badge>}</Group></Group>
           <Text size="xs" c="dimmed">{new Date(record.createdAt).toLocaleString()} · {record.modelName || "手动添加"}</Text>
+          {record.stylePreset && record.stylePreset !== "auto" && <Badge variant="light">{ILLUSTRATION_STYLES.find(item => item.value === record.stylePreset)?.label}</Badge>}
           {record.src && <a href={record.src} target="_blank" rel="noopener noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img className="illustration-history-image" src={record.src} alt="历史插图" loading="lazy" /></a>}
           {record.prompt && <Text size="sm" className="illustration-history-prompt">{record.prompt}</Text>}
           {record.excerpt && <Text size="xs" c="dimmed" lineClamp={3}>正文片段：{record.excerpt}</Text>}

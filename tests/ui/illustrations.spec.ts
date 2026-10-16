@@ -61,7 +61,7 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
       bodies.push(body!);
       const record: IllustrationRecord = {
         id: `test-${records.length}`, kind: body!.action === "image" ? "image" : "prompt", outlineId: "outline-current", outlineTitle: "潮汐表",
-        prompt: String(body!.prompt || ""), excerpt: String(body!.excerpt || ""), style: String(body!.style || ""),
+        prompt: String(body!.prompt || ""), excerpt: String(body!.excerpt || ""), style: String(body!.style || ""), stylePreset: body!.stylePreset as IllustrationRecord["stylePreset"],
         status: body!.action === "save-prompt" ? "success" : "queued", archived: false, model: String(body!.model || ""), modelName: "测试模型", createdAt: new Date().toISOString(),
       };
       records.unshift(record);
@@ -94,6 +94,50 @@ test.beforeEach(async ({ page, request }) => {
     { id: "text", name: "文本测试模型", modelId: "text", providerName: "测试", hasSecret: true },
     { adapterKind: "openrouter", metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { aspect_ratio: { type: "enum", values: ["16:9"] }, resolution: { type: "enum", values: ["2K"] } } }, id: "image", name: "图片测试模型", modelId: "image", providerName: "测试", hasSecret: true },
   ] } }));
+});
+
+test("illustration styles apply to both generation steps and restore from saved history", async ({ page }) => {
+  const { bodies } = await mockIllustrations(page);
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "生成插图", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "从正文生成插图" });
+  const styles = dialog.getByRole("combobox", { name: "插图风格", exact: true });
+  await expect(styles).toHaveValue("文学插图");
+  await styles.click();
+  for (const name of ["跟随 Prompt", "水彩插画", "国风水墨", "日系动漫", "电影写实", "油画质感", "铅笔素描", "扁平插画", "剪纸拼贴", "3D 绘本", "像素艺术"]) {
+    await expect(page.getByRole("option", { name, exact: true })).toBeAttached();
+  }
+  await page.getByRole("option", { name: "水彩插画", exact: true }).click();
+  await dialog.getByRole("textbox", { name: "画面要求（可选）", exact: true }).fill("冷色调，逆光");
+  await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();
+  await page.getByRole("option", { name: /文本测试模型/ }).click();
+  await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
+  await expect(dialog.getByRole("textbox", { name: "图片 prompt", exact: true })).not.toHaveValue("");
+  expect(bodies.at(-1)).toMatchObject({ action: "prompt", stylePreset: "watercolor", style: "冷色调，逆光" });
+  await styles.click();
+  await page.getByRole("option", { name: "国风水墨", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
+  await page.getByRole("option", { name: /图片测试模型/ }).click();
+  await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
+  await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
+  expect(bodies.at(-1)).toMatchObject({ action: "image", stylePreset: "ink", style: "冷色调，逆光" });
+  await dialog.getByRole("tab", { name: "Prompt 历史", exact: true }).click();
+  await expect(dialog.getByText("水彩插画", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "使用此 prompt", exact: true }).click();
+  await expect(styles).toHaveValue("水彩插画");
+  await expect(dialog.getByRole("textbox", { name: "画面要求（可选）", exact: true })).toHaveValue("冷色调，逆光");
+  await styles.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `.test-data/illustration-styles-${test.info().project.name}.png` });
+  await dialog.getByRole("button", { name: "保存 prompt 到历史", exact: true }).click();
+  await expect(dialog.getByText("Prompt 已添加到历史。", { exact: true })).toBeVisible();
+  expect(bodies.at(-1)).toMatchObject({ action: "save-prompt", stylePreset: "watercolor" });
+  await page.reload();
+  await page.getByRole("button", { name: "插图历史", exact: true }).click();
+  await dialog.getByRole("button", { name: "使用此 prompt", exact: true }).click();
+  await expect(styles).toHaveValue("国风水墨");
+  await styles.click();
+  await page.getByRole("option", { name: "跟随 Prompt", exact: true }).click();
+  await expect(styles).toHaveValue("跟随 Prompt");
 });
 
 test("SpicyAPI image model exposes its native aspect ratio and resolution choices", async ({ page }) => {

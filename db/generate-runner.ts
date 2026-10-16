@@ -40,14 +40,21 @@ export function startGenerateReviewRunner() {
         const options = JSON.parse(String(row.context_options_json ?? "{}"));
         if (["awaiting_author", "awaiting_confirmation"].includes(String(row.phase))) { if (row.target === "content") occupied.add(row.outline_id); continue; }
         if (reviewsOnly && !isIllustrationTarget(row.target) && (row.target !== "content" || (!options.reviewMaxRounds && !options.writingPreparation))) continue;
-        chosen.push(String(row.id));
+        chosen.push({ id: String(row.id), illustration: isIllustrationTarget(row.target) });
         if (row.target === "content") occupied.add(row.outline_id);
       }
       if (chosen.length) {
-        const { POST } = await import("@/app/api/ai/tasks/[taskId]/execute/route");
         // Do not keep the dispatcher busy while models work. Leases prevent
         // another tick from claiming a running task.
-        for (const id of chosen) void POST(new Request("http://writer-studio.local/api/ai/tasks/execute", { method: "POST" }), { params: Promise.resolve({ taskId: id }) }).catch((error) => console.error("Automatic review task failed", error));
+        for (const { id, illustration } of chosen) {
+          if (illustration) {
+            const { executeIllustration } = await import("./illustrations");
+            void executeIllustration(id).catch((error) => console.error("Automatic illustration task failed", error));
+          } else {
+            const { POST } = await import("@/app/api/ai/tasks/[taskId]/execute/route");
+            void POST(new Request("http://writer-studio.local/api/ai/tasks/execute", { method: "POST" }), { params: Promise.resolve({ taskId: id }) }).catch((error) => console.error("Automatic review task failed", error));
+          }
+        }
       }
     } catch (error) {
       console.error("Automatic review dispatcher failed", error);

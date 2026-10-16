@@ -49,7 +49,7 @@ test("built production service dispatches illustration jobs without a browser or
   });
   async function api(url, body, method = body === undefined ? "GET" : "POST", headers = {}) {
     const response = await fetch(base + url, { method, headers: { "Content-Type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) });
-    const result = await response.json();
+    const result = response.status === 204 ? null : await response.json();
     assert.ok(response.ok, `${url}: ${response.status} ${JSON.stringify(result)}`);
     return result;
   }
@@ -64,7 +64,7 @@ test("built production service dispatches illustration jobs without a browser or
   await api("/api/state", { data: fullStudioFixture() }, "PUT", { "If-Match": String(state.revision) });
   const provider = await api("/api/providers", { name: "Production regression mock", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, secret: "fake-production-test-secret" });
   const model = await api("/api/models", { providerId: provider.id, name: "Mock image", modelId: "mock-image", metadata: { source: "manual", inputModalities: ["text"], outputModalities: ["image"] } });
-  job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A blue circle" })).record;
+  job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A blue circle", stylePreset: "watercolor", style: "冷色调" })).record;
   for (let attempt = 0; attempt < 60; attempt++) {
     job = (await api(`/api/ai/illustrations/${job.id}`)).record;
     if (job.status === "success" || job.status === "error") break;
@@ -74,8 +74,22 @@ test("built production service dispatches illustration jobs without a browser or
   assert.equal(job.status, "success", job.error || output.join("").slice(-5000));
   assert.equal(calls.length, 1, "the production dispatcher must submit exactly once");
   assert.equal(calls[0].url, "/v1/images/generations");
+  assert.match(calls[0].body.prompt, /水彩插画/);
+  assert.match(calls[0].body.prompt, /冷色调/);
+  assert.equal(job.stylePreset, "watercolor");
   const image = await fetch(base + job.src);
   assert.equal(image.status, 200);
   assert.deepEqual(Buffer.from(await image.arrayBuffer()), Buffer.from(png, "base64"));
   assert.ok(!output.some(line => line.includes("Illustration dispatcher failed")));
+  await api(`/api/ai/illustrations/${job.id}`, undefined, "DELETE");
+  job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A quiet lake", stylePreset: "ink" })).record;
+  const execution = await fetch(`${base}/api/ai/tasks/${job.id}/execute`, { method: "POST" });
+  assert.equal(execution.status, 200);
+  assert.match(execution.headers.get("content-type"), /application\/x-ndjson/);
+  await execution.text();
+  job = (await api(`/api/ai/illustrations/${job.id}`)).record;
+  assert.equal(job.status, "success", job.error);
+  assert.equal(job.stylePreset, "ink");
+  assert.equal(calls.length, 2, "the shared task route must submit the second image exactly once");
+  assert.match(calls[1].body.prompt, /国风水墨/);
 });

@@ -8,21 +8,24 @@ import { isCloudDatabase } from "./sqlite";
 import type { IllustrationImage, IllustrationPrompt } from "@/lib/image-generation";
 import { illustrationTaskRegistration, illustrationTaskRevision, registerIllustrationTasks, syncIllustrationTask } from "./illustration-tasks";
 import { currentTaskExecutionOrigin } from "./task-execution";
+import { isIllustrationStylePreset, type IllustrationStylePreset } from "@/lib/illustration-styles";
 
 type Row = Record<string, unknown>;
 export type IllustrationInput = {
   action: "prompt" | "image"; outlineId: string; model: string;
-  content?: string; excerpt?: string; style?: string; prompt?: string;
+  content?: string; excerpt?: string; style?: string; stylePreset?: IllustrationStylePreset; prompt?: string;
   size?: string; quality?: string; aspectRatio?: string; resolution?: string;
 };
 const columns = "h.*,o.title AS outline_title";
 const join = "illustration_history h JOIN outlines o ON o.id=h.outline_id";
 const controllers = new Map<string, AbortController>();
 function record(row: Row): IllustrationRecord {
+  const input = JSON.parse(String(row.input_json || "{}"));
   return {
     id: String(row.id), outlineId: String(row.outline_id), outlineTitle: String(row.outline_title || "未命名大纲"),
     kind: row.kind as IllustrationRecord["kind"], status: row.status as IllustrationRecord["status"],
     prompt: String(row.prompt), excerpt: String(row.excerpt), style: String(row.style),
+    stylePreset: isIllustrationStylePreset(input.stylePreset) ? input.stylePreset : "auto",
     model: String(row.model_id), modelName: String(row.model_name), archived: Number(row.archived) === 1,
     createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : undefined,
     error: row.error_message ? String(row.error_message) : undefined,
@@ -75,6 +78,11 @@ function checkedText(value: unknown, maximum: number, message: string, required 
   if ((value !== undefined && typeof value !== "string") || (typeof value === "string" && value.length > maximum) || (required && (typeof value !== "string" || !value.trim()))) throw new AiInputError(message);
   return typeof value === "string" ? value.trim() : "";
 }
+function checkedStylePreset(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!isIllustrationStylePreset(value)) throw new AiInputError("请选择有效的插图风格");
+  return value;
+}
 async function checkTarget(outlineId: unknown) {
   if (typeof outlineId !== "string" || !outlineId || !await getDatabase().prepare("SELECT o.id FROM outlines o JOIN chapters c ON c.id=o.chapter_id WHERE o.id=? AND o.archived=0 AND c.archived=0").bind(outlineId).first()) throw new AiInputError("正文不存在或已归档");
   return outlineId;
@@ -85,9 +93,10 @@ export async function saveManualPrompt(input: Row) {
   const prompt = checkedText(input.prompt, MAX_ILLUSTRATION_PROMPT, "图片 prompt 不能为空，且不能超过 12,000 字符", true);
   const excerpt = checkedText(input.excerpt, MAX_ILLUSTRATION_EXCERPT, "正文片段过长");
   const style = checkedText(input.style, 2000, "画面要求过长");
+  const stylePreset = checkedStylePreset(input.stylePreset);
   const id = crypto.randomUUID(), now = new Date().toISOString();
-  await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,created_at,completed_at) VALUES(?,?,'prompt','success',?,?,?,?,?)")
-    .bind(id, outlineId, prompt, excerpt, style, now, now).run();
+  await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,input_json,created_at,completed_at) VALUES(?,?,'prompt','success',?,?,?,?,?,?)")
+    .bind(id, outlineId, prompt, excerpt, style, JSON.stringify({ stylePreset }), now, now).run();
   return getIllustration(id);
 }
 export async function createIllustration(input: Row, id: string) {
@@ -101,6 +110,8 @@ export async function createIllustration(input: Row, id: string) {
   const style = checkedText(input.style, 2000, "画面要求不能超过 2,000 字符");
   const prompt = checkedText(input.prompt, MAX_ILLUSTRATION_PROMPT, "图片 prompt 不能为空，且不能超过 12,000 字符", input.action === "image");
   const body: IllustrationInput = { action: input.action, outlineId, model: model.id, excerpt, style, prompt };
+  const stylePreset = checkedStylePreset(input.stylePreset);
+  if (stylePreset !== undefined) body.stylePreset = stylePreset;
   if (input.action === "prompt") {
     const content = checkedText(input.content, MAX_ILLUSTRATION_CONTENT, "正文为空或超过 80,000 字符，请先选取片段", true);
     if (excerpt && !content.includes(excerpt)) throw new AiInputError("片段必须来自正文");

@@ -1,7 +1,9 @@
+import type { IllustrationStylePreset } from "./illustration-styles";
+
 export type IllustrationStatus = "queued" | "running" | "success" | "error" | "cancelled";
 export type IllustrationRecord = {
   id: string; outlineId: string; outlineTitle: string; kind: "prompt" | "image";
-  status: IllustrationStatus; prompt: string; excerpt: string; style: string;
+  status: IllustrationStatus; prompt: string; excerpt: string; style: string; stylePreset?: IllustrationStylePreset;
   model: string; modelName: string; archived: boolean; error?: string;
   src?: string; revisedPrompt?: string; createdAt: string; completedAt?: string;
 };
