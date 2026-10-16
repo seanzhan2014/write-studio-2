@@ -1,4 +1,6 @@
 import { isCloudDatabase } from "./sqlite";
+// Keep this export reachable when the production bundler merges server modules.
+import { dispatchIllustrations } from "./illustrations";
 
 const key = Symbol.for("writer-studio.illustration-runner");
 export function startIllustrationRunner() {
@@ -11,7 +13,6 @@ export function startIllustrationRunner() {
     if (busy) return;
     busy = true;
     try {
-      const { dispatchIllustrations } = await import("./illustrations");
       await dispatchIllustrations();
     } catch (error) { console.error("Illustration dispatcher failed", error); }
     finally { busy = false; }

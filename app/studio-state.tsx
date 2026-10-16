@@ -180,7 +180,7 @@ export type AiTask = {
   articleId: string;
   chapterId: string;
   outlineId: string;
-  target: "正文" | "大纲" | "章节标题" | "全部名称" | "AI Chat";
+  target: import("@/lib/task-target").TaskTargetLabel;
   prompt: string;
   model: string;
   executionOrigin: TaskExecutionOrigin;
@@ -202,6 +202,9 @@ export type AiTask = {
   resultText?: string;
   error?: string;
   contextOptions?: {
+    illustrationId?: string;
+    illustrationKind?: "prompt" | "image";
+    illustrationInput?: import("@/db/illustrations").IllustrationInput;
     writingPreparation?: import("@/lib/writing-preparation").WritingPreparation;
     reasoningEffort?: ReasoningEffort | null;
     resolvedReasoningEffort?: ReasoningEffort | null;
