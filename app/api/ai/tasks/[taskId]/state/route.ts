@@ -1,4 +1,6 @@
 import type { AiTask } from "@/app/studio-state";
+import { isIllustrationTarget } from "@/lib/task-target";
+import { updateIllustration } from "@/db/illustrations";
 import { parseTaskHistory } from "@/lib/task-history";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
@@ -17,6 +19,18 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
     const db = getDatabase();
     const row = await db.prepare("SELECT status,target,outline_id,lease_until,execution_origin,context_options_json FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
     if (!row) return json({ error: "任务不存在" }, 404);
+    if (isIllustrationTarget(row.target)) {
+      if (body.action === "transfer" || normalizeTaskExecutionOrigin(row.execution_origin) !== currentTaskExecutionOrigin()) return json({ error: "请在任务所属运行端管理插图任务" }, 409);
+      await updateIllustration(taskId, body.action);
+      const updated = await db.prepare("SELECT * FROM ai_tasks WHERE id=?").bind(taskId).first<Record<string, unknown>>();
+      return json({ task: {
+        state: updated!.status === "queued" ? "waiting" : updated!.status === "error" ? "failed" : updated!.status,
+        phase: updated!.phase, attempt: Number(updated!.attempt), history: parseTaskHistory(updated!.history_json),
+        completedAt: updated!.completed_at ?? undefined, startedAt: updated!.started_at ?? undefined,
+        lastProgressAt: updated!.last_progress_at ?? undefined, runnerId: updated!.runner_id ?? undefined,
+        leaseUntil: updated!.lease_until ?? undefined, error: updated!.error_message ?? undefined,
+      }, revision: Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0) });
+    }
     if (row.target === "chat") {
       if (body.action !== "cancel") return json({ error: "聊天任务请返回会话再次发送" }, 409);
       if (normalizeTaskExecutionOrigin(row.execution_origin) !== currentTaskExecutionOrigin()) return json({ error: "请在任务所属运行端停止聊天" }, 409);

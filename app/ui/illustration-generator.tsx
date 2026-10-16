@@ -9,11 +9,13 @@ import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
 import { illustrationIsActive, illustrationStatusLabels, type IllustrationRecord } from "@/lib/illustration-history";
+import { useStudio } from "@/app/studio-state";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
 
 export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose }: Props) {
+  const studio = useStudio();
   const [models, setModels] = useState<Model[]>([]);
   const [modelError, setModelError] = useState("");
   const [textModel, setTextModel] = useState(defaultModel);
@@ -41,6 +43,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [pendingDelete, setPendingDelete] = useState("");
   const [selectedPrompt, setSelectedPrompt] = useState<string | null>(null);
   const latestJob = useRef<{ id: string; action: "prompt" | "image" } | null>(null);
+  const lastSubmittedTaskId = useRef("");
   const loadedCount = useRef(100);
   const historyRequest = useRef(0);
 
@@ -68,7 +71,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
           if (completed.kind === "prompt") { setPrompt(completed.prompt); setExcerpt(completed.excerpt); setSelectedPrompt(completed.id); }
           else if (completed.src) setImage({ src: completed.src, revisedPrompt: completed.revisedPrompt });
           setNotice(completed.kind === "prompt" ? "Prompt 已生成并自动保存到历史。" : "插图已自动保存，可在插图历史中查看或下载。");
-        } else if (completed.status === "error") setError(completed.error || "插图生成失败，可在后台任务中重试");
+        } else if (completed.status === "error") setError(completed.error || "插图生成失败，可在 AI 任务中重新执行");
         else setNotice("任务已取消");
       }
     } catch (cause) { if (requestId === historyRequest.current) setHistoryError(cause instanceof Error ? cause.message : "无法读取插图历史"); }
@@ -121,8 +124,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "插图生成失败");
       latestJob.current = { id: payload.record.id, action };
-      setNotice("任务已提交，可放到后台继续写作，结果会自动保存在历史中。");
-      window.dispatchEvent(new Event("illustrations-submitted"));
+      lastSubmittedTaskId.current = payload.record.id;
+      setNotice("已加入 AI 任务，可在统一任务列表查看进度、取消或重新执行。结果会自动保存到历史。");
+      await studio.refreshFromServer();
       void loadHistory();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "插图生成失败"); setBusy(null);
@@ -136,7 +140,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     setNotice("已载入历史 prompt，可编辑后生成插图。");
   }
 
-  async function manage(id: string, action: "archive" | "restore" | "cancel" | "retry" | "delete") {
+  async function manage(id: string, action: "archive" | "restore" | "delete") {
     if (mutation) return;
     setMutation(id); setError("");
     try {
@@ -147,7 +151,6 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       const payload = response.status === 204 ? null : await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload?.error || "历史操作失败");
       if (action === "delete") { setPendingDelete(""); if (image?.src === records.find(record => record.id === id)?.src) setImage(null); if (selectedPrompt === id) setSelectedPrompt(null); }
-      if (action === "retry") { window.dispatchEvent(new Event("illustrations-submitted")); setNotice("重试任务已提交，完成后会自动保存。"); }
       await loadHistory();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "历史操作失败"); }
     finally { setMutation(""); }
@@ -172,13 +175,18 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const visibleRecords = records.filter(record => {
     if (tab === "prompts" && (record.kind !== "prompt" || record.status !== "success" || (archiveFilter !== "all" && record.archived !== (archiveFilter === "archived")))) return false;
     if (tab === "images" && (record.kind !== "image" || record.status !== "success")) return false;
-    if (tab === "tasks" && !record.model) return false;
     return !search.trim() || `${record.prompt} ${record.excerpt} ${record.outlineTitle} ${record.modelName}`.toLowerCase().includes(search.trim().toLowerCase());
   });
 
   async function copyPrompt() {
     try { await navigator.clipboard.writeText(prompt); setNotice("已复制图片 prompt"); }
     catch { setError("复制失败，请在提示词输入框中手动复制"); }
+  }
+
+  function openAiTasks() {
+    const taskId = latestJob.current?.id || lastSubmittedTaskId.current || activeTasks[0]?.id || "";
+    onClose();
+    window.dispatchEvent(new CustomEvent("writer-studio-open-task", { detail: taskId }));
   }
 
   return <ResponsiveModal opened onClose={onClose} title="从正文生成插图" size="lg" closeButtonProps={{ "aria-label": "关闭插图生成" }}>
@@ -188,9 +196,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {error && <Alert color="red" role="alert">{error}</Alert>}
       {notice && <Text size="sm" role="status">{notice}</Text>}
       {historyError && <Alert color="red">{historyError}<Button variant="subtle" onClick={() => void loadHistory()}>重新读取历史</Button></Alert>}
-      {activeTasks.length > 0 && <Group justify="space-between"><Text size="sm" role="status">{activeTasks.length} 个插图任务正在后台处理</Text><Button variant="subtle" onClick={() => setTab("tasks")}>查看后台任务</Button></Group>}
+      <Group justify="space-between"><Text size="sm" role="status">{activeTasks.length ? `${activeTasks.length} 个插图任务正在处理` : "生成任务统一在 AI 任务中管理"}</Text><Button variant="subtle" onClick={openAiTasks}>查看 AI 任务</Button></Group>
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
-      <Tabs.List grow><Tabs.Tab value="generate">生成</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab><Tabs.Tab value="images">插图历史</Tabs.Tab><Tabs.Tab value="tasks">后台任务</Tabs.Tab></Tabs.List>
+      <Tabs.List grow><Tabs.Tab value="generate">生成</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab><Tabs.Tab value="images">插图历史</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="generate" pt="md"><Stack gap="md">
       {modelError && <Alert color="red">{modelError}</Alert>}
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
@@ -210,7 +218,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => { setResolution(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {qualities.length > 0 && <Select label="图片画质" data={[{ value: "", label: "模型默认" }, ...qualities]} value={quality} onChange={(value) => setQuality(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
       <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim()} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
-      {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button>{latestJob.current && <Button variant="subtle" disabled={Boolean(mutation)} onClick={() => void manage(latestJob.current!.id, "cancel")}>取消请求</Button>}</Group>}
+      {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button></Group>}
       {image && <figure className="illustration-result">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={image.src} alt="根据正文片段生成的插图" onError={() => setError("无法读取已保存的插图，请刷新历史后重试")} />
@@ -218,8 +226,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         <Button component="a" href={`${image.src}?download=1`} download variant="default">下载图片</Button>
       </figure>}
       </Stack></Tabs.Panel>
-      {(["prompts", "images", "tasks"] as const).map(panel => <Tabs.Panel key={panel} value={panel} pt="md"><Stack gap="md">
-        <Text size="sm" c="dimmed">{panel === "prompts" ? "保存和管理当前文章的 prompt，选择一条即可继续生成。" : panel === "images" ? "当前文章生成的插图会自动保存在这里，关闭窗口后仍可查看。" : "可关闭插图窗口或切换页面。完成的 prompt 和插图会分别进入历史。"}</Text>
+      {(["prompts", "images"] as const).map(panel => <Tabs.Panel key={panel} value={panel} pt="md"><Stack gap="md">
+        <Text size="sm" c="dimmed">{panel === "prompts" ? "保存和管理当前文章的 prompt，选择一条即可继续生成。" : "当前文章生成的插图会自动保存在这里，关闭窗口后仍可查看。"}</Text>
         <TextInput label="搜索历史" placeholder="搜索 prompt、正文片段、来源大纲或模型" value={search} onChange={event => setSearch(event.currentTarget.value)} />
         {panel === "prompts" && <Select label="Prompt 状态" value={archiveFilter} onChange={value => setArchiveFilter(value ?? "active")} allowDeselect={false} data={[{ value: "active", label: "未归档" }, { value: "archived", label: "已归档" }, { value: "all", label: "全部" }]} />}
         <Group justify="space-between"><Text size="sm">{historyLoading ? "正在读取历史…" : `${visibleRecords.length} 条记录${hasMore ? "（还有更多）" : ""}`}</Text><Button variant="subtle" onClick={() => void loadHistory()}>刷新历史</Button></Group>
@@ -236,8 +244,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
             {record.status === "success" && record.prompt && !record.archived && <Button size="xs" variant="light" disabled={Boolean(busy)} onClick={() => usePrompt(record)}>使用此 prompt</Button>}
             {record.src && <Button size="xs" component="a" variant="default" href={`${record.src}?download=1`} download>下载图片</Button>}
             {record.kind === "prompt" && record.status === "success" && <Button size="xs" variant="default" disabled={Boolean(mutation)} onClick={() => void manage(record.id, record.archived ? "restore" : "archive")}>{record.archived ? "恢复" : "归档"}</Button>}
-            {illustrationIsActive(record) ? <Button size="xs" variant="default" disabled={Boolean(mutation)} onClick={() => void manage(record.id, "cancel")}>取消任务</Button> : <>
-              {["error", "cancelled"].includes(record.status) && <Button size="xs" variant="light" disabled={Boolean(mutation)} onClick={() => void manage(record.id, "retry")}>重试</Button>}
+            {!illustrationIsActive(record) && <>
               <Button size="xs" variant="subtle" color="red" disabled={Boolean(mutation)} onClick={() => setPendingDelete(record.id)}>删除</Button>
             </>}
           </Group>

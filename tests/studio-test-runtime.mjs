@@ -11,6 +11,7 @@ import * as excellentFragments from "../lib/excellent-fragments.mjs";
 import * as outlineTitle from "../lib/outline-title.ts";
 import * as contentName from "../lib/content-name.mjs";
 import * as taskHistory from "../lib/task-history.ts";
+import * as taskTargets from "../lib/task-target.ts";
 import * as storySettings from "../lib/story-settings.ts";
 import * as appearanceSettings from "../lib/appearance.mjs";
 import * as conflict from "../app/studio-conflict.mjs";
@@ -29,7 +30,7 @@ const code = ts.transpileModule(functions.map((node) => node.getText(parsed)).jo
 const context = {
   ...generateOptions, ...namingOptions, ...nameVersions, ...reviewOptions,
   ...reviewRules, ...generateReview, ...excellentFragments, ...outlineTitle,
-  ...contentName, ...taskHistory, ...conflict, now: "2026-07-28T14:32:00.000Z", seedData: fullStudioFixture(),
+  ...contentName, ...taskHistory, ...taskTargets, ...conflict, now: "2026-07-28T14:32:00.000Z", seedData: fullStudioFixture(),
   ...storySettings, ...appearanceSettings,
 };
 export const { normalizeStudioData, reconcileTaskPoll, durableSnapshot, serializeDurable } = Function(

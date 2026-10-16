@@ -6,6 +6,8 @@ import { supportsImages, supportsText } from "@/lib/ai-model-capabilities";
 import type { IllustrationRecord } from "@/lib/illustration-history";
 import { isCloudDatabase } from "./sqlite";
 import type { IllustrationImage, IllustrationPrompt } from "@/lib/image-generation";
+import { illustrationTaskRegistration, illustrationTaskRevision, registerIllustrationTasks, syncIllustrationTask } from "./illustration-tasks";
+import { currentTaskExecutionOrigin } from "./task-execution";
 
 type Row = Record<string, unknown>;
 export type IllustrationInput = {
@@ -38,11 +40,16 @@ export async function getIllustration(id: string) {
   return record(row);
 }
 async function recoverInterrupted() {
-  await getDatabase().prepare("UPDATE illustration_history SET status='error',error_message='任务执行已中断，请重试',runner_id=NULL,lease_until=NULL,completed_at=? WHERE status='running' AND lease_until<?")
-    .bind(new Date().toISOString(), new Date().toISOString()).run();
+  const now = new Date().toISOString();
+  const stale = await getDatabase().prepare("SELECT id FROM illustration_history WHERE status='running' AND (lease_until IS NULL OR lease_until<?)").bind(now).all<{ id: string }>();
+  for (const row of stale.results ?? []) await getDatabase().batch([
+    getDatabase().prepare("UPDATE illustration_history SET status='error',error_message='任务执行已中断，请重试',runner_id=NULL,lease_until=NULL,completed_at=? WHERE id=? AND status='running' AND (lease_until IS NULL OR lease_until<?)").bind(now, row.id, now),
+    syncIllustrationTask(row.id, now), illustrationTaskRevision(now),
+  ]);
 }
 export async function listIllustrations(outlineId: string | null, offset = 0) {
   await ensureDatabase();
+  await registerIllustrationTasks();
   await recoverInterrupted();
   if (outlineId && !await getDatabase().prepare("SELECT id FROM outlines WHERE id=?").bind(outlineId).first()) throw new AiInputError("正文不存在");
   const result = await getDatabase().prepare(`SELECT ${columns} FROM ${join} WHERE ${outlineId ? "o.article_id=(SELECT article_id FROM outlines WHERE id=?)" : "h.status IN ('queued','running')"} ORDER BY h.created_at DESC,h.id DESC LIMIT 101 OFFSET ?`)
@@ -60,6 +67,7 @@ export async function saveCompletedIllustration(input: IllustrationInput, output
   try {
     await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,model_id,model_name,input_json,asset_key,mime_type,revised_prompt,created_at,completed_at) VALUES(?,?,?,'success',?,?,?,?,?,?,?,?,?,?,?)")
       .bind(id, input.outlineId, input.action, "prompt" in output ? output.prompt : input.prompt || "", "excerpt" in output ? output.excerpt : input.excerpt || "", input.style || "", model?.id || input.model, model?.name || input.model, JSON.stringify(input), asset?.key ?? null, asset?.mime ?? null, "revisedPrompt" in output ? output.revisedPrompt ?? null : null, now, now).run();
+    await getDatabase().batch([...illustrationTaskRegistration(id), illustrationTaskRevision(now)]);
     return getIllustration(id);
   } catch (error) { if (asset) await deleteIllustrationAsset(asset.key).catch(() => {}); throw error; }
 }
@@ -103,15 +111,22 @@ export async function createIllustration(input: Row, id: string) {
   }
   const existing = await illustrationRow(id);
   if (existing) {
-    if (existing.input_json !== JSON.stringify(body)) throw new AiInputError("任务标识已被其他请求使用");
+    const savedInput = JSON.parse(String(existing.input_json)); delete savedInput._aiTaskRegistered;
+    if (JSON.stringify(savedInput) !== JSON.stringify(body)) throw new AiInputError("任务标识已被其他请求使用");
     return record(existing);
   }
-  const active = await getDatabase().prepare("SELECT COUNT(*) AS count FROM illustration_history WHERE status IN ('queued','running')").first<number>("count");
-  if (Number(active) >= 20) throw new AiInputError("已有 20 个插图任务，请等待完成后重试");
-  await getDatabase().prepare("INSERT OR IGNORE INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,model_id,model_name,input_json,created_at) VALUES(?,?,?,'queued',?,?,?,?,?,?,?)")
-    .bind(id, outlineId, body.action, prompt, excerpt, style, model.id, model.name, JSON.stringify(body), new Date().toISOString()).run();
+  if (await getDatabase().prepare("SELECT id FROM ai_tasks WHERE id=?").bind(id).first()) throw new AiInputError("任务标识已用于其他 AI 任务");
+  const active = await getDatabase().prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(currentTaskExecutionOrigin()).first<number>("count");
+  if (Number(active) >= 20) throw new AiInputError("已有 20 个 AI 任务，请等待完成后重试");
+  const now = new Date().toISOString();
+  await getDatabase().batch([
+    getDatabase().prepare("INSERT OR IGNORE INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,model_id,model_name,input_json,created_at) SELECT ?,?,?,'queued',?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM ai_tasks WHERE id=?)")
+      .bind(id, outlineId, body.action, prompt, excerpt, style, model.id, model.name, JSON.stringify(body), now, id),
+    ...illustrationTaskRegistration(id), illustrationTaskRevision(now),
+  ]);
   const saved = await illustrationRow(id);
-  if (!saved || saved.input_json !== JSON.stringify(body)) throw new AiInputError("任务标识已被其他请求使用");
+  const savedInput = JSON.parse(String(saved?.input_json || "{}")); delete savedInput._aiTaskRegistered;
+  if (!saved || JSON.stringify(savedInput) !== JSON.stringify(body)) throw new AiInputError("任务标识已被其他请求使用");
   return record(saved);
 }
 export async function executeIllustration(id: string) {
@@ -121,12 +136,25 @@ export async function executeIllustration(id: string) {
   if (!row || row.status !== "queued") return;
   const runner = crypto.randomUUID();
   const lease = () => new Date(Date.now() + 90_000).toISOString();
-  const result = await getDatabase().prepare("UPDATE illustration_history SET status='running',runner_id=?,lease_until=? WHERE id=? AND status='queued'").bind(runner, lease(), id).run();
-  if (!Number(result.meta?.changes)) return;
+  const now = new Date().toISOString();
+  const capacity = Math.max(1, Math.min(5, Number(JSON.parse(await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json") || "{}").settings?.taskConcurrency) || 2));
+  const result = await getDatabase().batch([
+    getDatabase().prepare(`UPDATE illustration_history SET status='running',runner_id=?,lease_until=? WHERE id=? AND status='queued'
+      AND EXISTS(SELECT 1 FROM ai_tasks WHERE id=? AND status='queued' AND execution_origin=?)
+      AND (SELECT COUNT(*) FROM ai_tasks WHERE target<>'chat' AND status='running' AND execution_origin=? AND lease_until>?)<?`)
+      .bind(runner, lease(), id, id, currentTaskExecutionOrigin(), currentTaskExecutionOrigin(), now, capacity),
+    syncIllustrationTask(id, now),
+  ]);
+  if (!Number(result[0].meta?.changes)) return;
+  await illustrationTaskRevision(now).run();
   const controller = new AbortController(); controllers.set(id, controller);
   const heartbeat = setInterval(() => {
-    void getDatabase().prepare("UPDATE illustration_history SET lease_until=? WHERE id=? AND status='running' AND runner_id=?").bind(lease(), id, runner).run().then(async (update) => {
-      if (!Number(update.meta?.changes)) controller.abort();
+    const until = lease();
+    void getDatabase().batch([
+      getDatabase().prepare("UPDATE illustration_history SET lease_until=? WHERE id=? AND status='running' AND runner_id=?").bind(until, id, runner),
+      getDatabase().prepare("UPDATE ai_tasks SET lease_until=? WHERE id=? AND status='running' AND runner_id=?").bind(until, id, runner),
+    ]).then(update => {
+      if (!Number(update[0].meta?.changes) || !Number(update[1].meta?.changes)) controller.abort();
     }).catch(() => controller.abort());
   }, 15_000);
   let asset: { key: string; mime: string } | undefined;
@@ -138,34 +166,50 @@ export async function executeIllustration(id: string) {
       prompt = generated.prompt; excerpt = generated.excerpt;
     } else {
       const image = await generateIllustrationImage({ ...input, prompt: input.prompt! }, controller.signal);
+      const savingAt = new Date().toISOString();
+      await getDatabase().batch([
+        getDatabase().prepare("UPDATE ai_tasks SET phase='saving',last_progress_at=? WHERE id=? AND status='running' AND runner_id=?").bind(savingAt, id, runner),
+        illustrationTaskRevision(savingAt),
+      ]);
       asset = await saveIllustrationAsset(image.src); revisedPrompt = image.revisedPrompt;
     }
-    const saved = await getDatabase().prepare("UPDATE illustration_history SET status='success',prompt=?,excerpt=?,asset_key=?,mime_type=?,revised_prompt=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
-      .bind(prompt, excerpt, asset?.key ?? null, asset?.mime ?? null, revisedPrompt ?? null, new Date().toISOString(), id, runner).run();
-    if (!Number(saved.meta?.changes) && asset) await deleteIllustrationAsset(asset.key);
+    const completed = new Date().toISOString();
+    const saved = await getDatabase().batch([
+      getDatabase().prepare("UPDATE illustration_history SET status='success',prompt=?,excerpt=?,asset_key=?,mime_type=?,revised_prompt=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
+        .bind(prompt, excerpt, asset?.key ?? null, asset?.mime ?? null, revisedPrompt ?? null, completed, id, runner),
+      syncIllustrationTask(id, completed), illustrationTaskRevision(completed),
+    ]);
+    if (!Number(saved[0].meta?.changes) && asset) await deleteIllustrationAsset(asset.key);
   } catch (error) {
     if (asset) await deleteIllustrationAsset(asset.key).catch(() => {});
-    await getDatabase().prepare("UPDATE illustration_history SET status='error',error_message=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
-      .bind(error instanceof Error ? error.message : "插图生成失败", new Date().toISOString(), id, runner).run();
-  } finally { clearInterval(heartbeat); controllers.delete(id); }
-}
-export async function dispatchIllustrations() {
-  await ensureDatabase(); await recoverInterrupted();
-  const running = Number(await getDatabase().prepare("SELECT COUNT(*) AS count FROM illustration_history WHERE status='running'").first<number>("count"));
-  const available = Math.max(0, 2 - running);
-  if (!available) return;
-  const rows = await getDatabase().prepare("SELECT id FROM illustration_history WHERE status='queued' ORDER BY created_at LIMIT ?").bind(available).all<{ id: string }>();
-  for (const row of rows.results ?? []) void executeIllustration(row.id).catch(error => console.error("Illustration task failed", error));
+    const completed = new Date().toISOString();
+    await getDatabase().batch([
+      getDatabase().prepare("UPDATE illustration_history SET status='error',error_message=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
+        .bind(error instanceof Error ? error.message : "插图生成失败", completed, id, runner),
+      syncIllustrationTask(id, completed), illustrationTaskRevision(completed),
+    ]);
+  } finally { clearInterval(heartbeat); if (controllers.get(id) === controller) controllers.delete(id); }
 }
 export async function updateIllustration(id: string, action: unknown) {
+  await ensureDatabase(); await recoverInterrupted();
   const row = await illustrationRow(id);
   if (!row) throw new AiInputError("历史记录不存在");
   if (action === "retry") {
     if (!["error", "cancelled"].includes(String(row.status))) throw new AiInputError("只能重试失败或已取消的任务");
-    return createIllustration(JSON.parse(String(row.input_json)), crypto.randomUUID());
+    const now = new Date().toISOString();
+    await getDatabase().batch([
+      getDatabase().prepare("UPDATE illustration_history SET status='queued',error_message=NULL,completed_at=NULL,runner_id=NULL,lease_until=NULL WHERE id=? AND status IN ('error','cancelled')").bind(id),
+      getDatabase().prepare("UPDATE ai_tasks SET attempt=0,started_at=NULL WHERE id=?").bind(id),
+      syncIllustrationTask(id, now), illustrationTaskRevision(now),
+    ]);
+    return getIllustration(id);
   }
   if (action === "cancel") {
-    await getDatabase().prepare("UPDATE illustration_history SET status='cancelled',completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status IN ('queued','running')").bind(new Date().toISOString(), id).run();
+    const now = new Date().toISOString();
+    await getDatabase().batch([
+      getDatabase().prepare("UPDATE illustration_history SET status='cancelled',completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status IN ('queued','running')").bind(now, id),
+      syncIllustrationTask(id, now), illustrationTaskRevision(now),
+    ]);
     controllers.get(id)?.abort();
   } else if (action === "archive" || action === "restore") {
     if (row.kind !== "prompt" || row.status !== "success") throw new AiInputError("只能归档已保存的 prompt");

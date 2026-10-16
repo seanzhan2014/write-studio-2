@@ -4,7 +4,8 @@ import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/
 import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
 import { illustrationSchema, preserveIllustrationHistorySql, restoreIllustrationHistorySql, clearIllustrationHistoryBackupSql } from "./illustration-schema";
-import { startIllustrationRunner } from "./illustration-runner";
+import { registerIllustrationTasks } from "./illustration-tasks";
+import { taskTargetLabel, taskTargetCode } from "@/lib/task-target";
 import { normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy, type GenerateReviewReport } from "@/lib/generate-review.mjs";
 import { startGenerateReviewRunner } from "@/db/generate-runner";
 import type { StudioData } from "@/app/studio-state";
@@ -240,7 +241,6 @@ export async function ensureDatabase() {
   }
   await initialized;
   startGenerateReviewRunner();
-  startIllustrationRunner();
 }
 
 function rows<T>(result: SqliteResult<T>) {
@@ -530,6 +530,7 @@ export async function readStudioStateIdentity() {
 
 export async function readStudioState(): Promise<{ data: StudioData | null; revision: number; databaseVersion: number }> {
   await ensureDatabase();
+  await registerIllustrationTasks();
   const db = getDatabase();
   const [articleResult, chapterResult, outlineResult, contentResult, versionResult, excellentFragmentResult, characterResult, relationshipResult, sessionResult, messageResult, taskResult, settingResult] = await Promise.all([
     db.prepare("SELECT * FROM articles ORDER BY last_opened_at DESC, rowid").all(),
@@ -567,7 +568,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
   const messages = rows(messageResult) as Record<string, unknown>[];
   const tasks = (rows(taskResult) as Record<string, unknown>[]).map((row) => ({
     id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
-    target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
+    target: taskTargetLabel(row.target),
     prompt: String(row.instruction), model: String(row.model_id),
     executionOrigin: normalizeTaskExecutionOrigin(row.execution_origin),
     state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : row.status,
@@ -895,7 +896,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   }
   statements.push(db.prepare(restoreIllustrationHistorySql), db.prepare(clearIllustrationHistoryBackupSql));
   for (const task of data.tasks.slice(0, 20)) {
-    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title", task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history))]));
+    statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetCode(task.target), task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history))]));
   }
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(data.settings) }), now]));
   statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)", [String(nextRevision), now]));
@@ -912,7 +913,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
 }
 
 function taskTargetValue(task: StudioData["tasks"][number]) {
-  return task.target === "正文" ? "content" : task.target === "大纲" ? "outline" : task.target === "全部名称" ? "all-names" : task.target === "AI Chat" ? "chat" : "chapter-title";
+  return taskTargetCode(task.target);
 }
 
 function taskStatusValue(task: StudioData["tasks"][number]) {

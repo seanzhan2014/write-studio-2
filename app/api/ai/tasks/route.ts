@@ -1,4 +1,6 @@
 import { parseTaskHistory } from "@/lib/task-history";
+import { taskTargetLabel, taskChangesOutline } from "@/lib/task-target";
+import { registerIllustrationTasks } from "@/db/illustration-tasks";
 import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationStrategy, type WritingPreparation } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
@@ -41,7 +43,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
   try { contextOptions = JSON.parse(String(row.context_options_json ?? "{}")) as AiTask["contextOptions"]; } catch { contextOptions = undefined; }
   return {
     id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
-    target: row.target === "content" ? "正文" : row.target === "outline" ? "大纲" : row.target === "all-names" ? "全部名称" : row.target === "chat" ? "AI Chat" : "章节标题",
+    target: taskTargetLabel(row.target),
     prompt: String(row.instruction ?? ""), model: String(row.model_id ?? ""),
     executionOrigin: normalizeTaskExecutionOrigin(row.execution_origin),
     state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : String(row.status) as AiTask["state"],
@@ -59,6 +61,7 @@ function taskFromRow(row: Record<string, unknown>): AiTask {
 export async function GET() {
   try {
     await ensureDatabase();
+    await registerIllustrationTasks();
     await recoverChatTasks();
     const db = getDatabase();
     const [result, revision] = await Promise.all([
@@ -66,7 +69,7 @@ export async function GET() {
       db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json"),
     ]);
     const tasks = (result.results ?? []).map(taskFromRow);
-    return json({ data: tasks, tasks, runningOutlineIds: tasks.filter((task) => task.state === "running" && task.target !== "AI Chat" && task.target !== "全部名称").map((task) => task.outlineId), revision: Number(revision ?? 0) });
+    return json({ data: tasks, tasks, runningOutlineIds: tasks.filter((task) => task.state === "running" && taskChangesOutline(task.target)).map((task) => task.outlineId), revision: Number(revision ?? 0) });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "任务读取失败" }, 500);
   }

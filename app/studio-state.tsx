@@ -3,6 +3,7 @@
 import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
 
 import { parseTaskHistory } from "@/lib/task-history";
+import { taskChangesOutline } from "@/lib/task-target";
 
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 
@@ -831,7 +832,7 @@ function reconcileTaskPoll(current: StudioData, tasks: AiTask[], runningOutlineI
   const running = new Set(runningOutlineIds);
   const terminalByOutline = new Map<string, AiTask["state"]>();
   for (const task of tasks) {
-    if (task.target === "AI Chat" || task.target === "全部名称" || task.state === "waiting" || task.state === "running" || terminalByOutline.has(task.outlineId)) continue;
+    if (!taskChangesOutline(task.target) || task.state === "waiting" || task.state === "running" || terminalByOutline.has(task.outlineId)) continue;
     terminalByOutline.set(task.outlineId, task.state);
   }
   return {

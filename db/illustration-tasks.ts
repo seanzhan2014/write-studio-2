@@ -31,9 +31,13 @@ export function illustrationTaskRegistration(id: string) {
 
 export async function registerIllustrationTasks() {
   const rows = await getDatabase().prepare("SELECT id FROM illustration_history WHERE model_id<>'' AND COALESCE(json_extract(input_json,'$._aiTaskRegistered'),0)=0 ORDER BY created_at DESC LIMIT 20").all<{ id: string }>();
-  if (!rows.results?.length) return;
+  // An in-flight request from the previous deployment can still complete in
+  // the library after registration. Reflect that completion in its AI task.
+  const changed = await getDatabase().prepare("SELECT h.id FROM illustration_history h JOIN ai_tasks t ON t.id=h.id WHERE t.target IN ('illustration-prompt','illustration-image') AND t.execution_origin=? AND t.status<>h.status LIMIT 20")
+    .bind(currentTaskExecutionOrigin()).all<{ id: string }>();
+  if (!rows.results?.length && !changed.results?.length) return;
   const now = new Date().toISOString();
-  await getDatabase().batch([...rows.results.flatMap(row => illustrationTaskRegistration(row.id)), illustrationTaskRevision(now)]);
+  await getDatabase().batch([...(rows.results ?? []).flatMap(row => illustrationTaskRegistration(row.id)), ...(changed.results ?? []).map(row => syncIllustrationTask(row.id, now)), illustrationTaskRevision(now)]);
 }
 
 export function syncIllustrationTask(id: string, now: string) {

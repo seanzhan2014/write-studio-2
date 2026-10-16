@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import type { IllustrationRecord } from "../../lib/illustration-history";
+import type { AiTask } from "../../app/studio-state";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=";
 const excerpt = "林澈看向顾屿";
@@ -9,6 +10,46 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
   const records: IllustrationRecord[] = [];
   const bodies: Record<string, unknown>[] = [];
   const control = { failImage: false, holdPrompt: null as Promise<void> | null, holdImage: null as Promise<void> | null };
+  const executions = new Map<string, number>();
+  let revision = 0;
+  const asTask = (record: IllustrationRecord): AiTask => ({
+    id: record.id, articleId: "article-main", chapterId: "chapter-main", outlineId: record.outlineId,
+    target: record.kind === "image" ? "插图" : "插图 Prompt", model: record.model, executionOrigin: "local",
+    prompt: record.prompt || "从正文选景并编写插图 prompt", createdAt: record.createdAt,
+    state: record.status === "queued" ? "waiting" : record.status === "error" ? "failed" : record.status,
+    phase: record.status === "queued" ? "queued" : record.status === "running" ? "generating" : record.status === "success" ? "completed" : record.status === "error" ? "failed" : "cancelled",
+    leaseUntil: new Date(Date.now() + 90_000).toISOString(), error: record.error,
+    resultText: record.status === "success" ? record.prompt : undefined,
+    contextOptions: { illustrationId: record.id, illustrationKind: record.kind, includePrevious: false, includeCharacters: record.kind === "prompt", estimatedCharacters: 100, modelName: "测试模型" },
+  });
+  const execute = async (record: IllustrationRecord) => {
+    if (record.status !== "queued") return;
+    const attempt = (executions.get(record.id) ?? 0) + 1; executions.set(record.id, attempt);
+    record.status = "running";
+    await (record.kind === "prompt" ? control.holdPrompt : control.holdImage);
+    if (executions.get(record.id) !== attempt || record.status as string === "cancelled") return;
+    if (record.kind === "image" && control.failImage) { record.status = "error"; record.error = "图片服务暂时不可用"; }
+    else { record.status = "success"; if (record.kind === "prompt") { record.prompt = promptText; record.excerpt = excerpt; } else record.src = `/api/ai/illustrations/${record.id}/image`; }
+  };
+  await page.route("**/api/state", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const headers = route.request().headers(); delete headers["if-none-match"];
+    const response = await route.fetch({ headers });
+    const payload = await response.json(); revision = payload.revision;
+    payload.data.tasks = [...records.filter(record => record.model).map(asTask), ...payload.data.tasks];
+    return route.fulfill({ response, json: payload });
+  });
+  await page.route("**/api/ai/tasks**", async route => {
+    const parts = new URL(route.request().url()).pathname.split("/");
+    if (parts.at(-1) === "tasks") return route.fulfill({ json: { tasks: records.filter(record => record.model).map(asTask), runningOutlineIds: [], revision } });
+    const record = records.find(record => record.id === parts.at(-2));
+    if (!record) return route.continue();
+    if (parts.at(-1) === "execute") { await execute(record); return route.fulfill({ body: "{}" }); }
+    const { action } = route.request().postDataJSON();
+    if (action === "cancel") { record.status = "cancelled"; executions.set(record.id, (executions.get(record.id) ?? 0) + 1); }
+    if (action === "retry") { record.status = "queued"; record.error = undefined; }
+    return route.fulfill({ json: { task: asTask(record), revision } });
+  });
   await page.route("**/api/ai/illustrations**", async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -30,12 +71,7 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
     const id = parts.at(-1) === "execute" ? parts.at(-2) : parts.at(-1);
     const record = records.find(record => record.id === id)!;
     if (parts.at(-1) === "execute") {
-      if (record.status !== "queued") return route.fulfill({ body: "{}" });
-      record.status = "running";
-      await (record.kind === "prompt" ? control.holdPrompt : control.holdImage);
-      if (record.status as string === "cancelled") return route.fulfill({ body: "{}" });
-      if (record.kind === "image" && control.failImage) { record.status = "error"; record.error = "图片服务暂时不可用"; }
-      else { record.status = "success"; if (record.kind === "prompt") { record.prompt = promptText; record.excerpt = excerpt; } else record.src = `/api/ai/illustrations/${record.id}/image`; }
+      await execute(record);
       return route.fulfill({ body: "{}" });
     }
     if (method === "DELETE") { records.splice(records.indexOf(record), 1); return route.fulfill({ status: 204 }); }
@@ -191,4 +227,41 @@ test("background results survive modal dismissal and reload, and history manages
   await dialog.getByRole("button", { name: "删除", exact: true }).click();
   await dialog.getByRole("button", { name: "确认删除", exact: true }).click();
   await expect(dialog.getByText("没有匹配的历史记录。", { exact: true })).toBeVisible();
+});
+
+test("prompt and image generation share the AI task manager, cancellation, retry and saved results", async ({ page }) => {
+  const { control } = await mockIllustrations(page);
+  let finishPrompt!: () => void;
+  control.holdPrompt = new Promise(resolve => { finishPrompt = resolve; });
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "生成插图", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "从正文生成插图" });
+  await expect(dialog.getByRole("tab", { name: "后台任务", exact: true })).toHaveCount(0);
+  await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();
+  await page.getByRole("option", { name: /文本测试模型/ }).click();
+  await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
+  await dialog.getByRole("button", { name: "查看 AI 任务", exact: true }).click();
+  const taskArea = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await expect(taskArea.getByText("生成目标", { exact: true })).toBeVisible();
+  await expect(taskArea.getByText("插图 Prompt", { exact: true })).toBeVisible();
+  await taskArea.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(taskArea.getByText("已取消", { exact: true }).first()).toBeVisible();
+  finishPrompt(); control.holdPrompt = null;
+  await taskArea.getByRole("button", { name: "重新执行", exact: true }).click();
+  await expect(taskArea.getByLabel("任务结果", { exact: true })).toContainText("码头上两人相望");
+  await taskArea.getByRole("button", { name: "查看生成历史", exact: true }).click();
+  await expect(dialog.getByRole("tab", { name: "Prompt 历史", exact: true })).toHaveAttribute("aria-selected", "true");
+  await dialog.getByRole("button", { name: "使用此 prompt", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
+  await page.getByRole("option", { name: /图片测试模型/ }).click();
+  await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
+  await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
+  await dialog.getByRole("button", { name: "查看 AI 任务", exact: true }).click();
+  await taskArea.getByRole("button", { name: "返回任务列表", exact: true }).click();
+  const cards = taskArea.locator(".task-card");
+  const imageTask = cards.filter({ has: page.locator("p").filter({ hasText: /目标：插图$/ }) });
+  await imageTask.getByRole("button", { name: "打开", exact: true }).click();
+  await expect(taskArea.getByAltText("AI 任务生成的插图")).toBeVisible();
+  await expect(taskArea.getByRole("link", { name: "下载图片", exact: true })).toHaveAttribute("href", /\/image\?download=1$/);
+  await expect(taskArea.getByRole("button", { name: "应用结果", exact: true })).toHaveCount(0);
 });

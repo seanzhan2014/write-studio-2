@@ -16,7 +16,9 @@ import { AppearancePanel } from "@/app/ui/appearance-settings";
 import { AiServices } from "@/app/ui/ai-services";
 import { supportsText, type ModelMetadata } from "@/lib/ai-model-capabilities";
 import { IllustrationGenerator } from "@/app/ui/illustration-generator";
+import { IllustrationTaskResult } from "@/app/ui/illustration-task-result";
 import { taskPhaseLabels } from "@/lib/task-history";
+import { isIllustrationTarget, taskChangesOutline } from "@/lib/task-target";
 
 import { sendChatCompletion } from "@/lib/chat-client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
@@ -649,6 +651,7 @@ function WriterStudioInner() {
   const [articleMenu, setArticleMenu] = useState(false);
   const [taskPanel, setTaskPanel] = useState(false);
   const [taskSelectionId, setTaskSelectionId] = useState("");
+  const [taskIllustration, setTaskIllustration] = useState<{ outlineId: string; content: string; tab: string } | null>(null);
   useEffect(() => {
     const open = (event: Event) => { setTaskSelectionId((event as CustomEvent<string>).detail); setTaskPanel(true); };
     window.addEventListener("writer-studio-open-task", open);
@@ -733,12 +736,14 @@ function WriterStudioInner() {
       taskDispatches.current.add(task.id);
       void (async () => {
         try {
-          await fetchFromServer(`/api/ai/tasks/${encodeURIComponent(task.id)}/execute`, { method: "POST", cache: "no-store" });
+          const response = await fetchFromServer(`/api/ai/tasks/${encodeURIComponent(task.id)}/execute`, { method: "POST", cache: "no-store" });
+          await response.text();
         } catch {
           // A queued task remains available and will be retried after reconnecting.
         } finally {
           taskDispatches.current.delete(task.id);
           await studioRef.current.refreshFromServer();
+          window.dispatchEvent(new Event("illustrations-updated"));
         }
       })();
     });
@@ -840,6 +845,7 @@ function WriterStudioInner() {
   return (
     <div className={`studio-shell ${focusMode ? "focus-mode" : ""} ${mobileWritingEditing ? "mobile-writing-editing" : ""} theme-${studio.data.settings.theme}`}>
       <PersistenceNotices />
+      {taskIllustration && <IllustrationGenerator outlineId={taskIllustration.outlineId} content={taskIllustration.content} selectedExcerpt="" initialTab={taskIllustration.tab} defaultModel={studio.data.settings.illustrationPromptModel || studio.data.settings.generateModel} defaultImageModel={studio.data.settings.illustrationImageModel} onClose={() => setTaskIllustration(null)} />}
       {!focusMode && !mobileLayout && (
         <Sidebar
           key={`sidebar:${activeArticle.id}`}
@@ -858,7 +864,10 @@ function WriterStudioInner() {
       )}
 
       <main className={`main-area ${taskPanel ? "tasks-main-area" : ""}`}>
-        {taskPanel ? <TaskPanel key={taskSelectionId} initialTaskId={taskSelectionId} onClose={() => { setTaskPanel(false); setTaskSelectionId(""); }} onOpen={openOutline} /> : <>
+        {taskPanel ? <TaskPanel key={taskSelectionId} initialTaskId={taskSelectionId} onClose={() => { setTaskPanel(false); setTaskSelectionId(""); }} onOpen={openOutline} onOpenIllustration={task => {
+          const source = studio.data.articles.flatMap(article => article.chapters).flatMap(chapter => chapter.outlines).find(outline => outline.id === task.outlineId);
+          setTaskIllustration({ outlineId: task.outlineId, content: source ? resolvedOutlineContent(source) : "", tab: task.target === "插图" ? "images" : "prompts" });
+        }} /> : <>
         {view !== "outline-home" && <MobileHeader
           title={mobilePageTitle}
           status={isOutlineWorkspaceView ? saveStatusLabel(studio.saveStatus) : articleTitle}
@@ -5539,7 +5548,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
   </ScrollableDrawer>;
 }
 
-function TaskPanel({ onClose, onOpen, initialTaskId = "" }: { initialTaskId?: string; onClose: () => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => void }) {
+function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: { initialTaskId?: string; onClose: () => void; onOpenIllustration: (task: AiTask) => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => void }) {
   const studio = useStudio();
   const models = useConfiguredModels();
   const [selectedTaskId, setSelectedTaskId] = useState(() => initialTaskId || studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && isTaskAwaitingAuthor(task))?.id || "");
@@ -5560,6 +5569,7 @@ function TaskPanel({ onClose, onOpen, initialTaskId = "" }: { initialTaskId?: st
     .filter((character) => selectedTask?.contextOptions?.firstAppearanceCharacterIds?.includes(character.id))
     .map((character) => character.name) ?? [];
   function locate(task: AiTask) {
+    if (isIllustrationTarget(task.target)) { onOpenIllustration(task); return; }
     studio.setCurrentArticle(task.articleId);
     if (task.target === "全部名称") {
       window.history.pushState({}, "", `/articles/${task.articleId}/outlines/edit-all`);
@@ -5577,7 +5587,7 @@ function TaskPanel({ onClose, onOpen, initialTaskId = "" }: { initialTaskId?: st
     if (!response.ok || !payload.task || payload.revision === undefined) throw new Error(payload.error || "任务状态更新失败");
     studio.acceptServerMutation(payload.revision, (current) => ({
       ...current,
-      articles: action !== "cancel" || task.target === "AI Chat" || task.target === "全部名称" ? current.articles : current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => outline.id === task.outlineId ? { ...outline, state: "saved" } : outline) })) })),
+      articles: action !== "cancel" || !taskChangesOutline(task.target) ? current.articles : current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((outline) => outline.id === task.outlineId ? { ...outline, state: "saved" } : outline) })) })),
       tasks: current.tasks.map((item) => item.id === task.id ? { ...item, ...payload.task } as AiTask : item),
     }));
   }
@@ -5660,13 +5670,13 @@ function TaskPanel({ onClose, onOpen, initialTaskId = "" }: { initialTaskId?: st
           {selectedTask.contextOptions?.reviewCandidateOnly && <Alert color="yellow">执行期间正文已变化，终稿已保存为候选版本，可通过“打开生成版本”查看。</Alert>}
           {!!selectedTask.contextOptions?.reviewMaxRounds && selectedTask.state === "failed" && !selectedTask.contextOptions.reviewReport && <Alert color="yellow">审校未完成。下方结果是最近保存的中间稿，重新执行会从保存的进度继续。</Alert>}
           {selectedTask.error && <section className="task-detail-section task-detail-error"><h3>错误</h3><div>{selectedTask.error}</div></section>}
-          <section className="task-detail-section"><h3>任务结果</h3>{selectedResult ? <div className="task-detail-result" aria-label="任务结果">{selectedResult}</div> : <div className="task-detail-empty">{selectedTask.state === "waiting" || selectedTask.state === "running" ? "任务尚未产生结果" : "没有可用结果"}</div>}</section>
+          <section className="task-detail-section"><h3>任务结果</h3>{isIllustrationTarget(selectedTask.target) && selectedTask.state === "success" ? <IllustrationTaskResult id={selectedTask.contextOptions?.illustrationId || selectedTask.id} prompt={selectedResult} image={selectedTask.target === "插图"} /> : selectedResult ? <div className="task-detail-result" aria-label="任务结果">{selectedResult}</div> : <div className="task-detail-empty">{selectedTask.state === "waiting" || selectedTask.state === "running" ? "任务尚未产生结果" : "没有可用结果"}</div>}</section>
         </div>
         <footer className="task-detail-actions">
-          <button type="button" onClick={() => locate(selectedTask)}>{selectedTask.target === "全部名称" ? "查看名称候选" : selectedTask.state === "success" && selectedTask.target === "正文" ? "打开生成版本" : "打开对应内容"}</button>
+          <button type="button" onClick={() => locate(selectedTask)}>{isIllustrationTarget(selectedTask.target) ? "查看生成历史" : selectedTask.target === "全部名称" ? "查看名称候选" : selectedTask.state === "success" && selectedTask.target === "正文" ? "打开生成版本" : "打开对应内容"}</button>
           {(selectedTask.state === "waiting" || selectedTask.state === "running") && <button type="button" onClick={() => cancelTask(selectedTask)}>取消</button>}
-          {isForeign(selectedTask) && selectedTask.target !== "AI Chat" && (selectedTask.state === "waiting" || isStale(selectedTask)) && <button type="button" onClick={() => transferTask(selectedTask)}>{transferLabel}</button>}
-          {selectedTask.state === "success" && selectedTask.target !== "AI Chat" && selectedTask.target !== "正文" && selectedTask.target !== "全部名称" && <button type="button" onClick={() => applyResult(selectedTask)}>应用结果</button>}
+          {isForeign(selectedTask) && !isIllustrationTarget(selectedTask.target) && selectedTask.target !== "AI Chat" && (selectedTask.state === "waiting" || isStale(selectedTask)) && <button type="button" onClick={() => transferTask(selectedTask)}>{transferLabel}</button>}
+          {selectedTask.state === "success" && (selectedTask.target === "大纲" || selectedTask.target === "章节标题") && <button type="button" onClick={() => applyResult(selectedTask)}>应用结果</button>}
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
         </footer>
@@ -5684,8 +5694,8 @@ function TaskPanel({ onClose, onOpen, initialTaskId = "" }: { initialTaskId?: st
           <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
             <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
             {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
-            {isForeign(task) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
-            {task.state === "success" && task.target !== "AI Chat" && task.target !== "正文" && task.target !== "全部名称" && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
+            {isForeign(task) && !isIllustrationTarget(task.target) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
+            {task.state === "success" && (task.target === "大纲" || task.target === "章节标题") && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
             {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
             {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
           </span></div>

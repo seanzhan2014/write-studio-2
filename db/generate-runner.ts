@@ -1,6 +1,8 @@
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { isCloudDatabase } from "@/db/sqlite";
+import { registerIllustrationTasks } from "./illustration-tasks";
+import { isIllustrationTarget } from "@/lib/task-target";
 
 const runnerKey = Symbol.for("writer-studio.generate-review-runner");
 type RunnerState = { busy: boolean; timer?: ReturnType<typeof setInterval> };
@@ -20,6 +22,7 @@ export function startGenerateReviewRunner() {
     state.busy = true;
     try {
       await ensureDatabase();
+      await registerIllustrationTasks();
       const db = getDatabase();
       const origin = currentTaskExecutionOrigin();
       const rows = (await db.prepare("SELECT id,outline_id,target,status,phase,lease_until,context_options_json FROM ai_tasks WHERE execution_origin=? AND target<>'chat' AND status IN ('queued','running') ORDER BY created_at,id").bind(origin).all<Record<string, unknown>>()).results ?? [];
@@ -36,7 +39,7 @@ export function startGenerateReviewRunner() {
         if (running.includes(row) || (row.target === "content" && occupied.has(row.outline_id))) continue;
         const options = JSON.parse(String(row.context_options_json ?? "{}"));
         if (["awaiting_author", "awaiting_confirmation"].includes(String(row.phase))) { if (row.target === "content") occupied.add(row.outline_id); continue; }
-        if (reviewsOnly && (row.target !== "content" || (!options.reviewMaxRounds && !options.writingPreparation))) continue;
+        if (reviewsOnly && !isIllustrationTarget(row.target) && (row.target !== "content" || (!options.reviewMaxRounds && !options.writingPreparation))) continue;
         chosen.push(String(row.id));
         if (row.target === "content") occupied.add(row.outline_id);
       }
