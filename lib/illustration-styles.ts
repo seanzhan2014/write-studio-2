@@ -13,14 +13,33 @@ export const ILLUSTRATION_STYLES = [
   { value: "pixel", label: "像素艺术", description: "清晰像素，有限色板，复古质感。", instruction: "像素艺术插图，以清晰可见的像素块和有限色板表现完整场景，像素边缘利落，保留人物动作与叙事细节。" },
 ] as const;
 
-export type IllustrationStylePreset = typeof ILLUSTRATION_STYLES[number]["value"];
+export type IllustrationStylePreset = typeof ILLUSTRATION_STYLES[number]["value"] | `custom-${string}`;
+export type IllustrationStyle = { value: IllustrationStylePreset; label: string; description: string; instruction: string };
 export const DEFAULT_ILLUSTRATION_STYLE: IllustrationStylePreset = "literary";
 
 export function isIllustrationStylePreset(value: unknown): value is IllustrationStylePreset {
-  return typeof value === "string" && ILLUSTRATION_STYLES.some(style => style.value === value);
+  return typeof value === "string" && (ILLUSTRATION_STYLES.some(style => style.value === value) || /^custom-[a-zA-Z0-9-]{1,100}$/.test(value));
 }
 
-export function illustrationVisualDirection(preset: string | undefined, requirements = "") {
-  const style = ILLUSTRATION_STYLES.find(style => style.value === preset);
+// An absent library keeps the original presets; an empty one keeps only the
+// neutral mode, so deleting the last style never restores the defaults.
+export function normalizeIllustrationStyles(value: unknown): IllustrationStyle[] {
+  if (!Array.isArray(value)) return ILLUSTRATION_STYLES.map(style => ({ ...style }));
+  const seen = new Set<string>(["auto"]);
+  const styles: IllustrationStyle[] = [{ ...ILLUSTRATION_STYLES[0] }];
+  for (const item of value.slice(0, 200)) {
+    if (!item || !isIllustrationStylePreset(item.value) || seen.has(item.value) || typeof item.label !== "string" || !item.label.trim() || typeof item.instruction !== "string" || !item.instruction.trim()) continue;
+    seen.add(item.value);
+    styles.push({ value: item.value, label: item.label.trim().slice(0, 80), description: typeof item.description === "string" ? item.description.slice(0, 300) : "", instruction: item.instruction.slice(0, 8000) });
+  }
+  return styles;
+}
+
+export function resolveIllustrationStyle(preset: string | undefined, styles: readonly IllustrationStyle[]) {
+  return styles.find(style => style.value === preset) ?? styles.find(style => style.value === "auto") ?? ILLUSTRATION_STYLES[0];
+}
+
+export function illustrationVisualDirection(preset: string | undefined, requirements = "", styles: readonly IllustrationStyle[] = ILLUSTRATION_STYLES) {
+  const style = resolveIllustrationStyle(preset, styles);
   return [style?.instruction ? `插图风格：${style.label}。${style.instruction}` : "", requirements.trim()].filter(Boolean).join("\n");
 }

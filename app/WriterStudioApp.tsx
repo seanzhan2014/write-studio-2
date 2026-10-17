@@ -4,6 +4,7 @@ import { CharacterAvatar } from "./ui/character-visual";
 import { CharacterPhotoWorkspace, CharacterPhotoRuntime, CharacterPhotoTasks } from "./ui/character-photos";
 import type { CharacterVisual } from "@/lib/character-visual";
 import { ArticleIllustrationSettings } from "./ui/article-illustration-settings";
+import { AiPromptSettings } from "./ui/ai-prompt-settings";
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { normalizeReasoningEffort, resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
@@ -98,6 +99,7 @@ type View =
   | "settings-general"
   | "settings-appearance"
   | "settings-models"
+  | "settings-prompts"
   | "settings-tasks"
   | "settings-database"
   | "settings-system";
@@ -604,6 +606,7 @@ function viewFromPath(pathname: string): View {
   if (pathname.includes("/info/")) return "info-basic";
   if (pathname.includes("/settings/appearance")) return "settings-appearance";
   if (pathname.includes("/settings/models")) return "settings-models";
+  if (pathname.includes("/settings/prompts")) return "settings-prompts";
   if (pathname.includes("/settings/tasks")) return "settings-tasks";
   if (pathname.includes("/settings/database")) return "settings-database";
   if (pathname.includes("/settings/system")) return "settings-system";
@@ -629,6 +632,7 @@ function routeFor(view: View, articleId: string, outlineId: string, chapterId: s
     "settings-general": "/settings/general",
     "settings-appearance": "/settings/appearance",
     "settings-models": "/settings/models",
+    "settings-prompts": "/settings/prompts",
     "settings-tasks": "/settings/tasks",
     "settings-database": "/settings/database",
     "settings-system": "/settings/system",
@@ -5140,6 +5144,7 @@ function SettingsPage({ view, onGo }: { view: View; onGo: (view: View) => void }
     ["settings-general", "常规"],
     ["settings-appearance", "外观与编辑器"],
     ["settings-models", "AI 服务"],
+    ["settings-prompts", "AI提示"],
     ["settings-tasks", "AI 任务"],
     ["settings-database", "数据管理"],
     ["settings-system", "系统与诊断"],

@@ -91,7 +91,7 @@ test("portraits upload, iterate, recover native tasks, adopt and reconcile full 
     else if (req.url === "/api/v1/common/upload-url") data = { fileId: "fil_local", uploadUrl: `${url}/signed-upload`, headers: { "Content-Type": "image/png", "Content-Length": String(Buffer.from(png, "base64").length) }, maxBytes: 10485760, method: "PUT" };
     else if (req.url === "/api/v1/files/fil_local/commit") data = { status: "ready", uri: "spicy://f/fil_local" };
     else if (req.url === "/api/v1/assets") { if (loseAssetResponse) { loseAssetResponse = false; res.destroy(); return; } assert.ok(req.headers["idempotency-key"]); data = { id: "ast_saved", uri: "spicy://a/ast_saved", name: "定稿", kind: "image" }; }
-    else if (req.url === "/api/v1/models?modality=image&includeSchema=1") data = { items: [entry] };
+    else if (req.url === "/api/v1/models?includeSchema=1") data = { items: [entry] };
     else if (req.url === `/api/v1/models/${modelId}`) data = entry;
     else if (req.url === "/api/v1/jobs/quote") data = { quoteId: "quote-1", estimatedCost: "0.1" };
     else if (req.url === "/api/v1/jobs/createTask") {

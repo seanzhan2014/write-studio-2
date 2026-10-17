@@ -39,7 +39,7 @@ test("Spicy role binding, local portraits, reference generation and retries pres
     else if (request.url?.startsWith("/api/v1/assets/entities?")) data = { items: [remote], nextCursor: "page-2" };
     else if (request.url === "/api/v1/assets/entities/entity-original") data = remote;
     else if (request.url?.startsWith("/api/v1/assets/ast_")) data = image(request.url.split("/").at(-1));
-    else if (request.url === "/api/v1/models?modality=image&includeSchema=1") data = { items: [entry] };
+    else if (request.url === "/api/v1/models?includeSchema=1") data = { items: [entry] };
     else if (request.url === `/api/v1/models/${modelId}`) data = entry;
     else if (request.url === "/api/v1/jobs/quote") data = { quoteId: "quote-ref", estimatedCost: "0.15" };
     else if (request.url === "/api/v1/jobs/createTask") data = ++submitted === 1 ? { taskId: "job-failed-ref", state: "failed", errorCode: "upstream_failed", errorMessage: "try later" } : { taskId: "job-good-ref", state: "succeeded", output: { assets: [{ url: `http://127.0.0.1:${server.address().port}/picture-result.png`, mime: "image/png" }] } };

@@ -7,7 +7,7 @@ type SchemaField = {
   anyOf?: SchemaField[]; oneOf?: SchemaField[]; allOf?: SchemaField[]; if?: SchemaField; then?: SchemaField; else?: SchemaField;
   "x-ui"?: { widget?: string; accept?: string | string[] };
 };
-type ImageModel = {
+type SpicyModel = {
   model?: string; displayName?: string; modality?: string; tasks?: string[];
   enabled?: boolean; available?: boolean;
   inputSchema?: SchemaField;
@@ -58,7 +58,7 @@ async function api<T>(baseUrl: string, secret: string, path: string, signal: Abo
   return envelope.data;
 }
 
-function supportedImageModel(model: ImageModel) {
+function supportedImageModel(model: SpicyModel) {
   return model.enabled === true && model.available === true && model.modality === "image" && model.tasks?.some(task => ["text-to-image", "image-to-image", "edit"].includes(task));
 }
 
@@ -112,14 +112,22 @@ export async function getSpicyAsset(baseUrl: string, secret: string, id: string)
   return api<SpicyAsset>(baseUrl, secret, `/assets/${encodeURIComponent(id)}`, AbortSignal.timeout(15_000));
 }
 
-export async function discoverSpicyImageCatalog(baseUrl: string, secret: string): Promise<ModelCatalog> {
+export async function discoverSpicyCatalog(baseUrl: string, secret: string): Promise<ModelCatalog> {
   const signal = AbortSignal.timeout(15_000);
   try {
-    const data = await api<{ items?: ImageModel[] }>(baseUrl, secret, "/models?modality=image&includeSchema=1", signal);
+    const data = await api<{ items?: SpicyModel[] }>(baseUrl, secret, "/models?includeSchema=1", signal);
     const catalog: CatalogModel[] = [];
     let unsupported = 0;
     for (const model of data.items ?? []) {
-      if (!model.model || !supportedImageModel(model)) continue;
+      if (!model.model || model.enabled !== true || model.available !== true) continue;
+      if (model.modality === "text" && model.tasks?.includes("chat")) {
+        const supportedParameters = Object.fromEntries(Object.entries(model.inputSchema?.properties ?? {}).map(([key, field]) => [key, {
+          type: field.type, ...(field.enum ? { values: field.enum } : {}),
+        }]));
+        catalog.push({ id: model.model, name: model.displayName || model.model, metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["text"], supportedParameters } });
+        continue;
+      }
+      if (!supportedImageModel(model)) continue;
       const reference = spicyReferenceField(model.inputSchema);
       if (!model.inputSchema?.properties?.prompt || model.inputSchema.required?.some(key => key !== "prompt" && key !== reference?.[0]) || (!model.tasks?.includes("text-to-image") && !reference)) { unsupported++; continue; }
       const supportedParameters = Object.fromEntries(Object.entries(model.inputSchema?.properties ?? {}).map(([key, field]) => [key, {
@@ -129,15 +137,15 @@ export async function discoverSpicyImageCatalog(baseUrl: string, secret: string)
       catalog.push({ id: model.model, name: model.displayName || model.model, metadata: { source: "provider", inputModalities: reference ? ["text", "image"] : ["text"], outputModalities: ["image"], supportedParameters } });
     }
     catalog.sort((a, b) => a.id.localeCompare(b.id));
-    if (!catalog.length) throw new Error("图像服务没有返回当前可调用的图片模型");
+    if (!catalog.length) throw new Error("服务没有返回当前可调用的文字或图片模型");
     return { catalog, syncedAt: new Date().toISOString(), warnings: unsupported ? [`已略过 ${unsupported} 个需要额外必填参数或暂不支持的参考图结构的模型。`] : [] };
   } catch (error) {
-    if (signal.aborted) throw new Error("获取图像服务图片模型目录超时");
+    if (signal.aborted) throw new Error("获取服务模型目录超时");
     throw error;
   }
 }
 
-export function spicyImageInput(model: ImageModel, prompt: string, options: SpicyImageOptions = {}) {
+export function spicyImageInput(model: SpicyModel, prompt: string, options: SpicyImageOptions = {}) {
   if (!supportedImageModel(model)) throw new Error("此图像模型当前不可调用，或不支持图片生成，请刷新目录后重新选择");
   const schema = model.inputSchema;
   const fields = schema?.properties;
@@ -179,7 +187,7 @@ function pause(ms: number, signal: AbortSignal) {
 // lost create response can therefore be replayed with its original identity.
 export async function prepareSpicyPhoto(baseUrl: string, secret: string, modelId: string, prompt: string, options: SpicyImageOptions) {
   const signal = AbortSignal.timeout(30_000);
-  const model = await api<ImageModel>(baseUrl, secret, `/models/${modelId.split("/").map(encodeURIComponent).join("/")}`, signal);
+  const model = await api<SpicyModel>(baseUrl, secret, `/models/${modelId.split("/").map(encodeURIComponent).join("/")}`, signal);
   const input = spicyImageInput(model, prompt, options);
   const quote = await api<{ quoteId?: string; estimatedCost?: string }>(baseUrl, secret, "/jobs/quote", signal, { model: modelId, input });
   if (!quote.quoteId || typeof quote.estimatedCost !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.estimatedCost)) throw new Error("未取得有效报价，未提交图像任务");
@@ -218,7 +226,7 @@ export async function generateSpicyImage(connection: { baseUrl: string; secret: 
   let taskId = "";
   const { baseUrl, secret, modelId } = connection;
   try {
-    const model = await api<ImageModel>(baseUrl, secret, `/models/${modelId.split("/").map(encodeURIComponent).join("/")}`, controller.signal);
+    const model = await api<SpicyModel>(baseUrl, secret, `/models/${modelId.split("/").map(encodeURIComponent).join("/")}`, controller.signal);
     const input = spicyImageInput(model, prompt, options);
     const quote = await api<{ quoteId?: string; estimatedCost?: string }>(baseUrl, secret, "/jobs/quote", controller.signal, { model: modelId, input });
     if (!quote.quoteId || typeof quote.estimatedCost !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.estimatedCost)) throw new Error("图像服务未返回有效报价，未创建生成任务");

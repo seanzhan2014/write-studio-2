@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const code = ts.transpileModule(readFileSync(new URL("../lib/spicy-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { isSpicyApi, spicyApiBaseUrl, spicyChatBaseUrl, discoverSpicyImageCatalog, spicyImageInput, generateSpicyImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { isSpicyApi, spicyApiBaseUrl, spicyChatBaseUrl, discoverSpicyCatalog, spicyImageInput, generateSpicyImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const model = {
   model: "alibaba/wan-2.7-pro/text-to-image", displayName: "Wan 2.7 Pro", modality: "image", tasks: ["text-to-image"], enabled: true, available: true,
   inputSchema: { required: ["prompt"], properties: { prompt: { type: "string", maxLength: 5000 }, aspect_ratio: { type: "string", enum: ["1:1", "16:9"] }, resolution: { type: "string", enum: ["1k", "2k"] }, num_outputs: { type: "integer", default: 4 } } },
@@ -31,16 +31,39 @@ test("SpicyAPI preserves native and compatibility base paths", () => {
   assert.equal(spicyApiBaseUrl("https://proxy.example/spicy/v1"), "https://proxy.example/spicy/api/v1");
 });
 
-test("native catalog exposes only callable prompt-only image models and schema enums", async t => {
+test("native catalog exposes callable image models and schema enums", async t => {
   const calls = mockApi(t, () => success({ items: [model, { ...model, model: "disabled", enabled: false }, { ...model, model: "unavailable", available: false }, { ...model, model: "edit", tasks: ["edit"] }, { ...model, model: "video", modality: "video" }, { ...model, model: "controlnet", inputSchema: { required: ["prompt", "control_image_url"] } }] }));
-  const result = await discoverSpicyImageCatalog("https://api.spicyapi.ai/v1", "fake-secret");
-  assert.equal(calls[0].url, "https://api.spicyapi.ai/api/v1/models?modality=image&includeSchema=1");
+  const result = await discoverSpicyCatalog("https://api.spicyapi.ai/v1", "fake-secret");
+  assert.equal(calls[0].url, "https://api.spicyapi.ai/api/v1/models?includeSchema=1");
   assert.equal(calls[0].headers.Authorization, "Bearer fake-secret");
   assert.equal(result.catalog.length, 1);
   assert.equal(result.catalog[0].name, "Wan 2.7 Pro");
   assert.deepEqual(result.catalog[0].metadata.outputModalities, ["image"]);
   assert.deepEqual(result.catalog[0].metadata.supportedParameters.aspect_ratio.values, ["1:1", "16:9"]);
   assert.equal(result.warnings.length, 1);
+});
+
+test("native catalog includes available chat models alongside images and excludes other tasks", async t => {
+  const chat = { model: "publisher/writer/chat", displayName: "Writer", modality: "text", tasks: ["chat"], enabled: true, available: true, inputSchema: { properties: { messages: { type: "array" }, reasoning_effort: { type: "string", enum: ["low", "high"] } } } };
+  const calls = mockApi(t, () => success({ items: [model, chat, { ...chat, model: "disabled", enabled: false }, { ...chat, model: "unavailable", available: false }, { ...chat, model: "embedding", tasks: ["embedding"] }, { ...chat, model: "audio", modality: "audio" }] }));
+  const result = await discoverSpicyCatalog("https://api.spicyapi.ai/api/v1", "fake-secret");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.spicyapi.ai/api/v1/models?includeSchema=1");
+  assert.deepEqual(result.catalog.map(entry => entry.id), [model.model, chat.model]);
+  const writer = result.catalog.find(entry => entry.id === chat.model);
+  assert.equal(writer.name, "Writer");
+  assert.deepEqual(writer.metadata.inputModalities, ["text"]);
+  assert.deepEqual(writer.metadata.outputModalities, ["text"]);
+  assert.deepEqual(writer.metadata.supportedParameters.reasoning_effort.values, ["low", "high"]);
+  assert.deepEqual(result.catalog[0].metadata.outputModalities, ["image"]);
+});
+
+test("text-only accounts can synchronize and an empty callable catalog reports both supported capabilities", async t => {
+  let items = [{ model: "publisher/writer/chat", modality: "text", tasks: ["chat"], enabled: true, available: true }];
+  mockApi(t, () => success({ items }));
+  assert.equal((await discoverSpicyCatalog("https://api.spicyapi.ai", "fake-secret")).catalog[0].name, items[0].model);
+  items = [];
+  await assert.rejects(discoverSpicyCatalog("https://api.spicyapi.ai", "fake-secret"), /文字或图片模型/);
 });
 
 test("image input follows current schema and forces one output without OpenAI defaults", () => {
@@ -54,7 +77,7 @@ test("image input follows current schema and forces one output without OpenAI de
 test("reference models are discovered with image capabilities and preserve URI order in native input", async t => {
   const edit = { ...model, model: "example/identity/edit", tasks: ["image-to-image"], inputSchema: { type: "object", required: ["prompt", "image_urls"], additionalProperties: false, properties: { prompt: { type: "string" }, image_urls: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3, "x-ui": { widget: "multi-upload", accept: "image/*" } } } } };
   mockApi(t, () => success({ items: [model, edit] }));
-  const result = await discoverSpicyImageCatalog("https://api.spicyapi.ai", "fake-secret");
+  const result = await discoverSpicyCatalog("https://api.spicyapi.ai", "fake-secret");
   const entry = result.catalog.find(item => item.id === edit.model);
   assert.deepEqual(entry.metadata.inputModalities, ["text", "image"]);
   assert.equal(entry.metadata.supportedParameters.image_urls.maxImages, 3);

@@ -4,6 +4,7 @@ import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot,
 import { parseTaskHistory } from "@/lib/task-history";
 import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/writing-preparation";
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
+import { normalizeIllustrationStyles } from "@/lib/illustration-styles";
 import { normalizeCharacterVisual } from "@/lib/character-visual";
 import { DEFAULT_APPEARANCE, normalizeAppearance } from "@/lib/appearance.mjs";
 import { taskHistoryTriggers } from "./task-history-schema";
@@ -757,6 +758,7 @@ function normalizeStudioSettings(value: unknown): StudioData["settings"] {
     ...defaultSettings,
     ...settings,
     ...normalizeAppearance(settings),
+    illustrationStyles: normalizeIllustrationStyles(settings.illustrationStyles),
     namingModelMode: settings.namingModelMode === "fixed" ? "fixed" : "inherit",
     namingModel: String(settings.namingModel ?? ""),
     illustrationPromptModel: String(settings.illustrationPromptModel ?? ""),

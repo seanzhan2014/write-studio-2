@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
+import { normalizeIllustrationStyles, type IllustrationStyle } from "@/lib/illustration-styles";
 import { normalizeCharacterPhotos } from "@/lib/character-photos";
 import { normalizeCharacterVisual } from "@/lib/character-visual";
 import { nextSaveRetry, shouldRetrySave, type SaveRetryState } from "@/lib/save-retry";
@@ -279,6 +280,7 @@ export type StudioSettings = AppearanceSettings & {
   generateModel: string;
   illustrationPromptModel?: string;
   illustrationImageModel?: string;
+  illustrationStyles?: IllustrationStyle[];
   generateReasoningEffort?: ReasoningEffort | null;
   chatReasoningEffort?: ReasoningEffort | null;
   namingReasoningEffort?: ReasoningEffort | null;
@@ -884,6 +886,7 @@ function normalizeStudioData(source: StudioData): StudioData {
       ...seedData.settings,
       ...(source.settings ?? {}),
       ...normalizeAppearance(source.settings),
+      illustrationStyles: normalizeIllustrationStyles(source.settings?.illustrationStyles),
       namingModelMode: source.settings?.namingModelMode === "fixed" ? "fixed" : "inherit",
       namingModel: String(source.settings?.namingModel ?? ""),
       generateTargetWords: normalizeGenerateTargetWords(source.settings?.generateTargetWords),

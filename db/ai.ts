@@ -1,5 +1,5 @@
 import { catalogEntry, normalizeModelMetadata, supportsText, supportsImages, imageParameterValues, type ModelMetadata, type ModelCatalog, type CatalogModel, type ModelTestResult } from "../lib/ai-model-capabilities";
-import { discoverSpicyImageCatalog, generateSpicyImage, isSpicyApi, spicyChatBaseUrl } from "../lib/spicy-api";
+import { discoverSpicyCatalog, generateSpicyImage, isSpicyApi, spicyChatBaseUrl } from "../lib/spicy-api";
 import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, type ReasoningEffort, type ReasoningOptions } from "../lib/reasoning-options";
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
@@ -528,7 +528,7 @@ export async function discoverProviderCatalog(id: string) {
   const provider = await findProvider(id);
   if (!provider) throw new Error("服务连接不存在");
   const secret = await readProviderSecret(id);
-  const result = isSpicyApi(provider) ? await discoverSpicyImageCatalog(provider.baseUrl, secret) : await discoverConnection(provider.baseUrl, secret, isOpenRouter(provider));
+  const result = isSpicyApi(provider) ? await discoverSpicyCatalog(provider.baseUrl, secret) : await discoverConnection(provider.baseUrl, secret, isOpenRouter(provider));
   await getDatabase().prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)").bind(`ai_catalog:${id}`, JSON.stringify(result), result.syncedAt).run();
   return result;
 }
@@ -546,7 +546,7 @@ export async function discoverModelIds(input: { providerId?: unknown; baseUrl?: 
   if (existingId && !existing) throw new Error("模型不存在");
   const baseUrl = validateModelUrl(String(input.baseUrl ?? existing?.baseUrl ?? ""));
   const secret = String(input.secret ?? "").trim() || (existing ? await readProviderSecret(existing.providerId) : "");
-  return (await (isSpicyApi({ baseUrl }) ? discoverSpicyImageCatalog(baseUrl, secret) : discoverConnection(baseUrl, secret, new URL(baseUrl).hostname === "openrouter.ai"))).catalog.map((entry) => entry.id);
+  return (await (isSpicyApi({ baseUrl }) ? discoverSpicyCatalog(baseUrl, secret) : discoverConnection(baseUrl, secret, new URL(baseUrl).hostname === "openrouter.ai"))).catalog.map((entry) => entry.id);
 }
 
 function endpoint(model: AiModelRecord) {
