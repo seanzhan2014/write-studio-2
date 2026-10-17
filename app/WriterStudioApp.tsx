@@ -1,6 +1,7 @@
 "use client";
 
-import { CharacterAvatar, CharacterVisualField } from "./ui/character-visual";
+import { CharacterAvatar } from "./ui/character-visual";
+import { CharacterPhotoWorkspace, CharacterPhotoRuntime, CharacterPhotoTasks } from "./ui/character-photos";
 import type { CharacterVisual } from "@/lib/character-visual";
 import { ArticleIllustrationSettings } from "./ui/article-illustration-settings";
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
@@ -636,7 +637,7 @@ function routeFor(view: View, articleId: string, outlineId: string, chapterId: s
 }
 
 export default function WriterStudioApp() {
-  return <StudioProvider><StudioThemeProvider><DataTransferProvider><WriterStudioInner /></DataTransferProvider></StudioThemeProvider></StudioProvider>;
+  return <StudioProvider><StudioThemeProvider><DataTransferProvider><CharacterPhotoRuntime /><WriterStudioInner /></DataTransferProvider></StudioThemeProvider></StudioProvider>;
 }
 
 function WriterStudioInner() {
@@ -5052,10 +5053,11 @@ function Characters() {
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
+  const [photoTab, setPhotoTab] = useState(false);
   const [form, setForm] = useState({ name: "", aliases: "", description: "", profile: normalizeCharacterProfile(undefined), visual: undefined as CharacterVisual | undefined });
   const visible = studio.currentArticle.characters.filter((person) => (studio.data.settings.showArchived || !person.archived) && `${person.name}${person.aliases.join("")}${person.description}${Object.values(normalizeCharacterProfile(person.profile)).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-  function openCreate() { setEditingId(null); setForm({ name: "", aliases: "", description: "", profile: normalizeCharacterProfile(undefined), visual: undefined }); setFormOpen(true); }
-  function openEdit(person: Character) { setEditingId(person.id); setForm({ name: person.name, aliases: person.aliases.join("，"), description: person.description, profile: normalizeCharacterProfile(person.profile), visual: person.visual }); setFormOpen(true); }
+  function openCreate() { setPhotoTab(false); setEditingId(null); setForm({ name: "", aliases: "", description: "", profile: normalizeCharacterProfile(undefined), visual: undefined }); setFormOpen(true); }
+  function openEdit(person: Character) { setPhotoTab(false); setEditingId(person.id); setForm({ name: person.name, aliases: person.aliases.join("，"), description: person.description, profile: normalizeCharacterProfile(person.profile), visual: person.visual }); setFormOpen(true); }
   function save() {
     const name = form.name.trim();
     if (!name) return;
@@ -5064,23 +5066,32 @@ function Characters() {
     else studio.addCharacter({ name, aliases, description: form.description, profile: form.profile, visual: form.visual, archived: false });
     setFormOpen(false);
   }
+  function showPhotos() {
+    const name = form.name.trim(); if (!name) return;
+    const patch = { name, aliases: [...new Set(form.aliases.split(/[，,;；\n]/).map(s => s.trim()).filter(Boolean))], description: form.description, profile: form.profile, visual: form.visual };
+    if (editingId) studio.updateCharacter(editingId, patch);
+    else setEditingId(studio.addCharacter({ ...patch, archived: false }));
+    setPhotoTab(true);
+    window.setTimeout(() => void studio.saveNow(), 0);
+  }
   return <>
     <div className="list-toolbar"><label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物…" /></label><button className="primary-compact" type="button" onClick={openCreate}><Icon name="plus" />新建人物</button></div>
-    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}><CharacterAvatar visual={person.visual} name={person.name} /></div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
+    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}><CharacterAvatar visual={person.visual} photos={person.photos} name={person.name} /></div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     {!visible.length && <div className="empty-inline">没有符合条件的人物。</div>}
     <ResponsiveModal
       opened={formOpen}
       onClose={() => setFormOpen(false)}
       closeButtonProps={{ "aria-label": "关闭人物编辑" }}
       title={editingId ? "编辑人物" : "新建人物"}
-      size={720}
+      size={photoTab ? 1120 : 720}
       fullScreen={compact}
       centered={!compact}
       scrollMode="content"
       classNames={{ content: "character-edit-dialog", body: "character-edit-dialog-body" }}
     >
-      <div className="character-edit-scroll" data-ui-overlay-scroll><CharacterVisualField value={form.visual} onChange={visual => setForm(form => ({ ...form, visual }))} /><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div>
-      <footer className="character-edit-actions"><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer>
+      <div className="character-edit-tabs" role="tablist" aria-label="人物编辑页面"><button type="button" role="tab" aria-selected={!photoTab} onClick={() => setPhotoTab(false)}>资料</button><button type="button" role="tab" aria-selected={photoTab} disabled={!form.name.trim()} onClick={showPhotos}>照片</button></div>
+      {photoTab && editingId ? <CharacterPhotoWorkspace key={editingId} characterId={editingId} /> : <div className="character-edit-scroll" data-ui-overlay-scroll><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div>}
+      {!photoTab && <footer className="character-edit-actions"><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer>}
     </ResponsiveModal>
   </>;
 }
@@ -5684,7 +5695,7 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
         </footer>
-      </section> : <><div className="task-list" data-ui-overlay-scroll>{tasks.map((task) => {
+      </section> : <><div className="task-list" data-ui-overlay-scroll><CharacterPhotoTasks />{tasks.map((task) => {
         const article = studio.data.articles.find((item) => item.id === task.articleId);
         const chapter = article?.chapters.find((item) => item.id === task.chapterId);
         const outline = chapter?.outlines.find((item) => item.id === task.outlineId);

@@ -2,13 +2,15 @@
 import { Alert, Badge, Button, Checkbox, Group, Select, Stack, Text } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
+import { characterPhotos, type CharacterPhotoGallery } from "@/lib/character-photos";
 import { characterCover, characterImageSrc, type CharacterVisual } from "@/lib/character-visual";
 import { isSpicyApi, type SpicyCharacter } from "@/lib/spicy-api";
 import { ResponsiveModal } from "./overlays";
 
-export function CharacterAvatar({ visual, name }: { visual?: CharacterVisual; name: string }) {
+export function CharacterAvatar({ visual, photos, name }: { visual?: CharacterVisual; photos?: CharacterPhotoGallery; name: string }) {
   const [failed, setFailed] = useState(false);
-  const cover = characterCover(visual);
+  const gallery = characterPhotos(photos, visual);
+  const cover = gallery.photos.find(p => p.id === gallery.coverId) || (!photos ? characterCover(visual) : undefined);
   const src = cover ? characterImageSrc(cover) : "";
   useEffect(() => setFailed(false), [src]);
   // eslint-disable-next-line @next/next/no-img-element
@@ -119,5 +121,6 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
 
 export function CharacterReferenceSummary({ reference }: { reference?: import("@/lib/character-visual").CharacterReference }) {
   if (!reference) return null;
-  return <div className="character-reference-summary"><Text size="sm" fw={500}>人物快照：{reference.name} · {reference.visual.characterName} · {reference.visual.images.length} 张参考图</Text><div className="character-reference-thumbnails">{reference.visual.images.map((image, index) => <a key={image.id} href={characterImageSrc(image)} target="_blank" rel="noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={characterImageSrc(image)} alt={`${reference.name}的生成参考图 ${index + 1}`} loading="lazy" /></a>)}</div>{reference.appearance && <Text size="xs" c="dimmed">当时外貌：{reference.appearance}</Text>}</div>;
+  const images = reference.photos || reference.visual?.images || [];
+  return <div className="character-reference-summary"><Text size="sm" fw={500}>人物快照：{reference.name} · {reference.visual?.characterName || "人物照片"} · {images.length} 张参考图</Text><div className="character-reference-thumbnails">{images.map((image, index) => <a key={image.id} href={characterImageSrc(image)} target="_blank" rel="noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={characterImageSrc(image)} alt={`${reference.name}的生成参考图 ${index + 1}`} loading="lazy" /></a>)}</div>{reference.appearance && <Text size="xs" c="dimmed">当时外貌：{reference.appearance}</Text>}</div>;
 }

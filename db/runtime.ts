@@ -1,3 +1,5 @@
+import { normalizeCharacterPhotos } from "@/lib/character-photos";
+import { characterPhotoSchema } from "./character-photo-schema";
 import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { parseTaskHistory } from "@/lib/task-history";
 import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/writing-preparation";
@@ -29,6 +31,7 @@ import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type
 export { getDatabase } from "./sqlite";
 
 const schemaStatements = [
+  ...characterPhotoSchema,
   "PRAGMA foreign_keys = ON",
   `CREATE TABLE IF NOT EXISTS articles (
     id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
@@ -80,7 +83,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS characters (
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     name TEXT NOT NULL COLLATE NOCASE, aliases_json TEXT NOT NULL DEFAULT '[]',
-    description TEXT NOT NULL DEFAULT '', profile_json TEXT NOT NULL DEFAULT '{}', visual_json TEXT, archived INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '', profile_json TEXT NOT NULL DEFAULT '{}', visual_json TEXT, photos_json TEXT, archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1, UNIQUE(article_id, name)
   )`,
@@ -150,7 +153,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "16";
+const RUNTIME_SCHEMA_VERSION = "17";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -231,7 +234,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '15', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '16', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -715,6 +718,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         return {
           id: String(row.id), name: String(row.name), aliases: safeJson<string[]>(row.aliases_json, []),
           description: migratedCharacter.description, profile: migratedCharacter.profile, archived: bool(row.archived),
+          ...(normalizeCharacterPhotos(safeJson(row.photos_json, null)) ? { photos: normalizeCharacterPhotos(safeJson(row.photos_json, null)) } : {}),
           ...(normalizeCharacterVisual(safeJson(row.visual_json, null)) ? { visual: normalizeCharacterVisual(safeJson(row.visual_json, null)) } : {}),
         };
       }),
@@ -815,6 +819,7 @@ async function ensureStorySettingColumns(db: SqliteDatabase) {
   if (!chapterColumns.includes("settings_json")) await db.prepare("ALTER TABLE chapters ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'").run();
   const characterColumns = await tableColumns("characters");
   if (!characterColumns.includes("profile_json")) await db.prepare("ALTER TABLE characters ADD COLUMN profile_json TEXT NOT NULL DEFAULT '{}'").run();
+  if (!characterColumns.includes("photos_json")) await db.prepare("ALTER TABLE characters ADD COLUMN photos_json TEXT").run();
   if (!characterColumns.includes("visual_json")) await db.prepare("ALTER TABLE characters ADD COLUMN visual_json TEXT").run();
   const versionColumns = await tableColumns("versions");
   if (!versionColumns.includes("setting_snapshot_json")) await db.prepare("ALTER TABLE versions ADD COLUMN setting_snapshot_json TEXT").run();
@@ -860,6 +865,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   const statements: SqliteStatement[] = [
     db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
     db.prepare(preserveIllustrationHistorySql),
+    db.prepare("DELETE FROM character_photo_jobs"),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
   ];
@@ -894,7 +900,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
       });
     });
     article.characters.forEach((character) => {
-      statements.push(insert(db, "INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,visual_json,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, JSON.stringify(normalizeCharacterProfile(character.profile)), JSON.stringify(normalizeCharacterVisual(character.visual) ?? null), character.archived ? 1 : 0, now, now, nextRevision]));
+      statements.push(insert(db, "INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,visual_json,photos_json,archived,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [character.id, article.id, character.name, JSON.stringify(character.aliases), character.description, JSON.stringify(normalizeCharacterProfile(character.profile)), JSON.stringify(normalizeCharacterVisual(character.visual) ?? null), JSON.stringify(normalizeCharacterPhotos(character.photos) ?? null), character.archived ? 1 : 0, now, now, nextRevision]));
       statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}`]));
     });
     article.relationships.forEach((relationship) => {
@@ -973,6 +979,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
   for (const id of changes.tasks.delete) statements.push(db.prepare("DELETE FROM ai_tasks WHERE id=?").bind(id));
   for (const id of changes.relationships.delete) statements.push(db.prepare("DELETE FROM relationships WHERE id=?").bind(id));
   for (const id of changes.characters.delete) {
+    statements.push(db.prepare("DELETE FROM character_photo_jobs WHERE character_id=?").bind(id));
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='character' AND entity_id=?").bind(id));
     statements.push(db.prepare("DELETE FROM characters WHERE id=?").bind(id));
   }
@@ -1132,9 +1139,9 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
 
   for (const item of changes.characters.upsert) {
     const character = item.character;
-    statements.push(insert(db, `INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,visual_json,archived,created_at,updated_at,revision)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,name=excluded.name,aliases_json=excluded.aliases_json,description=excluded.description,profile_json=excluded.profile_json,visual_json=excluded.visual_json,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
-    [character.id, item.articleId, character.name.slice(0, 120), JSON.stringify([...new Set(character.aliases.map((value) => value.trim()).filter(Boolean))].slice(0, 50)), character.description.slice(0, 20_000), JSON.stringify(normalizeCharacterProfile(character.profile)), JSON.stringify(normalizeCharacterVisual(character.visual) ?? null), character.archived ? 1 : 0, now, now, nextRevision]));
+    statements.push(insert(db, `INSERT INTO characters(id,article_id,name,aliases_json,description,profile_json,visual_json,photos_json,archived,created_at,updated_at,revision)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET article_id=excluded.article_id,name=excluded.name,aliases_json=excluded.aliases_json,description=excluded.description,profile_json=excluded.profile_json,visual_json=excluded.visual_json,photos_json=excluded.photos_json,archived=excluded.archived,updated_at=excluded.updated_at,revision=excluded.revision`,
+    [character.id, item.articleId, character.name.slice(0, 120), JSON.stringify([...new Set(character.aliases.map((value) => value.trim()).filter(Boolean))].slice(0, 50)), character.description.slice(0, 20_000), JSON.stringify(normalizeCharacterProfile(character.profile)), JSON.stringify(normalizeCharacterVisual(character.visual) ?? null), JSON.stringify(normalizeCharacterPhotos(character.photos) ?? null), character.archived ? 1 : 0, now, now, nextRevision]));
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='character' AND entity_id=?").bind(character.id));
     statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [item.articleId, null, null, "character", character.id, character.name, `${character.aliases.join(" ")}\n${character.description}\n${Object.values(normalizeCharacterProfile(character.profile)).join("\n")}`]));
   }

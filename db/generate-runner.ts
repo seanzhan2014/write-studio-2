@@ -31,11 +31,12 @@ export function startGenerateReviewRunner() {
       const settingsJson = await db.prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json");
       const settings = settingsJson ? JSON.parse(settingsJson).settings ?? {} : {};
       const capacity = Math.max(0, Math.min(5, Number(settings.taskConcurrency) || 2) - running.length);
+      const photoRunning = Number(await db.prepare("SELECT COUNT(*) AS count FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>?)").bind(now).first<number>("count") || 0);
       const occupied = new Set(running.filter((row) => row.target === "content").map((row) => row.outline_id));
       const chosen = [];
       const reviewsOnly = process.env.WRITER_STUDIO_TEST_MODE === "1";
       for (const row of rows) {
-        if (chosen.length >= capacity) break;
+        if (chosen.length >= Math.max(0, capacity - photoRunning)) break;
         if (running.includes(row) || (row.target === "content" && occupied.has(row.outline_id))) continue;
         const options = JSON.parse(String(row.context_options_json ?? "{}"));
         if (["awaiting_author", "awaiting_confirmation"].includes(String(row.phase))) { if (row.target === "content") occupied.add(row.outline_id); continue; }
@@ -56,6 +57,8 @@ export function startGenerateReviewRunner() {
           }
         }
       }
+      const { dispatchPhotoJobs, executePhotoJob } = await import("./character-photos");
+      for (const id of await dispatchPhotoJobs()) void executePhotoJob(id).catch(error => console.error("Automatic photo job failed", error));
     } catch (error) {
       console.error("Automatic review dispatcher failed", error);
     } finally { state.busy = false; }

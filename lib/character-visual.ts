@@ -9,7 +9,7 @@ export type CharacterVisual = {
   images: CharacterVisualImage[];
   syncedAt: string;
 };
-export type CharacterReference = { characterId: string; name: string; age: string; appearance: string; visual: CharacterVisual };
+export type CharacterReference = { characterId: string; name: string; age: string; appearance: string; visual?: CharacterVisual; photos?: import("./character-photos").CharacterPhoto[] };
 export function normalizeCharacterVisual(value: unknown): CharacterVisual | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
@@ -24,5 +24,5 @@ export function normalizeCharacterVisual(value: unknown): CharacterVisual | unde
   if (!string("providerId") || !string("providerBaseUrl", 2000) || !string("workspaceId") || !string("characterId") || images.length !== raw.images.length || new Set(images.map(image => image.id)).size !== images.length) return undefined;
   return { providerId: string("providerId"), providerBaseUrl: string("providerBaseUrl", 2000), workspaceId: string("workspaceId"), characterId: string("characterId"), characterName: string("characterName"), coverAssetId: images.some(image => image.id === raw.coverAssetId) ? string("coverAssetId") : images[0].id, images, syncedAt: string("syncedAt") };
 }
-export function characterImageSrc(image: CharacterVisualImage) { return `/api/ai/character-images/${image.assetKey.split("/")[1]}`; }
+export function characterImageSrc(image: Pick<CharacterVisualImage, "assetKey">) { return `/api/ai/character-images/${image.assetKey.split("/")[1]}`; }
 export function characterCover(visual?: CharacterVisual) { return visual?.images.find(image => image.id === visual.coverAssetId) ?? visual?.images[0]; }

@@ -1,3 +1,4 @@
+import { characterPhotos, normalizeCharacterPhotos } from "@/lib/character-photos";
 import { AiInputError, findProvider, readProviderSecret } from "./ai";
 import { readStudioState } from "./runtime";
 import { deleteIllustrationAsset, readIllustrationAsset, saveIllustrationAsset } from "./illustration-assets";
@@ -41,13 +42,24 @@ export async function illustrationCharacterReference(outlineId: string, characte
   const chapter = article?.chapters.find(chapter => chapter.outlines.some(outline => outline.id === outlineId));
   const person = article?.characters.find(person => person.id === characterId && !person.archived);
   const visual = normalizeCharacterVisual(person?.visual);
-  if (!article || !chapter || !person || !visual) throw new AiInputError("此人物尚未关联可用形象，请到人物资料中设置");
+  const gallery = characterPhotos(person?.photos, person?.visual);
+  const photos = gallery.photos.filter(p => gallery.referenceIds.includes(p.id) && p.status !== "archived");
+  if (!article || !chapter || !person || (!visual && !photos.length)) throw new AiInputError("此人物尚未关联可用形象，请到人物资料中设置");
   const resolved = resolveOutlineSettings(article, outlineId).characters.find(item => item.id === person.id);
   if (resolved?.appears === false) throw new AiInputError("此人物在当前大纲中已设为不出场，请先修改设定");
-  return { characterId: person.id, name: person.name, age: resolved?.profile.age ?? "", appearance: resolved?.profile.appearance ?? "", visual };
+  return { characterId: person.id, name: person.name, age: resolved?.profile.age ?? "", appearance: resolved?.profile.appearance ?? "", ...(person.photos && photos.length ? { photos } : { visual }) };
 }
 
 export async function validateCharacterReference(reference: CharacterReference, providerId: string) {
+  if (reference.photos?.length) {
+    const normalized = normalizeCharacterPhotos({ photos: reference.photos });
+    if (!normalized || normalized.photos.length !== reference.photos.length) throw new AiInputError("人物参考照片无效");
+    const provider = await findProvider(providerId);
+    const secret = await readProviderSecret(providerId);
+    if (!provider || !secret) throw new AiInputError("图像服务连接不可用");
+    const { photoReferenceImages } = await import("./character-photos");
+    return photoReferenceImages(normalized.photos, provider, secret);
+  }
   const visual = normalizeCharacterVisual(reference.visual);
   if (!visual || visual.providerId !== providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");
   const connection = await spicyConnection(providerId);
@@ -65,6 +77,17 @@ export async function readCharacterImage(key: string) {
     return { bytes, mime };
   }
   const { data } = await readStudioState();
+  const galleries = data?.articles.flatMap(a => a.characters.map(p => characterPhotos(p.photos, p.visual))) || [];
+  const photo = [...galleries.flatMap(g => g.photos), ...data?.tasks.flatMap(t => t.contextOptions?.illustrationInput?.characterReference?.photos || []) || []].find(p => p.assetKey === key);
+  if (photo?.remote) {
+    const { provider, secret } = await spicyConnection(photo.remote.providerId);
+    if (spicyApiBaseUrl(provider.baseUrl) !== photo.remote.baseUrl || await getSpicyLibraryScope(provider.baseUrl, secret) !== photo.remote.workspaceId) throw new AiInputError("图像素材库已改变，请重新关联人物照片");
+    const { getSpicyAsset } = await import("@/lib/spicy-api");
+    const asset = await getSpicyAsset(provider.baseUrl, secret, photo.remote.assetId);
+    if (asset.uri !== photo.remote.uri || !asset.previewUrl) return null;
+    try { await saveIllustrationAsset(asset.previewUrl, key); } catch (e) { if (!(await readIllustrationAsset(key))) throw e; }
+    return { bytes: (await readIllustrationAsset(key))!, mime: photo.mime };
+  }
   const visuals = [
     ...data?.articles.flatMap(article => article.characters.flatMap(person => person.visual ? [person.visual] : [])) ?? [],
     ...data?.tasks.flatMap(task => task.contextOptions?.illustrationInput?.characterReference?.visual ? [task.contextOptions.illustrationInput.characterReference.visual] : []) ?? [],

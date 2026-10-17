@@ -3,6 +3,7 @@
 import { Alert, Badge, Button, Card, Group, Select, Stack, Tabs, Text, Textarea, TextInput } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supportsText, supportsImages, imageParameterValues, imageReferenceCapability, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { characterPhotos } from "@/lib/character-photos";
 import { CharacterReferenceSummary } from "./character-visual";
 import { resolveOutlineSettings } from "@/lib/story-settings";
 import { isSpicyApi } from "@/lib/spicy-api";
@@ -114,14 +115,17 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   const options = (items: Model[]) => items.map((model) => ({ value: model.id, label: `${modelSelectionLabel(model)}${model.hasSecret ? "" : "（需密钥）"}`, disabled: !model.hasSecret }));
   const imageRecord = models.find((model) => model.id === imageModel);
-  const visualCharacters = studio.currentArticle.characters.filter(person => !person.archived && person.visual);
+  const visualCharacters = studio.currentArticle.characters.filter(person => !person.archived && (person.photos ? characterPhotos(person.photos).referenceIds.length > 0 : person.visual));
   const selectedCharacter = visualCharacters.find(person => person.id === characterId);
+  const selectedGallery = selectedCharacter?.photos ? characterPhotos(selectedCharacter.photos) : undefined;
+  const selectedPhotos = selectedGallery?.photos.filter(p => selectedGallery.referenceIds.includes(p.id) && p.status !== "archived");
+  const referenceCount = selectedPhotos?.length ?? selectedCharacter?.visual?.images.length ?? 0;
   const resolvedCharacter = selectedCharacter ? resolveOutlineSettings(studio.currentArticle, outlineId).characters.find(person => person.id === selectedCharacter.id) : undefined;
   const referenceCapability = imageReferenceCapability(imageRecord);
   const referenceIssue = characterId ? !selectedCharacter ? "人物形象已解除绑定，请重新选择人物。"
-    : !imageRecord || !isSpicyApi(imageRecord) || imageRecord.providerId !== selectedCharacter.visual?.providerId ? "请选择与人物形象使用同一图像服务连接的图片模型。"
+    : !imageRecord || (!selectedPhotos && (!isSpicyApi(imageRecord) || imageRecord.providerId !== selectedCharacter.visual?.providerId)) ? "请选择与人物形象使用同一图像服务连接的图片模型。"
     : !referenceCapability ? "此模型未配置参考图能力，请刷新服务商模型目录并选择支持参考图的模型。"
-    : referenceCapability.maxImages && selectedCharacter.visual!.images.length > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，请在人物资料中减少参考图。` : ""
+    : referenceCapability.maxImages && referenceCount > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，请在人物资料中减少参考图。` : ""
     : referenceCapability?.required ? "此模型需要参考图，请先选择已绑定形象的人物。" : "";
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
@@ -249,8 +253,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => setTextModel(value ?? "")} disabled={Boolean(busy)} searchable />
-      <Select label="画面人物（可选）" description="第一版支持一个人物。先在人物资料中关联角色形象，再选择支持参考图的图片模型。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (imageRecord?.providerId !== person.visual?.providerId || !referenceCapability)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && model.providerId === person.visual?.providerId && imageReferenceCapability(model))?.id || ""); }} />
-      {selectedCharacter?.visual && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", visual: selectedCharacter.visual }} />}
+      <Select label="画面人物（可选）" description="使用人物照片中的默认参考，保持人物一致；可在人物资料中调整。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.photos ? characterPhotos(person.photos).referenceIds.length : person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (!referenceCapability || !person.photos && imageRecord?.providerId !== person.visual?.providerId)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && (person.photos || model.providerId === person.visual?.providerId) && imageReferenceCapability(model))?.id || ""); }} />
+      {selectedCharacter && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", ...(selectedPhotos ? { photos: selectedPhotos } : { visual: selectedCharacter.visual }) }} />}
       {referenceIssue && <Alert color="yellow">{referenceIssue}</Alert>}
       {(selectedCharacter?.visual || imageRecord && isSpicyApi(imageRecord)) && <Button size="xs" variant="subtle" loading={refreshingCapabilities} disabled={Boolean(busy)} onClick={() => void refreshCapabilities()}>刷新参考图模型能力</Button>}
       <Group justify="space-between"><Text size="xs" c="dimmed">{outline?.illustrationOptions == null ? "当前跟随文章图片风格预设" : "当前使用此大纲的最近图片设置"}</Text><Button variant="subtle" size="xs" disabled={Boolean(busy) || outline?.illustrationOptions == null} onClick={() => { studio.updateOutline(outlineId, { illustrationOptions: null }); setNotice("已恢复使用文章图片风格预设。"); }}>恢复文章图片预设</Button></Group>

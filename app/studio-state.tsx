@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
+import { normalizeCharacterPhotos } from "@/lib/character-photos";
 import { normalizeCharacterVisual } from "@/lib/character-visual";
 import { nextSaveRetry, shouldRetrySave, type SaveRetryState } from "@/lib/save-retry";
 import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
@@ -149,6 +150,7 @@ export type Character = {
   description: string;
   profile?: CharacterProfile;
   archived: boolean;
+  photos?: import("@/lib/character-photos").CharacterPhotoGallery;
   visual?: import("@/lib/character-visual").CharacterVisual;
 };
 
@@ -805,6 +807,7 @@ function normalizeCharacter(source: unknown): Character {
     aliases: Array.isArray(item.aliases) ? item.aliases.map(String) : [],
     description,
     profile: migrated.profile,
+    ...(normalizeCharacterPhotos(item.photos) ? { photos: normalizeCharacterPhotos(item.photos) } : {}),
     ...(normalizeCharacterVisual(item.visual) ? { visual: normalizeCharacterVisual(item.visual) } : {}),
     archived: Boolean(item.archived),
   };

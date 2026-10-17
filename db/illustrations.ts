@@ -132,7 +132,7 @@ export async function createIllustration(input: Row, id: string) {
   const body: IllustrationInput = { action: input.action, outlineId, model: model.id, excerpt, style, prompt };
   const reference = await illustrationCharacterReference(outlineId, input.characterId);
   if (reference) {
-    if (input.action === "image" && reference.visual.providerId !== model.providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");
+    if (input.action === "image" && reference.visual && reference.visual.providerId !== model.providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");
     body.characterId = reference.characterId; body.characterReference = reference;
   }
   const promptLanguage = checkedPromptLanguage(input.promptLanguage);
@@ -179,7 +179,7 @@ export async function executeIllustration(id: string) {
   const result = await getDatabase().batch([
     getDatabase().prepare(`UPDATE illustration_history SET status='running',runner_id=?,lease_until=? WHERE id=? AND status='queued'
       AND EXISTS(SELECT 1 FROM ai_tasks WHERE id=? AND status='queued' AND execution_origin=?)
-      AND (SELECT COUNT(*) FROM ai_tasks WHERE target<>'chat' AND status='running' AND execution_origin=? AND lease_until>?)<?`)
+      AND ((SELECT COUNT(*) FROM ai_tasks WHERE target<>'chat' AND status='running' AND execution_origin=? AND lease_until>?) + (SELECT COUNT(*) FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>strftime('%Y-%m-%dT%H:%M:%fZ','now'))))<?`)
       .bind(runner, lease(), id, id, currentTaskExecutionOrigin(), currentTaskExecutionOrigin(), now, capacity),
     syncIllustrationTask(id, now),
   ]);

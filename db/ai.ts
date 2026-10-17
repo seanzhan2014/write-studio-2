@@ -746,11 +746,10 @@ export async function generateIllustrationImage(input: { outlineId: string; prom
   return requestModelImage(model, prompt, { ...input, referenceImages }, signal);
 }
 
-async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] } = {}, signal?: AbortSignal) {
+export async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
-  if (options.referenceImages?.length) throw new AiInputError("当前图像接口暂不支持人物参考图，请选择已接入参考图能力的模型");
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;
@@ -770,10 +769,23 @@ async function requestModelImage(model: AiModelRecord, prompt: string, options: 
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    const response = await fetch(model.baseUrl.replace(/\/$/, "") + (openRouter ? "/images" : "/images/generations"), {
-      method: "POST", signal: controller.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({ model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) }),
+    const fields = { model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) };
+    const references = options.referenceImages || [];
+    let body: BodyInit = JSON.stringify({ ...fields, ...(references.length ? { input_references: references.map(url => ({ type: "image_url", image_url: { url } })) } : {}) });
+    const headers: Record<string, string> = { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" };
+    if (references.length && !openRouter) {
+      const form = new FormData();
+      Object.entries(fields).forEach(([key, value]) => form.set(key, String(value)));
+      references.forEach((src, index) => {
+        const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(src);
+        if (!match) throw new AiInputError("参考照片必须是已保存的本地图片");
+        const bytes = Uint8Array.from(atob(match[2]), c => c.charCodeAt(0));
+        form.append(references.length === 1 ? "image" : "image[]", new Blob([bytes], { type: match[1] }), `reference-${index}.${match[1].split("/")[1]}`);
+      });
+      body = form; delete headers["Content-Type"];
+    }
+    const response = await fetch(model.baseUrl.replace(/\/$/, "") + (openRouter ? "/images" : references.length ? "/images/edits" : "/images/generations"), {
+      method: "POST", signal: controller.signal, headers, body,
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 500).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").split(secret).join("[REDACTED]");

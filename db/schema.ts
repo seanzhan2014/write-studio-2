@@ -120,6 +120,7 @@ export const characters = sqliteTable("characters", {
   description: text("description").notNull().default(""),
   profileJson: text("profile_json").notNull().default("{}"),
   visualJson: text("visual_json"),
+  photosJson: text("photos_json"),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
