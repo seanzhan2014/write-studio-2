@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { normalizeIllustrationOptions, supportedIllustrationResolution } from "../lib/illustration-options.ts";
+import { fullStudioFixture } from "./fixtures.mjs";
+
+test("image settings normalize inherited values and preserve explicit model defaults", () => {
+  const article = normalizeIllustrationOptions({ promptLanguage: "en", stylePreset: "ink", resolution: "2k" });
+  assert.deepEqual(normalizeIllustrationOptions(undefined, article), article);
+  assert.deepEqual(normalizeIllustrationOptions({ resolution: "" }, article), { ...article, resolution: "" });
+  assert.deepEqual(normalizeIllustrationOptions({ promptLanguage: "bad", stylePreset: "bad", resolution: 4 }, article), article);
+  assert.equal(supportedIllustrationResolution("2k", ["1K", "2K"]), "2K");
+  assert.equal(supportedIllustrationResolution("4k", ["2K"]), "");
+});
+
+const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
+test("image presets and outline overrides survive snapshots, incremental saves and resets", { skip: !baseUrl }, async () => {
+  async function api(path, body, method = body ? "POST" : "GET", headers = {}) {
+    if (method === "PATCH") {
+      const state = await (await fetch(`${baseUrl}/api/state`)).json();
+      headers = { ...headers, "If-Match": String(state.revision) };
+    }
+    const response = await fetch(`${baseUrl}${path}`, { method, headers: { "Content-Type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const payload = await response.json();
+    assert.ok(response.ok, JSON.stringify(payload));
+    return payload;
+  }
+  const original = await api("/api/state");
+  try {
+    const data = fullStudioFixture();
+    data.articles[0].illustrationSettings = { promptLanguage: "en", stylePreset: "ink", resolution: "2k" };
+    await api("/api/state", { data }, "PUT", { "If-Match": String(original.revision) });
+    await api("/api/outlines/outline-current", { illustrationOptions: { stylePreset: "anime", resolution: "" } }, "PATCH");
+    let state = await api("/api/state");
+    let article = state.data.articles[0];
+    let outline = article.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === "outline-current");
+    assert.deepEqual(outline.illustrationOptions, { promptLanguage: "en", stylePreset: "anime", resolution: "" });
+    await api("/api/articles/article-main", { illustrationSettings: { promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k" } }, "PATCH");
+    state = await api("/api/state");
+    article = state.data.articles[0];
+    outline = article.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === "outline-current");
+    assert.deepEqual(article.illustrationSettings, { promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k" });
+    assert.equal(outline.illustrationOptions.stylePreset, "anime");
+    await api("/api/outlines/outline-current", { illustrationOptions: null }, "PATCH");
+    state = await api("/api/state");
+    assert.equal(state.data.articles[0].chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === "outline-current").illustrationOptions, null);
+  } finally {
+    const latest = await api("/api/state");
+    await api("/api/state", { data: original.data }, "PUT", { "If-Match": String(latest.revision) });
+  }
+});

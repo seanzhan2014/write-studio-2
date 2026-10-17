@@ -86,6 +86,11 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.ok(!JSON.stringify(source).includes("后续正文秘密"));
   const auto = await send({ action: "prompt", content, model: textModel.id });
   assert.equal(auto.status, 200);
+  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用中文/);
+  const english = await send({ action: "prompt", content, promptLanguage: "en", model: textModel.id });
+  assert.equal(english.status, 200);
+  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用英语/);
+  assert.match(calls.at(-1).body.messages[0].content, /excerpt 字段始终保留原文语言/);
   const generated = await send({ action: "image", prompt: `${prompt} 额外编辑`, model: imageModel.id });
   assert.equal(generated.status, 200); assert.equal((await generated.json()).src, `data:image/png;base64,${png}`);
   assert.deepEqual(calls.at(-1).body, { model: "image-model", prompt: `${prompt} 额外编辑`, n: 1, size: "1024x1024" });
@@ -113,7 +118,7 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "archive" }, "PATCH")).record.archived, true);
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "restore" }, "PATCH")).record.archived, false);
   const key = crypto.randomUUID();
-  const backgroundBody = { action: "prompt", background: true, outlineId: "outline-current", content, excerpt, stylePreset: "anime", model: textModel.id };
+  const backgroundBody = { action: "prompt", background: true, outlineId: "outline-current", content, excerpt, stylePreset: "anime", promptLanguage: "en", model: textModel.id };
   const job = (await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record;
   assert.equal((await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record.id, job.id);
   const waitFor = async (id, status) => {
@@ -128,6 +133,8 @@ test("real illustration API uses separate text/image requests and preserves pros
   const savedPrompt = await waitFor(job.id, "success");
   assert.equal(savedPrompt.prompt, prompt);
   assert.equal(savedPrompt.stylePreset, "anime");
+  assert.equal(savedPrompt.promptLanguage, "en");
+  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用英语/);
   assert.match(JSON.parse(calls.at(-1).body.messages.at(-1).content).visualDirection, /日系动漫/);
   remoteImage = true;
   const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, stylePreset: "flat", model: imageModel.id })).record;

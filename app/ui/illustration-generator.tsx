@@ -10,24 +10,29 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
 import { illustrationIsActive, illustrationStatusLabels, type IllustrationRecord } from "@/lib/illustration-history";
 import { useStudio } from "@/app/studio-state";
-import { DEFAULT_ILLUSTRATION_STYLE, ILLUSTRATION_STYLES, isIllustrationStylePreset, type IllustrationStylePreset } from "@/lib/illustration-styles";
+import { ILLUSTRATION_STYLES, isIllustrationStylePreset } from "@/lib/illustration-styles";
+import { PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, supportedIllustrationResolution, type IllustrationOptions } from "@/lib/illustration-options";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
 
 export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose }: Props) {
   const studio = useStudio();
+  const outline = studio.currentArticle.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
+  const inheritedOptions = normalizeIllustrationOptions(studio.currentArticle.illustrationSettings);
+  const illustrationOptions = normalizeIllustrationOptions(outline?.illustrationOptions ?? inheritedOptions, inheritedOptions);
+  const { promptLanguage, stylePreset } = illustrationOptions;
+  function rememberOptions(patch: Partial<IllustrationOptions>) {
+    studio.updateOutline(outlineId, { illustrationOptions: normalizeIllustrationOptions({ ...illustrationOptions, ...patch }, inheritedOptions) });
+  }
   const [models, setModels] = useState<Model[]>([]);
   const [modelError, setModelError] = useState("");
   const [textModel, setTextModel] = useState(defaultModel);
   const [imageModel, setImageModel] = useState(defaultImageModel ?? "");
-  const [size, setSize] = useState("");
   const [quality, setQuality] = useState("");
   const [aspectRatio, setAspectRatio] = useState("");
-  const [resolution, setResolution] = useState("");
   const [excerpt, setExcerpt] = useState(selectedExcerpt);
   const [style, setStyle] = useState("");
-  const [stylePreset, setStylePreset] = useState<IllustrationStylePreset>(DEFAULT_ILLUSTRATION_STYLE);
   const [prompt, setPrompt] = useState("");
   const [image, setImage] = useState<IllustrationImage | null>(null);
   const [busy, setBusy] = useState<"prompt" | "image" | null>(null);
@@ -111,17 +116,23 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const nativeImageOptions = spicyImage || imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
   const ratios = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "aspect_ratio") : [];
   const resolutions = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "resolution") : [];
+  const size = supportedIllustrationResolution(illustrationOptions.resolution, sizes);
+  const resolution = size ? "" : supportedIllustrationResolution(illustrationOptions.resolution, resolutions);
+  const unsupportedResolution = Boolean(imageRecord && illustrationOptions.resolution && !size && !resolution);
   const excerptValid = !excerpt.trim() || (content.includes(excerpt.trim()) && excerpt.trim().length <= MAX_ILLUSTRATION_EXCERPT);
 
   async function generate(action: "prompt" | "image") {
     if (busy) return;
     setBusy(action); setError(""); setNotice("");
     try {
+      // Refreshing the task list requires a clean save baseline. Persist a
+      // just-changed preset before creating work for the shared task runner.
+      if (!await studio.saveNow()) throw new Error("请先完成设置保存，再生成插图");
       const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
-          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, model: textModel }
+          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, promptLanguage, model: textModel }
           : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
@@ -138,7 +149,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   function usePrompt(record: IllustrationRecord) {
     setPrompt(record.prompt); setStyle(record.style);
-    setStylePreset(record.stylePreset ?? "auto");
+    rememberOptions({ stylePreset: record.stylePreset ?? "auto", ...(record.promptLanguage ? { promptLanguage: record.promptLanguage } : {}) });
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
     setSelectedPrompt(record.kind === "prompt" ? record.id : null); setTab("generate");
     setNotice("已载入历史 prompt，可编辑后生成插图。");
@@ -165,7 +176,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     try {
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset }),
+        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, promptLanguage }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "保存失败");
@@ -208,20 +219,23 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => setTextModel(value ?? "")} disabled={Boolean(busy)} searchable />
+      <Group justify="space-between"><Text size="xs" c="dimmed">{outline?.illustrationOptions == null ? "当前跟随文章图片风格预设" : "当前使用此大纲的最近图片设置"}</Text><Button variant="subtle" size="xs" disabled={Boolean(busy) || outline?.illustrationOptions == null} onClick={() => { studio.updateOutline(outlineId, { illustrationOptions: null }); setNotice("已恢复使用文章图片风格预设。"); }}>恢复文章图片预设</Button></Group>
+      <Select label="生成 Prompt 的语言" data={[...PROMPT_LANGUAGE_OPTIONS]} value={promptLanguage} onChange={value => rememberOptions({ promptLanguage: value as IllustrationOptions["promptLanguage"] })} allowDeselect={false} disabled={Boolean(busy)} />
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
-      <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={ILLUSTRATION_STYLES.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) setStylePreset(value); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
+      <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={ILLUSTRATION_STYLES.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
       <Text size="xs" c="dimmed">{ILLUSTRATION_STYLES.find(item => item.value === stylePreset)?.description}</Text>
       <Textarea label="画面要求（可选）" description="可补充自定义风格、色调、光线与构图要求。" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
-      <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setSize(""); setQuality(""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} searchable />
+      <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setQuality(""); setAspectRatio(""); }} disabled={Boolean(busy)} searchable />
       {spicyImage && <Text size="xs" c="dimmed">SpicyAPI 图片生成后会自动保存到插图历史。提交后的远程任务无法取消，停止等待后仍可能产生费用。</Text>}
       {!modelError && models.length > 0 && !models.some(supportsImages) && <Alert color="yellow">尚未配置图像生成模型，请到“设置 → AI 服务”添加或编辑模型能力。</Alert>}
-      {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { setSize(value ?? ""); setAspectRatio(""); setResolution(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
-      {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { setAspectRatio(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
-      {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => { setResolution(value ?? ""); setSize(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
+      {unsupportedResolution && <Text size="xs" c="dimmed">当前模型不支持预设分辨率 {illustrationOptions.resolution}，本次使用模型默认值。</Text>}
+      {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { rememberOptions({ resolution: value ?? "" }); setAspectRatio(""); }} disabled={Boolean(busy)} allowDeselect={false} />}
+      {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { setAspectRatio(value ?? ""); if (size) rememberOptions({ resolution: "" }); }} disabled={Boolean(busy)} allowDeselect={false} />}
+      {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => rememberOptions({ resolution: value ?? "" })} disabled={Boolean(busy)} allowDeselect={false} />}
       {qualities.length > 0 && <Select label="图片画质" data={[{ value: "", label: "模型默认" }, ...qualities]} value={quality} onChange={(value) => setQuality(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
       <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim()} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
       {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button></Group>}

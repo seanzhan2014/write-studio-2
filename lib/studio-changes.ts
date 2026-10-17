@@ -14,7 +14,7 @@ export type StudioOutlinePatch = {
   articleId: string;
   chapterId: string;
   location?: Partial<Pick<StudioOutlineChange, "articleId" | "chapterId" | "position">>;
-  outline?: Partial<Pick<Outline, "title" | "nameVersions" | "defaultNameVersionId" | "plan" | "generateInstruction" | "generateOptions" | "settings" | "archived" | "state" | "titleGenerationPending" | "updatedAt">>;
+  outline?: Partial<Pick<Outline, "title" | "nameVersions" | "defaultNameVersionId" | "plan" | "generateInstruction" | "generateOptions" | "illustrationOptions" | "settings" | "archived" | "state" | "titleGenerationPending" | "updatedAt">>;
   content?: Partial<Pick<Outline, "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "manualExcellent">>;
   versions?: Outline["versions"];
   excellentFragments?: Outline["excellentFragments"];
@@ -48,7 +48,7 @@ function jsonComparable(value: unknown): unknown {
 // fast-deep-equal's property-order-independent comparison for normal saves.
 const same = (left: unknown, right: unknown) => equal(left, right) || equal(jsonComparable(left), jsonComparable(right));
 
-const outlineFieldKeys = ["title", "nameVersions", "defaultNameVersionId", "plan", "generateInstruction", "generateOptions", "settings", "archived", "state", "titleGenerationPending", "updatedAt"] as const;
+const outlineFieldKeys = ["title", "nameVersions", "defaultNameVersionId", "plan", "generateInstruction", "generateOptions", "illustrationOptions", "settings", "archived", "state", "titleGenerationPending", "updatedAt"] as const;
 const contentFieldKeys = ["content", "contentName", "currentVersionId", "defaultVersionId", "contentOutlineSnapshot", "manualExcellent"] as const;
 
 function changedFields<T extends object, K extends keyof T>(before: T, after: T, keys: readonly K[]) {
@@ -78,6 +78,7 @@ function articleRecord(article: Article): StudioArticleChange {
     chapterNaming: article.chapterNaming,
     outlineNaming: article.outlineNaming,
     aiGenerateSettings: article.aiGenerateSettings,
+    illustrationSettings: article.illustrationSettings,
     createdAt: article.createdAt,
     updatedAt: article.updatedAt,
     lastOutlineId: article.lastOutlineId,
@@ -316,6 +317,7 @@ function validOutlinePatch(value: unknown): value is StudioOutlinePatch {
     if (!optionalString(outline, "title", 80) || !optionalString(outline, "plan", 10_000) || !optionalString(outline, "generateInstruction", 20_000) || !optionalString(outline, "updatedAt", 80)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "settings") && (!isRecord(outline.settings) || JSON.stringify(outline.settings).length > 500_000)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "generateOptions") && outline.generateOptions !== null && (!isRecord(outline.generateOptions) || JSON.stringify(outline.generateOptions).length > 100_000)) return false;
+    if (Object.prototype.hasOwnProperty.call(outline, "illustrationOptions") && outline.illustrationOptions !== null && (!isRecord(outline.illustrationOptions) || JSON.stringify(outline.illustrationOptions).length > 2_000)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "nameVersions") && !Array.isArray(outline.nameVersions)) return false;
     if (!optionalNullableId(outline, "defaultNameVersionId")) return false;
     if (["archived", "titleGenerationPending"].some((key) => Object.prototype.hasOwnProperty.call(outline, key) && typeof outline[key] !== "boolean")) return false;

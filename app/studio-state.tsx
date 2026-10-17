@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
 import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
 
 import { parseTaskHistory } from "@/lib/task-history";
@@ -102,6 +103,7 @@ export type Outline = {
   plan: string;
   generateInstruction: string;
   generateOptions: AiGenerateOptions | null;
+  illustrationOptions?: IllustrationOptions | null;
   settings?: OutlineSettings;
   content: string;
   contentName?: string;
@@ -166,6 +168,7 @@ export type Article = {
   chapterNaming: NamingProfile;
   outlineNaming: NamingProfile;
   aiGenerateSettings: AiGenerateOptions;
+  illustrationSettings?: IllustrationOptions;
   createdAt: string;
   updatedAt: string;
   lastOutlineId: string;
@@ -474,7 +477,7 @@ type StudioContextValue = {
   setCurrentOutline: (outlineId: string) => void;
   createArticle: (fields: Pick<Article, "title" | "summary" | "type" | "style">) => string;
   duplicateArticle: (articleId: string, options: ArticleCopyOptions) => { articleId: string; outlineId: string } | null;
-  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "storySettings" | "reviewRules" | "reviewRuleItems" | "chapterNaming" | "outlineNaming" | "aiGenerateSettings">>) => void;
+  updateArticle: (patch: Partial<Pick<Article, "title" | "summary" | "type" | "style" | "storySettings" | "reviewRules" | "reviewRuleItems" | "chapterNaming" | "outlineNaming" | "aiGenerateSettings" | "illustrationSettings">>) => void;
   deleteArticle: (articleId: string) => void;
   createChapter: (title?: string) => string;
   updateChapter: (chapterId: string, patch: Partial<Pick<Chapter, "title" | "archived" | "settings">>) => void;
@@ -486,7 +489,7 @@ type StudioContextValue = {
   moveChapter: (chapterId: string, direction: -1 | 1) => void;
   deleteChapter: (chapterId: string) => void;
   createOutline: (chapterId?: string, afterId?: string) => string;
-  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "generateOptions" | "settings" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
+  updateOutline: (outlineId: string, patch: Partial<Pick<Outline, "title" | "titleGenerationPending" | "plan" | "generateInstruction" | "generateOptions" | "illustrationOptions" | "settings" | "content" | "contentName" | "currentVersionId" | "defaultVersionId" | "contentOutlineSnapshot" | "archived" | "state">>) => void;
   saveOutlinePlan: (outlineId: string, plan: string) => Promise<boolean>;
   stageContentDraft: (outlineId: string, text: string) => void;
   clearContentDraft: (outlineId: string) => void;
@@ -894,6 +897,7 @@ function normalizeStudioData(source: StudioData): StudioData {
       chapterNaming: normalizeNamingProfile(article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
       outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
       aiGenerateSettings,
+      illustrationSettings: normalizeIllustrationOptions(article.illustrationSettings),
       characters: (article.characters ?? []).map(normalizeCharacter),
       chapters: article.chapters.map((chapter) => {
         const chapterNameState = normalizeNameVersionState(chapter.id, chapter.title, chapter.nameVersions, chapter.defaultNameVersionId, article.updatedAt, 120);
@@ -926,6 +930,7 @@ function normalizeStudioData(source: StudioData): StudioData {
             ...outlineNameState,
             title: normalizedTitle,
             generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
+            illustrationOptions: item.illustrationOptions == null ? null : normalizeIllustrationOptions(item.illustrationOptions, normalizeIllustrationOptions(article.illustrationSettings)),
             generateOptions: item.generateOptions == null ? null : normalizeAiGenerateOptions(item.generateOptions, DEFAULT_AI_GENERATE_OPTIONS),
             settings: normalizeChapterSettings(item.settings),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),

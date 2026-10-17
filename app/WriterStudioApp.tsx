@@ -1,5 +1,6 @@
 "use client";
 
+import { ArticleIllustrationSettings } from "./ui/article-illustration-settings";
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { normalizeReasoningEffort, resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
@@ -4932,6 +4933,7 @@ function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (view: Vi
       {view === "info-basic" && <BasicInfo />}
       {view === "info-ai-tasks" && <div className="article-ai-task-settings">
         <ArticleGenerateSettings />
+        <ArticleIllustrationSettings />
         <div className="form-card article-ai-task-section"><ArticleReviewRulesPage /></div>
         <ArticleChapterNames />
       </div>}
