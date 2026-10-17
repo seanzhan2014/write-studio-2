@@ -16,6 +16,8 @@ import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, parsePreparationRes
 import { NARRATIVE_CRAFT_RULES, PREPARATION_NARRATIVE_RULES, NARRATIVE_REVIEW_GUIDANCE } from "../lib/narrative-craft";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
 import { illustrationVisualDirection, isIllustrationStylePreset } from "../lib/illustration-styles";
+import { validateCharacterReference } from "./character-visuals";
+import type { CharacterReference } from "../lib/character-visual";
 
 export type AiProviderRecord = {
   id: string;
@@ -59,7 +61,7 @@ export type AiProviderSyncRecord = Omit<AiProviderRecord, "hasSecret" | "modelCo
   secret?: string;
 };
 
-async function readProviderSecret(id: string) {
+export async function readProviderSecret(id: string) {
   const row = await getDatabase().prepare("SELECT secret FROM ai_providers WHERE id=?").bind(id).first<Record<string, unknown>>();
   const stored = String(row?.secret ?? "");
   if (!stored) return "";
@@ -704,7 +706,7 @@ function illustrationDirection(input: { style?: string; stylePreset?: string }) 
   return illustrationVisualDirection(input.stylePreset, input.style);
 }
 
-export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; promptLanguage?: string; model: string }, signal?: AbortSignal) {
+export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; promptLanguage?: string; model: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.content !== "string" || !input.content.trim()) throw new AiInputError("正文为空，无法生成插图");
   if (input.content.length > MAX_ILLUSTRATION_CONTENT) throw new AiInputError("正文超过 80,000 字符，请先选取片段");
@@ -720,7 +722,8 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 写一个可直接交给文生图模型的完整 prompt，包含主体、人物外貌与服饰、地点、动作、构图、光线、色彩和氛围。遵循原文和人物设定，不引入后续情节；未说明的视觉细节可以合理补足，不改变故事事实。
 画面只表现一个时刻，不做多场景拼接或多格漫画。遵循作者指定的插图风格与画面要求；未指定风格时默认采用细腻的文学插图。默认无文字、无水印。
 只输出 JSON：{"excerpt":"逐字正文片段","prompt":"完整图片提示词"}。${input.promptLanguage === "en" ? "prompt 字段必须使用英语（English）编写。" : "prompt 字段必须使用中文编写。"}excerpt 字段始终保留原文语言，逐字引用，不得翻译。`;
-  const user = JSON.stringify({ content: input.content, selectedExcerpt: excerpt, visualDirection, article: source.article, characters: source.characters });
+  const selectedCharacter = input.characterReference ? { name: input.characterReference.name, age: input.characterReference.age, appearance: input.characterReference.appearance } : undefined;
+  const user = JSON.stringify({ content: input.content, selectedExcerpt: excerpt, visualDirection, article: source.article, characters: source.characters, ...(selectedCharacter ? { selectedCharacter, direction: "选择包含此人物的单人物画面，明确写出人物姓名和当前外貌，身份特征将由参考图补充。" } : {}) });
   const characters = system.length + user.length;
   if (characters > model.maxInputCharacters) throw new AiPromptTooLongError("插图上下文超过模型输入上限，请缩短正文或选取片段", characters, model.maxInputCharacters);
   const handle = await upstream(model, [{ role: "system", content: system }, { role: "user", content: user }], signal);
@@ -729,21 +732,25 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 }
 
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string }, signal?: AbortSignal) {
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
   const visualDirection = illustrationDirection(input);
   await assertAiTargetAvailable(input.outlineId);
   const model = await illustrationModel(input.model);
   if (!supportsImages(model)) throw new AiInputError("请选择已标记图像生成能力的模型");
-  const prompt = input.prompt.trim() + (visualDirection ? `\n\n画面风格与要求（如与上文的风格描述冲突，以此处为准；保持原有主体、人物、场景与动作）：\n${visualDirection}` : "");
-  return requestModelImage(model, prompt, input, signal);
+  const reference = input.characterReference;
+  const referenceImages = reference ? await validateCharacterReference(reference, model.providerId) : undefined;
+  const characterDirection = reference ? `\n\n人物身份参考：所有附图均为同一人物“${reference.name}”，按输入顺序参考其身份特征。保持脸型、五官和体态一致。当前年龄：${reference.age || "以画面要求为准"}；当前外貌：${reference.appearance || "遵循正文提示词"}。服饰、动作、表情及场景遵循本次画面要求。` : "";
+  const prompt = input.prompt.trim() + characterDirection + (visualDirection ? `\n\n画面风格与要求（如与上文的风格描述冲突，以此处为准；保持原有主体、人物、场景与动作）：\n${visualDirection}` : "");
+  return requestModelImage(model, prompt, { ...input, referenceImages }, signal);
 }
 
-async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string } = {}, signal?: AbortSignal) {
+async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
+  if (options.referenceImages?.length) throw new AiInputError("人物参考图目前仅支持 SpicyAPI 图片模型");
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;

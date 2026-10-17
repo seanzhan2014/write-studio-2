@@ -119,6 +119,7 @@ export const characters = sqliteTable("characters", {
   aliasesJson: text("aliases_json").notNull().default("[]"),
   description: text("description").notNull().default(""),
   profileJson: text("profile_json").notNull().default("{}"),
+  visualJson: text("visual_json"),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

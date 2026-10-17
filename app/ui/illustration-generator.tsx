@@ -2,7 +2,9 @@
 
 import { Alert, Badge, Button, Card, Group, Select, Stack, Tabs, Text, Textarea, TextInput } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { supportsText, supportsImages, imageParameterValues, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { supportsText, supportsImages, imageParameterValues, imageReferenceCapability, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { CharacterReferenceSummary } from "./character-visual";
+import { resolveOutlineSettings } from "@/lib/story-settings";
 import { isSpicyApi } from "@/lib/spicy-api";
 import { ResponsiveModal } from "./overlays";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
@@ -13,7 +15,7 @@ import { useStudio } from "@/app/studio-state";
 import { ILLUSTRATION_STYLES, isIllustrationStylePreset } from "@/lib/illustration-styles";
 import { PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, supportedIllustrationResolution, type IllustrationOptions } from "@/lib/illustration-options";
 
-type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerName: string; hasSecret: boolean };
+type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerId?: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
 
 export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose }: Props) {
@@ -27,8 +29,10 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   }
   const [models, setModels] = useState<Model[]>([]);
   const [modelError, setModelError] = useState("");
+  const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
   const [textModel, setTextModel] = useState(defaultModel);
   const [imageModel, setImageModel] = useState(defaultImageModel ?? "");
+  const [characterId, setCharacterId] = useState("");
   const [quality, setQuality] = useState("");
   const [aspectRatio, setAspectRatio] = useState("");
   const [excerpt, setExcerpt] = useState(selectedExcerpt);
@@ -110,6 +114,15 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   const options = (items: Model[]) => items.map((model) => ({ value: model.id, label: `${modelSelectionLabel(model)}${model.hasSecret ? "" : "（需密钥）"}`, disabled: !model.hasSecret }));
   const imageRecord = models.find((model) => model.id === imageModel);
+  const visualCharacters = studio.currentArticle.characters.filter(person => !person.archived && person.visual);
+  const selectedCharacter = visualCharacters.find(person => person.id === characterId);
+  const resolvedCharacter = selectedCharacter ? resolveOutlineSettings(studio.currentArticle, outlineId).characters.find(person => person.id === selectedCharacter.id) : undefined;
+  const referenceCapability = imageReferenceCapability(imageRecord);
+  const referenceIssue = characterId ? !selectedCharacter ? "人物形象已解除绑定，请重新选择人物。"
+    : !imageRecord || !isSpicyApi(imageRecord) || imageRecord.providerId !== selectedCharacter.visual?.providerId ? "请选择与人物形象使用同一 SpicyAPI 连接的图片模型。"
+    : !referenceCapability ? "此模型未配置参考图能力，请刷新服务商模型目录并选择支持参考图的模型。"
+    : referenceCapability.maxImages && selectedCharacter.visual!.images.length > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，请在人物资料中减少参考图。` : ""
+    : referenceCapability?.required ? "此模型需要参考图，请先选择已绑定形象的人物。" : "";
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
   const spicyImage = Boolean(imageRecord && isSpicyApi(imageRecord));
@@ -120,6 +133,22 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const resolution = size ? "" : supportedIllustrationResolution(illustrationOptions.resolution, resolutions);
   const unsupportedResolution = Boolean(imageRecord && illustrationOptions.resolution && !size && !resolution);
   const excerptValid = !excerpt.trim() || (content.includes(excerpt.trim()) && excerpt.trim().length <= MAX_ILLUSTRATION_EXCERPT);
+
+  async function refreshCapabilities() {
+    const providerId = selectedCharacter?.visual?.providerId ?? imageRecord?.providerId;
+    if (!providerId) return;
+    setRefreshingCapabilities(true); setError("");
+    try {
+      const response = await fetchServerAction(`/api/providers/${encodeURIComponent(providerId)}/discover`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || "无法刷新模型能力");
+      setModels(items => items.map(model => {
+        const entry = model.providerId === providerId ? data.catalog.find((entry: { id: string }) => entry.id === model.modelId) : undefined;
+        return entry ? { ...model, metadata: entry.metadata } : model;
+      }));
+      setNotice("本窗口已读取最新模型能力。需要其他参考图模型时，请在“设置 → AI 服务”添加。请重新选择图片模型。");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "刷新失败"); }
+    finally { setRefreshingCapabilities(false); }
+  }
 
   async function generate(action: "prompt" | "image") {
     if (busy) return;
@@ -132,8 +161,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
-          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, promptLanguage, model: textModel }
-          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, model: imageModel, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
+          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, promptLanguage, model: textModel, ...(characterId ? { characterId } : {}) }
+          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, model: imageModel, ...(characterId ? { characterId } : {}), ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "插图生成失败");
@@ -153,6 +182,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
     setSelectedPrompt(record.kind === "prompt" ? record.id : null); setTab("generate");
     setNotice("已载入历史 prompt，可编辑后生成插图。");
+    setCharacterId(record.characterReference?.characterId ?? "");
   }
 
   async function manage(id: string, action: "archive" | "restore" | "delete") {
@@ -176,7 +206,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     try {
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, promptLanguage }),
+        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, promptLanguage, ...(characterId ? { characterId } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "保存失败");
@@ -219,6 +249,10 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => setTextModel(value ?? "")} disabled={Boolean(busy)} searchable />
+      <Select label="画面人物（可选）" description="第一版支持一个人物。先在人物资料中绑定 SpicyAPI 形象，再选择支持参考图的图片模型。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (imageRecord?.providerId !== person.visual?.providerId || !referenceCapability)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && model.providerId === person.visual?.providerId && imageReferenceCapability(model))?.id || ""); }} />
+      {selectedCharacter?.visual && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", visual: selectedCharacter.visual }} />}
+      {referenceIssue && <Alert color="yellow">{referenceIssue}</Alert>}
+      {(selectedCharacter?.visual || imageRecord && isSpicyApi(imageRecord)) && <Button size="xs" variant="subtle" loading={refreshingCapabilities} disabled={Boolean(busy)} onClick={() => void refreshCapabilities()}>刷新参考图模型能力</Button>}
       <Group justify="space-between"><Text size="xs" c="dimmed">{outline?.illustrationOptions == null ? "当前跟随文章图片风格预设" : "当前使用此大纲的最近图片设置"}</Text><Button variant="subtle" size="xs" disabled={Boolean(busy) || outline?.illustrationOptions == null} onClick={() => { studio.updateOutline(outlineId, { illustrationOptions: null }); setNotice("已恢复使用文章图片风格预设。"); }}>恢复文章图片预设</Button></Group>
       <Select label="生成 Prompt 的语言" data={[...PROMPT_LANGUAGE_OPTIONS]} value={promptLanguage} onChange={value => rememberOptions({ promptLanguage: value as IllustrationOptions["promptLanguage"] })} allowDeselect={false} disabled={Boolean(busy)} />
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
@@ -237,7 +271,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { setAspectRatio(value ?? ""); if (size) rememberOptions({ resolution: "" }); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => rememberOptions({ resolution: value ?? "" })} disabled={Boolean(busy)} allowDeselect={false} />}
       {qualities.length > 0 && <Select label="图片画质" data={[{ value: "", label: "模型默认" }, ...qualities]} value={quality} onChange={(value) => setQuality(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
-      <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim()} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
+      <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim() || Boolean(referenceIssue)} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
       {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button></Group>}
       {image && <figure className="illustration-result">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -256,6 +290,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
           <Group justify="space-between"><Text size="sm" fw={600}>{record.kind === "prompt" ? "Prompt" : "插图"} · {record.outlineTitle}</Text><Group gap="xs"><Badge color={record.status === "error" ? "red" : illustrationIsActive(record) ? "blue" : "gray"}>{illustrationStatusLabels[record.status]}</Badge>{record.archived && <Badge color="gray">已归档</Badge>}</Group></Group>
           <Text size="xs" c="dimmed">{new Date(record.createdAt).toLocaleString()} · {record.modelName || "手动添加"}</Text>
           {record.stylePreset && record.stylePreset !== "auto" && <Badge variant="light">{ILLUSTRATION_STYLES.find(item => item.value === record.stylePreset)?.label}</Badge>}
+          <CharacterReferenceSummary reference={record.characterReference} />
           {record.src && <a href={record.src} target="_blank" rel="noopener noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img className="illustration-history-image" src={record.src} alt="历史插图" loading="lazy" /></a>}
           {record.prompt && <Text size="sm" className="illustration-history-prompt">{record.prompt}</Text>}
           {record.excerpt && <Text size="xs" c="dimmed" lineClamp={3}>正文片段：{record.excerpt}</Text>}

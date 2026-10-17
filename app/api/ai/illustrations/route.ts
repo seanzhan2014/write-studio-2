@@ -1,5 +1,5 @@
 import { AiInputError, AiPromptTooLongError, generateIllustrationPrompt, generateIllustrationImage } from "@/db/ai";
-import { createIllustration, listIllustrations, saveManualPrompt, saveCompletedIllustration } from "@/db/illustrations";
+import { createIllustration, listIllustrations, saveManualPrompt, saveCompletedIllustration, prepareIllustrationReference, type IllustrationInput } from "@/db/illustrations";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +18,9 @@ export async function POST(request: Request) {
     if (body.action === "save-prompt") return Response.json({ record: await saveManualPrompt(body) }, { status: 201 });
     if (body.background === true) return Response.json({ record: await createIllustration(body, request.headers.get("Idempotency-Key") || crypto.randomUUID()) }, { status: 202, headers: { "Cache-Control": "no-store" } });
     if (body.action === "prompt" || body.action === "image") {
-      const result = body.action === "prompt" ? await generateIllustrationPrompt(body, request.signal) : await generateIllustrationImage(body, request.signal);
-      await saveCompletedIllustration(body, result);
+      const prepared = await prepareIllustrationReference(body) as IllustrationInput;
+      const result = prepared.action === "prompt" ? await generateIllustrationPrompt({ ...prepared, content: prepared.content! }, request.signal) : await generateIllustrationImage({ ...prepared, prompt: prepared.prompt! }, request.signal);
+      await saveCompletedIllustration(prepared, result);
       return Response.json(result, { headers: { "Cache-Control": "no-store" } });
     }
     throw new AiInputError("插图操作无效");

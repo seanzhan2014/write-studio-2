@@ -21,6 +21,7 @@ import {
   type SettingSource,
   type StoryFieldKey,
 } from "@/lib/story-settings";
+import { CharacterVisualField } from "./character-visual";
 import { ScrollableDrawer } from "./overlays";
 
 const STORY_LABELS: Record<StoryFieldKey, { label: string; placeholder: string; rows?: number }> = {
@@ -98,6 +99,7 @@ function BaseCharacterFields({ character }: { character: Character }) {
   const studio = useStudio();
   const profile = normalizeCharacterProfile(character.profile);
   return <div className="character-setting-fields">
+    <CharacterVisualField value={character.visual} onChange={visual => studio.updateCharacter(character.id, { visual })} />
     {CHARACTER_PROFILE_KEYS.map((key) => <StoryInput key={key} {...CHARACTER_LABELS[key]} value={profile[key]} onChange={(value) => studio.updateCharacter(character.id, { profile: { ...profile, [key]: value } })} />)}
     <Textarea autosize minRows={3} maxRows={12} label="人物说明" description="身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。" value={character.description} onChange={(event) => studio.updateCharacter(character.id, { description: event.currentTarget.value })} />
   </div>;

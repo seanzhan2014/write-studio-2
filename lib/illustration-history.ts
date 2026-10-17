@@ -8,6 +8,7 @@ export type IllustrationRecord = {
   promptLanguage?: IllustrationPromptLanguage;
   model: string; modelName: string; archived: boolean; error?: string;
   src?: string; revisedPrompt?: string; createdAt: string; completedAt?: string;
+  characterReference?: import("./character-visual").CharacterReference;
 };
 export const illustrationStatusLabels: Record<IllustrationStatus, string> = {
   queued: "等待中", running: "生成中", success: "已保存", error: "失败", cancelled: "已取消",

@@ -31,6 +31,11 @@ export function supportsText(model: CapabilityModel) {
 export function supportsImages(model: CapabilityModel) {
   return Boolean(model.metadata?.outputModalities.includes("image"));
 }
+export function imageReferenceCapability(model?: CapabilityModel) {
+  const parameters = model?.metadata?.supportedParameters;
+  if (!parameters || Array.isArray(parameters)) return undefined;
+  return Object.values(parameters).find((field): field is { referenceImage: true; maxImages?: number; required?: boolean } => Boolean(field && typeof field === "object" && (field as { referenceImage?: boolean }).referenceImage));
+}
 export function manualModelMetadata(kind: "text" | "image" | "both"): ModelMetadata {
   return { source: "manual", inputModalities: ["text"], outputModalities: kind === "both" ? ["text", "image"] : [kind] };
 }

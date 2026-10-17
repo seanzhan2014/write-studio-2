@@ -34,7 +34,7 @@ test("SpicyAPI preserves native and compatibility base paths", () => {
 test("native catalog exposes only callable prompt-only image models and schema enums", async t => {
   const calls = mockApi(t, () => success({ items: [model, { ...model, model: "disabled", enabled: false }, { ...model, model: "unavailable", available: false }, { ...model, model: "edit", tasks: ["edit"] }, { ...model, model: "video", modality: "video" }, { ...model, model: "controlnet", inputSchema: { required: ["prompt", "control_image_url"] } }] }));
   const result = await discoverSpicyImageCatalog("https://api.spicyapi.ai/v1", "fake-secret");
-  assert.equal(calls[0].url, "https://api.spicyapi.ai/api/v1/models?modality=image&task=text-to-image&includeSchema=1");
+  assert.equal(calls[0].url, "https://api.spicyapi.ai/api/v1/models?modality=image&includeSchema=1");
   assert.equal(calls[0].headers.Authorization, "Bearer fake-secret");
   assert.equal(result.catalog.length, 1);
   assert.equal(result.catalog[0].name, "Wan 2.7 Pro");
@@ -49,6 +49,34 @@ test("image input follows current schema and forces one output without OpenAI de
   assert.throws(() => spicyImageInput(model, "A lighthouse", { resolution: "4K" }), /resolution/);
   assert.throws(() => spicyImageInput(model, "x".repeat(5001)), /长度/);
   assert.throws(() => spicyImageInput({ ...model, available: false }, "hello"), /不可调用/);
+});
+
+test("reference models are discovered with image capabilities and preserve URI order in native input", async t => {
+  const edit = { ...model, model: "example/identity/edit", tasks: ["image-to-image"], inputSchema: { type: "object", required: ["prompt", "image_urls"], additionalProperties: false, properties: { prompt: { type: "string" }, image_urls: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 3, "x-ui": { widget: "multi-upload", accept: "image/*" } } } } };
+  mockApi(t, () => success({ items: [model, edit] }));
+  const result = await discoverSpicyImageCatalog("https://api.spicyapi.ai", "fake-secret");
+  const entry = result.catalog.find(item => item.id === edit.model);
+  assert.deepEqual(entry.metadata.inputModalities, ["text", "image"]);
+  assert.equal(entry.metadata.supportedParameters.image_urls.maxImages, 3);
+  assert.equal(entry.metadata.supportedParameters.image_urls.required, true);
+  const referenceImages = ["spicy://a/ast_side", "spicy://a/ast_front"];
+  assert.deepEqual(spicyImageInput(edit, "portrait", { referenceImages }), { prompt: "portrait", image_urls: referenceImages });
+  assert.throws(() => spicyImageInput(edit, "portrait"), /参考图/);
+  assert.throws(() => spicyImageInput(model, "portrait", { referenceImages }), /不支持人物参考图/);
+  assert.throws(() => spicyImageInput(edit, "portrait", { referenceImages: [...referenceImages, ...referenceImages] }), /最多支持 3/);
+  const single = { ...edit, inputSchema: { required: ["prompt", "image_url"], properties: { prompt: { type: "string" }, image_url: { type: "string", "x-ui": { widget: "upload", accept: "image/*" } } } } };
+  assert.equal(spicyImageInput(single, "portrait", { referenceImages: referenceImages.slice(0, 1) }).image_url, referenceImages[0]);
+  assert.throws(() => spicyImageInput(single, "portrait", { referenceImages }), /最多支持 1/);
+});
+
+test("conditional reference requirements and masks fail before a paid request", async t => {
+  const conditional = { ...model, inputSchema: { required: ["prompt"], anyOf: [{ required: ["image_urls"] }], properties: { prompt: { type: "string" }, image_urls: { type: "array", items: { type: "string" }, maxItems: 2 } } } };
+  assert.throws(() => spicyImageInput(conditional, "portrait"), /实时结构/);
+  assert.deepEqual(spicyImageInput(conditional, "portrait", { referenceImages: ["spicy://a/ast_face"] }).image_urls, ["spicy://a/ast_face"]);
+  const mask = { ...model, inputSchema: { required: ["prompt", "mask_image_url"], properties: { prompt: { type: "string" }, mask_image_url: { type: "string", "x-ui": { widget: "upload", accept: "image/*" } } } } };
+  const calls = mockApi(t, () => success(mask));
+  await assert.rejects(generateSpicyImage({ baseUrl: "https://api.spicyapi.ai", secret: "fake-secret", modelId: "mask", timeoutMs: 1000 }, "portrait", { referenceImages: ["spicy://a/ast_face"] }), /不支持人物参考图/);
+  assert.equal(calls.length, 1);
 });
 
 test("generation quotes then submits once, polls pending image transfer and uses the result URL", { timeout: 15000 }, async t => {

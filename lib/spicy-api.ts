@@ -1,12 +1,20 @@
 import type { CatalogModel, ModelCatalog } from "./ai-model-capabilities";
 
-type SchemaField = { type?: string; enum?: unknown[]; default?: unknown; minLength?: number; maxLength?: number };
+type SchemaField = {
+  type?: string; enum?: unknown[]; const?: unknown; default?: unknown; minLength?: number; maxLength?: number;
+  minimum?: number; maximum?: number; minItems?: number; maxItems?: number; items?: SchemaField;
+  properties?: Record<string, SchemaField>; required?: string[]; additionalProperties?: boolean;
+  anyOf?: SchemaField[]; oneOf?: SchemaField[]; allOf?: SchemaField[]; if?: SchemaField; then?: SchemaField; else?: SchemaField;
+  "x-ui"?: { widget?: string; accept?: string | string[] };
+};
 type ImageModel = {
   model?: string; displayName?: string; modality?: string; tasks?: string[];
   enabled?: boolean; available?: boolean;
-  inputSchema?: { properties?: Record<string, SchemaField>; required?: string[] };
+  inputSchema?: SchemaField;
 };
-export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string };
+export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] };
+export type SpicyAsset = { id: string; uri: string; name?: string; kind?: string; contentType?: string; previewUrl?: string };
+export type SpicyCharacter = { id: string; kind: string; name: string; note?: string; cover?: SpicyAsset | null; assets?: SpicyAsset[]; count?: number; updatedAt?: string };
 type Task = {
   taskId?: string; state?: string; errorCode?: string; errorMessage?: string;
   output?: { assets?: Array<{ url?: string; mime?: string; pending?: boolean; unavailable?: boolean }> };
@@ -50,42 +58,101 @@ async function api<T>(baseUrl: string, secret: string, path: string, signal: Abo
 }
 
 function supportedImageModel(model: ImageModel) {
-  return model.enabled === true && model.available === true && model.modality === "image" && model.tasks?.includes("text-to-image");
+  return model.enabled === true && model.available === true && model.modality === "image" && model.tasks?.some(task => ["text-to-image", "image-to-image", "edit"].includes(task));
+}
+
+export function spicyReferenceField(schema?: SchemaField): [string, SchemaField] | undefined {
+  const fields = Object.entries(schema?.properties ?? {}).filter(([key, field]) => {
+    if (/mask|control|depth|pose|edge/i.test(key)) return false;
+    const widget = field["x-ui"]?.widget;
+    const accept = String(field["x-ui"]?.accept ?? "");
+    const imageField = /^(image_url|image_urls|images|image_input|reference_images?|reference_image_urls?)$/.test(key);
+    return (imageField || (accept.includes("image") && ["upload", "multi-upload"].includes(widget ?? "")))
+      && (field.type === "string" || (field.type === "array" && field.items?.type === "string"));
+  });
+  return fields.length === 1 ? fields[0] : undefined;
+}
+
+function schemaAccepts(schema: SchemaField, value: unknown): boolean {
+  if (schema.enum && !schema.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) return false;
+  if ("const" in schema && JSON.stringify(schema.const) !== JSON.stringify(value)) return false;
+  if (schema.type === "string" && (typeof value !== "string" || value.length < (schema.minLength ?? 0) || value.length > (schema.maxLength ?? Infinity))) return false;
+  if (schema.type === "number" || schema.type === "integer") {
+    if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isInteger(value)) || value < (schema.minimum ?? -Infinity) || value > (schema.maximum ?? Infinity)) return false;
+  }
+  if (schema.type === "boolean" && typeof value !== "boolean") return false;
+  if (schema.type === "array" && !Array.isArray(value)) return false;
+  if (Array.isArray(value) && (value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity) || (schema.items && !value.every(item => schemaAccepts(schema.items!, item))))) return false;
+  if (schema.type === "object" && (!value || typeof value !== "object" || Array.isArray(value))) return false;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const object = value as Record<string, unknown>;
+    if (schema.required?.some(key => !(key in object))) return false;
+    if (Object.entries(object).some(([key, item]) => schema.properties?.[key] ? !schemaAccepts(schema.properties[key], item) : schema.additionalProperties === false)) return false;
+  }
+  if (schema.anyOf && !schema.anyOf.some(branch => schemaAccepts(branch, value))) return false;
+  if (schema.oneOf && schema.oneOf.filter(branch => schemaAccepts(branch, value)).length !== 1) return false;
+  if (schema.allOf && !schema.allOf.every(branch => schemaAccepts(branch, value))) return false;
+  if (schema.if) { const branch = schemaAccepts(schema.if, value) ? schema.then : schema.else; if (branch && !schemaAccepts(branch, value)) return false; }
+  return true;
+}
+
+export async function listSpicyCharacters(baseUrl: string, secret: string, cursor = "") {
+  return api<{ items: SpicyCharacter[]; nextCursor?: string }>(baseUrl, secret, `/assets/entities?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, AbortSignal.timeout(15_000));
+}
+export async function getSpicyCharacter(baseUrl: string, secret: string, id: string) {
+  return api<SpicyCharacter>(baseUrl, secret, `/assets/entities/${encodeURIComponent(id)}`, AbortSignal.timeout(15_000));
+}
+export async function getSpicyLibraryScope(baseUrl: string, secret: string) {
+  const data = await api<{ scope?: { workspaceId?: string } }>(baseUrl, secret, "/assets/usage", AbortSignal.timeout(15_000));
+  if (!data.scope?.workspaceId) throw new Error("SpicyAPI 尚无可用素材工作区，请先在其网页端创建角色后重试");
+  return data.scope.workspaceId;
+}
+export async function getSpicyAsset(baseUrl: string, secret: string, id: string) {
+  return api<SpicyAsset>(baseUrl, secret, `/assets/${encodeURIComponent(id)}`, AbortSignal.timeout(15_000));
 }
 
 export async function discoverSpicyImageCatalog(baseUrl: string, secret: string): Promise<ModelCatalog> {
   const signal = AbortSignal.timeout(15_000);
   try {
-    const data = await api<{ items?: ImageModel[] }>(baseUrl, secret, "/models?modality=image&task=text-to-image&includeSchema=1", signal);
+    const data = await api<{ items?: ImageModel[] }>(baseUrl, secret, "/models?modality=image&includeSchema=1", signal);
     const catalog: CatalogModel[] = [];
     let unsupported = 0;
     for (const model of data.items ?? []) {
       if (!model.model || !supportedImageModel(model)) continue;
-      // Models that require a control/reference image cannot run in this text-to-image UI.
-      if (model.inputSchema?.required?.some((key) => key !== "prompt")) { unsupported++; continue; }
+      const reference = spicyReferenceField(model.inputSchema);
+      if (!model.inputSchema?.properties?.prompt || model.inputSchema.required?.some(key => key !== "prompt" && key !== reference?.[0]) || (!model.tasks?.includes("text-to-image") && !reference)) { unsupported++; continue; }
       const supportedParameters = Object.fromEntries(Object.entries(model.inputSchema?.properties ?? {}).map(([key, field]) => [key, {
         type: field.type, ...(field.enum ? { values: field.enum } : {}),
+        ...(reference?.[0] === key ? { referenceImage: true, maxImages: field.type === "array" ? field.maxItems ?? null : 1, required: Boolean(model.inputSchema?.required?.includes(key)) || !model.tasks?.includes("text-to-image") } : {}),
       }]));
-      catalog.push({ id: model.model, name: model.displayName || model.model, metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters } });
+      catalog.push({ id: model.model, name: model.displayName || model.model, metadata: { source: "provider", inputModalities: reference ? ["text", "image"] : ["text"], outputModalities: ["image"], supportedParameters } });
     }
     catalog.sort((a, b) => a.id.localeCompare(b.id));
-    if (!catalog.length) throw new Error("SpicyAPI 没有返回当前可调用的文生图模型");
-    return { catalog, syncedAt: new Date().toISOString(), warnings: unsupported ? [`已略过 ${unsupported} 个需要参考图片或其他必填参数的模型。`] : [] };
+    if (!catalog.length) throw new Error("SpicyAPI 没有返回当前可调用的图片模型");
+    return { catalog, syncedAt: new Date().toISOString(), warnings: unsupported ? [`已略过 ${unsupported} 个需要额外必填参数或暂不支持的参考图结构的模型。`] : [] };
   } catch (error) {
-    if (signal.aborted) throw new Error("获取 SpicyAPI 文生图目录超时");
+    if (signal.aborted) throw new Error("获取 SpicyAPI 图片模型目录超时");
     throw error;
   }
 }
 
 export function spicyImageInput(model: ImageModel, prompt: string, options: SpicyImageOptions = {}) {
-  if (!supportedImageModel(model)) throw new Error("此 SpicyAPI 模型当前不可调用，或不支持文生图，请刷新目录后重新选择");
+  if (!supportedImageModel(model)) throw new Error("此 SpicyAPI 模型当前不可调用，或不支持图片生成，请刷新目录后重新选择");
   const schema = model.inputSchema;
   const fields = schema?.properties;
   if (!fields?.prompt) throw new Error("SpicyAPI 没有返回此模型的提示词参数结构");
   if (!prompt.trim() || prompt.length < (fields.prompt.minLength ?? 1) || prompt.length > (fields.prompt.maxLength ?? 12000)) throw new Error(`此模型的提示词长度应为 ${fields.prompt.minLength ?? 1}–${fields.prompt.maxLength ?? 12000} 字符`);
-  if (schema?.required?.some((key) => key !== "prompt")) throw new Error("此模型还需要参考图片或其他参数，请选择仅需提示词的文生图模型");
   if (options.size && (options.aspectRatio || options.resolution)) throw new Error("尺寸与比例、分辨率请分别选择一种方式");
   const input: Record<string, unknown> = { prompt };
+  const reference = spicyReferenceField(schema);
+  if (options.referenceImages?.length) {
+    if (!reference) throw new Error("此模型不支持人物参考图，请刷新目录并选择支持参考图的模型");
+    const [key, field] = reference;
+    const limit = field.type === "array" ? field.maxItems ?? Infinity : 1;
+    if (options.referenceImages.length > limit) throw new Error(`此模型最多支持 ${limit} 张参考图，请减少人物参考图后重试`);
+    if (options.referenceImages.some(uri => !/^spicy:\/\/a\/[\w-]+$/.test(uri))) throw new Error("人物参考图引用无效");
+    input[key] = field.type === "array" ? options.referenceImages : options.referenceImages[0];
+  } else if (!model.tasks?.includes("text-to-image")) throw new Error("此模型需要人物参考图，请先选择已绑定形象的人物");
   for (const [key, value] of [["size", options.size], ["quality", options.quality], ["aspect_ratio", options.aspectRatio], ["resolution", options.resolution]] as const) {
     if (!value) continue;
     const field = fields[key];
@@ -94,6 +161,7 @@ export function spicyImageInput(model: ImageModel, prompt: string, options: Spic
   }
   // Do not inject OpenAI's n or default size into model-specific schemas.
   if (fields.num_outputs) input.num_outputs = 1;
+  if (!schemaAccepts(schema!, input)) throw new Error("图片参数不符合此模型的实时结构，请检查参考图数量或刷新模型目录");
   return input;
 }
 

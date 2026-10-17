@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
+import { normalizeCharacterVisual } from "@/lib/character-visual";
 import { nextSaveRetry, shouldRetrySave, type SaveRetryState } from "@/lib/save-retry";
 import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
 
@@ -148,6 +149,7 @@ export type Character = {
   description: string;
   profile?: CharacterProfile;
   archived: boolean;
+  visual?: import("@/lib/character-visual").CharacterVisual;
 };
 
 export type Relationship = {
@@ -803,6 +805,7 @@ function normalizeCharacter(source: unknown): Character {
     aliases: Array.isArray(item.aliases) ? item.aliases.map(String) : [],
     description,
     profile: migrated.profile,
+    ...(normalizeCharacterVisual(item.visual) ? { visual: normalizeCharacterVisual(item.visual) } : {}),
     archived: Boolean(item.archived),
   };
 }

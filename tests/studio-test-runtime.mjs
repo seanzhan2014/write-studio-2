@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import * as generateOptions from "../lib/generate-options.ts";
 import * as illustrationOptions from "../lib/illustration-options.ts";
+import * as characterVisual from "../lib/character-visual.ts";
 import * as namingOptions from "../lib/naming-options.ts";
 import * as nameVersions from "../lib/name-versions.ts";
 import * as reviewOptions from "../lib/review-options.ts";
@@ -32,7 +33,7 @@ const context = {
   ...generateOptions, ...namingOptions, ...nameVersions, ...reviewOptions,
   ...reviewRules, ...generateReview, ...excellentFragments, ...outlineTitle,
   ...contentName, ...taskHistory, ...taskTargets, ...conflict, now: "2026-07-28T14:32:00.000Z", seedData: fullStudioFixture(),
-  ...storySettings, ...appearanceSettings, ...illustrationOptions,
+  ...storySettings, ...appearanceSettings, ...illustrationOptions, ...characterVisual,
 };
 export const { normalizeStudioData, reconcileTaskPoll, durableSnapshot, serializeDurable } = Function(
   ...Object.keys(context), `${code}\nreturn { normalizeStudioData, reconcileTaskPoll, durableSnapshot, serializeDurable };`,

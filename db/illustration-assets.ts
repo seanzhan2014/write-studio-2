@@ -51,7 +51,7 @@ async function readRemote(src: string, signal: AbortSignal) {
   }
   throw new Error("图片地址重定向过多，无法保存");
 }
-export async function saveIllustrationAsset(src: string) {
+export async function saveIllustrationAsset(src: string, restoreKey?: string) {
   let bytes: Uint8Array;
   const inline = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(src);
   if (inline) {
@@ -63,7 +63,8 @@ export async function saveIllustrationAsset(src: string) {
     : head[0] === 255 && head[1] === 216 && head[2] === 255 ? "image/jpeg"
     : String.fromCharCode(...head.slice(0, 4)) === "RIFF" && String.fromCharCode(...head.slice(8, 12)) === "WEBP" ? "image/webp" : "";
   if (!mime || !bytes.length || bytes.length > MAX_BYTES) throw new Error("图片不是有效的 PNG、JPEG 或 WebP，无法保存");
-  const key = `illustrations/${crypto.randomUUID()}`;
+  const key = restoreKey ?? `illustrations/${crypto.randomUUID()}`;
+  if (!/^illustrations\/[a-f0-9-]+$/.test(key)) throw new Error("图片文件标识无效");
   if (isCloudDatabase()) await bucket().put(key, bytes, { httpMetadata: { contentType: mime } });
   else {
     const fs = await import("node:fs/promises");

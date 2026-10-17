@@ -17,7 +17,7 @@ test("SpicyAPI native discovery, model activation and background generation pers
     if (request.url === "/result.png") { response.writeHead(200, { "Content-Type": "image/png" }); return response.end(Buffer.from(png, "base64")); }
     response.setHeader("Content-Type", "application/json");
     let data;
-    if (request.url === "/api/v1/models?modality=image&task=text-to-image&includeSchema=1") data = { items: [entry] };
+    if (request.url === "/api/v1/models?modality=image&includeSchema=1") data = { items: [entry] };
     else if (request.url === `/api/v1/models/${id}`) data = entry;
     else if (request.url === "/api/v1/jobs/quote") data = { quoteId: "q-live", estimatedCost: "0.075" };
     else if (request.url === "/api/v1/jobs/createTask") { response.statusCode = 202; data = { taskId: "job-persist", state: "queued" }; }
