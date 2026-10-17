@@ -132,7 +132,7 @@ export async function createIllustration(input: Row, id: string) {
   const body: IllustrationInput = { action: input.action, outlineId, model: model.id, excerpt, style, prompt };
   const reference = await illustrationCharacterReference(outlineId, input.characterId);
   if (reference) {
-    if (input.action === "image" && reference.visual.providerId !== model.providerId) throw new AiInputError("人物形象与图片模型必须使用同一个 SpicyAPI 服务连接");
+    if (input.action === "image" && reference.visual.providerId !== model.providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");
     body.characterId = reference.characterId; body.characterReference = reference;
   }
   const promptLanguage = checkedPromptLanguage(input.promptLanguage);

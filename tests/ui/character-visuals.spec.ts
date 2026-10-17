@@ -5,22 +5,22 @@ test("character image binding persists, previews and enables a matching referenc
   const original = await (await request.get("/api/state")).json();
   await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data: fullStudioFixture() } });
   await page.route("**/api/connectivity", route => route.fulfill({ status: 204 }));
-  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "spicy", name: "Spicy 图像", adapterKind: "spicyapi", hasSecret: true }] } }));
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "spicy", name: "图像服务", adapterKind: "spicyapi", hasSecret: true }] } }));
   const assets = ["ast_front", "ast_side"].map(id => ({ id, uri: `spicy://a/${id}`, name: id, kind: "image", previewUrl: `data:image/png;base64,${png}` }));
   const remote = { id: "role-lin", kind: "character", name: "林澈定妆", assets, cover: assets[0], count: 2 };
   let boundBody: { imageIds: string[]; coverAssetId: string } | undefined;
   const binding = { providerId: "spicy", providerBaseUrl: "https://api.spicyapi.ai/api/v1", workspaceId: "personal", characterId: remote.id, characterName: remote.name, coverAssetId: "ast_side", images: assets.map((asset, i) => ({ id: asset.id, uri: asset.uri, name: asset.name, assetKey: `illustrations/abcdef0${i}-1234`, mime: "image/png" })), syncedAt: "2026-10-17" };
-  await page.route("**/api/ai/spicy-characters**", route => {
+  await page.route("**/api/ai/image-characters**", route => {
     if (route.request().method() === "POST") { boundBody = route.request().postDataJSON(); return route.fulfill({ json: { visual: binding } }); }
     return route.fulfill({ json: new URL(route.request().url()).searchParams.has("characterId") ? { character: remote } : { items: [remote] } });
   });
   await page.route("**/api/ai/character-images/*", route => route.fulfill({ contentType: "image/png", body: Buffer.from(png, "base64") }));
-  await page.route("**/api/models", route => route.fulfill({ json: { models: [{ id: "ref-model", name: "参考图模型", modelId: "example/edit", providerId: "spicy", providerName: "Spicy 图像", adapterKind: "spicyapi", hasSecret: true, metadata: { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"], supportedParameters: { image_urls: { referenceImage: true, maxImages: 3, required: true } } } }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [{ id: "ref-model", name: "参考图模型", modelId: "example/edit", providerId: "spicy", providerName: "图像服务", adapterKind: "spicyapi", hasSecret: true, metadata: { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"], supportedParameters: { image_urls: { referenceImage: true, maxImages: 3, required: true } } } }] } }));
   await page.goto("/articles/article-main/info/characters");
   await page.locator(".character-card").first().getByRole("button", { name: "编辑", exact: true }).click();
   const edit = page.getByRole("dialog", { name: "编辑人物", exact: true });
-  await edit.getByRole("button", { name: "绑定 SpicyAPI 角色", exact: true }).click();
-  const picker = page.getByRole("dialog", { name: "绑定 SpicyAPI 角色", exact: true });
+  await edit.getByRole("button", { name: "关联角色库", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "关联角色库", exact: true });
   await picker.getByRole("combobox", { name: "角色库中的角色", exact: true }).click();
   await page.getByRole("option", { name: remote.name, exact: true }).click();
   await expect(picker.getByRole("checkbox", { name: "参考图 1", exact: true })).toBeChecked();
@@ -38,7 +38,7 @@ test("character image binding persists, previews and enables a matching referenc
   const generator = page.getByRole("dialog", { name: "从正文生成插图", exact: true });
   await generator.getByRole("combobox", { name: "画面人物（可选）", exact: true }).click();
   await page.getByRole("option", { name: /林澈 · 2 张参考图/ }).click();
-  await expect(generator.getByRole("combobox", { name: "文生图模型", exact: true })).toHaveValue("Spicy 图像-参考图模型");
+  await expect(generator.getByRole("combobox", { name: "文生图模型", exact: true })).toHaveValue("图像服务-参考图模型");
   await generator.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("林澈站在雨夜码头");
   await expect(generator.getByRole("button", { name: "生成图片", exact: true })).toBeEnabled();
   await expect(generator.getByText(/人物快照：林澈/)).toBeVisible();

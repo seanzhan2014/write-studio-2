@@ -7,9 +7,9 @@ import { resolveOutlineSettings } from "@/lib/story-settings";
 
 export async function spicyConnection(providerId: string) {
   const provider = await findProvider(providerId);
-  if (!provider || !isSpicyApi(provider)) throw new AiInputError("请选择 SpicyAPI 服务连接");
+  if (!provider || !isSpicyApi(provider)) throw new AiInputError("请选择支持角色库的图像服务连接");
   const secret = await readProviderSecret(provider.id);
-  if (!secret) throw new AiInputError("此 SpicyAPI 连接尚未设置可用密钥");
+  if (!secret) throw new AiInputError("此图像服务连接尚未设置可用密钥");
   return { provider, secret };
 }
 
@@ -17,7 +17,7 @@ export async function bindSpicyCharacter(input: { providerId?: unknown; characte
   if (typeof input.providerId !== "string" || typeof input.characterId !== "string" || !Array.isArray(input.imageIds) || !input.imageIds.length || input.imageIds.length > 8 || input.imageIds.some(id => typeof id !== "string") || new Set(input.imageIds).size !== input.imageIds.length) throw new AiInputError("请选择角色及 1–8 张参考图");
   const { provider, secret } = await spicyConnection(input.providerId);
   const [remote, workspaceId] = await Promise.all([getSpicyCharacter(provider.baseUrl, secret, input.characterId), getSpicyLibraryScope(provider.baseUrl, secret)]);
-  if (remote.kind !== "character" || remote.id !== input.characterId) throw new AiInputError("SpicyAPI 返回了无效角色");
+  if (remote.kind !== "character" || remote.id !== input.characterId) throw new AiInputError("图像服务返回了无效角色");
   // Filter in the provider's order, never the checkbox click order.
   const ids = input.imageIds as string[];
   const selected = remote.assets?.filter(asset => ids.includes(asset.id)) ?? [];
@@ -41,7 +41,7 @@ export async function illustrationCharacterReference(outlineId: string, characte
   const chapter = article?.chapters.find(chapter => chapter.outlines.some(outline => outline.id === outlineId));
   const person = article?.characters.find(person => person.id === characterId && !person.archived);
   const visual = normalizeCharacterVisual(person?.visual);
-  if (!article || !chapter || !person || !visual) throw new AiInputError("此人物尚未绑定可用的 SpicyAPI 形象，请到人物资料中绑定");
+  if (!article || !chapter || !person || !visual) throw new AiInputError("此人物尚未关联可用形象，请到人物资料中设置");
   const resolved = resolveOutlineSettings(article, outlineId).characters.find(item => item.id === person.id);
   if (resolved?.appears === false) throw new AiInputError("此人物在当前大纲中已设为不出场，请先修改设定");
   return { characterId: person.id, name: person.name, age: resolved?.profile.age ?? "", appearance: resolved?.profile.appearance ?? "", visual };
@@ -49,9 +49,9 @@ export async function illustrationCharacterReference(outlineId: string, characte
 
 export async function validateCharacterReference(reference: CharacterReference, providerId: string) {
   const visual = normalizeCharacterVisual(reference.visual);
-  if (!visual || visual.providerId !== providerId) throw new AiInputError("人物形象与图片模型必须使用同一个 SpicyAPI 服务连接");
+  if (!visual || visual.providerId !== providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");
   const connection = await spicyConnection(providerId);
-  if (visual.providerBaseUrl !== spicyApiBaseUrl(connection.provider.baseUrl) || visual.workspaceId !== await getSpicyLibraryScope(connection.provider.baseUrl, connection.secret)) throw new AiInputError("SpicyAPI 连接的素材库已改变，请重新绑定人物形象");
+  if (visual.providerBaseUrl !== spicyApiBaseUrl(connection.provider.baseUrl) || visual.workspaceId !== await getSpicyLibraryScope(connection.provider.baseUrl, connection.secret)) throw new AiInputError("图像服务连接的素材库已改变，请重新绑定人物形象");
   return visual.images.map(image => image.uri);
 }
 

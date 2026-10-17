@@ -46,13 +46,13 @@ async function api<T>(baseUrl: string, secret: string, path: string, signal: Abo
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const raw = await response.text();
-  if (raw.length > 5_000_000) throw new Error("SpicyAPI 响应过大");
+  if (raw.length > 5_000_000) throw new Error("图像服务响应过大");
   let envelope: { code?: number; msg?: string; data?: T; request_id?: string };
   try { envelope = JSON.parse(raw); }
-  catch { throw new Error(`SpicyAPI 返回无效 JSON（HTTP ${response.status}）`); }
-  if (!envelope || typeof envelope !== "object") throw new Error("SpicyAPI 返回无效响应结构");
+  catch { throw new Error(`图像服务返回无效 JSON（HTTP ${response.status}）`); }
+  if (!envelope || typeof envelope !== "object") throw new Error("图像服务返回无效响应结构");
   if (!response.ok || envelope.code !== 200 || !envelope.data) {
-    throw new Error(`SpicyAPI 请求失败（HTTP ${response.status}，code=${envelope.code ?? "unknown"}）：${redact(String(envelope.msg || response.statusText), secret)}`);
+    throw new Error(`图像服务请求失败（HTTP ${response.status}，code=${envelope.code ?? "unknown"}）：${redact(String(envelope.msg || response.statusText), secret)}`);
   }
   return envelope.data;
 }
@@ -104,7 +104,7 @@ export async function getSpicyCharacter(baseUrl: string, secret: string, id: str
 }
 export async function getSpicyLibraryScope(baseUrl: string, secret: string) {
   const data = await api<{ scope?: { workspaceId?: string } }>(baseUrl, secret, "/assets/usage", AbortSignal.timeout(15_000));
-  if (!data.scope?.workspaceId) throw new Error("SpicyAPI 尚无可用素材工作区，请先在其网页端创建角色后重试");
+  if (!data.scope?.workspaceId) throw new Error("图像服务尚无可用素材工作区，请先在其网页端创建角色后重试");
   return data.scope.workspaceId;
 }
 export async function getSpicyAsset(baseUrl: string, secret: string, id: string) {
@@ -128,19 +128,19 @@ export async function discoverSpicyImageCatalog(baseUrl: string, secret: string)
       catalog.push({ id: model.model, name: model.displayName || model.model, metadata: { source: "provider", inputModalities: reference ? ["text", "image"] : ["text"], outputModalities: ["image"], supportedParameters } });
     }
     catalog.sort((a, b) => a.id.localeCompare(b.id));
-    if (!catalog.length) throw new Error("SpicyAPI 没有返回当前可调用的图片模型");
+    if (!catalog.length) throw new Error("图像服务没有返回当前可调用的图片模型");
     return { catalog, syncedAt: new Date().toISOString(), warnings: unsupported ? [`已略过 ${unsupported} 个需要额外必填参数或暂不支持的参考图结构的模型。`] : [] };
   } catch (error) {
-    if (signal.aborted) throw new Error("获取 SpicyAPI 图片模型目录超时");
+    if (signal.aborted) throw new Error("获取图像服务图片模型目录超时");
     throw error;
   }
 }
 
 export function spicyImageInput(model: ImageModel, prompt: string, options: SpicyImageOptions = {}) {
-  if (!supportedImageModel(model)) throw new Error("此 SpicyAPI 模型当前不可调用，或不支持图片生成，请刷新目录后重新选择");
+  if (!supportedImageModel(model)) throw new Error("此图像模型当前不可调用，或不支持图片生成，请刷新目录后重新选择");
   const schema = model.inputSchema;
   const fields = schema?.properties;
-  if (!fields?.prompt) throw new Error("SpicyAPI 没有返回此模型的提示词参数结构");
+  if (!fields?.prompt) throw new Error("图像服务没有返回此模型的提示词参数结构");
   if (!prompt.trim() || prompt.length < (fields.prompt.minLength ?? 1) || prompt.length > (fields.prompt.maxLength ?? 12000)) throw new Error(`此模型的提示词长度应为 ${fields.prompt.minLength ?? 1}–${fields.prompt.maxLength ?? 12000} 字符`);
   if (options.size && (options.aspectRatio || options.resolution)) throw new Error("尺寸与比例、分辨率请分别选择一种方式");
   const input: Record<string, unknown> = { prompt };
@@ -156,7 +156,7 @@ export function spicyImageInput(model: ImageModel, prompt: string, options: Spic
   for (const [key, value] of [["size", options.size], ["quality", options.quality], ["aspect_ratio", options.aspectRatio], ["resolution", options.resolution]] as const) {
     if (!value) continue;
     const field = fields[key];
-    if (!field || field.type !== "string" || (field.enum && !field.enum.includes(value))) throw new Error(`此 SpicyAPI 模型不支持所选 ${key} 参数，请刷新目录`);
+    if (!field || field.type !== "string" || (field.enum && !field.enum.includes(value))) throw new Error(`此图像模型不支持所选 ${key} 参数，请刷新目录`);
     input[key] = value;
   }
   // Do not inject OpenAI's n or default size into model-specific schemas.
@@ -186,19 +186,19 @@ export async function generateSpicyImage(connection: { baseUrl: string; secret: 
     const model = await api<ImageModel>(baseUrl, secret, `/models/${modelId.split("/").map(encodeURIComponent).join("/")}`, controller.signal);
     const input = spicyImageInput(model, prompt, options);
     const quote = await api<{ quoteId?: string; estimatedCost?: string }>(baseUrl, secret, "/jobs/quote", controller.signal, { model: modelId, input });
-    if (!quote.quoteId || typeof quote.estimatedCost !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.estimatedCost)) throw new Error("SpicyAPI 未返回有效报价，未创建生成任务");
+    if (!quote.quoteId || typeof quote.estimatedCost !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.estimatedCost)) throw new Error("图像服务未返回有效报价，未创建生成任务");
     let task = await api<Task>(baseUrl, secret, "/jobs/createTask", controller.signal, { model: modelId, input, quoteId: quote.quoteId, expectedCost: quote.estimatedCost }, crypto.randomUUID());
     taskId = task.taskId || "";
-    if (!taskId) throw new Error("SpicyAPI 未返回任务 ID；请先在服务商后台确认任务状态，避免重复提交");
+    if (!taskId) throw new Error("图像服务未返回任务 ID；请先在服务商后台确认任务状态，避免重复提交");
     let delay = 2000;
     while (true) {
       if (task.state === "succeeded") {
         const assets = task.output?.assets ?? [];
         const image = assets.find((asset) => !asset.pending && !asset.unavailable && asset.url && ["image/png", "image/jpeg", "image/webp"].includes(asset.mime || ""));
         if (image) return { data: [{ url: image.url, media_type: image.mime }] };
-        if (!assets.some((asset) => asset.pending && !asset.unavailable)) throw new Error("SpicyAPI 任务已完成，但没有可用的 PNG、JPEG 或 WebP 图片");
+        if (!assets.some((asset) => asset.pending && !asset.unavailable)) throw new Error("图像服务任务已完成，但没有可用的 PNG、JPEG 或 WebP 图片");
       } else if (task.state !== "queued" && task.state !== "running") {
-        throw new Error(`SpicyAPI 图像任务失败（${task.errorCode || task.state || "unknown"}）：${task.errorMessage || "请在服务商后台查看任务"}`);
+        throw new Error(`图像任务失败（${task.errorCode || task.state || "unknown"}）：${task.errorMessage || "请在服务商后台查看任务"}`);
       }
       await pause(delay, controller.signal);
       task = await api<Task>(baseUrl, secret, `/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, controller.signal);
@@ -206,8 +206,8 @@ export async function generateSpicyImage(connection: { baseUrl: string; secret: 
     }
   } catch (error) {
     const detail = controller.signal.aborted
-      ? controller.signal.reason === "timeout" ? "SpicyAPI 图像生成等待超时，可增加连接超时时间" : "已停止等待 SpicyAPI 图像任务"
-      : error instanceof Error ? error.message : "SpicyAPI 图像生成失败";
+      ? controller.signal.reason === "timeout" ? "图像生成等待超时，可增加连接超时时间" : "已停止等待图像任务"
+      : error instanceof Error ? error.message : "图像生成失败";
     throw new Error(`${redact(detail, secret)}${taskId ? `（任务 ${redact(taskId, secret)}；已提交的远程任务不会因停止等待而取消，请先确认状态再重试）` : ""}`);
   } finally { clearTimeout(timeout); signal?.removeEventListener("abort", cancel); }
 }

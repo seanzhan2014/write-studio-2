@@ -66,7 +66,7 @@ test("Spicy role binding, local portraits, reference generation and retries pres
   fixture.articles[0].chapters[0].outlines.find(outline => outline.id === "outline-current").settings = { story: {}, relationships: {}, characters: { [personId]: { start: { appearance: { value: "短发，深蓝色大衣", scope: "chapter" } }, end: {} } } };
   await api("/api/state", { data: fixture }, "PUT", { "If-Match": String(original.revision) });
   provider = await api("/api/providers", { name: "Spicy visuals", adapterKind: "spicyapi", baseUrl: `http://127.0.0.1:${server.address().port}/v1`, secret: "test-spicy-secret" });
-  const listing = await api(`/api/ai/spicy-characters?providerId=${provider.id}`);
+  const listing = await api(`/api/ai/image-characters?providerId=${provider.id}`);
   assert.equal(listing.items[0].name, "原始林澈"); assert.equal(listing.nextCursor, "page-2");
   const bound = (await api("/api/ai/spicy-characters", { providerId: provider.id, characterId: "entity-original", imageIds: ["ast_side", "ast_front"], coverAssetId: "ast_side" })).visual;
   assert.deepEqual(bound.images.map(image => image.id), ["ast_front", "ast_side"]);

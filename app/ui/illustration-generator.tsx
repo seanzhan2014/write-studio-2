@@ -119,14 +119,14 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const resolvedCharacter = selectedCharacter ? resolveOutlineSettings(studio.currentArticle, outlineId).characters.find(person => person.id === selectedCharacter.id) : undefined;
   const referenceCapability = imageReferenceCapability(imageRecord);
   const referenceIssue = characterId ? !selectedCharacter ? "人物形象已解除绑定，请重新选择人物。"
-    : !imageRecord || !isSpicyApi(imageRecord) || imageRecord.providerId !== selectedCharacter.visual?.providerId ? "请选择与人物形象使用同一 SpicyAPI 连接的图片模型。"
+    : !imageRecord || !isSpicyApi(imageRecord) || imageRecord.providerId !== selectedCharacter.visual?.providerId ? "请选择与人物形象使用同一图像服务连接的图片模型。"
     : !referenceCapability ? "此模型未配置参考图能力，请刷新服务商模型目录并选择支持参考图的模型。"
     : referenceCapability.maxImages && selectedCharacter.visual!.images.length > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，请在人物资料中减少参考图。` : ""
     : referenceCapability?.required ? "此模型需要参考图，请先选择已绑定形象的人物。" : "";
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
-  const spicyImage = Boolean(imageRecord && isSpicyApi(imageRecord));
-  const nativeImageOptions = spicyImage || imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
+  const taskImageService = Boolean(imageRecord && isSpicyApi(imageRecord));
+  const nativeImageOptions = taskImageService || imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
   const ratios = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "aspect_ratio") : [];
   const resolutions = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "resolution") : [];
   const size = supportedIllustrationResolution(illustrationOptions.resolution, sizes);
@@ -249,7 +249,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => setTextModel(value ?? "")} disabled={Boolean(busy)} searchable />
-      <Select label="画面人物（可选）" description="第一版支持一个人物。先在人物资料中绑定 SpicyAPI 形象，再选择支持参考图的图片模型。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (imageRecord?.providerId !== person.visual?.providerId || !referenceCapability)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && model.providerId === person.visual?.providerId && imageReferenceCapability(model))?.id || ""); }} />
+      <Select label="画面人物（可选）" description="第一版支持一个人物。先在人物资料中关联角色形象，再选择支持参考图的图片模型。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (imageRecord?.providerId !== person.visual?.providerId || !referenceCapability)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && model.providerId === person.visual?.providerId && imageReferenceCapability(model))?.id || ""); }} />
       {selectedCharacter?.visual && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", visual: selectedCharacter.visual }} />}
       {referenceIssue && <Alert color="yellow">{referenceIssue}</Alert>}
       {(selectedCharacter?.visual || imageRecord && isSpicyApi(imageRecord)) && <Button size="xs" variant="subtle" loading={refreshingCapabilities} disabled={Boolean(busy)} onClick={() => void refreshCapabilities()}>刷新参考图模型能力</Button>}
@@ -264,7 +264,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
       <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setQuality(""); setAspectRatio(""); }} disabled={Boolean(busy)} searchable />
-      {spicyImage && <Text size="xs" c="dimmed">SpicyAPI 图片生成后会自动保存到插图历史。提交后的远程任务无法取消，停止等待后仍可能产生费用。</Text>}
+      {taskImageService && <Text size="xs" c="dimmed">图像生成结果会自动保存到插图历史。提交后的远程任务无法取消，停止等待后仍可能产生费用。</Text>}
       {!modelError && models.length > 0 && !models.some(supportsImages) && <Alert color="yellow">尚未配置图像生成模型，请到“设置 → AI 服务”添加或编辑模型能力。</Alert>}
       {unsupportedResolution && <Text size="xs" c="dimmed">当前模型不支持预设分辨率 {illustrationOptions.resolution}，本次使用模型默认值。</Text>}
       {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { rememberOptions({ resolution: value ?? "" }); setAspectRatio(""); }} disabled={Boolean(busy)} allowDeselect={false} />}

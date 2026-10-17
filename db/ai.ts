@@ -750,7 +750,7 @@ async function requestModelImage(model: AiModelRecord, prompt: string, options: 
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
-  if (options.referenceImages?.length) throw new AiInputError("人物参考图目前仅支持 SpicyAPI 图片模型");
+  if (options.referenceImages?.length) throw new AiInputError("当前图像接口暂不支持人物参考图，请选择已接入参考图能力的模型");
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;
