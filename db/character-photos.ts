@@ -5,7 +5,7 @@ import { readIllustrationAsset, saveIllustrationAsset, deleteIllustrationAsset }
 import { spicyConnection } from "./character-visuals";
 import { getSpicyCharacter, getSpicyLibraryScope, isSpicyApi, spicyApiBaseUrl, prepareSpicyPhoto, submitSpicyPhoto, querySpicyPhoto, uploadSpicyPhoto, saveSpicyPhoto } from "@/lib/spicy-api";
 import { characterPhotos, normalizePhotoDraft, photoStyle, type CharacterPhoto, type CharacterPhotoGallery, type PhotoDraft, type PhotoJob, type PhotoSnapshot } from "@/lib/character-photos";
-import { illustrationVisualDirection } from "@/lib/illustration-styles";
+import { illustrationVisualDirection, normalizeIllustrationStyles, resolveIllustrationStyle } from "@/lib/illustration-styles";
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
 import { imageReferenceCapability, supportsImages } from "@/lib/ai-model-capabilities";
 import { diffStudioData } from "@/lib/studio-changes";
@@ -81,7 +81,9 @@ export async function photoOverview(id?: string) {
   return { gallery: result ? characterPhotos(result.person.photos, result.person.visual) : undefined, jobs: await listPhotoJobs(id), revision: state.revision, backgroundMode: isCloudDatabase() ? "app" : "service" };
 }
 async function snapshotFor(id: string, draftValue: unknown) {
-  const { article, person } = personIn((await readStudioState()).data, id);
+  const { data } = await readStudioState();
+  const styles = normalizeIllustrationStyles(data.settings.illustrationStyles);
+  const { article, person } = personIn(data, id);
   if (person.archived) throw new Error("请先恢复此人物，再生成照片");
   const gallery = characterPhotos(person.photos, person.visual);
   const draft = normalizePhotoDraft(draftValue);
@@ -97,8 +99,9 @@ async function snapshotFor(id: string, draftValue: unknown) {
   if (capability?.required && !referenceCount) throw new Error("此模型需要参考照片");
   if (capability?.maxImages && referenceCount > capability.maxImages) throw new Error(`此模型最多支持 ${capability.maxImages} 张参考图（包括修改底图）`);
   const style = photoStyle(draft, gallery, normalizeIllustrationOptions(article.illustrationSettings).stylePreset);
+  style.stylePreset = resolveIllustrationStyle(style.stylePreset, styles).value;
   const personSnapshot = { name: person.name, age: person.profile?.age || "", appearance: person.profile?.appearance || "" };
-  const prompt = [`人物定妆照片：${person.name}。年龄：${personSnapshot.age || "以参考照片为准"}。外貌：${personSnapshot.appearance || "以参考照片及画面要求为准"}。`, `构图：${draft.pose || "正面半身"}。${draft.prompt}`, referenceCount ? `${basePhoto ? "第一张图片是修改底图，" : ""}其余参考照片用于保持同一人物的脸型、五官和体态；只调整本次要求的内容。` : "", illustrationVisualDirection(style.stylePreset), "单个人物，清晰完整，无文字、水印或拼图。"].filter(Boolean).join("\n");
+  const prompt = [`人物定妆照片：${person.name}。年龄：${personSnapshot.age || "以参考照片为准"}。外貌：${personSnapshot.appearance || "以参考照片及画面要求为准"}。`, `构图：${draft.pose || "正面半身"}。${draft.prompt}`, referenceCount ? `${basePhoto ? "第一张图片是修改底图，" : ""}其余参考照片用于保持同一人物的脸型、五官和体态；只调整本次要求的内容。` : "", illustrationVisualDirection(style.stylePreset, "", styles), "单个人物，清晰完整，无文字、水印或拼图。"].filter(Boolean).join("\n");
   const snapshot: PhotoSnapshot = { draft: { ...draft, experimentId: draft.experimentId || crypto.randomUUID() }, ...style, prompt, person: personSnapshot, references: references as CharacterPhoto[], ...(basePhoto ? { basePhoto } : {}), model: { id: model.id, modelId: model.modelId, name: model.name, providerId: model.providerId, baseUrl: model.baseUrl, adapterKind: model.adapterKind, timeoutMs: model.timeoutMs } };
   return { snapshot, model };
 }

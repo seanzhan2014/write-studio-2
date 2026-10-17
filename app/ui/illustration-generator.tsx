@@ -13,7 +13,7 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
 import { illustrationIsActive, illustrationStatusLabels, type IllustrationRecord } from "@/lib/illustration-history";
 import { useStudio } from "@/app/studio-state";
-import { ILLUSTRATION_STYLES, isIllustrationStylePreset } from "@/lib/illustration-styles";
+import { normalizeIllustrationStyles, resolveIllustrationStyle, isIllustrationStylePreset } from "@/lib/illustration-styles";
 import { PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, supportedIllustrationResolution, type IllustrationOptions } from "@/lib/illustration-options";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerId?: string; providerName: string; hasSecret: boolean };
@@ -24,7 +24,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const outline = studio.currentArticle.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
   const inheritedOptions = normalizeIllustrationOptions(studio.currentArticle.illustrationSettings);
   const illustrationOptions = normalizeIllustrationOptions(outline?.illustrationOptions ?? inheritedOptions, inheritedOptions);
-  const { promptLanguage, stylePreset } = illustrationOptions;
+  const styles = normalizeIllustrationStyles(studio.data.settings.illustrationStyles);
+  const { promptLanguage } = illustrationOptions;
+  const stylePreset = resolveIllustrationStyle(illustrationOptions.stylePreset, styles).value;
   function rememberOptions(patch: Partial<IllustrationOptions>) {
     studio.updateOutline(outlineId, { illustrationOptions: normalizeIllustrationOptions({ ...illustrationOptions, ...patch }, inheritedOptions) });
   }
@@ -261,8 +263,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Select label="生成 Prompt 的语言" data={[...PROMPT_LANGUAGE_OPTIONS]} value={promptLanguage} onChange={value => rememberOptions({ promptLanguage: value as IllustrationOptions["promptLanguage"] })} allowDeselect={false} disabled={Boolean(busy)} />
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
-      <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={ILLUSTRATION_STYLES.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
-      <Text size="xs" c="dimmed">{ILLUSTRATION_STYLES.find(item => item.value === stylePreset)?.description}</Text>
+      <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={styles.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
+      <Text size="xs" c="dimmed">{styles.find(item => item.value === stylePreset)?.description}</Text>
       <Textarea label="画面要求（可选）" description="可补充自定义风格、色调、光线与构图要求。" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
@@ -293,7 +295,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         {visibleRecords.map(record => <Card key={record.id} withBorder padding="md" className="illustration-history-card"><Stack gap="sm">
           <Group justify="space-between"><Text size="sm" fw={600}>{record.kind === "prompt" ? "Prompt" : "插图"} · {record.outlineTitle}</Text><Group gap="xs"><Badge color={record.status === "error" ? "red" : illustrationIsActive(record) ? "blue" : "gray"}>{illustrationStatusLabels[record.status]}</Badge>{record.archived && <Badge color="gray">已归档</Badge>}</Group></Group>
           <Text size="xs" c="dimmed">{new Date(record.createdAt).toLocaleString()} · {record.modelName || "手动添加"}</Text>
-          {record.stylePreset && record.stylePreset !== "auto" && <Badge variant="light">{ILLUSTRATION_STYLES.find(item => item.value === record.stylePreset)?.label}</Badge>}
+          {record.stylePreset && record.stylePreset !== "auto" && <Badge variant="light">{(styles.find(item => item.value === record.stylePreset)?.label ?? "已删除的风格")}</Badge>}
           <CharacterReferenceSummary reference={record.characterReference} />
           {record.src && <a href={record.src} target="_blank" rel="noopener noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img className="illustration-history-image" src={record.src} alt="历史插图" loading="lazy" /></a>}
           {record.prompt && <Text size="sm" className="illustration-history-prompt">{record.prompt}</Text>}

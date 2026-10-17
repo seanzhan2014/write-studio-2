@@ -15,7 +15,7 @@ import type { ResolvedOutlineSettings } from "../lib/story-settings";
 import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, parsePreparationResponse, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, type WritingPreparation } from "../lib/writing-preparation";
 import { NARRATIVE_CRAFT_RULES, PREPARATION_NARRATIVE_RULES, NARRATIVE_REVIEW_GUIDANCE } from "../lib/narrative-craft";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
-import { illustrationVisualDirection, isIllustrationStylePreset } from "../lib/illustration-styles";
+import { illustrationVisualDirection, isIllustrationStylePreset, normalizeIllustrationStyles, type IllustrationStyle } from "../lib/illustration-styles";
 import { validateCharacterReference } from "./character-visuals";
 import type { CharacterReference } from "../lib/character-visual";
 
@@ -700,20 +700,21 @@ async function illustrationModel(reference: unknown) {
   return model;
 }
 
-function illustrationDirection(input: { style?: string; stylePreset?: string }) {
+async function illustrationDirection(input: { style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle }) {
   if (input.style !== undefined && (typeof input.style !== "string" || input.style.length > 2000)) throw new AiInputError("画面要求不能超过 2,000 字符");
   if (input.stylePreset !== undefined && !isIllustrationStylePreset(input.stylePreset)) throw new AiInputError("请选择有效的插图风格");
-  return illustrationVisualDirection(input.stylePreset, input.style);
+  const styles = input.styleSnapshot ? [input.styleSnapshot] : normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  return illustrationVisualDirection(input.stylePreset, input.style, styles);
 }
 
-export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; promptLanguage?: string; model: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
+export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; promptLanguage?: string; model: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.content !== "string" || !input.content.trim()) throw new AiInputError("正文为空，无法生成插图");
   if (input.content.length > MAX_ILLUSTRATION_CONTENT) throw new AiInputError("正文超过 80,000 字符，请先选取片段");
   if (input.excerpt !== undefined && typeof input.excerpt !== "string") throw new AiInputError("正文片段无效");
   const excerpt = (input.excerpt ?? "").trim();
   if (excerpt.length > MAX_ILLUSTRATION_EXCERPT || (excerpt && !input.content.includes(excerpt))) throw new AiInputError("片段必须来自正文，且不超过 3,000 字符");
-  const visualDirection = illustrationDirection(input);
+  const visualDirection = await illustrationDirection(input);
   if (input.promptLanguage !== undefined && input.promptLanguage !== "zh" && input.promptLanguage !== "en") throw new AiInputError("请选择有效的 Prompt 语言");
   const source = await selectPromptContext(input.outlineId, "content", { includePrevious: false, includeCharacters: true });
   const model = await illustrationModel(input.model);
@@ -732,10 +733,10 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 }
 
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
-  const visualDirection = illustrationDirection(input);
+  const visualDirection = await illustrationDirection(input);
   await assertAiTargetAvailable(input.outlineId);
   const model = await illustrationModel(input.model);
   if (!supportsImages(model)) throw new AiInputError("请选择已标记图像生成能力的模型");

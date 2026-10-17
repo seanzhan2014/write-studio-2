@@ -1,5 +1,5 @@
 import { AiInputError, findModel, generateIllustrationImage, generateIllustrationPrompt } from "./ai";
-import { ensureDatabase, getDatabase } from "./runtime";
+import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { deleteIllustrationAsset, saveIllustrationAsset } from "./illustration-assets";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT } from "@/lib/image-generation";
 import { supportsImages, supportsText } from "@/lib/ai-model-capabilities";
@@ -8,7 +8,7 @@ import { isCloudDatabase } from "./sqlite";
 import type { IllustrationImage, IllustrationPrompt } from "@/lib/image-generation";
 import { illustrationTaskRegistration, illustrationTaskRevision, registerIllustrationTasks, syncIllustrationTask } from "./illustration-tasks";
 import { currentTaskExecutionOrigin } from "./task-execution";
-import { isIllustrationStylePreset, type IllustrationStylePreset } from "@/lib/illustration-styles";
+import { isIllustrationStylePreset, normalizeIllustrationStyles, resolveIllustrationStyle, type IllustrationStylePreset, type IllustrationStyle } from "@/lib/illustration-styles";
 import { isIllustrationPromptLanguage, type IllustrationPromptLanguage } from "@/lib/illustration-options";
 import { illustrationCharacterReference } from "./character-visuals";
 import type { CharacterReference } from "@/lib/character-visual";
@@ -19,13 +19,16 @@ export type IllustrationInput = {
   content?: string; excerpt?: string; style?: string; stylePreset?: IllustrationStylePreset; prompt?: string;
   size?: string; quality?: string; aspectRatio?: string; resolution?: string;
   promptLanguage?: IllustrationPromptLanguage;
+  styleSnapshot?: IllustrationStyle;
   characterId?: string;
   characterReference?: CharacterReference;
 };
 export async function prepareIllustrationReference(input: Record<string, unknown>) {
-  const { characterReference: _ignored, ...request } = input;
+  const { characterReference: _ignored, styleSnapshot: _ignoredStyle, ...request } = input;
   const reference = await illustrationCharacterReference(String(input.outlineId ?? ""), input.characterId);
-  return { ...request, ...(reference ? { characterReference: reference } : {}) };
+  const stylePreset = checkedStylePreset(input.stylePreset);
+  const styles = normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  return { ...request, styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
 }
 const columns = "h.*,o.title AS outline_title";
 const join = "illustration_history h JOIN outlines o ON o.id=h.outline_id";
@@ -139,6 +142,8 @@ export async function createIllustration(input: Row, id: string) {
   if (promptLanguage !== undefined) body.promptLanguage = promptLanguage;
   const stylePreset = checkedStylePreset(input.stylePreset);
   if (stylePreset !== undefined) body.stylePreset = stylePreset;
+  const styles = normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  body.styleSnapshot = resolveIllustrationStyle(stylePreset, styles);
   if (input.action === "prompt") {
     const content = checkedText(input.content, MAX_ILLUSTRATION_CONTENT, "正文为空或超过 80,000 字符，请先选取片段", true);
     if (excerpt && !content.includes(excerpt)) throw new AiInputError("片段必须来自正文");
