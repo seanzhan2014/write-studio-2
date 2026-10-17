@@ -19,7 +19,8 @@ test("manage image styles, persist edits and copies, select them and delete safe
   await modal.getByLabel("风格说明", { exact: true }).fill("暖色与颗粒");
   await modal.getByLabel("风格 Prompt", { exact: true }).fill("复古胶片，暖色灯光，细腻颗粒。");
   await modal.getByRole("button", { name: "添加风格", exact: true }).click();
-  const editor = page.getByRole("form", { name: "风格编辑" });
+  await expect(modal).not.toBeVisible();
+  const editor = page.getByRole("region", { name: "图片风格管理" }).getByRole("form", { name: "风格编辑" });
   await expect(editor.getByLabel("风格名称", { exact: true })).toHaveValue("复古胶片");
   await editor.getByLabel("风格 Prompt", { exact: true }).fill("复古胶片，蓝色夜景，细腻颗粒。");
   await editor.getByRole("button", { name: "保存修改", exact: true }).click();
