@@ -1,6 +1,7 @@
 "use client";
 
 import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
+import { nextSaveRetry, shouldRetrySave, type SaveRetryState } from "@/lib/save-retry";
 import { DEFAULT_APPEARANCE, normalizeAppearance, type AppearanceSettings } from "@/lib/appearance.mjs";
 
 import { parseTaskHistory } from "@/lib/task-history";
@@ -977,6 +978,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const lastSavedRef = useRef("");
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const saveEpochRef = useRef(0);
+  const saveRetryRef = useRef<SaveRetryState | null>(null);
   const pendingRecoveredDraftKeysRef = useRef<string[]>([]);
   const pendingRecoveredOfflineDraftIdsRef = useRef<string[]>([]);
   const pendingLegacyMigrationRef = useRef(false);
@@ -1106,7 +1108,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     if (epoch !== saveEpochRef.current) return false;
     const durable = durableSnapshot(snapshot);
     const serialized = stableStudioStringify(durable);
-    if (serialized === lastSavedRef.current) return true;
+    if (serialized === lastSavedRef.current) { saveRetryRef.current = null; return true; }
+    if (!shouldRetrySave(saveRetryRef.current, serialized, Date.now())) return false;
     let base: StudioData;
     try {
       // Normalization restores valid active chat/session defaults. Strip those
@@ -1118,12 +1121,14 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     const changes = diffStudioData(base, durable);
     if (isStudioChangesEmpty(changes)) {
       lastSavedRef.current = serialized;
+      saveRetryRef.current = null;
       return true;
     }
     if (browserIsOffline()) {
       const cached = await persistOfflineCache(snapshot);
       if (epoch !== saveEpochRef.current) return false;
       if (cached) {
+        saveRetryRef.current = nextSaveRetry(saveRetryRef.current, serialized, Date.now());
         setSaveError("修改已保存在本设备，连接服务后会自动同步。");
         setSaveStatus("local");
         return true;
@@ -1132,8 +1137,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setSaveStatus("failed");
       return false;
     }
-    setSaveStatus("saving");
-    setSaveError("");
+    // Keep the existing warning visible during automatic retries.
+    if (saveRetryRef.current?.serialized !== serialized) {
+      setSaveStatus("saving");
+      setSaveError("");
+    }
     const controller = new AbortController();
     const timeout = globalThis.setTimeout(() => controller.abort("save-timeout"), saveRequestTimeoutMs);
     try {
@@ -1193,6 +1201,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       }
       if (!response.ok || payload.revision === undefined) throw new Error(payload.message || `保存失败（${response.status}）`);
       revisionRef.current = payload.revision;
+      saveRetryRef.current = null;
       advanceStateIdentity(payload.revision, payload.databaseVersion);
       lastSavedRef.current = serialized;
       setConflict(null);
@@ -1211,7 +1220,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (epoch !== saveEpochRef.current) return false;
       const cached = await persistOfflineCache(snapshot);
       if (cached) {
-        setSaveError("修改已保存在本设备，连接服务后会自动同步。");
+        saveRetryRef.current = nextSaveRetry(saveRetryRef.current, serialized, Date.now());
+        const reason = controller.signal.reason === "save-timeout" ? "同步请求超时" : error instanceof Error ? error.message : "服务端保存失败";
+        setSaveError(`修改已保存在本设备；同步失败：${reason}。稍后会自动重试。`);
         setSaveStatus("local");
         return true;
       }
@@ -1257,6 +1268,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           setData(withDeviceUi);
         }
         lastSavedRef.current = serialized;
+        saveRetryRef.current = null;
         setSaveError("");
         setSaveStatus("saved");
         await persistOfflineCache(dataRef.current);
@@ -1287,6 +1299,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     if (!hydrated || conflict) return;
     const serialized = serializeDurable(data);
     if (serialized === lastSavedRef.current) return;
+    if (saveRetryRef.current?.serialized === serialized) return;
     setSaveStatus("unsaved");
     const timer = window.setTimeout(() => { void enqueueSave(data); }, 800);
     return () => window.clearTimeout(timer);
@@ -1306,15 +1319,16 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       if (!navigator.onLine || syncing || conflict) return;
       const dirty = serializeDurable(dataRef.current) !== lastSavedRef.current;
       if (!dirty && !refreshCleanState) return;
+      if (!shouldRetrySave(saveRetryRef.current, serializeDurable(dataRef.current), Date.now())) return;
       syncing = true;
       try {
         const synchronized = dirty ? await enqueueSave(dataRef.current) : await refreshFromServer();
-        if (synchronized && !dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void triggerBackgroundCloudUpload();
+        if (synchronized && serializeDurable(dataRef.current) === lastSavedRef.current && !dataRef.current.tasks.some((task) => task.state === "waiting" || task.state === "running")) void triggerBackgroundCloudUpload();
       } finally {
         syncing = false;
       }
     };
-    const synchronizeAfterReconnect = () => { void synchronizeWhenOnline(true); };
+    const synchronizeAfterReconnect = () => { saveRetryRef.current = null; void synchronizeWhenOnline(true); };
     const synchronizeWhenVisible = () => { if (document.visibilityState === "visible") synchronizeAfterReconnect(); };
     window.addEventListener("online", synchronizeAfterReconnect);
     window.addEventListener("focus", synchronizeAfterReconnect);
@@ -2201,9 +2215,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     acceptServerMutation,
     refreshFromServer,
     saveNow() {
+      saveRetryRef.current = null;
       return enqueueSave(dataRef.current);
     },
     retrySave() {
+      saveRetryRef.current = null;
       return enqueueSave(dataRef.current);
     },
     async resolveConflict(choice) {

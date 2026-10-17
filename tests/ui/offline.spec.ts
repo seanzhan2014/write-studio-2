@@ -14,6 +14,35 @@ test.beforeEach(async ({ request }) => {
   expect(saved.ok()).toBeTruthy();
 });
 
+test("failed settings saves keep a stable local warning, show the cause and recover on retry", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  let fail = true;
+  let attempts = 0;
+  await page.route("**/api/state/mutations", async route => {
+    attempts++;
+    if (fail) return route.fulfill({ status: 500, json: { error: "save_failed", message: "图片设置数据库暂时无法写入" } });
+    return route.continue();
+  });
+  await page.goto("/articles/article-main/info/ai-tasks");
+  await page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true }).click();
+  await page.getByRole("option", { name: "English", exact: true }).click();
+  const banner = page.locator(".persistence-banner.local");
+  await expect(banner).toContainText("图片设置数据库暂时无法写入");
+  await banner.evaluate(element => {
+    document.documentElement.dataset.saveWarningRemoved = "false";
+    const observer = new MutationObserver(() => {
+      if (!element.isConnected) document.documentElement.dataset.saveWarningRemoved = "true";
+    });
+    observer.observe(element.parentElement!, { childList: true });
+  });
+  await expect.poll(() => attempts, { timeout: 10_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page.locator("html")).toHaveAttribute("data-save-warning-removed", "false");
+  fail = false;
+  await banner.getByRole("button", { name: "立即同步", exact: true }).click();
+  await expect(banner).toHaveCount(0);
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].illustrationSettings.promptLanguage).toBe("en");
+});
+
 test("mobile reopens the cached library offline and syncs its local edit after reconnecting", async ({ page, context, request }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile offline workflow");
   test.setTimeout(60_000);
@@ -53,10 +82,15 @@ test("mobile reopens the cached library offline and syncs its local edit after r
     window.history.pushState({}, "", "/articles/article-main/outlines/outline-current/generate?offline-test=1");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
-  const offlineClickStartedAt = Date.now();
-  await page.getByRole("button", { name: "开始生成" }).click();
+  const generate = page.getByRole("button", { name: "开始生成" });
+  // Measure the application's response from the actual click, excluding
+  // Playwright's scrolling and actionability waits on the mobile viewport.
+  await generate.evaluate(button => button.addEventListener("click", () => {
+    document.documentElement.dataset.offlineClickAt = String(performance.now());
+  }, { once: true }));
+  await generate.click();
   await expect(page.getByText("当前处于离线模式，此操作需要连接服务端。", { exact: true })).toBeVisible();
-  expect(Date.now() - offlineClickStartedAt).toBeLessThan(1_000);
+  expect(await page.evaluate(() => performance.now() - Number(document.documentElement.dataset.offlineClickAt))).toBeLessThan(1_000);
   expect(offlineAiRequests).toBe(0);
   await page.evaluate(() => {
     window.history.pushState({}, "", "/articles/article-main/info/basic?offline-test=1");

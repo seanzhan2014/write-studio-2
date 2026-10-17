@@ -149,7 +149,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "14";
+const RUNTIME_SCHEMA_VERSION = "15";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
