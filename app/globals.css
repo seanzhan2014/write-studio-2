@@ -3264,10 +3264,10 @@ kbd {
 .ai-prompts-settings h2 { margin: 0 0 6px; font-size: 18px; }
 .ai-prompts-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 24px; align-items: start; }
 .ai-prompt-list { display: grid; gap: 6px; max-height: 650px; overflow-y: auto; }
-.ai-prompt-list button { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); cursor: pointer; display: grid; gap: 5px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
+.ai-prompt-list button { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); cursor: pointer; display: grid; gap: 5px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
 .ai-prompt-list button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .ai-prompt-list button small { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
-.ai-prompt-editor { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); }
+.ai-prompt-editor { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .ai-prompt-empty { color: var(--text-secondary); padding: 32px 16px; text-align: center; }
 @media (max-width: 767px) {
   .ai-prompts-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
@@ -9080,3 +9080,6 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 }
 
 .photo-experiment-label { grid-column: 1 / -1; font-size: 12px; font-weight: 500; color: var(--text-secondary); margin: 12px 0 0; display: flex; gap: 8px; }
+.photo-model-resolution { color: var(--text-secondary); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.photo-model-resolution strong { font-weight: 500; }
+.photo-model-resolution button { margin-left: 6px; font-size: 12px; }

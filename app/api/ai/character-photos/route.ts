@@ -5,11 +5,13 @@ import { listProviders } from "@/db/ai";
 import { isSpicyApi } from "@/lib/spicy-api";
 import { isCloudDatabase } from "@/db/sqlite";
 import { readStudioState } from "@/db/runtime";
+import { resolvePhotoModel } from "@/db/photo-model-resolution";
 export const dynamic = "force-dynamic";
 const reply = (data: unknown, status = 200) => Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
 export async function GET(request: Request) {
   try {
     const q = new URL(request.url).searchParams;
+    if (q.has("modelId")) return reply((await resolvePhotoModel(q.get("modelId") || "", q.get("references") === "1")).resolution);
     if (q.has("dispatch")) {
       const state = await readStudioState();
       return reply({ ids: isCloudDatabase() ? await dispatchPhotoJobs() : [], revision: state.revision });

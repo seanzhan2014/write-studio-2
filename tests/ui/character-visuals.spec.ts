@@ -10,10 +10,15 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data: fixture } });
   const jobs: any[] = []; let submissions = 0;
   const model = { id: "portrait-model", name: "参考图模型", modelId: "example/edit", providerId: "image-service", providerName: "图像服务", adapterKind: "openai-compatible", hasSecret: true, metadata: { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"], supportedParameters: { image_urls: { referenceImage: true, maxImages: 3 } } } };
-  await page.route("**/api/models", route => route.fulfill({ json: { models: [model] } }));
+  const generationModel = { ...model, name: "人物图像模型", modelId: "example/text-to-image", metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"] } };
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [generationModel] } }));
   await page.route("**/api/ai/character-photos**", async route => {
     const url = new URL(route.request().url());
     if (route.request().method() === "GET") {
+      if (url.searchParams.has("modelId")) {
+        const references = url.searchParams.get("references") === "1";
+        return route.fulfill({ json: { selectedId: model.id, requestedModelId: generationModel.modelId, model: references ? model : generationModel, editVersion: model, automaticEdit: references, checkedAt: new Date().toISOString() } });
+      }
       if (url.searchParams.has("dispatch")) return route.continue();
       const response = await route.fetch(); const data = await response.json();
       return route.fulfill({ response, json: { ...data, jobs, providers: [] } });
@@ -46,6 +51,9 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   const mobile = info.project.name.startsWith("mobile");
   if (mobile) await dialog.locator(".photo-bottom-actions").getByRole("button", { name: "生成照片", exact: true }).click();
   await dialog.getByLabel("角色照片图像模型", { exact: true }).selectOption(model.id);
+  await expect(dialog.locator(".photo-model-resolution")).toContainText("已自动匹配图片编辑版");
+  await expect(dialog.getByLabel("角色照片图像模型", { exact: true })).toHaveValue(model.id);
+  await expect(dialog.getByLabel("角色照片图像模型", { exact: true }).locator("option")).toHaveCount(2);
   await expect(dialog.locator(".photo-style-status")).toContainText("跟随文章 · 国风水墨");
   await dialog.getByLabel("本次照片风格", { exact: true }).selectOption("anime");
   await dialog.getByLabel("角色照片画面要求", { exact: true }).fill("保持五官，微笑，浅色外套");

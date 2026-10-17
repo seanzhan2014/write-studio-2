@@ -1,0 +1,56 @@
+import { expect, test } from "@playwright/test";
+import { fullStudioFixture } from "../fixtures.mjs";
+
+test.beforeEach(async ({ page, request }) => {
+  await page.route("**/api/connectivity", route => route.fulfill({ status: 204 }));
+  const state = await (await request.get("/api/state")).json();
+  const response = await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
+  expect(response.ok()).toBeTruthy();
+});
+
+test("manage image styles, persist edits and copies, select them and delete safely", async ({ page, request }, testInfo) => {
+  test.setTimeout(90_000);
+  await page.goto("/settings/general");
+  await page.getByRole("navigation", { name: "设置分类" }).getByRole("button", { name: "AI提示", exact: true }).click();
+  await expect(page).toHaveURL(/settings\/prompts/);
+  await page.getByRole("button", { name: "添加风格", exact: true }).click();
+  const modal = page.getByRole("dialog", { name: "添加图片风格" });
+  await modal.getByLabel("风格名称", { exact: true }).fill("复古胶片");
+  await modal.getByLabel("风格说明", { exact: true }).fill("暖色与颗粒");
+  await modal.getByLabel("风格 Prompt", { exact: true }).fill("复古胶片，暖色灯光，细腻颗粒。");
+  await modal.getByRole("button", { name: "添加风格", exact: true }).click();
+  const editor = page.getByRole("form", { name: "风格编辑" });
+  await expect(editor.getByLabel("风格名称", { exact: true })).toHaveValue("复古胶片");
+  await editor.getByLabel("风格 Prompt", { exact: true }).fill("复古胶片，蓝色夜景，细腻颗粒。");
+  await editor.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationStyles?.find((s: { label: string }) => s.label === "复古胶片")?.instruction).toBe("复古胶片，蓝色夜景，细腻颗粒。");
+  await page.reload();
+  await page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /复古胶片/ }).click();
+  await expect(editor.getByLabel("风格 Prompt", { exact: true })).toHaveValue("复古胶片，蓝色夜景，细腻颗粒。");
+  await editor.getByRole("button", { name: "复制为新风格" }).click();
+  await expect(editor.getByLabel("风格名称", { exact: true })).toHaveValue("复古胶片 副本");
+  await editor.getByLabel("风格名称", { exact: true }).fill("胶片夜景");
+  await editor.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationStyles?.filter((s: { label: string }) => ["复古胶片", "胶片夜景"].includes(s.label)).length).toBe(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath("ai-prompts.png"), fullPage: true });
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "生成插图", exact: true }).click();
+  const generator = page.getByRole("dialog", { name: "从正文生成插图" });
+  const selector = generator.getByRole("combobox", { name: "插图风格", exact: true });
+  await selector.click();
+  await page.getByRole("option", { name: "胶片夜景", exact: true }).click();
+  await expect(selector).toHaveValue("胶片夜景");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters.flatMap((c: { outlines: unknown[] }) => c.outlines).find((o: { id: string }) => o.id === "outline-current").illustrationOptions?.stylePreset).toMatch(/^custom-/);
+  await page.goto("/settings/prompts");
+  await page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /胶片夜景/ }).click();
+  await editor.getByRole("button", { name: "删除风格", exact: true }).click();
+  await page.getByRole("dialog", { name: "删除图片风格" }).getByRole("button", { name: "确认删除" }).click();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationStyles?.some((s: { label: string }) => s.label === "胶片夜景")).toBe(false);
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /胶片夜景/ })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /复古胶片/ })).toHaveCount(1);
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByRole("button", { name: "生成插图", exact: true }).click();
+  await expect(selector).toHaveValue("跟随 Prompt");
+});

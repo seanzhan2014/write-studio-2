@@ -27,7 +27,7 @@ export async function prepareIllustrationReference(input: Record<string, unknown
   const { characterReference: _ignored, styleSnapshot: _ignoredStyle, ...request } = input;
   const reference = await illustrationCharacterReference(String(input.outlineId ?? ""), input.characterId);
   const stylePreset = checkedStylePreset(input.stylePreset);
-  const styles = normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  const styles = normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
   return { ...request, styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
 }
 const columns = "h.*,o.title AS outline_title";
@@ -142,7 +142,7 @@ export async function createIllustration(input: Row, id: string) {
   if (promptLanguage !== undefined) body.promptLanguage = promptLanguage;
   const stylePreset = checkedStylePreset(input.stylePreset);
   if (stylePreset !== undefined) body.stylePreset = stylePreset;
-  const styles = normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  const styles = normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
   body.styleSnapshot = resolveIllustrationStyle(stylePreset, styles);
   if (input.action === "prompt") {
     const content = checkedText(input.content, MAX_ILLUSTRATION_CONTENT, "正文为空或超过 80,000 字符，请先选取片段", true);
@@ -155,7 +155,9 @@ export async function createIllustration(input: Row, id: string) {
   const existing = await illustrationRow(id);
   if (existing) {
     const savedInput = JSON.parse(String(existing.input_json)); delete savedInput._aiTaskRegistered;
-    if (JSON.stringify(savedInput) !== JSON.stringify(body)) throw new AiInputError("任务标识已被其他请求使用");
+    const requestedInput = { ...body };
+    delete savedInput.styleSnapshot; delete requestedInput.styleSnapshot;
+    if (JSON.stringify(savedInput) !== JSON.stringify(requestedInput)) throw new AiInputError("任务标识已被其他请求使用");
     return record(existing);
   }
   if (await getDatabase().prepare("SELECT id FROM ai_tasks WHERE id=?").bind(id).first()) throw new AiInputError("任务标识已用于其他 AI 任务");

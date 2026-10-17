@@ -703,7 +703,7 @@ async function illustrationModel(reference: unknown) {
 async function illustrationDirection(input: { style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle }) {
   if (input.style !== undefined && (typeof input.style !== "string" || input.style.length > 2000)) throw new AiInputError("画面要求不能超过 2,000 字符");
   if (input.stylePreset !== undefined && !isIllustrationStylePreset(input.stylePreset)) throw new AiInputError("请选择有效的插图风格");
-  const styles = input.styleSnapshot ? [input.styleSnapshot] : normalizeIllustrationStyles((await readStudioState()).data.settings.illustrationStyles);
+  const styles = input.styleSnapshot ? [input.styleSnapshot] : normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
   return illustrationVisualDirection(input.stylePreset, input.style, styles);
 }
 

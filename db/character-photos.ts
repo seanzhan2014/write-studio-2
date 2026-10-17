@@ -1,3 +1,5 @@
+import { resolvePhotoModel } from "./photo-model-resolution";
+import { photoModelOptions } from "@/lib/photo-model-resolution";
 import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./runtime";
 import { isCloudDatabase } from "./sqlite";
 import { findModel, findProvider, readProviderSecret, requestModelImage, type AiModelRecord } from "./ai";
@@ -7,7 +9,7 @@ import { getSpicyCharacter, getSpicyLibraryScope, isSpicyApi, spicyApiBaseUrl, p
 import { characterPhotos, normalizePhotoDraft, photoStyle, type CharacterPhoto, type CharacterPhotoGallery, type PhotoDraft, type PhotoJob, type PhotoSnapshot } from "@/lib/character-photos";
 import { illustrationVisualDirection, normalizeIllustrationStyles, resolveIllustrationStyle } from "@/lib/illustration-styles";
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
-import { imageReferenceCapability, supportsImages } from "@/lib/ai-model-capabilities";
+import { imageReferenceCapability } from "@/lib/ai-model-capabilities";
 import { diffStudioData } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin } from "./task-execution";
 
@@ -82,27 +84,27 @@ export async function photoOverview(id?: string) {
 }
 async function snapshotFor(id: string, draftValue: unknown) {
   const { data } = await readStudioState();
-  const styles = normalizeIllustrationStyles(data.settings.illustrationStyles);
+  const styles = normalizeIllustrationStyles(data?.settings.illustrationStyles);
   const { article, person } = personIn(data, id);
   if (person.archived) throw new Error("请先恢复此人物，再生成照片");
   const gallery = characterPhotos(person.photos, person.visual);
-  const draft = normalizePhotoDraft(draftValue);
-  const model = await findModel(draft.modelId);
-  if (!model || !supportsImages(model)) throw new Error("请选择支持图像生成的模型");
+  let draft = normalizePhotoDraft(draftValue);
   if (!draft.prompt.trim() && !person.profile?.appearance.trim() && !draft.referenceIds.length && !draft.basePhotoId) throw new Error("请填写外貌、画面要求或上传参考照片");
   const references = draft.referenceIds.map(id => gallery.photos.find(p => p.id === id && p.status !== "archived"));
   const basePhoto = draft.basePhotoId ? gallery.photos.find(p => p.id === draft.basePhotoId && p.status !== "archived") : undefined;
   if (references.some(p => !p) || (draft.basePhotoId && !basePhoto)) throw new Error("参考照片已变化，请重新选择");
   const referenceCount = new Set([...references.map(p => p!.id), ...(basePhoto ? [basePhoto.id] : [])]).size;
+  const { model, resolution } = await resolvePhotoModel(draft.modelId, referenceCount > 0);
+  draft = photoModelOptions(draft, resolution.model, resolution.automaticEdit);
   const capability = imageReferenceCapability(model);
-  if (referenceCount && !capability) throw new Error("此模型未声明参考图能力，请选择支持参考图的模型");
+  if (referenceCount && !capability) throw new Error("此模型没有可用的参考图或 edit 版本，请选择其他图像模型");
   if (capability?.required && !referenceCount) throw new Error("此模型需要参考照片");
   if (capability?.maxImages && referenceCount > capability.maxImages) throw new Error(`此模型最多支持 ${capability.maxImages} 张参考图（包括修改底图）`);
   const style = photoStyle(draft, gallery, normalizeIllustrationOptions(article.illustrationSettings).stylePreset);
   style.stylePreset = resolveIllustrationStyle(style.stylePreset, styles).value;
   const personSnapshot = { name: person.name, age: person.profile?.age || "", appearance: person.profile?.appearance || "" };
   const prompt = [`人物定妆照片：${person.name}。年龄：${personSnapshot.age || "以参考照片为准"}。外貌：${personSnapshot.appearance || "以参考照片及画面要求为准"}。`, `构图：${draft.pose || "正面半身"}。${draft.prompt}`, referenceCount ? `${basePhoto ? "第一张图片是修改底图，" : ""}其余参考照片用于保持同一人物的脸型、五官和体态；只调整本次要求的内容。` : "", illustrationVisualDirection(style.stylePreset, "", styles), "单个人物，清晰完整，无文字、水印或拼图。"].filter(Boolean).join("\n");
-  const snapshot: PhotoSnapshot = { draft: { ...draft, experimentId: draft.experimentId || crypto.randomUUID() }, ...style, prompt, person: personSnapshot, references: references as CharacterPhoto[], ...(basePhoto ? { basePhoto } : {}), model: { id: model.id, modelId: model.modelId, name: model.name, providerId: model.providerId, baseUrl: model.baseUrl, adapterKind: model.adapterKind, timeoutMs: model.timeoutMs } };
+  const snapshot: PhotoSnapshot = { draft: { ...draft, experimentId: draft.experimentId || crypto.randomUUID() }, ...style, prompt, person: personSnapshot, references: references as CharacterPhoto[], ...(basePhoto ? { basePhoto } : {}), model: { id: model.id, modelId: model.modelId, requestedModelId: resolution.requestedModelId, metadata: model.metadata, name: model.name, providerId: model.providerId, baseUrl: model.baseUrl, adapterKind: model.adapterKind, timeoutMs: model.timeoutMs } };
   return { snapshot, model };
 }
 export async function createPhotoJobs(id: string, requestId: string, draft: unknown, retryId?: string) {
@@ -117,7 +119,7 @@ export async function createPhotoJobs(id: string, requestId: string, draft: unkn
     snapshot = JSON.parse(original.snapshot_json);
     snapshot.draft.count = 1;
     model = await findModel(snapshot.model.id);
-    if (!model || model.providerId !== snapshot.model.providerId || model.baseUrl !== snapshot.model.baseUrl || model.modelId !== snapshot.model.modelId) throw new Error("原模型连接已改变，请使用调整参数重新生成");
+    if (!model || model.providerId !== snapshot.model.providerId || model.baseUrl !== snapshot.model.baseUrl || model.modelId !== (snapshot.model.requestedModelId || snapshot.model.modelId)) throw new Error("原模型连接已改变，请使用调整参数重新生成");
   } else ({ snapshot, model } = await snapshotFor(id, draft));
   const secret = await readProviderSecret(model!.providerId);
   if (!secret) throw new Error("图像服务尚未设置密钥");
@@ -167,9 +169,10 @@ export async function executePhotoJob(id: string) {
   const set = (status: string, error = "", delay = 0) => db.prepare("UPDATE character_photo_jobs SET state=?,error=?,runner_id=NULL,lease_until=NULL,next_poll_at=?,updated_at=? WHERE id=? AND runner_id=?").bind(status, error.slice(0, 1500), delay ? new Date(Date.now() + delay).toISOString() : null, now(), id, runner).run();
   try {
     personIn(state.data, row.character_id);
-    const model = await findModel(snapshot.model.id);
+    const configured = await findModel(snapshot.model.id);
     const secret = await readProviderSecret(snapshot.model.providerId);
-    if (!model || model.baseUrl !== snapshot.model.baseUrl || model.modelId !== snapshot.model.modelId || model.providerId !== snapshot.model.providerId || !secret || await digest(secret) !== row.credential_hash) throw new Error("创建此任务的连接或密钥已改变，请恢复原连接再继续查询");
+    if (!configured || configured.baseUrl !== snapshot.model.baseUrl || configured.modelId !== (snapshot.model.requestedModelId || snapshot.model.modelId) || configured.providerId !== snapshot.model.providerId || configured.adapterKind !== snapshot.model.adapterKind || !secret || await digest(secret) !== row.credential_hash) throw new Error("创建此任务的连接或密钥已改变，请恢复原连接再继续查询");
+    const model = { ...configured, modelId: snapshot.model.modelId, name: snapshot.model.name, metadata: snapshot.model.metadata || configured.metadata };
     let src: string;
     if (isSpicyApi(snapshot.model)) {
       if (!request && !remoteId) {

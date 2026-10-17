@@ -10,7 +10,7 @@ export type PhotoSnapshot = {
   draft: PhotoDraft; prompt: string; stylePreset: IllustrationStylePreset; styleSource: string;
   person: { name: string; age: string; appearance: string };
   references: CharacterPhoto[]; basePhoto?: CharacterPhoto;
-  model: { id: string; modelId: string; name: string; providerId: string; baseUrl: string; adapterKind: string; timeoutMs: number };
+  model: { id: string; modelId: string; requestedModelId?: string; name: string; providerId: string; baseUrl: string; adapterKind: string; timeoutMs: number; metadata?: import("./ai-model-capabilities").ModelMetadata };
 };
 export type CharacterPhoto = {
   id: string; assetKey: string; mime: string; name: string; hash?: string; createdAt: string;
