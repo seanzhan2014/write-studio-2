@@ -7,7 +7,7 @@ import { ArticleIllustrationSettings } from "./ui/article-illustration-settings"
 import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "./ui/advanced-writing";
 import { StyleJobHistory } from "./ui/style-job-history";
-import { StyleLabPanel, StyleLabRuntime, useActiveStyleCount } from "./ui/style-lab";
+import { StyleLabPanel, StyleLabRuntime, useActiveStyleCount, useStyleTaskSummary } from "./ui/style-lab";
 import { AiPromptSettings } from "./ui/ai-prompt-settings";
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
@@ -5599,14 +5599,15 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
 function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: { initialTaskId?: string; onClose: () => void; onOpenIllustration: (task: AiTask) => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => void }) {
   const studio = useStudio();
   const models = useConfiguredModels();
-  const styleTaskCount = useActiveStyleCount();
-  const [taskKind, setTaskKind] = useState(initialTaskId.startsWith("style:") ? "style" : "generate");
-  const [selectedTaskId, setSelectedTaskId] = useState(() => initialTaskId.startsWith("style:") ? "" : initialTaskId || studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && isTaskAwaitingAuthor(task))?.id || "");
+  const { active: styleTaskCount, total: styleTaskTotal, failed: styleFailureCount } = useStyleTaskSummary();
+  const [taskKind, setTaskKind] = useState(initialTaskId.startsWith("style:") ? "style" : initialTaskId ? "generate" : "all");
+  const [selectedTaskId, setSelectedTaskId] = useState(() => initialTaskId.startsWith("style:") ? "" : initialTaskId);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 3000); return () => window.clearInterval(timer); }, []);
   const tasks = [...studio.data.tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const activeCount = tasks.filter((task) => task.state === "running" || task.state === "waiting").length + styleTaskCount;
+  const failedCount = tasks.filter((task) => task.state === "failed").length + styleFailureCount;
   const completedCount = tasks.filter((task) => task.state === "success").length;
   const generateRunningCount = tasks.filter((task) => task.target !== "AI Chat" && task.state === "running").length;
   const chatRunningCount = tasks.filter((task) => task.target === "AI Chat" && task.state === "running").length;
@@ -5704,8 +5705,8 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
 </> : null;
 
   return <section className="workspace task-workspace" aria-label="AI 任务工作区">
-    <header className="workspace-header"><div className="task-drawer-title">{selectedTask && <IconButton name="back" label="返回任务列表" onClick={() => setSelectedTaskId("")} />}<div><strong>{selectedTask ? (selectedOutline ? outlineDisplayTitle(selectedOutline) : "任务详情") : "AI 任务"}</strong><span>{selectedTask ? taskPhaseLabels[selectedTask.phase ?? "queued"] : activeCount ? String(activeCount) + " 个待处理任务" : "没有进行中的任务"}</span></div></div><IconButton name="close" label="关闭 AI 任务" onClick={onClose} /></header>
-    <nav className="style-task-tabs" aria-label="任务类型"><button type="button" aria-pressed={taskKind === "generate"} onClick={() => setTaskKind("generate")}>生成与对话</button><button type="button" aria-pressed={taskKind === "style"} onClick={() => { setTaskKind("style"); setSelectedTaskId(""); }}>学习与微调{styleTaskCount ? " · " + styleTaskCount : ""}</button></nav>
+    <header className="workspace-header"><div className="task-drawer-title">{selectedTask && <IconButton name="back" label="返回任务列表" onClick={() => setSelectedTaskId("")} />}<div><strong>{selectedTask ? (selectedOutline ? outlineDisplayTitle(selectedOutline) : "任务详情") : "AI 任务"}</strong><span>{selectedTask ? taskPhaseLabels[selectedTask.phase ?? "queued"] : activeCount ? String(activeCount) + " 个待处理任务" : failedCount ? `${failedCount} 个任务需要处理` : "没有进行中的任务"}</span></div></div><IconButton name="close" label="关闭 AI 任务" onClick={onClose} /></header>
+    {!selectedTask && <nav className="style-task-tabs" aria-label="任务类型"><button type="button" aria-pressed={taskKind === "all"} onClick={() => { setTaskKind("all"); setSelectedTaskId(""); }}>全部任务</button><button type="button" aria-pressed={taskKind === "generate"} onClick={() => { setTaskKind("generate"); setSelectedTaskId(""); }}>生成与对话</button><button type="button" aria-label="学习与微调" aria-pressed={taskKind === "style"} onClick={() => { setTaskKind("style"); setSelectedTaskId(""); }}>学习与微调{styleTaskTotal ? ` · ${styleTaskTotal}` : ""}</button></nav>}
     <div className="task-workspace-content">
       {taskKind === "style" ? <div className="task-panel style-task-panel" data-ui-overlay-scroll><StyleJobHistory onOpenArticle={onClose} initialJobId={initialTaskId.startsWith("style:") ? initialTaskId.slice(6) : ""} /></div> : <>
       {selectedTask && <nav className="task-workspace-rail" aria-label="任务列表">{tasks.map((task) => <button type="button" key={task.id} aria-current={selectedTaskId === task.id ? "true" : undefined} onClick={() => setSelectedTaskId(task.id)}><span className={"state-dot " + (isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state)} /><span><strong>{studio.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((outline) => outline.id === task.outlineId)?.title || task.target}</strong><small>{taskPhaseLabels[task.phase ?? "queued"]}</small></span></button>)}</nav>}
@@ -5732,7 +5733,7 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
         </footer>
-      </section> : <><div className="task-list" data-ui-overlay-scroll><CharacterPhotoTasks />{tasks.map((task) => {
+      </section> : <><div className="task-list" data-ui-overlay-scroll>{taskKind === "all" && <StyleJobHistory onOpenArticle={onClose} />}<CharacterPhotoTasks />{tasks.map((task) => {
         const article = studio.data.articles.find((item) => item.id === task.articleId);
         const chapter = article?.chapters.find((item) => item.id === task.chapterId);
         const outline = chapter?.outlines.find((item) => item.id === task.outlineId);
@@ -5752,7 +5753,7 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
             {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
           </span></div>
         </article>;
-      })}{!tasks.length && <div className="empty-inline">暂无 AI 任务</div>}</div>
+      })}{!tasks.length && (taskKind === "generate" || !styleTaskTotal) && <div className="empty-inline">暂无 AI 任务</div>}</div>
       <footer><span>生成并发 {generateRunningCount} / {studio.data.settings.taskConcurrency}{chatRunningCount ? ` · Chat ${chatRunningCount}` : ""}</span><span className="task-footer-actions"><button type="button" disabled={!completedCount} onClick={() => studio.clearCompletedTasks()}>清空已完成{completedCount ? ` (${completedCount})` : ""}</button><button type="button" onClick={() => { onClose(); window.history.pushState({}, "", "/settings/tasks"); window.dispatchEvent(new PopStateEvent("popstate")); }}>任务设置 →</button></span></footer></>}
     </div></>}
     </div>

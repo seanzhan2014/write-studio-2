@@ -9,11 +9,14 @@ import type { StyleJob } from "@/db/style-lab";
 import { StyleJobHistory, ConfigComparison, styleLabApi as api, downloadStyleRecord as download } from "./style-job-history";
 
 let runtimeBusy = false;
-let activeStyleCount = 0;
+let styleTaskSummary = { active: 0, total: 0, failed: 0 };
+export function useStyleTaskSummary() {
+  const [summary, setSummary] = useState(styleTaskSummary);
+  useEffect(() => { const update = () => setSummary(styleTaskSummary); window.addEventListener("style-lab-summary", update); update(); return () => window.removeEventListener("style-lab-summary", update); }, []);
+  return summary;
+}
 export function useActiveStyleCount() {
-  const [count, setCount] = useState(activeStyleCount);
-  useEffect(() => { const update = () => setCount(activeStyleCount); window.addEventListener("style-lab-summary", update); update(); return () => window.removeEventListener("style-lab-summary", update); }, []);
-  return count;
+  return useStyleTaskSummary().active;
 }
 export function StyleLabRuntime() {
   const studio = useStudio(); const studioRef = useRef(studio); studioRef.current = studio;
@@ -25,7 +28,7 @@ export function StyleLabRuntime() {
       try {
         const result = await api("/api/style-lab");
         if (!active) return;
-        activeStyleCount = result.active ?? result.jobs.length;
+        styleTaskSummary = { active: result.active ?? result.jobs.length, total: result.total ?? result.jobs.length, failed: result.failed ?? 0 };
         window.dispatchEvent(new CustomEvent("style-lab-summary"));
         const jobs = result.jobs as StyleJob[];
         for (const job of jobs) observed.add(job.id);

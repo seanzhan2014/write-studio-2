@@ -8,8 +8,8 @@ export async function GET(request: Request) {
     const articleId = params.get("articleId") || undefined;
     if (articleId || params.get("scope") === "history") return Response.json(await listStyleJobHistory({ articleId, filter: params.get("filter") ?? "all", page: Number(params.get("page")) }), { headers: { "Cache-Control": "no-store" } });
     const jobs = await listStyleJobs(articleId);
-    const active = Number(await getDatabase().prepare("SELECT COUNT(*) AS count FROM style_lab_jobs WHERE status IN ('queued','running')").first<number>("count") ?? 0);
-    return Response.json({ jobs: jobs.map(({ id, status }) => ({ id, status })), active, executionMode: isCloudDatabase() ? "browser" : "server" }, { headers: { "Cache-Control": "no-store" } });
+    const counts = await getDatabase().prepare("SELECT COUNT(*) AS total,COALESCE(SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END),0) AS active,COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) AS failed FROM style_lab_jobs WHERE COALESCE(json_extract(payload_json,'$.archived'),0)=0").first<{ total: number; active: number; failed: number }>();
+    return Response.json({ jobs: jobs.map(({ id, status }) => ({ id, status })), active: Number(counts?.active ?? 0), total: Number(counts?.total ?? 0), failed: Number(counts?.failed ?? 0), executionMode: isCloudDatabase() ? "browser" : "server" }, { headers: { "Cache-Control": "no-store" } });
   }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "风格任务读取失败" }, { status: 500 }); }
 }

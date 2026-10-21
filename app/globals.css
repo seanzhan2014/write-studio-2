@@ -9104,7 +9104,8 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .style-job-history { display: grid; gap: 16px; min-width: 0; }
 .style-selected-job { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--border-soft); border-radius: 10px; min-width: 0; }
 .style-job-detail { min-width: 0; }
-.style-task-tabs { display: flex; flex-shrink: 0; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); }
+.style-task-tabs { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); }
+.task-list > .style-job-history { padding-bottom: 20px; border-bottom: 1px solid var(--border-soft); margin-bottom: 20px; }
 .style-task-tabs button { border: 0; border-radius: 8px; padding: 9px 14px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; }
 .style-task-tabs button[aria-pressed="true"] { color: var(--text); background: var(--surface-soft); font-weight: 600; }
 .style-task-panel { overflow-y: auto; min-height: 0; padding: 20px; }

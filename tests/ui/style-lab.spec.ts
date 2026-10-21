@@ -85,6 +85,33 @@ test("learning history is available from the task workspace with pagination, evi
   await page.screenshot({ path: testInfo.outputPath("style-history-tasks.png"), fullPage: true });
 });
 
+test("the ordinary task entry shows failed calibrations in all tasks by default", async ({ page, request }, testInfo) => {
+  const current = await (await request.get("/api/state")).json(), data = fullStudioFixture(); data.tasks = [];
+  await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } });
+  const configuration = normalizeConfiguration({ style: "原风格" });
+  const jobs = Array.from({ length: 3 }, (_, i) => ({ id: `failed-calibration-${i}`, articleId: "article-main", kind: "tune", status: "failed", phase: "generate", model: "model", error: "模拟上游失败，等待处理", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z", payload: { base: configuration, best: configuration, references: [], outlines: [], analyses: [], inputTokens: 10, outputTokens: 20, bestRound: 0, bestScore: -1, round: 1 } }));
+  await page.route(/\/api\/style-lab(?:\?.*)?$/, route => {
+    const history = new URL(route.request().url()).searchParams.get("scope") === "history";
+    return route.fulfill({ json: { jobs: history ? jobs : [], active: 0, failed: 3, total: 3, pages: 1, page: 1, executionMode: "server" } });
+  });
+  await page.goto("/articles/article-main/outlines");
+  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await expect(workspace.getByRole("button", { name: "全部任务", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(workspace.getByText("风格微调", { exact: true })).toHaveCount(3);
+  await expect(workspace.getByText("模拟上游失败，等待处理", { exact: true })).toHaveCount(3);
+  await expect(workspace.getByText("3 个任务需要处理", { exact: true })).toBeVisible();
+  await expect(workspace.getByText("暂无 AI 任务", { exact: true })).toHaveCount(0);
+  await workspace.getByRole("button", { name: "生成与对话", exact: true }).click();
+  await expect(workspace.getByRole("region", { name: "学习历史", exact: true })).toHaveCount(0);
+  await workspace.getByRole("button", { name: "学习与微调", exact: true }).click();
+  await expect(workspace.getByText("风格微调", { exact: true })).toHaveCount(3);
+  await expect(workspace.getByRole("button", { name: "学习与微调", exact: true })).toContainText("3");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await workspace.getByRole("button", { name: "全部任务", exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("all-tasks-calibration.png"), fullPage: true });
+});
+
 test("unqualified calibration keeps diagnostics visible and offers no configuration to apply", async ({ page, request }) => {
   const current = await (await request.get("/api/state")).json(), data = fullStudioFixture(); data.tasks = [];
   await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } });
