@@ -54,7 +54,7 @@ async function stableAfterSave(page: Page, request: APIRequestContext) {
   await noConflict(page);
 }
 async function chat(page: Page, request: APIRequestContext, outlineId: string, question: string) {
-  await page.getByLabel("AI Chat 消息").fill(question);
+  await page.getByLabel("聊天消息").fill(question);
   const submission = page.waitForResponse((response) => response.url().endsWith(`/outlines/${outlineId}/chat/transactions`)
     && response.request().postDataJSON()?.action === "submit");
   await page.getByRole("button", { name: "发送消息" }).click();
@@ -131,7 +131,7 @@ test("new chapter can chat immediately without hydrating from the database", asy
   expect(match).not.toBeNull();
   const outlineId = match![1];
   expect(outlineId).not.toBe("outline-current");
-  await page.getByRole("tab", { name: "AI Chat", exact: true }).click();
+  await page.getByRole("tab", { name: "聊天", exact: true }).click();
   await chat(page, request, outlineId, "刚新建章节就聊天");
   await chat(page, request, outlineId, "继续第二轮");
   const chapter = (await readState(request)).data.articles[0].chapters.find((item) => item.outlines.some((outline) => outline.id === outlineId))!;

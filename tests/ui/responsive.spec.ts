@@ -433,7 +433,7 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await tasks.getByRole("button", { name: "关闭 AI 任务" }).click();
 
   await page.locator('[data-outline-id="outline-current"] .icon-button').click();
-  await page.getByRole("button", { name: "AI Generate 大纲", exact: true }).click();
+  await page.getByRole("button", { name: "生成大纲", exact: true }).click();
   const structureGenerate = page.locator(".structure-generate-drawer");
   await expectOverlayContract(page, structureGenerate);
   await expect(structureGenerate.getByText("当前大纲内容", { exact: true })).toBeVisible();
@@ -464,10 +464,10 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await presets.getByRole("button", { name: "关闭预设管理" }).click();
 
   await gotoSettled("/articles/article-main/outlines/edit-all");
-  await page.locator('[data-continuous-outline-id="outline-current"]').getByRole("button", { name: "AI Chat", exact: true }).click();
+  await page.locator('[data-continuous-outline-id="outline-current"]').getByRole("button", { name: "聊天", exact: true }).click();
   const fullChat = page.locator(".full-outline-chat-modal");
   await expectOverlayContract(page, fullChat);
-  await fullChat.getByRole("button", { name: "关闭全文大纲 AI Chat" }).click();
+  await fullChat.getByRole("button", { name: "关闭全文大纲 聊天" }).click();
 
   await gotoSettled("/articles/article-main/edit");
   if (STANDALONE_AI_REVIEW_ENABLED) {
@@ -546,7 +546,7 @@ test("model candidates can be assigned as independent task defaults", async ({ p
     { id: "writer-candidate", providerId: "writer-provider", providerName: "Writer Provider", name: "Writer", modelId: "writer-large", systemPrompt: "", hasSecret: true, timeoutMs: 120000, timeoutOverrideMs: null, maxInputCharacters: 60000 }
   ] } }));
   await page.goto("/settings/models");
-  for (const [purpose, label] of [["AI Chat", "DeepSeek Provider-DeepSeek"], ["正文生成", "Writer Provider-Writer"], ["名称生成", "Writer Provider-Writer"]]) {
+  for (const [purpose, label] of [["聊天", "DeepSeek Provider-DeepSeek"], ["正文生成", "Writer Provider-Writer"], ["名称生成", "Writer Provider-Writer"]]) {
     await page.getByRole("combobox", { name: purpose, exact: true }).click();
     await page.getByRole("option", { name: label, exact: true }).click();
   }
@@ -663,7 +663,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await expect(page.getByText("正在使用文章 AI Generate 预设", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("正在使用文章生成预设", { exact: true })).toHaveCount(0);
   const outlinePlan = page.locator("#generate-outline-plan");
   await expect(outlinePlan).toHaveAttribute("rows", "6");
   const defaultRowsHeight = await outlinePlan.evaluate((element) => {
@@ -923,8 +923,8 @@ test("AI Generate reuses supplementary instructions only within the same outline
     return state.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === "outline-current")?.generateInstruction;
   }).toBe("当前码头下一次仍要沿用");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
-  await page.getByRole("tab", { name: "AI Chat" }).click();
-  await page.getByRole("tab", { name: "AI Generate" }).click();
+  await page.getByRole("tab", { name: "聊天" }).click();
+  await page.getByRole("tab", { name: "生成" }).click();
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await instruction.fill("");
   await page.getByRole("button", { name: "保存指令" }).click();
@@ -961,7 +961,7 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
   await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
-  await expect(page.locator(".generate-settings-source")).toContainText("正在使用此大纲最近的 Generate 设置");
+  await expect(page.locator(".generate-settings-source")).toContainText("正在使用此大纲最近的生成设置");
   await expect.poll(() => numericValue("正文目标字数")).toBe(7100);
   await page.getByRole("textbox", { name: "正文目标字数" }).fill("7200");
   await expect.poll(async () => {
@@ -982,8 +982,8 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
   }).toBeNull();
 
   await page.goto("/articles/article-main/info/ai-tasks");
-  await expect(page.getByRole("heading", { name: "AI Generate" })).toBeVisible();
-  const articleTarget = page.getByRole("textbox", { name: "文章 AI Generate 默认目标字数" });
+  await expect(page.getByRole("heading", { name: "生成" })).toBeVisible();
+  const articleTarget = page.getByRole("textbox", { name: "文章生成默认目标字数" });
   await articleTarget.fill("6800");
   await articleTarget.press("Tab");
   await expect.poll(async () => {
@@ -1056,19 +1056,19 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     if (route.request().method() === "POST") await saveGate;
     await route.continue();
   });
-  await page.getByRole("tab", { name: "AI Generate" }).click();
+  await page.getByRole("tab", { name: "生成" }).click();
   const model = page.getByRole("combobox", { name: "本次模型" });
   await model.click();
   await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
   await expect(page.locator(".save-state")).toContainText(/未保存|正在保存/);
 
   try {
-    await page.getByRole("tab", { name: "AI Chat" }).click();
+    await page.getByRole("tab", { name: "聊天" }).click();
     await expect(page.locator(".chat-view")).toBeVisible({ timeout: 800 });
   } finally {
     releaseSave();
   }
-  await page.getByRole("tab", { name: "AI Generate" }).click();
+  await page.getByRole("tab", { name: "生成" }).click();
   await expect(page.locator(".generate-view")).toBeVisible();
   expect(modelRequests).toBe(1);
 });
@@ -1506,7 +1506,7 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await page.getByRole("button", { name: "版本" }).click();
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
-  await page.getByRole("tab", { name: "AI Generate" }).click();
+  await page.getByRole("tab", { name: "生成" }).click();
   await expect(page.locator(".generate-excellent-fragments-toggle input")).not.toBeChecked();
   await page.locator(".generate-context-summary").click();
   const excellentOption = page.locator(".generate-context-panel").getByLabel("参考优秀片段");
@@ -1640,8 +1640,8 @@ test("mobile starts at outline and separates article and global entry points", a
   await more.click();
   await expect(page.getByText("大纲操作", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑大纲" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "AI Chat 大纲" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "AI Generate 大纲" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "大纲聊天" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成大纲" })).toBeVisible();
   await expect(page.getByRole("button", { name: "重新生成大纲名字" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "删除大纲" })).toBeVisible();
   await page.getByRole("button", { name: "关闭大纲操作" }).click();
@@ -2226,7 +2226,7 @@ test("full outline editor keeps core actions visible and groups structural actio
   const properties = current.getByRole("button", { name: "打开「当前码头」属性" });
   const more = current.getByRole("button", { name: "当前码头更多操作" });
   await expect(drag).toBeVisible();
-  await expect(current.getByRole("button", { name: "AI Chat", exact: true })).toBeVisible();
+  await expect(current.getByRole("button", { name: "聊天", exact: true })).toBeVisible();
   await expect(properties).toBeVisible();
   await expect(current.locator(".continuous-outline-secondary-actions")).toHaveCount(0);
 
@@ -2298,7 +2298,7 @@ test("unified editor moves an outline through the contextual move drawer", async
   await page.locator(".continuous-outline-action-menu").getByRole("menuitem", { name: "移动到章节…", exact: true }).click();
   const picker = page.locator(".continuous-outline-properties-drawer");
   await expect(picker).toBeVisible();
-  await expect(picker.getByText("选择目标章节；大纲内容、正文版本和 AI Chat 会一起保留。")).toBeVisible();
+  await expect(picker.getByText("选择目标章节；大纲内容、正文版本和聊天会一起保留。")).toBeVisible();
   await picker.getByRole("button", { name: /第二章/ }).click();
 
   await expect.poll(async () => {
@@ -2565,7 +2565,7 @@ test("AI Chat creates a completed task linked to its conversation", async ({ pag
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   test.setTimeout(60_000);
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("检查任务中心中的聊天记录");
+  await page.getByLabel("聊天消息").fill("检查任务中心中的聊天记录");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.locator(".message.assistant").last()).toContainText("我参考了", { timeout: 15_000 });
   await expect(page.getByRole("button", { name: "停止回复" })).toHaveCount(0, { timeout: 30_000 });
@@ -2573,7 +2573,7 @@ test("AI Chat creates a completed task linked to its conversation", async ({ pag
   await page.getByRole("button", { name: /^AI 任务/ }).click();
   const task = page.locator(".task-card").first();
   await expect(task).toContainText("检查任务中心中的聊天记录");
-  await expect(task).toContainText("目标：AI Chat");
+  await expect(task).toContainText("目标：聊天");
   await expect(task).toContainText("已完成", { timeout: 20_000 });
   await expect(task.getByRole("button", { name: "应用结果" })).toHaveCount(0);
   await task.getByRole("button", { name: "打开", exact: true }).click();
@@ -2603,7 +2603,7 @@ test("AI Chat acknowledges immediately and ignores rapid duplicate submits while
 
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   const question = "慢保存期间只提交一次";
-  await page.getByLabel("AI Chat 消息").fill(question);
+  await page.getByLabel("聊天消息").fill(question);
   delayNextSubmit = true;
   await page.getByRole("button", { name: "发送消息" }).evaluate((button) => {
     (button as HTMLButtonElement).click();
@@ -2638,11 +2638,11 @@ test("AI Chat releases its short submission lock after a save failure", async ({
   });
 
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("这次保存会失败");
+  await page.getByLabel("聊天消息").fill("这次保存会失败");
   failNextSubmit = true;
   await page.getByRole("button", { name: "发送消息" }).click();
 
-  const composer = page.getByLabel("AI Chat 消息");
+  const composer = page.getByLabel("聊天消息");
   await composer.fill("保存失败后仍可继续提交");
   await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
 });
@@ -2668,7 +2668,7 @@ test("AI Chat distinguishes requesting the model from waiting for its first text
     };
   });
 
-  await page.getByLabel("AI Chat 消息").fill("检查模型响应阶段");
+  await page.getByLabel("聊天消息").fill("检查模型响应阶段");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByText("正在请求模型", { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("等待首字", { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -2683,13 +2683,13 @@ test("AI Chat finishes after leaving and clears its unread marker when opened", 
   });
 
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("离开聊天后继续完成");
+  await page.getByLabel("聊天消息").fill("离开聊天后继续完成");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
   await page.getByRole("tab", { name: "写作", exact: true }).click();
 
   await expect(page.getByLabel("有新生成的聊天回复")).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("tab", { name: /AI Chat/ }).click();
+  await page.getByRole("tab", { name: /聊天/ }).click();
   await expect(page.locator(".message.assistant").last()).toContainText("后台生成的聊天回复");
   await page.getByRole("tab", { name: "写作", exact: true }).click();
   await expect(page.getByLabel("有新生成的聊天回复")).toHaveCount(0);
@@ -2718,7 +2718,7 @@ test("AI Chat can be cancelled from the task panel after leaving", async ({ page
   });
 
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("离开后取消这项任务");
+  await page.getByLabel("聊天消息").fill("离开后取消这项任务");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
   await page.getByRole("tab", { name: "写作", exact: true }).click();
@@ -2747,7 +2747,7 @@ test("AI Chat message action menu closes when clicking elsewhere", async ({ page
   const trigger = page.getByRole("button", { name: "更多写作操作" }).last();
   await trigger.click();
   await expect(page.locator(".message-action-menu")).toBeVisible();
-  await page.getByRole("tab", { name: /AI Chat/ }).click();
+  await page.getByRole("tab", { name: /聊天/ }).click();
   await expect(page.locator(".message-action-menu")).toHaveCount(0);
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 });
@@ -3187,11 +3187,11 @@ test("desktop full outline editor provides a scrollable viewport", async ({ page
 test("full outline editor opens AI Chat with context through the current outline", async ({ page }) => {
   await page.goto("/articles/article-main/outlines/edit-all");
   const current = page.locator('[data-continuous-outline-id="outline-current"]');
-  await current.getByRole("button", { name: "AI Chat", exact: true }).click();
+  await current.getByRole("button", { name: "聊天", exact: true }).click();
 
   const dialog = page.locator(".full-outline-chat-modal");
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("AI Chat · 当前码头");
+  await expect(dialog).toContainText("聊天 · 当前码头");
   await dialog.locator(".composer-context-chip").click();
   const context = dialog.locator(".chat-context-panel");
   await expect(context).toBeVisible();

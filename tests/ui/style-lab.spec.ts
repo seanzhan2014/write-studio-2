@@ -44,3 +44,43 @@ test("advanced settings stay optional and reference learning saves inputs before
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await page.screenshot({path:testInfo.outputPath("style-lab.png"),fullPage:true});
 });
+
+test("learning history is available from the task workspace with pagination, evidence and archive", async ({ page, request }, testInfo) => {
+  const current = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture(); data.tasks = [];
+  await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } });
+  const configuration = normalizeConfiguration({ style: "历史成果风格" });
+  let archived = false;
+  const job = { id: "history-ui", articleId: "article-main", kind: "learn", status: "completed", phase: "completed", model: "model", createdAt: "2026-10-21T00:00:00.000Z", updatedAt: "2026-10-21T00:00:00.000Z", payload: { base: configuration, best: configuration, references: [{ id: "ref", title: "历史参考文章", text: "关闭页面以后仍保留的参考原文。" }], outlines: [], analyses: [], inputTokens: 10, outputTokens: 20, bestRound: 0, bestScore: -1, round: 0, applications: [], archived: false }, rounds: [] };
+  await page.route(/\/api\/style-lab(?:\?.*)?$/, async route => {
+    const url = new URL(route.request().url());
+    const history = url.searchParams.get("scope") === "history";
+    const filter = url.searchParams.get("filter"), second = url.searchParams.get("page") === "2";
+    const show = history && (filter === "archived" ? archived : !archived);
+    const jobs = show ? second || filter === "archived" ? [job] : Array.from({ length: 20 }, (_, i) => ({ ...job, id: i ? "history-ui-" + i : job.id })) : [];
+    await route.fulfill({ json: { jobs, active: 0, executionMode: "server", total: show ? filter === "archived" ? 1 : 21 : 0, pages: show && filter !== "archived" ? 2 : 1, page: second ? 2 : 1 } });
+  });
+  await page.route("**/api/style-lab/history-ui", async route => {
+    if (route.request().method() === "POST") { archived = true; job.payload.archived = true; }
+    await route.fulfill({ json: { job } });
+  });
+  await page.goto("/articles/article-main/info/ai-tasks");
+  await expect(page.getByText("由本机服务在后台执行", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await expect(workspace.getByRole("button", { name: "学习与微调", exact: true })).toHaveAttribute("aria-pressed", "true");
+  const history = workspace.getByRole("region", { name: "学习历史", exact: true });
+  await expect(history.getByText("21 条记录", { exact: false })).toBeVisible();
+  await history.getByRole("button", { name: "2", exact: true }).click();
+  await expect(history.getByRole("button", { name: "查看过程", exact: true })).toHaveCount(1);
+  await history.getByRole("button", { name: "查看过程", exact: true }).click();
+  await history.locator("summary").filter({ hasText: "参考文章快照" }).click();
+  await history.locator("summary").filter({ hasText: /^历史参考文章$/ }).click();
+  await expect(history.getByText("关闭页面以后仍保留的参考原文。", { exact: true })).toBeVisible();
+  await history.getByRole("button", { name: "归档", exact: true }).first().click();
+  await history.getByRole("combobox", { name: "筛选学习历史" }).click();
+  await page.getByRole("option", { name: "已归档", exact: true }).click();
+  await expect(history.getByText("1 条记录", { exact: false })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: testInfo.outputPath("style-history-tasks.png"), fullPage: true });
+});

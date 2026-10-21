@@ -5,6 +5,7 @@ import net from "node:net";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
@@ -36,11 +37,15 @@ test("production bundle dispatches learning, format-corrected calibration and pr
   }).listen(0, "127.0.0.1");
   await once(model, "listening");
   let output = "";
-  const service = spawn(process.execPath, ["scripts/prod-server.mjs"], { cwd: workspace, windowsHide: true, env: {
+  const startService = () => {
+    const child = spawn(process.execPath, ["scripts/prod-server.mjs"], { cwd: workspace, windowsHide: true, env: {
     ...process.env, WRITER_STUDIO_DB_PATH: database, WRITER_STUDIO_HOST: "127.0.0.1", WRITER_STUDIO_PORT: String(port), WRITER_STUDIO_TEST_MODE: "0",
-  }, stdio: ["ignore", "pipe", "pipe"] });
-  service.stdout.on("data", chunk => { output += chunk; });
-  service.stderr.on("data", chunk => { output += chunk; });
+    }, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", chunk => { output += chunk; });
+    child.stderr.on("data", chunk => { output += chunk; });
+    return child;
+  };
+  let service = startService();
   const api = async (url, method = "GET", data, headers = {}) => {
     const response = await fetch(origin + url, { method, headers: { "Content-Type": "application/json", ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
     const body = await response.json(); assert.ok(response.ok, `${url}: ${response.status} ${JSON.stringify(body)}`); return body;
@@ -62,7 +67,23 @@ test("production bundle dispatches learning, format-corrected calibration and pr
     data.articles[0].storySettings = { styleLibrary: { references: [{ id: "source", title: "参考", text: "两位成年人核对书籍后道别。" }] } };
     await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) });
     let job = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "learn", model: selectedModel.id })).job;
-    await until(async () => { const next = (await api(`/api/style-lab/${job.id}`)).job; assert.notEqual(next.status, "failed", next.error); return next.status === "completed"; }, "Learning did not run in the background");
+    await until(async () => { const next = (await api(`/api/style-lab/${job.id}`)).job; assert.notEqual(next.status, "failed", next.error); return next.status === "completed" && next.payload.applied; }, "Learning did not run in the background");
+    // A recovered lease after a process restart continues from the saved phase.
+    const learnedId = job.id;
+    await api(`/api/style-lab/${learnedId}`, "POST", { action: "restore" });
+    job = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "learn", model: selectedModel.id, autoApply: false })).job;
+    await api(`/api/style-lab/${job.id}`, "POST", { action: "pause" });
+    service.kill(); if (service.exitCode === null) await once(service, "exit");
+    const native = new DatabaseSync(database);
+    const checkpoint = native.prepare("SELECT payload_json FROM style_lab_jobs WHERE id=?").get(job.id);
+    const payload = JSON.parse(checkpoint.payload_json); payload.candidate = configuration; payload.referenceIndex = 1; payload.analyses = [configuration];
+    native.prepare("UPDATE style_lab_jobs SET status='running',phase='validate',payload_json=?,owner='interrupted-service',lease_until='2000-01-01T00:00:00.000Z' WHERE id=?").run(JSON.stringify(payload), job.id);
+    native.close();
+    service = startService();
+    await until(async () => { try { return (await fetch(origin + "/api/database/status")).ok; } catch { return false; } }, "Production service did not restart");
+    const recovered = await until(async () => { const next = (await api(`/api/style-lab/${job.id}`)).job; assert.notEqual(next.status, "failed", next.error); return next.status === "completed" ? next : false; }, "Learning did not resume after restart");
+    assert.equal(recovered.payload.analyses.length, 1); assert.ok(!recovered.payload.applied);
+    assert.equal((await api(`/api/style-lab/${learnedId}`)).job.payload.applications.length, 1, "application history survives process restart");
     job = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "tune", model: selectedModel.id, maxRounds: 1 })).job;
     const tuned = await until(async () => { const next = (await api(`/api/style-lab/${job.id}`)).job; assert.notEqual(next.status, "failed", next.error); return next.rounds?.[0]?.drafts?.[0]?.text ? next : false; }, "Calibration did not prepare and generate in the background");
     assert.match(tuned.rounds[0].drafts[0].brief, /核对后道别/);

@@ -62,7 +62,7 @@ function ArticleReviewRulesEditor({ article, onUpdate, presets }: { article: Art
 
   return <section className="article-review-rules" aria-label="审校规则管理">
     <Group justify="space-between" align="flex-start">
-      <div><h2>审校规则</h2><Text size="sm" c="dimmed">用于 AI Generate 的生成后审校。</Text></div>
+      <div><h2>审校规则</h2><Text size="sm" c="dimmed">用于 生成 的生成后审校。</Text></div>
       <Group gap="xs">{presets.length > 0 && <Button variant="default" onClick={() => { setSelected([]); setError(""); setImporting(true); }}>导入原全局预设</Button>}<Button disabled={rules.length >= MAX_REVIEW_RULES} onClick={() => openEditor("new")}>新增规则</Button></Group>
     </Group>
     <Group gap="xs" className="review-rule-filters"><Button variant={archived ? "subtle" : "light"} aria-pressed={!archived} onClick={() => setArchived(false)}>生效中（{activeCount}）</Button><Button variant={archived ? "light" : "subtle"} aria-pressed={archived} onClick={() => setArchived(true)}>已归档（{rules.length - activeCount}）</Button></Group>

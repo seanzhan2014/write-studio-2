@@ -1751,6 +1751,14 @@ button:disabled {
 }
 
 .illustration-generator { min-width: 0; }
+.illustration-mode-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.illustration-mode-panel[hidden] { display: none; }
+.illustration-view { width: 100%; }
+.illustration-page-header { align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.illustration-page-header > div { flex: 1 1 220px; }
+.illustration-source-summary { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.illustration-command-card { scroll-margin-top: 24px; }
+.illustration-history-section { min-width: 0; padding-top: 12px; scroll-margin-top: 20px; }
 .illustration-generator .mantine-Tabs-list { flex-wrap: wrap; }
 .illustration-history-card { min-width: 0; }
 .illustration-history-prompt { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; }
@@ -9093,6 +9101,15 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .style-lab-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .55fr); gap: 16px; }
 .style-reference { display: grid; gap: 10px; border-bottom: 1px solid var(--border-soft); padding-bottom: 12px; }
 .style-job-list { display: grid; gap: 10px; }
+.style-job-history { display: grid; gap: 16px; min-width: 0; }
+.style-selected-job { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--border-soft); border-radius: 10px; min-width: 0; }
+.style-job-detail { min-width: 0; }
+.style-task-tabs { display: flex; flex-shrink: 0; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); }
+.style-task-tabs button { border: 0; border-radius: 8px; padding: 9px 14px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; }
+.style-task-tabs button[aria-pressed="true"] { color: var(--text); background: var(--surface-soft); font-weight: 600; }
+.style-task-panel { overflow-y: auto; min-height: 0; padding: 20px; }
+.style-run-history { padding-left: 20px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.style-job-history .mantine-Select-root { max-width: 100%; }
 .style-job { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 10px; }
 .style-version { padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 8px; }
 .style-comparison { overflow-x: auto; max-width: 100%; }

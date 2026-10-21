@@ -2,6 +2,7 @@ import type { ModelMetadata } from "./ai-model-capabilities";
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
 import type { NameVersion } from "@/lib/name-versions";
+import type { StyleLabSnapshot } from "@/db/style-lab-history";
 
 import { articleReviewRules } from "./review-rules.mjs";
 import { EMPTY_ARTICLE_STORY_SETTINGS, normalizeChapterSettings, type ChapterSettings, type ResolvedChapterSettings, type ResolvedOutlineSettings, type SettingSource } from "./story-settings.ts";
@@ -38,7 +39,7 @@ export type OutlineTransferData = { outline: Outline };
 export type ArticleTransferData = { article: Article; tasks: AiTask[] };
 export type ArticlesTransferData = { articles: Article[]; tasks: AiTask[] };
 export type SystemConfigTransferData = { settings: StudioSettings; providers: PortableAiProvider[]; models: PortableAiModel[] };
-export type CompleteTransferData = { studio: StudioData; providers: PortableAiProvider[]; models: PortableAiModel[] };
+export type CompleteTransferData = { studio: StudioData; providers: PortableAiProvider[]; models: PortableAiModel[]; styleLab?: StyleLabSnapshot };
 
 export type TransferDataByScope = {
   outline: OutlineTransferData;

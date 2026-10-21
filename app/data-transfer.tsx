@@ -286,9 +286,13 @@ export function DataTransferProvider({ children }: { children: React.ReactNode }
 
   async function exportComplete() {
     try {
+      if (!await studio.saveNow()) throw new Error("请先保存当前修改，再导出完整备份");
       const [providers, models] = await Promise.all([loadProviders().then(portableProviders), loadModels().then(portableModels)]);
-      downloadJson(createTransferEnvelope("complete", { studio: studio.data, providers, models }), transferFilename("complete"));
-      setNotice("完整备份已导出，不包含 API Key");
+      const response = await fetch("/api/style-lab/export", { cache: "no-store" });
+      const snapshot = await response.json();
+      if (!response.ok) throw new Error(snapshot.error || "读取学习历史失败，完整备份未导出");
+      downloadJson(createTransferEnvelope("complete", { studio: snapshot.data, providers, models, styleLab: snapshot.styleLab }), transferFilename("complete"));
+      setNotice("完整备份已导出，包含学习历史，不包含 API Key");
     } catch (reason) { showError(reason); }
   }
 

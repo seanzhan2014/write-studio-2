@@ -5,9 +5,10 @@ import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, typ
 import { canAutomaticallyUpload, classifyRemoteWriteConflict, evaluateSyncPolicy, remoteAcknowledgesPendingOperation, shouldDisableAutomaticUpload } from "@/lib/sync-policy.mjs";
 import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
+import { readStyleLabSnapshot, validateStyleLabSnapshot, type StyleLabSnapshot } from "./style-lab-history";
 import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
-export const SYNC_SCHEMA_VERSION = 16;
+export const SYNC_SCHEMA_VERSION = 17;
 const syncFormat = "writer-studio-sync-v1";
 const syncChangesFormat = "writer-studio-changes-v2";
 const remoteTimeoutMs = 30_000;
@@ -20,6 +21,7 @@ export type SyncSnapshot = {
   databaseVersion: number;
   createdAt: string;
   data: StudioData;
+  styleLab?: StyleLabSnapshot;
   modelScope: "none" | "config" | "all";
   providers?: AiProviderSyncRecord[];
   models?: AiModelSyncRecord[];
@@ -229,6 +231,9 @@ export async function createCurrentSnapshot(options?: Partial<SyncOverwriteOptio
   const normalized = normalizedOverwriteOptions(options);
   const [state, meta] = await Promise.all([readStudioState(), currentDatabaseMeta()]);
   if (!state.data) throw new SyncError("database_unavailable", "数据库内容不可用", 503);
+  const styleLab = await readStyleLabSnapshot(getDatabase());
+  const after = await currentDatabaseMeta();
+  if (after.databaseVersion !== state.databaseVersion) throw new SyncError("revision_busy", "学习或写作数据正在更新，请稍后重试备份", 409);
   const modelScope = normalized.includeModels ? normalized.includeSecrets ? "all" : "config" : "none";
   return {
     format: syncFormat,
@@ -237,6 +242,7 @@ export async function createCurrentSnapshot(options?: Partial<SyncOverwriteOptio
     databaseVersion: state.databaseVersion,
     createdAt: new Date().toISOString(),
     data: state.data,
+    styleLab,
     modelScope,
     ...(normalized.includeModels ? {
       providers: await exportProvidersForSync(normalized.includeSecrets),
@@ -256,6 +262,10 @@ export function validateSyncSnapshot(value: unknown): asserts value is SyncSnaps
     (snapshot.modelScope !== undefined && snapshot.modelScope !== "none" && (!Array.isArray(snapshot.providers) || !Array.isArray(snapshot.models)))
   ) {
     throw new SyncError("invalid_snapshot", "同步快照格式无效", 400);
+  }
+  if (snapshot.styleLab !== undefined) {
+    try { validateStyleLabSnapshot(snapshot.styleLab, new Set(snapshot.data.articles.map(a => a.id))); }
+    catch (error) { throw new SyncError("invalid_snapshot", error instanceof Error ? error.message : "学习历史格式无效", 400); }
   }
 }
 
@@ -280,7 +290,7 @@ export async function replaceCurrentDatabase(snapshotValue: unknown, expectedDat
     const current = await readStudioState();
     if (current.databaseVersion !== expectedDatabaseVersion) throw remoteWriteConflict(expectedDatabaseVersion, current.databaseVersion);
     if (!current.data) throw new SyncError("database_unavailable", "数据库内容不可用", 503);
-    const result = await writeStudioState(snapshot.data, current.revision, { syncOperationId: operationId || undefined });
+    const result = await writeStudioState(snapshot.data, current.revision, { syncOperationId: operationId || undefined, styleLab: snapshot.styleLab });
     if (!result.conflict) {
       const modelScope = snapshot.modelScope ?? "none";
       if (modelScope !== "none") await replaceModelsFromSync(snapshot.models ?? [], modelScope === "all", snapshot.providers ?? []);
@@ -485,8 +495,9 @@ async function performBackgroundUpload() {
   if (!config) return { state: "not_configured" as const, uploaded: false, message: statusMessage("not_configured") };
   if (stored.lastCloudVersion === null) return { state: "unpaired" as const, uploaded: false, message: statusMessage("unpaired") };
   const activeTasks = localState.data?.tasks.filter((task) => task.state === "waiting" || task.state === "running") ?? [];
-  if (activeTasks.length) {
-    return { state: "pending" as const, uploaded: false, deferred: true, reason: "active_tasks" as const, message: `有 ${activeTasks.length} 个 AI 任务尚未结束，完成后再自动上传` };
+  const activeStyleJobs = Number(await getDatabase().prepare("SELECT COUNT(*) AS count FROM style_lab_jobs WHERE status IN ('queued','running')").first<number>("count") ?? 0);
+  if (activeTasks.length || activeStyleJobs) {
+    return { state: "pending" as const, uploaded: false, deferred: true, reason: "active_tasks" as const, message: `有 ${activeTasks.length + activeStyleJobs} 个 AI 任务尚未结束，完成后再自动上传` };
   }
   try {
     const remote = await remoteMeta(config);
@@ -593,7 +604,7 @@ export async function pullCloudOverLocal(options?: Partial<SyncOverwriteOptions>
   }
   const backupPath = writeRecoverySnapshot("sync-local-before-pull", local);
   const current = await readStudioState();
-  const saved = await writeStudioState(cloud.data, current.revision);
+  const saved = await writeStudioState(cloud.data, current.revision, { styleLab: cloud.styleLab });
   if (saved.conflict) throw new SyncError("local_changed", "本地数据库在覆盖前发生变化，请重试", 409);
   if (normalized.includeModels) await replaceModelsFromSync(cloud.models ?? [], normalized.includeSecrets, cloud.providers ?? []);
   await pruneChangeLog(saved.databaseVersion);

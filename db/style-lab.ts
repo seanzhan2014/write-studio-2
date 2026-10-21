@@ -2,6 +2,8 @@ import { supportsText } from "@/lib/ai-model-capabilities";
 import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./runtime";
 import { diffStudioData } from "@/lib/studio-changes";
 import { isCloudDatabase } from "./sqlite";
+import { styleLabChangedStatement } from "./style-lab-history";
+import { currentTaskExecutionOrigin } from "./task-execution";
 import { AiInputError, findModel, generateText, generateWritingPreparation, reviewGeneratedText, reviseGeneratedText, styleLabCompletion, type AiModelRecord } from "./ai";
 import { createWritingPreparation } from "@/lib/writing-preparation";
 import { normalizeArticleStorySettings } from "@/lib/story-settings";
@@ -15,7 +17,12 @@ import type { SelectedAiContext } from "@/lib/ai-context";
 type Plan = { referenceId: string; scenes: Array<{ title: string; plan: string; targetWords: number }> };
 type Evaluation = { scores: number[]; contentScore: number; evidence: string; suggestions: string };
 export type StyleRound = { index: number; configuration: StyleConfiguration; drafts: Array<{ referenceId: string; scene: number; raw: string; text: string; brief?: string }>; evaluations: Evaluation[]; reviewCheckpoint?: GenerateReviewCheckpoint; score?: number; contentScore?: number; change?: string };
-type Payload = { references: ReferenceDocument[]; base: StyleConfiguration; candidate: StyleConfiguration; best: StyleConfiguration; bestScore: number; bestRound: number; maxRounds: number; round: number; referenceIndex: number; outlines: Plan[]; analyses: StyleConfiguration[]; locked: string[]; modelFingerprint: string; reviewModel: string; reviewModelFingerprint: string; preparation: boolean; reviewRounds: number; reviewStrategy: "minimal" | "explore"; rules: ReviewRuleSnapshot; inputTokens: number; outputTokens: number; applied?: boolean; notice?: string };
+type Application = { id: string; at: string; before: StyleConfiguration; previousCalibration?: ConfigurationVersion; restoredAt?: string };
+type Payload = { references: ReferenceDocument[]; base: StyleConfiguration; candidate: StyleConfiguration; best: StyleConfiguration; bestScore: number; bestRound: number; maxRounds: number; round: number; referenceIndex: number; outlines: Plan[]; analyses: StyleConfiguration[]; locked: string[]; modelFingerprint: string; reviewModel: string; reviewModelFingerprint: string; preparation: boolean; reviewRounds: number; reviewStrategy: "minimal" | "explore"; rules: ReviewRuleSnapshot; inputTokens: number; outputTokens: number; applied?: boolean; notice?: string;
+  autoApply?: boolean; autoApplyPending?: boolean; archived?: boolean; completedAt?: string; executionOrigin?: "local" | "cloud";
+  modelName?: string; providerName?: string; modelSnapshot?: Record<string, unknown>;
+  applications?: Application[]; history?: Array<{ at: string; status: string; phase: string; error?: string }>;
+};
 export type StyleJob = { id: string; articleId: string; kind: "learn" | "tune"; status: string; phase: string; model: string; createdAt: string; updatedAt: string; error?: string; payload: Payload; rounds?: StyleRound[] };
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const stamp = () => new Date().toISOString();
@@ -36,8 +43,34 @@ export async function getStyleJob(id: string, withRounds = false) {
 }
 export async function listStyleJobs(articleId?: string) {
   await ensureDatabase();
-  const rows = articleId ? await getDatabase().prepare("SELECT * FROM style_lab_jobs WHERE article_id=? ORDER BY created_at DESC LIMIT 20").bind(articleId).all<Record<string, unknown>>() : await getDatabase().prepare("SELECT * FROM style_lab_jobs WHERE status IN ('queued','running') ORDER BY created_at LIMIT 20").all<Record<string, unknown>>();
-  return (rows.results ?? []).map(fromRow);
+  const rows = articleId ? await getDatabase().prepare("SELECT id,status FROM style_lab_jobs WHERE article_id=? ORDER BY created_at DESC LIMIT 20").bind(articleId).all<{ id: string; status: string }>() : await getDatabase().prepare("SELECT id,status FROM style_lab_jobs WHERE status IN ('queued','running') ORDER BY created_at LIMIT 20").all<{ id: string; status: string }>();
+  return rows.results ?? [];
+}
+export async function listStyleJobHistory(input: { articleId?: string; filter?: string; page?: number }) {
+  await ensureDatabase();
+  const db = getDatabase(); const args: unknown[] = [];
+  const where = ["1=1"];
+  if (input.articleId) { where.push("article_id=?"); args.push(input.articleId); }
+  if (input.filter === "archived") where.push("COALESCE(json_extract(payload_json,'$.archived'),0)=1");
+  else where.push("COALESCE(json_extract(payload_json,'$.archived'),0)=0");
+  if (input.filter === "active") where.push("status IN ('queued','running','paused','failed')");
+  if (input.filter === "completed") where.push("status='completed'");
+  if (input.filter === "pending") where.push("status='completed' AND COALESCE(json_extract(payload_json,'$.applied'),0)=0");
+  const predicate = where.join(" AND ");
+  const total = Number(await db.prepare(`SELECT COUNT(*) AS count FROM style_lab_jobs WHERE ${predicate}`).bind(...args).first<number>("count") ?? 0);
+  const pages = Math.max(1, Math.ceil(total / 20));
+  const page = Math.max(1, Math.min(pages, Math.floor(Number(input.page) || 1)));
+  const rows = await db.prepare(`SELECT id,article_id,kind,status,phase,model_id,error,created_at,updated_at,json_remove(payload_json,'$.references','$.outlines','$.analyses','$.applications','$.history','$.modelSnapshot','$.base','$.best','$.candidate','$.rules') AS payload_json FROM style_lab_jobs WHERE ${predicate} ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET ?`).bind(...args, (page - 1) * 20).all<Record<string, unknown>>();
+  const jobs = (rows.results ?? []).map(fromRow).map(job => ({ ...job, payload: { ...job.payload, references: [], outlines: [], analyses: [], applications: [], history: [] } }));
+  const active = Number(await db.prepare("SELECT COUNT(*) AS count FROM style_lab_jobs WHERE status IN ('queued','running','paused')" + (input.articleId ? " AND article_id=?" : "")).bind(...(input.articleId ? [input.articleId] : [])).first<number>("count") ?? 0);
+  return { jobs, total, page, pages, active, executionMode: isCloudDatabase() ? "browser" as const : "server" as const };
+}
+function addHistory(job: StyleJob, status = job.status, error?: string) {
+  job.payload.history = [...(job.payload.history ?? []), { at: stamp(), status, phase: job.phase, ...(error ? { error } : {}) }];
+}
+async function saveJobPayload(job: StyleJob) {
+  const db = getDatabase();
+  await db.batch([db.prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(job.payload), stamp(), job.id), styleLabChangedStatement(db)]);
 }
 export async function createStyleJob(input: Record<string, unknown>) {
   await ensureDatabase();
@@ -62,41 +95,79 @@ export async function createStyleJob(input: Record<string, unknown>) {
   if (reviewRounds && !reviewModel?.hasSecret) throw new AiInputError("当前审校模型不可用，请先调整 AI 任务设置");
   const payload: Payload = { references: library.references, base, candidate: initial, best: initial, bestScore: -1, bestRound: 0, maxRounds: maximum, round: 0, referenceIndex: 0, outlines: [], analyses: [], locked: library.locked, modelFingerprint: modelFingerprint(model), reviewModel: reviewModel?.id ?? model.id, reviewModelFingerprint: modelFingerprint(reviewModel ?? model), preparation: true, reviewRounds, reviewStrategy: snapshot.data.settings.generateReviewStrategy === "explore" ? "explore" : "minimal", rules: createReviewRuleSnapshot(article, snapshot.data.settings.generateReviewInstruction), inputTokens: 0, outputTokens: 0 };
   const id = `style-${crypto.randomUUID()}`; const now = stamp();
-  await getDatabase().prepare("INSERT INTO style_lab_jobs(id,article_id,kind,status,phase,model_id,payload_json,created_at,updated_at) VALUES(?,?,?,'queued',?,?,?,?,?)").bind(id, article.id, input.kind, input.kind === "learn" ? "learn" : "outline", model.id, json(payload), now, now).run();
+  const phase = input.kind === "learn" ? "learn" : "outline";
+  Object.assign(payload, { autoApply: input.autoApply !== false, executionOrigin: currentTaskExecutionOrigin(), modelName: model.name, providerName: model.providerName, modelSnapshot: { modelId: model.modelId, baseUrl: model.baseUrl, systemPrompt: model.systemPrompt, temperature: model.temperature, maxOutput: model.maxOutput, reasoningEffort: model.reasoningEffort }, applications: [], history: [{ at: now, status: "queued", phase }] });
+  const db = getDatabase();
+  const inserted = await db.batch([db.prepare("INSERT INTO style_lab_jobs(id,article_id,kind,status,phase,model_id,payload_json,created_at,updated_at) SELECT ?,?,?,'queued',?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM style_lab_jobs WHERE article_id=? AND status IN ('queued','running','paused'))").bind(id, article.id, input.kind, phase, model.id, json(payload), now, now, article.id), styleLabChangedStatement(db)]);
+  if (!Number(inserted[0]?.meta?.changes)) throw new AiInputError("本文章已有进行中的风格任务，请先完成或停止");
   return getStyleJob(id);
 }
 
 export async function applyStyleResult(id: string, force = false) {
-  const job = await getStyleJob(id, true);
-  if (job.status !== "completed") throw new AiInputError("请等待任务完成");
-  const p = job.payload;
   for (let retry = 0; retry < 5; retry++) {
     const snapshot = await readStudioState(); if (!snapshot.data) throw new AiInputError("文章不存在");
+    const job = await getStyleJob(id);
+    if (job.status !== "completed") throw new AiInputError("请等待任务完成");
+    const p = job.payload;
     const next = structuredClone(snapshot.data); const article = next.articles.find(a => a.id === job.articleId); if (!article) throw new AiInputError("文章不存在");
     const story = normalizeArticleStorySettings(article.storySettings); const library = normalizeStyleLibrary(story.styleLibrary);
-    if (library.versions.some(v => v.id === id) || library.calibrations[job.model]?.id === id) {
-      p.applied = true;
-      await getDatabase().prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(p), stamp(), id).run(); return;
-    }
     const current = configurationOf(article);
+    if (!force && p.applied) { p.autoApplyPending = false; await saveJobPayload(job); return; }
     if (!force && (configurationFingerprint(current) !== configurationFingerprint(p.base) || json(library.references) !== json(p.references))) {
       p.notice = "任务期间配置或参考资料已改变，结果已保留，请对照后应用。";
-      await getDatabase().prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(p), stamp(), id).run(); return;
+      p.autoApplyPending = false; await saveJobPayload(job); return;
     }
-    const version: ConfigurationVersion = { id, name: `${job.kind === "learn" ? "学习" : "微调"} ${stamp().slice(0, 16).replace("T", " ")}`, createdAt: stamp(), configuration: p.best, ...(job.kind === "tune" ? { model: job.model, baseFingerprint: configurationFingerprint(current), modelFingerprint: p.modelFingerprint } : {}) };
+    if (job.kind === "tune") {
+      const model = await findModel(job.model);
+      if (!model || modelFingerprint(model) !== p.modelFingerprint) throw new AiInputError("模型设置已改变，请重新微调后应用");
+    }
+    const at = stamp(); const applicationId = crypto.randomUUID();
+    const version: ConfigurationVersion = { id, name: `${job.kind === "learn" ? "学习" : "微调"} ${at.slice(0, 16).replace("T", " ")}`, createdAt: at, configuration: p.best, ...(job.kind === "tune" ? { model: job.model, baseFingerprint: configurationFingerprint(current), modelFingerprint: p.modelFingerprint } : {}) };
+    p.applications = [...(p.applications ?? []), { id: applicationId, at, before: current, ...(library.calibrations[job.model] ? { previousCalibration: library.calibrations[job.model] } : {}) }];
+    library.versions = library.versions.filter(v => v.id !== id);
+    library.versions.push({ id: `${id}-before-${applicationId}`, name: "应用前配置", createdAt: at, configuration: current });
     if (job.kind === "learn") {
-      library.versions.push({ id: `${id}-before`, name: "学习前配置", createdAt: stamp(), configuration: current }, version);
+      library.versions.push(version);
       library.scenes = p.best.scenes;
       article.style = p.best.style; story.advancedStyle = p.best.advancedStyle;
       article.aiGenerateSettings = { ...article.aiGenerateSettings, proseControls: p.best.generate.proseControls, advanced: p.best.generate.advanced };
     } else { library.versions.push(version); library.calibrations[job.model] = version; }
-    story.styleLibrary = normalizeStyleLibrary(library); article.storySettings = story; article.updatedAt = stamp();
-    const saved = await applyStudioChanges(diffStudioData(snapshot.data, next), snapshot.revision);
+    if (job.kind === "learn") library.activeVersionId = id;
+    story.styleLibrary = normalizeStyleLibrary(library); article.storySettings = story; article.updatedAt = at;
+    p.applied = true; p.autoApplyPending = false; p.notice = undefined;
+    const saved = await applyStudioChanges(diffStudioData(snapshot.data, next), snapshot.revision, { recordSyncChange: false, additionalStatements: [getDatabase().prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(p), at, id)] });
     if (saved.conflict) continue;
-    p.applied = true; p.notice = undefined;
-    await getDatabase().prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(p), stamp(), id).run(); return;
+    return;
   }
   throw new Error("配置保存冲突，请重试应用");
+}
+
+async function restoreStyleApplication(id: string) {
+  for (let retry = 0; retry < 5; retry++) {
+    const snapshot = await readStudioState(); if (!snapshot.data) throw new AiInputError("文章不存在");
+    const job = await getStyleJob(id); const p = job.payload;
+    const application = p.applications?.at(-1);
+    if (!application || application.restoredAt) throw new AiInputError("没有可恢复的应用记录");
+    const next = structuredClone(snapshot.data); const article = next.articles.find(a => a.id === job.articleId); if (!article) throw new AiInputError("文章不存在");
+    const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
+    if (job.kind === "learn") {
+      if (configurationFingerprint(configurationOf(article)) !== configurationFingerprint(p.best)) throw new AiInputError("当前配置已经修改，请先对照学习历史，避免覆盖人工修改");
+      const before = application.before;
+      article.style = before.style;
+      article.aiGenerateSettings = { ...article.aiGenerateSettings, proseControls: before.generate.proseControls, advanced: before.generate.advanced };
+      library.scenes = before.scenes; library.activeVersionId = undefined;
+      article.storySettings = { ...normalizeArticleStorySettings(article.storySettings), advancedStyle: before.advancedStyle };
+    } else {
+      if (library.calibrations[job.model]?.id !== id) throw new AiInputError("当前模型配置已经改变，不能直接恢复");
+      if (application.previousCalibration) library.calibrations[job.model] = application.previousCalibration;
+      else delete library.calibrations[job.model];
+    }
+    application.restoredAt = stamp(); p.applied = false; p.autoApplyPending = false; p.notice = "已恢复应用前配置，学习成果仍保存在历史中。";
+    article.storySettings = { ...normalizeArticleStorySettings(article.storySettings), styleLibrary: library };
+    const result = await applyStudioChanges(diffStudioData(snapshot.data, next), snapshot.revision, { recordSyncChange: false, additionalStatements: [getDatabase().prepare("UPDATE style_lab_jobs SET payload_json=?,updated_at=? WHERE id=?").bind(json(p), stamp(), id)] });
+    if (!result.conflict) return;
+  }
+  throw new AiInputError("配置保存冲突，请重试恢复");
 }
 
 function trialContext(job: StyleJob, round: StyleRound, doc: number, scene: number): SelectedAiContext {
@@ -105,13 +176,15 @@ function trialContext(job: StyleJob, round: StyleRound, doc: number, scene: numb
   return { kind: "content", article: { id: "style-trial", title: "风格校准试写", summary: "仅依据本次固定大纲与前文写作", style: [config.style, advancedText(config.advancedStyle, STYLE_FIELDS), sceneInstructions(config.scenes)].filter(Boolean).join("\n"), location: "", negativeConstraints: "", outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE }, currentChapter: { id: "style-trial", title: "试写" }, currentOutline: { id: "style-trial", title: plan.scenes[scene].title, titleGenerationPending: false, plan: plan.scenes[scene].plan, content: "" }, previousOutlines: plan.scenes.slice(0, scene).map((s, i) => ({ id: `scene-${i}`, title: s.title, plan: s.plan })), previousContentTail: previous.map(d => d.text).join("\n\n").slice(-3000), chapterOutlines: [], characters: [], relationships: [], recentMessages: [], excellentFragments: [] };
 }
 export async function executeStyleStep(id: string) {
-  const job = await getStyleJob(id); if (!["queued", "running"].includes(job.status)) return job;
+  let job = await getStyleJob(id); if (!["queued", "running"].includes(job.status)) return job;
+  if (job.payload.executionOrigin && job.payload.executionOrigin !== currentTaskExecutionOrigin()) return job;
   const db = getDatabase(); const owner = crypto.randomUUID();
   const settings = (await readStudioState()).data?.settings;
   const capacity = Math.max(1, Math.min(5, Number(settings?.taskConcurrency) || 2));
   const until = new Date(Date.now() + 30_000).toISOString(); const now = stamp();
-  const claim = await db.prepare("UPDATE style_lab_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=? AND (status='queued' OR (status='running' AND lease_until<?)) AND ((SELECT COUNT(*) FROM style_lab_jobs WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM ai_tasks WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM character_photo_jobs WHERE state='running' AND lease_until>?))<?").bind(owner, until, now, id, now, now, now, now, capacity).run();
+  const claim = await db.prepare("UPDATE style_lab_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<?))) AND ((SELECT COUNT(*) FROM style_lab_jobs WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM ai_tasks WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>?)))<?").bind(owner, until, now, id, now, now, now, now, capacity).run();
   if (!Number(claim.meta?.changes)) return job;
+  job = await getStyleJob(id);
   job.status = "running"; const p = job.payload;
   const abort = new AbortController(); let heartbeatBusy = false;
   const heartbeat = setInterval(() => { if (heartbeatBusy) return; heartbeatBusy = true; void db.prepare("UPDATE style_lab_jobs SET lease_until=? WHERE id=? AND status='running' AND owner=?").bind(new Date(Date.now() + 30_000).toISOString(), id, owner).run().then(r => { if (!Number(r.meta?.changes)) abort.abort(); }).catch(() => abort.abort()).finally(() => { heartbeatBusy = false; }); }, 5000);
@@ -120,12 +193,15 @@ export async function executeStyleStep(id: string) {
     if (abort.signal.aborted) throw new Error("任务已停止");
     const row = await db.prepare("SELECT owner,status FROM style_lab_jobs WHERE id=?").bind(id).first<{ owner: string; status: string }>();
     if (row?.owner !== owner || row.status !== "running") throw new Error("任务执行权已转移");
+    if (release) addHistory(job, job.status === "completed" ? "completed" : "queued");
     const compactRound = round ? { ...round, drafts: round.drafts.map(({referenceId,scene}) => ({ referenceId, scene })) } : undefined;
     if (new TextEncoder().encode(json(p)).length > 1_800_000) throw new AiInputError("学习记录超过存储上限，请减少参考材料后新建任务");
     await db.batch([
+      db.prepare("UPDATE app_settings SET value_json=CASE WHEN EXISTS(SELECT 1 FROM style_lab_jobs WHERE id=? AND owner=? AND status='running') THEN 'ready' ELSE NULL END WHERE key='state_write_guard'").bind(id, owner),
       ...(round ? [db.prepare("INSERT INTO style_lab_rounds(job_id,round_index,payload_json) VALUES(?,?,?) ON CONFLICT(job_id,round_index) DO UPDATE SET payload_json=excluded.payload_json").bind(id, round.index, json(compactRound))] : []),
       ...(round?.drafts.length ? [db.prepare("INSERT INTO style_lab_artifacts(job_id,round_index,scene_index,payload_json) VALUES(?,?,?,?) ON CONFLICT(job_id,round_index,scene_index) DO UPDATE SET payload_json=excluded.payload_json").bind(id, round.index, round.drafts.length - 1, json(round.drafts.at(-1)))] : []),
       db.prepare("UPDATE style_lab_jobs SET status=?,phase=?,payload_json=?,updated_at=?,owner=?,lease_until=?,error=NULL WHERE id=? AND owner=? AND status='running'").bind(job.status === "completed" ? "completed" : release ? "queued" : "running", job.phase, json(p), stamp(), release ? null : owner, release ? null : new Date(Date.now() + 30_000).toISOString(), id, owner),
+      styleLabChangedStatement(db),
     ]);
   }
   async function ask(system: string, data: unknown) { const response = await styleLabCompletion(job.model, system, data, abort.signal); p.inputTokens += response.inputTokens; p.outputTokens += response.outputTokens; return response.result; }
@@ -200,26 +276,51 @@ export async function executeStyleStep(id: string) {
         p.round++; job.phase = "prepare";
       }
     }
+    if (job.status === "completed") { p.completedAt = stamp(); p.autoApplyPending = p.autoApply !== false; }
     await save(true);
-    if (job.status === "completed") await applyStyleResult(id);
   } catch (error) {
-    await db.prepare("UPDATE style_lab_jobs SET status='failed',error=?,owner=NULL,lease_until=NULL,updated_at=? WHERE id=? AND owner=? AND status='running'").bind(error instanceof Error ? error.message : "风格任务失败", stamp(), id, owner).run();
+    const message = error instanceof Error ? error.message : "风格任务失败";
+    // Keep the last successful checkpoint; partially mutated step data is discarded.
+    const persisted = await getStyleJob(id); addHistory(persisted, "failed", message);
+    await db.batch([db.prepare("UPDATE style_lab_jobs SET status='failed',error=?,payload_json=?,owner=NULL,lease_until=NULL,updated_at=? WHERE id=? AND owner=? AND status='running'").bind(message, json(persisted.payload), stamp(), id, owner), styleLabChangedStatement(db)]);
   } finally { clearInterval(heartbeat); }
+  if (job.status === "completed" && p.autoApplyPending) await attemptAutomaticApplication(id);
   return getStyleJob(id);
+}
+
+async function attemptAutomaticApplication(id: string) {
+  try { await applyStyleResult(id); }
+  catch (error) {
+    const job = await getStyleJob(id);
+    job.payload.autoApplyPending = false;
+    job.payload.notice = `成果已保存，自动应用未完成：${error instanceof Error ? error.message : "请手动应用"}`;
+    await saveJobPayload(job);
+  }
 }
 
 export async function styleJobAction(id: string, action: string) {
   const job = await getStyleJob(id);
   if (action === "apply") { await applyStyleResult(id, true); return getStyleJob(id); }
+  if (action === "restore") { await restoreStyleApplication(id); return getStyleJob(id); }
+  if (["archive", "unarchive"].includes(action)) {
+    if (!["completed", "cancelled", "failed"].includes(job.status)) throw new AiInputError("请先完成或停止任务，再归档历史");
+    job.payload.archived = action === "archive"; await saveJobPayload(job); return getStyleJob(id);
+  }
   const next = action === "pause" ? "paused" : action === "stop" ? "cancelled" : action === "resume" || action === "retry" ? "queued" : "";
   if (!next || ["completed", "cancelled"].includes(job.status) || next === "queued" && !["paused", "failed"].includes(job.status)) throw new AiInputError("当前状态不支持此操作");
-  await getDatabase().prepare("UPDATE style_lab_jobs SET status=?,owner=NULL,lease_until=NULL,error=NULL,updated_at=? WHERE id=?").bind(next, stamp(), id).run();
+  const db = getDatabase();
+  const at = stamp();
+  const allowed = next === "queued" ? "'paused','failed'" : next === "paused" ? "'queued','running'" : "'queued','running','paused','failed'";
+  const result = await db.batch([db.prepare(`UPDATE style_lab_jobs SET status=?,payload_json=json_set(payload_json,'$.history',json_insert(COALESCE(json_extract(payload_json,'$.history'),'[]'),'$[#]',json_object('at',?,'status',?,'phase',phase)),'$.executionOrigin',CASE WHEN ?='queued' THEN ? ELSE json_extract(payload_json,'$.executionOrigin') END,'$.archived',json('false'),'$.notice',NULL),owner=NULL,lease_until=NULL,error=NULL,updated_at=? WHERE id=? AND status IN (${allowed})`).bind(next, at, next, next, currentTaskExecutionOrigin(), at, id), styleLabChangedStatement(db)]);
+  if (!Number(result[0]?.meta?.changes)) throw new AiInputError("任务状态已改变，请刷新后重试");
   return getStyleJob(id);
 }
 
 export async function dispatchStyleJobs() {
   if (isCloudDatabase()) return;
   await ensureDatabase();
-  const row = await getDatabase().prepare("SELECT id FROM style_lab_jobs WHERE status='queued' OR (status='running' AND lease_until<?) ORDER BY created_at LIMIT 1").bind(stamp()).first<{id:string}>();
+  const pending = await getDatabase().prepare("SELECT id FROM style_lab_jobs WHERE status='completed' AND json_extract(payload_json,'$.autoApplyPending')=1 ORDER BY updated_at LIMIT 1").first<{ id: string }>();
+  if (pending) await attemptAutomaticApplication(pending.id);
+  const row = await getDatabase().prepare("SELECT id FROM style_lab_jobs WHERE (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<?))) AND COALESCE(json_extract(payload_json,'$.executionOrigin'),'local')='local' ORDER BY updated_at,id LIMIT 1").bind(stamp()).first<{id:string}>();
   if (row) void executeStyleStep(row.id).catch(error => console.error("Style job dispatch failed", error));
 }

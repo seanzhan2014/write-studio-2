@@ -30,7 +30,7 @@ test("Chat reload restores server progress and receives exactly one durable repl
     const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "Reload test", modelId: "reload-test" } })).json();
     await page.goto("/articles/article-main/outlines/outline-current/chat");
     await page.getByLabel("聊天模型", { exact: true }).selectOption(model.id);
-    await page.getByLabel("AI Chat 消息").fill("刷新时继续保存回复");
+    await page.getByLabel("聊天消息").fill("刷新时继续保存回复");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.receivedCharacters).toBeGreaterThan(0);
     await page.reload();
@@ -53,7 +53,7 @@ test("Chat replays a lost completion acknowledgement after reload without duplic
     } else await route.continue();
   });
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("完成响应丢失后恢复");
+  await page.getByLabel("聊天消息").fill("完成响应丢失后恢复");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect.poll(() => lostTask).not.toBe("");
   await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem("writer-studio.pending-chat-completions.v1") ?? "[]").length)).toBe(1);
@@ -73,7 +73,7 @@ test("Chat queues an unconfirmed stop and confirms cancellation after reconnecti
     else await route.continue();
   });
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  await page.getByLabel("AI Chat 消息").fill("停止请求暂时无法送达");
+  await page.getByLabel("聊天消息").fill("停止请求暂时无法送达");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect.poll(async () => page.evaluate(() => JSON.parse(localStorage.getItem("writer-studio.pending-chat-completions.v1") ?? "[]").length)).toBe(1);
   await page.getByRole("button", { name: "停止回复" }).click();

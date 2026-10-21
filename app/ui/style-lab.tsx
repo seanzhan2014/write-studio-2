@@ -1,51 +1,59 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { supportsText } from "@/lib/ai-model-capabilities";
-import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { STYLE_FIELDS, GENERATE_FIELDS } from "@/lib/advanced-writing";
-import { configurationFingerprint, configurationOf, MAX_REFERENCE_TOTAL, normalizeConfiguration, normalizeStyleLibrary, type ReferenceDocument, type ConfigurationVersion, type StyleConfiguration } from "@/lib/style-learning";
+import { configurationFingerprint, configurationOf, MAX_REFERENCE_TOTAL, normalizeConfiguration, normalizeStyleLibrary, type ReferenceDocument, type ConfigurationVersion } from "@/lib/style-learning";
 import type { StyleJob } from "@/db/style-lab";
+import { StyleJobHistory, ConfigComparison, styleLabApi as api, downloadStyleRecord as download } from "./style-job-history";
 
-const phases: Record<string, string> = { learn: "逐篇学习", merge: "提取共性与场景差异", validate: "检查配置与情节污染", outline: "提取并固定参考大纲", prepare: "整理试写准备稿", generate: "生成试写稿", review: "按现有规则审校", evaluate: "对照参考评价", adjust: "调整配置", completed: "已完成" };
-const statuses: Record<string, string> = { queued: "等待执行", running: "进行中", paused: "已暂停", failed: "需要处理", completed: "已完成", cancelled: "已停止" };
 let runtimeBusy = false;
-async function api(path: string, body?: unknown) {
-  const response = body === undefined ? await fetchFromServer(path, { cache: "no-store" }) : await fetchServerAction(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const result = await response.json(); if (!response.ok) throw new Error(result.error || "风格任务请求失败"); return result;
+let activeStyleCount = 0;
+export function useActiveStyleCount() {
+  const [count, setCount] = useState(activeStyleCount);
+  useEffect(() => { const update = () => setCount(activeStyleCount); window.addEventListener("style-lab-summary", update); update(); return () => window.removeEventListener("style-lab-summary", update); }, []);
+  return count;
 }
 export function StyleLabRuntime() {
   const studio = useStudio(); const studioRef = useRef(studio); studioRef.current = studio;
   useEffect(() => {
-    let active = true;
+    let active = true; const observed = new Set<string>();
     async function tick() {
       if (runtimeBusy || !active || navigator.onLine === false) return;
       runtimeBusy = true;
       try {
-        const { jobs } = await api("/api/style-lab");
-        const job = (jobs as StyleJob[]).find(j => j.status === "queued") ?? (jobs as StyleJob[]).find(j => j.status === "running");
-        if (job) { const response = await api(`/api/style-lab/${job.id}/step`, {}); window.dispatchEvent(new CustomEvent("style-lab-progress")); if (response.job.status === "completed") await studioRef.current.refreshFromServer(); }
-      } catch { /* Persisted failed jobs display their error in the panel; connectivity recovers on next tick. */ }
+        const result = await api("/api/style-lab");
+        if (!active) return;
+        activeStyleCount = result.active ?? result.jobs.length;
+        window.dispatchEvent(new CustomEvent("style-lab-summary"));
+        const jobs = result.jobs as StyleJob[];
+        for (const job of jobs) observed.add(job.id);
+        for (const id of observed) {
+          if (jobs.some(job => job.id === id)) continue;
+          const { job } = await api("/api/style-lab/" + id);
+          if (!active) return;
+          if (job.payload.autoApplyPending) continue;
+          observed.delete(id);
+          if (["completed", "failed"].includes(job.status)) {
+            window.dispatchEvent(new CustomEvent("style-lab-progress"));
+            window.dispatchEvent(new CustomEvent("writer-studio-style-completed", { detail: job.status === "failed" ? "学习任务需要处理，可在 AI 任务中重试" : job.payload.applied ? "学习成果已保存并应用，可在学习历史中查看" : "学习成果已保存，等待应用" }));
+            if (job.payload.applied && studioRef.current.saveStatus === "saved") await studioRef.current.refreshFromServer();
+          }
+        }
+        // Self-hosted services own execution. The cloud retains its existing page-driven fallback.
+        if (result.executionMode === "browser") {
+          const job = jobs.find(j => j.status === "queued") ?? jobs.find(j => j.status === "running");
+          if (job) { await api("/api/style-lab/" + job.id + "/step", {}); window.dispatchEvent(new CustomEvent("style-lab-progress")); }
+        }
+      } catch { /* The next tick recovers connectivity; durable failures remain in history. */ }
       finally { runtimeBusy = false; }
     }
-    const timer = window.setInterval(() => { void tick(); }, 2500); void tick();
-    const wake = () => { void tick(); }; window.addEventListener("style-lab-progress", wake);
-    return () => { active = false; window.clearInterval(timer); window.removeEventListener("style-lab-progress", wake); };
+    const timer = window.setInterval(() => void tick(), 2500); void tick();
+    const wake = () => void tick(); window.addEventListener("style-lab-progress", wake);
+    return () => { active = false; clearInterval(timer); window.removeEventListener("style-lab-progress", wake); };
   }, []);
   return null;
-}
-function download(name: string, value: unknown) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a"); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-function configurationRows(c: StyleConfiguration) {
-  return { "写作风格": c.style, ...Object.fromEntries(Object.entries(c.advancedStyle).map(([k,v]) => [`风格 · ${STYLE_FIELDS[k as keyof typeof STYLE_FIELDS][0]}`, v])), ...Object.fromEntries(Object.entries(c.generate.proseControls).map(([k,v]) => [`正文表达 · ${k}`, v])), ...Object.fromEntries(Object.entries(c.generate.advanced).map(([k,v]) => [`生成 · ${GENERATE_FIELDS[k as keyof typeof GENERATE_FIELDS][0]}`, v])), "场景偏好": c.scenes.map(s => `${s.name}（${s.when}）：${s.instruction}`).join("\n") };
-}
-function ConfigComparison({ before, after }: { before: StyleConfiguration; after: StyleConfiguration }) {
-  const a: Record<string, string | undefined> = configurationRows(before); const b: Record<string, string | undefined> = configurationRows(after);
-  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => a[k] !== b[k]);
-  return <div className="style-comparison"><table><thead><tr><th>设置项</th><th>原设置</th><th>建议设置</th></tr></thead><tbody>{keys.map(key => <tr key={key}><th>{key}</th><td>{a[key] || "自动"}</td><td>{b[key] || "自动"}</td></tr>)}</tbody></table>{!keys.length && <Text size="sm" c="dimmed">没有配置变化。</Text>}</div>;
 }
 export function StyleLabPanel() {
   const studio = useStudio(); const article = studio.currentArticle;
@@ -55,23 +63,22 @@ export function StyleLabPanel() {
   const [models, setModels] = useState<Array<{ id: string; name: string; providerName: string; hasSecret: boolean }>>([]);
   const [model, setModel] = useState(article.aiGenerateSettings.model);
   const [rounds, setRounds] = useState<number | string>(3);
-  const [jobs, setJobs] = useState<StyleJob[]>([]);
-  const [selected, setSelected] = useState<StyleJob | null>(null);
+  const [active, setActive] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [autoApply, setAutoApply] = useState(true);
+  const [executionMode, setExecutionMode] = useState<"server" | "browser" | null>(null);
   const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
-  const refreshed = useRef(new Set<string>());
-  const state = useRef({ article, studio, selected }); state.current = { article, studio, selected };
+  const state = useRef({ article, studio }); state.current = { article, studio };
   const fileRef = useRef<HTMLInputElement>(null); const importRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { setReferences(normalizeStyleLibrary(article.storySettings?.styleLibrary).references); setDirty(false); setSelected(null); }, [article.id]);
+  useEffect(() => { setReferences(normalizeStyleLibrary(article.storySettings?.styleLibrary).references); setDirty(false); setSelectedJobId(""); setActive(false); }, [article.id]);
   useEffect(() => { void api("/api/models").then(result => setModels((result.models ?? []).filter(supportsText))).catch(error => setNotice(String(error.message))); }, []);
   useEffect(() => {
     let active = true;
     async function refresh() {
       try {
-        const result = await api(`/api/style-lab?articleId=${encodeURIComponent(article.id)}`); if (!active) return; setJobs(result.jobs);
-        const current = state.current.selected;
-        if (current) { const detail = await api(`/api/style-lab/${current.id}`); if (active) setSelected(detail.job); }
-        const completed = result.jobs.filter((j: StyleJob) => j.status === "completed" && j.payload.applied && !refreshed.current.has(j.id));
-        if (completed.length && state.current.studio.saveStatus === "saved") { completed.forEach((j: StyleJob) => refreshed.current.add(j.id)); await state.current.studio.refreshFromServer(); }
+        const result = await api(`/api/style-lab?articleId=${encodeURIComponent(article.id)}&filter=active`); if (!active) return;
+        setActive((result.active ?? result.jobs.filter((j: StyleJob) => ["queued", "running", "paused"].includes(j.status)).length) > 0);
+        setExecutionMode(result.executionMode ?? null);
       } catch (error) { if (active) setNotice(error instanceof Error ? error.message : "读取失败"); }
     }
     void refresh(); const timer = window.setInterval(() => { void refresh(); }, 4000);
@@ -89,10 +96,9 @@ export function StyleLabPanel() {
   async function perform(operation: () => Promise<void>) { if (busy) return; setBusy(true); setNotice(""); try { await operation(); } catch(error) { setNotice(error instanceof Error ? error.message : "操作失败"); } finally { setBusy(false); } }
   async function start(kind: "learn" | "tune") {
     await saveReferences();
-    const result = await api("/api/style-lab", { articleId: article.id, kind, model, maxRounds: Number(rounds) });
-    setSelected(result.job); setJobs(current => [result.job, ...current]); window.dispatchEvent(new CustomEvent("style-lab-progress"));
+    const result = await api("/api/style-lab", { articleId: article.id, kind, model, maxRounds: Number(rounds), autoApply });
+    setSelectedJobId(result.job.id); setActive(true); setNotice("任务已提交，可继续写作；过程和成果保存在学习历史中。"); window.dispatchEvent(new CustomEvent("style-lab-progress"));
   }
-  async function action(job: StyleJob, actionName: string) { const result = await api(`/api/style-lab/${job.id}`, { action: actionName }); setSelected(result.job); window.dispatchEvent(new CustomEvent("style-lab-progress")); await studio.refreshFromServer(); }
   function restore(version: ConfigurationVersion, asBase = false) {
     const current = configurationOf(article); const next = normalizeStyleLibrary(library);
     next.versions.push({ id: crypto.randomUUID(), name: "应用前配置", createdAt: new Date().toISOString(), configuration: current });
@@ -105,7 +111,6 @@ export function StyleLabPanel() {
     }
     setNotice("已应用配置，可在版本记录中恢复。");
   }
-  const active = jobs.some(j => ["queued", "running", "paused"].includes(j.status));
   const total = references.reduce((n,r) => n+r.text.length, 0);
   const lockOptions = [{ value: "style", label: "写作风格" }, { value: "proseControls", label: "全部正文表达选项" }, { value: "scenes", label: "场景偏好" }, ...Object.entries(STYLE_FIELDS).map(([k,[label]]) => ({ value: `style.${k}`, label: `风格 · ${label}` })), ...Object.entries(GENERATE_FIELDS).map(([k,[label]]) => ({ value: `generate.${k}`, label: `生成 · ${label}` }))];
   return <section className="form-card article-ai-task-section style-lab" aria-label="风格学习与微调">
@@ -118,11 +123,13 @@ export function StyleLabPanel() {
     </Stack></details>
     <div className="style-lab-controls"><Select label="学习 / 生成模型" placeholder="选择文本模型" data={models.map(m => ({ value:m.id,label:`${m.providerName} · ${m.name}${m.hasSecret?"":"（需密钥）"}`,disabled:!m.hasSecret }))} value={model} onChange={value=>setModel(value??"")} /><NumberInput label="微调轮次" description={`基线1次＋最多${Number(rounds)||0}次调整，另含准备与评估请求。`} min={1} max={10} allowDecimal={false} value={rounds} onChange={setRounds} /></div>
     <Group><Button loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("learn"))}>学习并设定</Button><Button variant="light" loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("tune"))}>微调设定</Button></Group>
+    <Checkbox label="完成后自动应用" description="文章配置或参考资料有变化时，成果会保留为待应用。" checked={autoApply} onChange={event => setAutoApply(event.currentTarget.checked)} />
+    {executionMode && <Text size="sm" c="dimmed">{executionMode === "server" ? "由本机服务在后台执行，服务运行时关闭页面也会继续；重启后接续已保存进度。" : "当前云端任务需要保留一个应用页面，过程与结果会持续保存。"}</Text>}
+    <Button variant="subtle" size="compact-sm" onClick={() => window.dispatchEvent(new CustomEvent("writer-studio-open-task", { detail: "style:" + selectedJobId }))}>在 AI 任务中查看学习与微调</Button>
     {notice && <Alert role="status">{notice}</Alert>}
     <details className="writing-advanced"><summary>学习与微调高级设定<span>{library.locked.length?`锁定${library.locked.length}项`:"自动"}</span></summary><Stack gap="md" className="writing-advanced-body"><MultiSelect label="锁定设置项" description="学习和微调保留这些项目。" searchable clearable data={lockOptions} value={library.locked} onChange={locked=>studio.updateArticle({storySettings:{...article.storySettings!,styleLibrary:{...library,locked}}})} /><Text size="sm" c="dimmed">多篇材料提取共性，差异保存为场景偏好。微调固定参考大纲、生成模型和评分标准，并沿用当前审校设置。配置变化时结果保留待应用；模型设置变化时需要新建试验。</Text><Button variant="default" onClick={()=>importRef.current?.click()}>导入可复用配置</Button><input ref={importRef} type="file" hidden accept=".json" onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void perform(async()=>{const value=JSON.parse(await file.text());if(value.kind!=="writer-studio-style-configuration"||!value.configuration)throw new Error("配置文件格式无效");const configuration=normalizeConfiguration(value.configuration);const version={id:crypto.randomUUID(),name:file.name,createdAt:new Date().toISOString(),configuration};studio.updateArticle({storySettings:{...article.storySettings!,styleLibrary:normalizeStyleLibrary({...library,versions:[...library.versions,version]})}});setNotice("配置已导入版本列表，可对照后应用。");});}} /></Stack></details>
     {!!library.scenes.length && <details className="writing-advanced"><summary>场景偏好<span>{library.scenes.length} 项</span></summary><div className="writing-advanced-body">{library.scenes.map((scene,i)=><div key={i}><strong>{scene.name}</strong><p>{scene.when}</p><p>{scene.instruction}</p></div>)}</div></details>}
-    {!!jobs.length && <div className="style-job-list">{jobs.map(job=><article key={job.id} className="style-job"><div><strong>{job.kind==="learn"?"学习并设定":"微调设定"}</strong><Text size="sm">{statuses[job.status]} · {phases[job.phase]??job.phase}{job.kind==="tune"?` · ${job.payload.round===0?"基线":`第${job.payload.round}轮`}`:""}</Text>{job.error&&<Text c="red" size="sm">{job.error}</Text>}{job.payload.notice&&<Text size="sm">{job.payload.notice}</Text>}</div><Group gap="xs"><Button size="compact-sm" variant="subtle" onClick={()=>void perform(async()=>setSelected((await api(`/api/style-lab/${job.id}`)).job))}>查看过程</Button>{["queued","running"].includes(job.status)&&<Button size="compact-sm" variant="subtle" onClick={()=>void perform(()=>action(job,"pause"))}>暂停</Button>}{["paused","failed"].includes(job.status)&&<Button size="compact-sm" variant="subtle" onClick={()=>void perform(()=>action(job,job.status==="failed"?"retry":"resume"))}>{job.status==="failed"?"重试本步骤":"继续"}</Button>}{["queued","running","paused","failed"].includes(job.status)&&<Button size="compact-sm" color="red" variant="subtle" onClick={()=>void perform(()=>action(job,"stop"))}>停止</Button>}{job.status==="completed"&&!job.payload.applied&&<Button size="compact-sm" onClick={()=>void perform(()=>action(job,"apply"))}>应用结果</Button>}</Group></article>)}</div>}
-    {selected&&<details className="writing-advanced" open><summary>本次过程与结果<span>{statuses[selected.status]}</span></summary><Stack gap="md" className="writing-advanced-body"><Text size="sm">模型：{models.find(m=>m.id===selected.model)?.name??selected.model} · 输入 {selected.payload.inputTokens.toLocaleString()} / 输出 {selected.payload.outputTokens.toLocaleString()} tokens</Text>{selected.kind==="tune"&&<Text size="sm">当前最佳：{selected.payload.bestRound===0?"基线":`第${selected.payload.bestRound}轮`} · {selected.payload.bestScore<0?"尚未评分":`${selected.payload.bestScore.toFixed(1)} / 100`}</Text>}<ConfigComparison before={selected.payload.base} after={selected.payload.best}/>{selected.payload.best.notes&&<Text className="style-prewrap" size="sm">{selected.payload.best.notes}</Text>}<details><summary>固定参考大纲</summary><pre className="style-prewrap">{selected.payload.outlines.map(o=>o.scenes.map(s=>`${s.title}\n${s.plan}`).join("\n\n")).join("\n\n")||"尚未提取"}</pre></details>{selected.rounds?.map(round=><details key={round.index}><summary>{round.index===0?"基线":`第${round.index}轮`} · {round.score===undefined?"进行中":`风格${round.score.toFixed(1)}分 · 内容${round.contentScore?.toFixed(1)}分`}</summary><ConfigComparison before={selected.payload.base} after={round.configuration}/>{round.evaluations.map((evaluation,i)=><div key={i}><Text fw={600}>参考文章 {i+1} · {evaluation.scores.join(" / ")}</Text><p className="style-prewrap">{evaluation.evidence}</p><p className="style-prewrap">{evaluation.suggestions}</p></div>)}{round.drafts.map((draft,i)=><details key={i}><summary>场景 {i+1} 试写稿</summary><pre className="style-prewrap">{draft.text}</pre>{draft.raw!==draft.text&&<details><summary>审校前版本</summary><pre className="style-prewrap">{draft.raw}</pre></details>}</details>)}</details>)}<Button variant="default" onClick={()=>download(`style-run-${selected.id}.json`,selected)}>导出本次完整记录</Button></Stack></details>}
+    <StyleJobHistory articleId={article.id} initialJobId={selectedJobId} />
     {!!library.versions.length&&<details className="writing-advanced"><summary>配置版本与复用<span>{library.versions.length} 个</span></summary><Stack gap="md" className="writing-advanced-body">{library.versions.slice().reverse().map(version=><div className="style-version" key={version.id}><strong>{version.name}</strong>{version.model&&<Text size="xs" c="dimmed">模型专用 · {models.find(m=>m.id===version.model)?.name??version.model}{version.baseFingerprint!==configurationFingerprint(configurationOf(article))?" · 基础配置已变更，建议复测":""}</Text>}<Group gap="xs"><Button size="compact-sm" variant="subtle" onClick={()=>restore(version)}>应用此版本</Button>{version.model&&<Button size="compact-sm" variant="subtle" onClick={()=>restore(version,true)}>另存为文章基础配置</Button>}<Button size="compact-sm" variant="subtle" onClick={()=>download("writer-studio-style.json",{kind:"writer-studio-style-configuration",version:1,configuration:version.configuration})}>导出复用</Button></Group><details><summary>查看配置差异</summary><ConfigComparison before={configurationOf(article)} after={version.configuration}/></details></div>)}</Stack></details>}
   </section>;
 }

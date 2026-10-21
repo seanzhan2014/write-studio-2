@@ -63,5 +63,16 @@ test("learning and model calibration persist, resume and use validated best sett
     assert.deepEqual(job.payload.outlines,outlines);
     job=(await api(`/api/style-lab/${job.id}`,"POST",{action:"retry"})).job;job=await finish(job);
     assert.deepEqual(job.payload.outlines,outlines);assert.equal(job.rounds[0].drafts.length,2);
+    // Background learning must retain a result when the author edits configuration meanwhile.
+    job=(await api("/api/style-lab","POST",{articleId:"article-main",kind:"learn",model:model.id})).job;
+    const edited=await api("/api/state");edited.data.articles[0].style="作者在学习期间手动修改的风格";
+    await api("/api/state","PUT",{data:edited.data},{"If-Match":String(edited.revision)});
+    job=await finish(job);
+    assert.equal((await api("/api/state")).data.articles[0].style,"作者在学习期间手动修改的风格");
+    assert.match(job.payload.notice,/已改变/);assert.equal(job.payload.autoApplyPending,false);
+    await api(`/api/style-lab/${job.id}`,"POST",{action:"apply"});
+    assert.equal((await api("/api/state")).data.articles[0].style,config.style);
+    job=(await api("/api/style-lab","POST",{articleId:"article-main",kind:"learn",model:model.id,autoApply:false})).job;
+    job=await finish(job);assert.ok(!job.payload.applied);assert.equal(job.payload.autoApplyPending,false);
   }finally{server.closeAllConnections();server.close();}
 });

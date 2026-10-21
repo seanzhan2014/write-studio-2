@@ -7,7 +7,6 @@ import { characterPhotos } from "@/lib/character-photos";
 import { CharacterReferenceSummary } from "./character-visual";
 import { resolveOutlineSettings } from "@/lib/story-settings";
 import { isSpicyApi } from "@/lib/spicy-api";
-import { ResponsiveModal } from "./overlays";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
@@ -45,7 +44,10 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [busy, setBusy] = useState<"prompt" | "image" | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [tab, setTab] = useState<string | null>(initialTab);
+  const [tab, setTab] = useState<string | null>(initialTab === "prompts" ? "prompts" : "images");
+  const formRef = useRef<HTMLElement>(null);
+  const historyRef = useRef<HTMLElement>(null);
+  useEffect(() => { setExcerpt(selectedExcerpt); }, [selectedExcerpt]);
   const [records, setRecords] = useState<IllustrationRecord[]>([]);
   const [historyError, setHistoryError] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -186,7 +188,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     setPrompt(record.prompt); setStyle(record.style);
     rememberOptions({ stylePreset: record.stylePreset ?? "auto", ...(record.promptLanguage ? { promptLanguage: record.promptLanguage } : {}) });
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
-    setSelectedPrompt(record.kind === "prompt" ? record.id : null); setTab("generate");
+    setSelectedPrompt(record.kind === "prompt" ? record.id : null);
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setNotice("已载入历史 prompt，可编辑后生成插图。");
     setCharacterId(record.characterReference?.characterId ?? "");
   }
@@ -240,17 +243,18 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     window.dispatchEvent(new CustomEvent("writer-studio-open-task", { detail: taskId }));
   }
 
-  return <ResponsiveModal opened onClose={onClose} title="从正文生成插图" size="lg" closeButtonProps={{ "aria-label": "关闭插图生成" }}>
-    <Stack gap="md" className="illustration-generator">
-      <Text size="sm" c="dimmed">生成结果自动保存。同一文章内可复用历史 prompt；任务可放到后台，继续写作。</Text>
-      {backgroundMode === "app" && <Text size="xs" c="dimmed">云端生成时请保留应用页面；可以关闭此窗口或切换功能。</Text>}
+  return <div className="generate-view illustration-view" role="region" aria-label="插图工作区">
+    <div className="generate-page illustration-generator">
+      <header className="generate-page-header illustration-page-header"><div><h2>AI 插图</h2><p>从正文选景、编辑 Prompt，生成和管理当前文章的插图。</p></div><Button variant="default" size="sm" onClick={() => historyRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看历史</Button></header>
+      <Stack gap="md">
+      {backgroundMode === "app" && <Text size="xs" c="dimmed">云端生成时请保留应用页面；可以切换到其他工作页签。</Text>}
       {error && <Alert color="red" role="alert">{error}</Alert>}
       {notice && <Text size="sm" role="status">{notice}</Text>}
       {historyError && <Alert color="red">{historyError}<Button variant="subtle" onClick={() => void loadHistory()}>重新读取历史</Button></Alert>}
       <Group justify="space-between"><Text size="sm" role="status">{activeTasks.length ? `${activeTasks.length} 个插图任务正在处理` : "生成任务统一在 AI 任务中管理"}</Text><Button variant="subtle" onClick={openAiTasks}>查看 AI 任务</Button></Group>
-      <Tabs value={tab} onChange={setTab} keepMounted={false}>
-      <Tabs.List grow><Tabs.Tab value="generate">生成</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab><Tabs.Tab value="images">插图历史</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="generate" pt="md"><Stack gap="md">
+      <section ref={formRef} className="generate-command-card illustration-command-card" aria-label="插图生成设置"><Stack gap="md">
+      <div className="illustration-source-summary"><Text size="sm" fw={600}>{outline?.title || "当前大纲"}</Text><Text size="xs" c="dimmed">当前正文 · {content.length.toLocaleString("zh-CN")} 字符</Text></div>
+      {!content.trim() && <Alert color="yellow">当前大纲暂无正文。你仍可直接输入图片 Prompt 生成插图，或复用历史 Prompt。</Alert>}
       {modelError && <Alert color="red">{modelError}</Alert>}
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
@@ -266,7 +270,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={styles.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
       <Text size="xs" c="dimmed">{styles.find(item => item.value === stylePreset)?.description}</Text>
       <Textarea label="画面要求（可选）" description="可补充自定义风格、色调、光线与构图要求。" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
-      <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
+      <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !content.trim() || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
       <Select label="文生图模型" description="选择支持图片生成的模型，可与提示词模型使用不同的 Provider。" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); setQuality(""); setAspectRatio(""); }} disabled={Boolean(busy)} searchable />
@@ -285,12 +289,16 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         {image.revisedPrompt && <figcaption>模型采用的提示词：{image.revisedPrompt}</figcaption>}
         <Button component="a" href={`${image.src}?download=1`} download variant="default">下载图片</Button>
       </figure>}
-      </Stack></Tabs.Panel>
+      </Stack></section>
+      <section ref={historyRef} className="illustration-history-section" aria-label="生成内容管理">
+      <div className="generate-results-title"><div><span>生成内容</span><h3>插图历史</h3></div><Group gap="xs"><Button variant="subtle" size="compact-sm" onClick={() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>新建插图</Button><Button variant="subtle" size="compact-sm" onClick={() => void loadHistory()}>刷新历史</Button></Group></div>
+      <Tabs value={tab} onChange={setTab} keepMounted={false}>
+      <Tabs.List><Tabs.Tab value="images">插图历史</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab></Tabs.List>
       {(["prompts", "images"] as const).map(panel => <Tabs.Panel key={panel} value={panel} pt="md"><Stack gap="md">
-        <Text size="sm" c="dimmed">{panel === "prompts" ? "保存和管理当前文章的 prompt，选择一条即可继续生成。" : "当前文章生成的插图会自动保存在这里，关闭窗口后仍可查看。"}</Text>
+        <Text size="sm" c="dimmed">{panel === "prompts" ? "保存和管理当前文章的 prompt，选择一条即可继续生成。" : "当前文章生成的插图会自动保存在这里，可复用 Prompt 或下载图片。"}</Text>
         <TextInput label="搜索历史" placeholder="搜索 prompt、正文片段、来源大纲或模型" value={search} onChange={event => setSearch(event.currentTarget.value)} />
         {panel === "prompts" && <Select label="Prompt 状态" value={archiveFilter} onChange={value => setArchiveFilter(value ?? "active")} allowDeselect={false} data={[{ value: "active", label: "未归档" }, { value: "archived", label: "已归档" }, { value: "all", label: "全部" }]} />}
-        <Group justify="space-between"><Text size="sm">{historyLoading ? "正在读取历史…" : `${visibleRecords.length} 条记录${hasMore ? "（还有更多）" : ""}`}</Text><Button variant="subtle" onClick={() => void loadHistory()}>刷新历史</Button></Group>
+        <Text size="sm">{historyLoading ? "正在读取历史…" : `${visibleRecords.length} 条记录${hasMore ? "（还有更多）" : ""}`}</Text>
         {!historyLoading && !visibleRecords.length && <Text c="dimmed" size="sm">{search.trim() ? "没有匹配的历史记录。" : "暂无记录。生成结果会自动出现在这里。"}</Text>}
         {visibleRecords.map(record => <Card key={record.id} withBorder padding="md" className="illustration-history-card"><Stack gap="sm">
           <Group justify="space-between"><Text size="sm" fw={600}>{record.kind === "prompt" ? "Prompt" : "插图"} · {record.outlineTitle}</Text><Group gap="xs"><Badge color={record.status === "error" ? "red" : illustrationIsActive(record) ? "blue" : "gray"}>{illustrationStatusLabels[record.status]}</Badge>{record.archived && <Badge color="gray">已归档</Badge>}</Group></Group>
@@ -315,7 +323,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         {hasMore && <Button variant="default" onClick={() => void loadHistory(true)}>加载更早的历史</Button>}
       </Stack></Tabs.Panel>)}
       </Tabs>
+      </section>
       <Button variant="subtle" onClick={onClose}>返回正文</Button>
-    </Stack>
-  </ResponsiveModal>;
+      </Stack>
+    </div>
+  </div>;
 }

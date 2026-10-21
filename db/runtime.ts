@@ -1,5 +1,6 @@
 import { normalizeCharacterPhotos } from "@/lib/character-photos";
 import { styleLabSchema } from "./style-lab-schema";
+import { preserveStyleLabSql, restoreStyleLabSql, clearStyleLabBackupSql, importStyleLabStatements, type StyleLabSnapshot } from "./style-lab-history";
 import { characterPhotoSchema } from "./character-photo-schema";
 import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { parseTaskHistory } from "@/lib/task-history";
@@ -155,7 +156,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "18";
+const RUNTIME_SCHEMA_VERSION = "19";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -240,7 +241,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '16', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '17', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),
@@ -832,7 +833,7 @@ async function ensureStorySettingColumns(db: SqliteDatabase) {
   if (!versionColumns.includes("setting_snapshot_json")) await db.prepare("ALTER TABLE versions ADD COLUMN setting_snapshot_json TEXT").run();
 }
 
-type StudioWriteOptions = { syncOperationId?: string };
+type StudioWriteOptions = { syncOperationId?: string; styleLab?: StyleLabSnapshot };
 
 function syncOperationReceiptStatements(db: SqliteDatabase, operationId: string | undefined, databaseVersion: number, now: string) {
   if (!operationId) return [];
@@ -850,7 +851,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   if (current !== expectedRevision) return { conflict: true as const, current: currentState };
   const currentDatabaseVersion = currentState.databaseVersion;
 
-  if (currentState.data && isStudioChangesEmpty(diffStudioData(currentState.data, data))) {
+  if (!options?.styleLab && currentState.data && isStudioChangesEmpty(diffStudioData(currentState.data, data))) {
     if (!options?.syncOperationId) return { conflict: false as const, revision: current, databaseVersion: currentDatabaseVersion, unchanged: true as const };
     const now = new Date().toISOString();
     try {
@@ -872,6 +873,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   const statements: SqliteStatement[] = [
     db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END, updated_at=? WHERE key='state_write_guard'").bind(expectedRevision, currentDatabaseVersion, crypto.randomUUID(), now),
     db.prepare(preserveIllustrationHistorySql),
+    ...preserveStyleLabSql.map(sql => db.prepare(sql)),
     db.prepare("DELETE FROM character_photo_jobs"),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
@@ -916,6 +918,8 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
     });
   }
   statements.push(db.prepare(restoreIllustrationHistorySql), db.prepare(clearIllustrationHistoryBackupSql));
+  statements.push(...restoreStyleLabSql.map(sql => db.prepare(sql)), db.prepare(clearStyleLabBackupSql));
+  if (options?.styleLab) statements.push(...importStyleLabStatements(db, options.styleLab));
   for (const task of data.tasks.slice(0, 20)) {
     statements.push(insert(db, "INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,result_text,result_version_id,error_message,input_tokens,output_tokens,phase,last_progress_at,received_characters,timeout_ms,runner_id,lease_until,created_at,started_at,completed_at,history_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetCode(task.target), task.prompt, task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, task.state === "waiting" ? "queued" : task.state === "failed" ? "error" : task.state, task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history))]));
   }
@@ -950,7 +954,7 @@ function updateByKey(db: SqliteDatabase, table: string, key: string, id: string,
   return db.prepare(sql).bind(...assignments.map(([, value]) => value), id);
 }
 
-export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string; taskRunnerId?: string; taskInteractionId?: string }) {
+export async function applyStudioChanges(changes: StudioChanges, expectedRevision: number, options?: { recordSyncChange?: boolean; expectedDatabaseVersion?: number; syncOperationId?: string; taskRunnerId?: string; taskInteractionId?: string; additionalStatements?: SqliteStatement[] }) {
   await ensureDatabase();
   const db = getDatabase();
   const currentRevision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
@@ -959,7 +963,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     return { conflict: true as const, revision: currentRevision, databaseVersion: currentDatabaseVersion };
   }
 
-  if (isStudioChangesEmpty(changes)) {
+  if (isStudioChangesEmpty(changes) && !options?.additionalStatements?.length) {
     if (!options?.syncOperationId) return { conflict: false as const, revision: currentRevision, databaseVersion: currentDatabaseVersion, unchanged: true as const };
     const now = new Date().toISOString();
     try {
@@ -1170,6 +1174,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     [task.id, task.articleId, task.chapterId, task.outlineId, taskTargetValue(task), task.prompt.slice(0, 20_000), task.model, normalizeTaskExecutionOrigin(task.executionOrigin), JSON.stringify(task.contextOptions ?? {}), task.id, taskStatusValue(task), task.attempt ?? 0, task.resultText ?? null, task.resultVersionId ?? null, task.error ?? null, task.inputTokens ?? null, task.outputTokens ?? null, task.phase ?? null, task.lastProgressAt ?? null, task.receivedCharacters ?? null, task.timeoutMs ?? null, task.runnerId ?? null, task.leaseUntil ?? null, task.createdAt, task.startedAt ?? null, task.completedAt ?? null, JSON.stringify(parseTaskHistory(task.history)), options?.taskRunnerId ?? null, options?.taskInteractionId ?? null]));
   }
 
+  if (options?.additionalStatements) statements.push(...options.additionalStatements);
   if (changes.settings) statements.push(insert(db, "INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('studio_ui',?,?)", [JSON.stringify({ settings: normalizeStudioSettings(changes.settings) }), now]));
   if ((options?.recordSyncChange ?? !isCloudDatabase())) {
     statements.push(db.prepare("DELETE FROM sync_change_log WHERE database_version<?").bind(Math.max(0, nextDatabaseVersion - 500)));

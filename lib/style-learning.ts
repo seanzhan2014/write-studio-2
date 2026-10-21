@@ -5,7 +5,7 @@ export type ReferenceDocument = { id: string; title: string; text: string };
 export type ScenePreference = { name: string; when: string; instruction: string };
 export type StyleConfiguration = { style: string; advancedStyle: StyleAdvanced; generate: AiGenerateOptions; scenes: ScenePreference[]; notes: string };
 export type ConfigurationVersion = { id: string; name: string; createdAt: string; configuration: StyleConfiguration; model?: string; baseFingerprint?: string; modelFingerprint?: string };
-export type StyleLibrary = { references: ReferenceDocument[]; scenes: ScenePreference[]; versions: ConfigurationVersion[]; calibrations: Record<string, ConfigurationVersion>; locked: string[] };
+export type StyleLibrary = { references: ReferenceDocument[]; scenes: ScenePreference[]; versions: ConfigurationVersion[]; calibrations: Record<string, ConfigurationVersion>; locked: string[]; activeVersionId?: string };
 export const MAX_REFERENCE_TOTAL = 240_000;
 export const SCORE_DIMENSIONS = ["语言与句式", "叙述声音与视角", "心理与对白", "节奏与结构", "细节组织与留白"];
 export const STYLE_SCORE_RUBRIC = "五项各0–20分，按固定维度评价与参考表达是否接近，提供两边的具体依据及可执行的配置调整建议。内容还原另列0–100分，不计入风格总分。不要因更简洁、更文学而加分；不要因没有照搬原句而扣分。";
@@ -34,7 +34,7 @@ export function normalizeStyleLibrary(value: unknown): StyleLibrary {
     return { id: String(r.id ?? `reference-${i}`).slice(0, 100), title: String(r.title ?? `参考文章 ${i + 1}`).slice(0, 150), text };
   });
   function version(raw: unknown): ConfigurationVersion { const p = rec(raw); return { id: String(p.id ?? "").slice(0, 100), name: String(p.name ?? "配置版本").slice(0, 150), createdAt: String(p.createdAt ?? ""), configuration: normalizeConfiguration(p.configuration), ...(p.model ? { model: String(p.model).slice(0, 300), baseFingerprint: String(p.baseFingerprint ?? ""), modelFingerprint: String(p.modelFingerprint ?? "") } : {}) }; }
-  return { references, scenes: normalizeConfiguration({ scenes: v.scenes }).scenes, versions: (Array.isArray(v.versions) ? v.versions : []).slice(-20).map(version), calibrations: Object.fromEntries(Object.entries(rec(v.calibrations)).slice(0, 30).map(([key, val]) => [key, version(val)])), locked: (Array.isArray(v.locked) ? v.locked : []).map(String).slice(0, 100) };
+  return { references, scenes: normalizeConfiguration({ scenes: v.scenes }).scenes, versions: (Array.isArray(v.versions) ? v.versions : []).slice(-20).map(version), calibrations: Object.fromEntries(Object.entries(rec(v.calibrations)).slice(0, 30).map(([key, val]) => [key, version(val)])), locked: (Array.isArray(v.locked) ? v.locked : []).map(String).slice(0, 100), ...(typeof v.activeVersionId === "string" ? { activeVersionId: v.activeVersionId } : {}) };
 }
 type ConfiguredArticle = { style: string; aiGenerateSettings: unknown; storySettings?: { advancedStyle?: StyleAdvanced; styleLibrary?: StyleLibrary } };
 export function configurationOf(article: ConfiguredArticle): StyleConfiguration {
