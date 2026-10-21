@@ -82,3 +82,89 @@ test("bulk text checks never test or delete image models", async ({ page }) => {
   expect(calls).toHaveLength(1); expect(calls[0]).toContain("/models/writer/test");
   await expect(page.locator('[data-provider-model-id="image"]')).toBeVisible();
 });
+
+test("model row deletion handles an empty response and resets its default assignment", async ({ page, request }) => {
+  let models = [{ id: "writer", providerId: "p", providerName: "服务", name: "Writer", modelId: "writer", hasSecret: true, metadata: textMetadata }];
+  let deleted = 0;
+  const state = await (await request.get("/api/state")).json();
+  state.data.settings.generateModel = "writer";
+  await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: state.data } });
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "p", name: "服务", baseUrl: "https://example.com/v1", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models } }));
+  await page.route("**/api/providers/p/discover", route => route.fulfill({ json: null }));
+  await page.route("**/api/models/writer", route => { deleted++; models = []; return route.fulfill({ status: 204 }); });
+  await page.goto("/settings/models");
+  const row = page.locator('[data-provider-model-id="writer"]');
+  await row.getByRole("button", { name: "删除", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "删除模型", exact: true });
+  await expect(confirm).toContainText("所选模型正在用于默认用途");
+  await confirm.getByRole("button", { name: "取消", exact: true }).click();
+  expect(deleted).toBe(0); await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "删除", exact: true }).click();
+  await confirm.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(confirm).toBeHidden(); await expect(row).toHaveCount(0);
+  await expect(page.locator(".ai-services").getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "正文生成", exact: true })).toHaveValue("本地演示引擎");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.generateModel).toBe("");
+  expect(deleted).toBe(1);
+});
+
+test("provider management preserves selections, retries deletion and clears all its models despite search", async ({ page, request }, info) => {
+  let models = [
+    { id: "a1", providerId: "p", providerName: "服务 A", name: "Writer One", modelId: "writer-one", hasSecret: true, metadata: textMetadata },
+    { id: "a2", providerId: "p", providerName: "服务 A", name: "Writer Two", modelId: "writer-two", hasSecret: true, metadata: textMetadata },
+    { id: "a3", providerId: "p", providerName: "服务 A", name: "Painter", modelId: "painter", hasSecret: true, metadata: imageMetadata },
+    { id: "b1", providerId: "q", providerName: "服务 B", name: "Other Writer", modelId: "other-writer", hasSecret: true, metadata: textMetadata },
+  ];
+  const calls: { providerId: string; ids: string[] }[] = [];
+  const state = await (await request.get("/api/state")).json();
+  Object.assign(state.data.settings, { generateModel: "a1", namingModel: "a2", namingModelMode: "fixed", reviewModel: "a2", reviewModelMode: "fixed", chatModel: "b1", illustrationImageModel: "a3" });
+  await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: state.data } });
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "p", name: "服务 A", baseUrl: "https://example.com/v1", hasSecret: true, timeoutMs: 120000 }, { id: "q", name: "服务 B", baseUrl: "https://other.example.com/v1", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models } }));
+  await page.route("**/api/providers/*/discover", route => route.fulfill({ json: null }));
+  await page.route("**/api/models/bulk", route => {
+    const body = route.request().postDataJSON() as { providerId: string; ids: string[] }; calls.push(body);
+    if (calls.length === 1) return route.fulfill({ status: 503, json: { error: "暂时无法删除，请重试" } });
+    const deletedIds = models.filter((model) => model.providerId === body.providerId && body.ids.includes(model.id)).map((model) => model.id);
+    models = models.filter((model) => !deletedIds.includes(model.id));
+    return route.fulfill({ json: { deletedIds } });
+  });
+  await page.goto("/settings/models");
+  const provider = page.locator(".ai-model-group").filter({ has: page.getByRole("heading", { name: "服务 A", exact: true }) });
+  await provider.getByRole("button", { name: "管理模型", exact: true }).click();
+  const manager = page.getByRole("dialog", { name: "管理模型 · 服务 A", exact: true });
+  await manager.getByRole("checkbox", { name: "选择已启用模型 writer-one", exact: true }).check();
+  await manager.getByRole("textbox", { name: "搜索要管理的模型" }).fill("writer-two");
+  await manager.getByRole("checkbox", { name: "全选当前结果", exact: true }).check();
+  await expect(manager).toContainText("已选择 2 / 3 个模型");
+  await page.screenshot({ path: info.outputPath("provider-model-manager.png") });
+  await manager.getByRole("button", { name: "删除所选（2）", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "批量删除模型", exact: true });
+  await confirm.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(confirm.getByRole("alert").filter({ hasText: "暂时无法删除" })).toBeVisible();
+  await confirm.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  expect(calls[1]).toEqual({ providerId: "p", ids: ["a1", "a2"] });
+  await expect.poll(async () => {
+    const settings = (await (await request.get("/api/state")).json()).data.settings;
+    return [settings.generateModel, settings.namingModel, settings.namingModelMode, settings.reviewModel, settings.reviewModelMode, settings.chatModel];
+  }).toEqual(["", "", "inherit", "", "inherit", "b1"]);
+  await manager.getByRole("textbox", { name: "搜索要管理的模型" }).fill("no-match");
+  await manager.getByRole("button", { name: "清空全部模型", exact: true }).click();
+  const clear = page.getByRole("dialog", { name: "清空模型", exact: true });
+  await expect(clear).toContainText("此操作包含搜索条件之外的模型");
+  await clear.getByRole("button", { name: "取消", exact: true }).click();
+  expect(calls).toHaveLength(2);
+  await manager.getByRole("button", { name: "清空全部模型", exact: true }).click();
+  await clear.getByRole("button", { name: "确认清空", exact: true }).click();
+  await expect(clear).toBeHidden();
+  await expect(manager).toContainText("此 Provider 暂无已启用模型");
+  await expect(manager.getByRole("button", { name: "清空全部模型", exact: true })).toBeDisabled();
+  await manager.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(page.locator('[data-provider-model-id="b1"]')).toBeVisible();
+  await expect(provider).toContainText("0 个模型");
+  expect(calls[2]).toEqual({ providerId: "p", ids: ["a3"] });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  await page.screenshot({ path: info.outputPath("provider-model-management.png"), fullPage: true });
+});

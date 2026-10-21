@@ -471,6 +471,17 @@ export async function deleteModel(id: string) {
   await getDatabase().prepare("DELETE FROM ai_models WHERE id=?").bind(id).run();
 }
 
+export async function deleteModels(input: { providerId?: unknown; ids?: unknown }) {
+  if (!input || typeof input.providerId !== "string" || !input.providerId.trim()) throw new Error("请选择服务连接");
+  if (!Array.isArray(input.ids) || !input.ids.length || input.ids.some((id) => typeof id !== "string" || !id.trim())) throw new Error("请选择要删除的模型");
+  const provider = await findProvider(input.providerId);
+  if (!provider) throw new Error("Provider 不存在");
+  const ids = [...new Set(input.ids as string[])];
+  const result = await getDatabase().prepare("DELETE FROM ai_models WHERE provider_id=? AND id IN (SELECT value FROM json_each(?)) RETURNING id")
+    .bind(provider.id, JSON.stringify(ids)).all<{ id: string }>();
+  return { deletedIds: (result.results ?? []).map((model) => model.id) };
+}
+
 export async function setModelSecret(id: string, secret: string) {
   const model = await findModel(id);
   if (!model || model.id !== id) throw new Error("模型不存在");

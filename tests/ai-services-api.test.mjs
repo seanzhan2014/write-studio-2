@@ -6,6 +6,44 @@ import { once } from "node:events";
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=";
 
+test("bulk deletion validates selection, stays within its provider and preserves connection credentials", { skip: !baseUrl }, async (t) => {
+  async function api(path, body, method = body === undefined ? "GET" : "POST") {
+    const response = await fetch(baseUrl + path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const raw = await response.text(); return { response, value: raw ? JSON.parse(raw) : null };
+  }
+  const providers = [], models = [];
+  t.after(async () => {
+    for (const model of models) await api(`/api/models/${model.id}`, undefined, "DELETE");
+    for (const provider of providers) await api(`/api/providers/${provider.id}`, undefined, "DELETE");
+  });
+  for (const name of ["Delete A", "Delete B"]) {
+    const result = await api("/api/providers", { name, baseUrl: "https://example.com/v1", secret: "delete-test-key" });
+    assert.equal(result.response.status, 201); providers.push(result.value);
+    const enabled = await api("/api/models/bulk", { providerId: result.value.id, modelIds: ["one", "two", "three"] });
+    models.push(...enabled.value.models);
+  }
+  const [providerA, providerB] = providers;
+  const own = models.filter((model) => model.providerId === providerA.id);
+  const other = models.filter((model) => model.providerId === providerB.id);
+  for (const ids of [undefined, [], [own[0].id, null]]) {
+    assert.equal((await api("/api/models/bulk", { providerId: providerA.id, ids }, "DELETE")).response.status, 400);
+  }
+  assert.equal((await api("/api/models/bulk", { providerId: "missing", ids: [own[0].id] }, "DELETE")).response.status, 400);
+  const selected = await api("/api/models/bulk", { providerId: providerA.id, ids: [own[0].id, own[0].id, other[0].id] }, "DELETE");
+  assert.equal(selected.response.status, 200);
+  assert.deepEqual(selected.value.deletedIds, [own[0].id]);
+  let remaining = (await api("/api/models")).value.models;
+  assert.equal(remaining.filter((model) => model.providerId === providerA.id).length, 2);
+  assert.equal(remaining.filter((model) => model.providerId === providerB.id).length, 3);
+  const cleared = await api("/api/models/bulk", { providerId: providerA.id, ids: own.map((model) => model.id) }, "DELETE");
+  assert.deepEqual(new Set(cleared.value.deletedIds), new Set(own.slice(1).map((model) => model.id)));
+  const connection = (await api("/api/providers")).value.providers.find((provider) => provider.id === providerA.id);
+  assert.equal(connection.hasSecret, true); assert.equal(connection.modelCount, 0);
+  assert.equal((await api(`/api/models/${other[0].id}`, undefined, "DELETE")).response.status, 204);
+  remaining = (await api("/api/models")).value.models;
+  assert.equal(remaining.filter((model) => model.providerId === providerB.id).length, 2);
+});
+
 test("catalog discovery, bulk enable, capability-specific tests and refresh preserve configured models", { skip: !baseUrl, timeout: 60000 }, async (t) => {
   const calls = []; let omitText = false, failImageDirectory = false;
   const text = { id: "writer", name: "Writer", architecture: { input_modalities: ["text"], output_modalities: ["text"] }, context_length: 64000 };

@@ -25,6 +25,7 @@ async function jsonRequest<T>(path: string, body?: unknown, method = body === un
   const response = await (method === "GET" ? fetchFromServer : fetchServerAction)(path, {
     method, cache: "no-store", ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
   });
+  if (response.status === 204 && response.ok) return undefined as T;
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || result.message || `请求失败（${response.status}）`);
   return result as T;
@@ -65,6 +66,11 @@ export function AiServices() {
   const [editing, setEditing] = useState<Model | null>(null);
   const [editForm, setEditForm] = useState({ providerId: "", name: "", modelId: "", kind: "text", systemPrompt: "", maxInput: DEFAULT_MAX_INPUT_CHARACTERS, reasoningEffort: null as ReasoningEffort | null });
   const [preview, setPreview] = useState<string | null>(null);
+  const [managing, setManaging] = useState<AiProviderRecord | null>(null);
+  const [manageQuery, setManageQuery] = useState("");
+  const [managedSelection, setManagedSelection] = useState<string[]>([]);
+  const [removal, setRemoval] = useState<{ models: Model[]; provider?: AiProviderRecord; clearAll?: boolean } | null>(null);
+  const [removalError, setRemovalError] = useState("");
 
   const load = useCallback(async () => {
     const [p, m] = await Promise.all([jsonRequest<{ providers: AiProviderRecord[] }>("/api/providers"), jsonRequest<{ models: Model[] }>("/api/models")]);
@@ -186,19 +192,42 @@ export function AiServices() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "检测中断"); }
     finally { setBusy(""); }
   }
-  async function removeModel(model: Model) {
-    const used = [settings.generateModel, settings.chatModel, settings.namingModel, settings.illustrationPromptModel, settings.illustrationImageModel, settings.reviewModel].some((reference) => matchesReference(model, reference));
-    if (!window.confirm(`删除模型「${model.name}」？${used ? "此模型正在用于默认用途，删除后需要重新选择。" : ""}`)) return;
-    setBusy("delete");
+  function openManage(provider: AiProviderRecord) {
+    setManaging(provider); setManageQuery(""); setManagedSelection([]);
+  }
+  function removeModel(model: Model) {
+    setRemovalError(""); setRemoval({ models: [model] });
+  }
+  function requestBulkRemoval(targets: Model[], clearAll = false) {
+    if (!managing || !targets.length || busy) return;
+    setRemovalError(""); setRemoval({ models: targets, provider: managing, clearAll });
+  }
+  async function confirmRemoval() {
+    if (!removal || busy) return;
+    setBusy("delete"); setRemovalError(""); setError("");
     try {
-      await jsonRequest(`/api/models/${model.id}`, undefined, "DELETE");
+      let deletedIds: string[];
+      if (removal.provider) {
+        const result = await jsonRequest<{ deletedIds: string[] }>("/api/models/bulk", { providerId: removal.provider.id, ids: removal.models.map((model) => model.id) }, "DELETE");
+        deletedIds = result.deletedIds;
+      } else {
+        await jsonRequest(`/api/models/${removal.models[0].id}`, undefined, "DELETE");
+        deletedIds = [removal.models[0].id];
+      }
+      const deleted = new Set(deletedIds);
+      const removedModels = removal.models.filter((model) => deleted.has(model.id));
+      const removedReference = (reference?: string) => removedModels.some((model) => matchesReference(model, reference));
       const patch: Partial<StudioSettings> = {};
-      for (const key of ["generateModel", "chatModel", "namingModel", "illustrationPromptModel", "illustrationImageModel", "reviewModel"] as const) if (matchesReference(model, settings[key])) patch[key] = "";
-      if (matchesReference(model, settings.namingModel)) patch.namingModelMode = "inherit";
-      if (matchesReference(model, settings.reviewModel)) patch.reviewModelMode = "inherit";
+      for (const key of ["generateModel", "chatModel", "namingModel", "illustrationPromptModel", "illustrationImageModel", "reviewModel"] as const) if (removedReference(settings[key])) patch[key] = "";
+      if (removedReference(settings.namingModel)) patch.namingModelMode = "inherit";
+      if (removedReference(settings.reviewModel)) patch.reviewModelMode = "inherit";
       if (Object.keys(patch).length) studio.updateSettings(patch);
-      await load(); setNotice("模型已删除");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "删除失败"); }
+      setModels((current) => current.filter((model) => !deleted.has(model.id)));
+      setManagedSelection((current) => current.filter((id) => !deleted.has(id)));
+      setRemoval(null);
+      setNotice(`已删除 ${deletedIds.length} 个模型${Object.keys(patch).length ? "，相关默认用途已重置" : ""}`);
+      try { await load(); } catch { setError("模型已删除，但列表刷新失败，请刷新页面。"); }
+    } catch (cause) { setRemovalError(cause instanceof Error ? cause.message : "删除失败"); }
     finally { setBusy(""); }
   }
   async function connectionAction(provider: AiProviderRecord, action: "test" | "delete" | "key") {
@@ -214,9 +243,15 @@ export function AiServices() {
     finally { setBusy(""); }
   }
   function uses(model: Model) {
-    return [matchesReference(model, settings.generateModel) && "正文", matchesReference(model, settings.chatModel) && "对话", settings.namingModelMode === "fixed" && matchesReference(model, settings.namingModel) && "命名", matchesReference(model, settings.illustrationPromptModel) && "插图提示词", matchesReference(model, settings.illustrationImageModel) && "插图"].filter(Boolean).join(" · ");
+    return [matchesReference(model, settings.generateModel) && "正文", matchesReference(model, settings.chatModel) && "对话", settings.namingModelMode === "fixed" && matchesReference(model, settings.namingModel) && "命名", settings.reviewModelMode === "fixed" && matchesReference(model, settings.reviewModel) && "审校", matchesReference(model, settings.illustrationPromptModel) && "插图提示词", matchesReference(model, settings.illustrationImageModel) && "插图"].filter(Boolean).join(" · ");
   }
   const visible = models.filter((model) => `${model.name} ${model.modelId} ${model.providerName}`.toLowerCase().includes(query.toLowerCase()) && (filter === "all" || filter === "text" && supportsText(model) || filter === "image" && supportsImages(model) || filter === "used" && Boolean(uses(model)) || filter === "failed" && Object.values(model.metadata?.tests ?? {}).some((result) => !result?.ok)));
+  const unfiltered = !query.trim() && filter === "all";
+  const managedModels = models.filter((model) => model.providerId === managing?.id);
+  const managedVisible = managedModels.filter((model) => `${model.name} ${model.modelId}`.toLowerCase().includes(manageQuery.toLowerCase()));
+  const selectedManagedModels = managedModels.filter((model) => managedSelection.includes(model.id));
+  const allManagedVisibleSelected = managedVisible.length > 0 && managedVisible.every((model) => managedSelection.includes(model.id));
+  const removalUsesDefaults = removal?.models.some((model) => [settings.generateModel, settings.chatModel, settings.namingModel, settings.illustrationPromptModel, settings.illustrationImageModel, settings.reviewModel].some((reference) => matchesReference(model, reference)));
   const formModal = { fullScreen: compact, centered: !compact, scrollMode: "content" as const, classNames: { content: "ai-service-modal", body: "ai-service-modal-body" } };
 
   return <div className="ai-services">
@@ -232,13 +267,33 @@ export function AiServices() {
     </div></section>
     <section className="ai-service-section" aria-labelledby="ai-models-title"><div className="ai-section-heading"><div><h2 id="ai-models-title">已启用模型 <span>{models.length}</span></h2><p>只显示你添加的模型；服务商目录可在添加时搜索。</p></div><Button variant="subtle" size="xs" disabled={Boolean(busy) || !textModels.length} onClick={() => void testModels(textModels, "text")}>检测文字模型</Button></div>
       <div className="ai-model-tools"><TextInput aria-label="搜索已启用模型" placeholder="搜索模型名称、ID 或服务商" value={query} onChange={(event) => setQuery(event.currentTarget.value)} /><div className="ai-filter-tabs" role="group" aria-label="模型筛选">{[["all", "全部"], ["text", "文字"], ["image", "图像"], ["used", "默认使用中"], ["failed", "检测失败"]].map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
-      {loading ? <Text p="md" role="status">正在加载模型配置…</Text> : visible.length ? <div className="ai-model-groups">{providers.map((provider) => {
-        const items = visible.filter((model) => model.providerId === provider.id); if (!items.length) return null;
-        return <div className="ai-model-group" key={provider.id}><div className="ai-model-group-title"><h3>{provider.name}</h3><span>{items.length} 个模型</span><Button size="compact-xs" variant="subtle" onClick={() => openAdd(provider.id)}>添加模型</Button></div><table className="ai-model-table"><colgroup><col className="ai-model-col-name" /><col className="ai-model-col-uses" /><col className="ai-model-col-actions" /></colgroup><thead><tr><th>模型与能力</th><th>默认用途</th><th>操作</th></tr></thead><tbody>{items.map((model) => <tr key={model.id} data-provider-model-id={model.id}><td><div className="ai-model-name"><strong>{model.name}</strong><CapabilityBadges model={model} /></div><div className="ai-model-id"><code>{model.modelId}</code><button type="button" aria-label={`复制模型 ID：${model.modelId}`} onClick={() => void navigator.clipboard.writeText(model.modelId).then(() => setNotice("已复制模型 ID")).catch(() => setError("复制失败，请手动选择模型 ID"))}>复制</button></div>{!model.hasSecret && <span className="ai-inline-warning">连接缺少密钥</span>}{catalogs[provider.id] && !catalogs[provider.id].catalog.some((entry) => entry.id === model.modelId) && <span className="ai-model-meta">最近目录未列出，仍可测试和使用</span>}<div className="ai-test-results">{(["text", "image"] as const).map((operation) => { const result = model.metadata?.tests?.[operation]; return result ? <span className={result.ok ? "passed" : "failed"} key={operation} title={`${formatTime(result.checkedAt)} · ${result.message}`}>{operation === "text" ? "文字" : "图像"}：{result.ok ? `${result.latencyMs} ms · 通过` : result.message}<small>{formatTime(result.checkedAt)}</small></span> : null; })}{!Object.keys(model.metadata?.tests ?? {}).length && <span className="ai-model-meta">尚未测试调用</span>}</div></td><td className="ai-model-uses">{uses(model) || "—"}</td><td><div className="ai-row-actions"><Button size="compact-xs" variant="subtle" onClick={() => openEdit(model)}>编辑</Button>{supportsText(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "text")}>测试文字</Button>}{supportsImages(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "image")}>试生成 1 张</Button>}</div></td></tr>)}</tbody></table></div>;
+      {loading ? <Text p="md" role="status">正在加载模型配置…</Text> : visible.length || unfiltered && providers.length ? <div className="ai-model-groups">{providers.map((provider) => {
+        const items = visible.filter((model) => model.providerId === provider.id); if (!items.length && !unfiltered) return null;
+        return <div className="ai-model-group" key={provider.id}><div className="ai-model-group-title"><h3>{provider.name}</h3><span>{items.length} 个模型</span><div className="ai-model-group-actions"><Button size="compact-xs" variant="default" disabled={Boolean(busy)} onClick={() => openManage(provider)}>管理模型</Button><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openAdd(provider.id)}>添加模型</Button></div></div>{!items.length && <div className="ai-service-empty">暂无已启用模型，可从目录添加模型。</div>}{items.length > 0 && <table className="ai-model-table"><colgroup><col className="ai-model-col-name" /><col className="ai-model-col-uses" /><col className="ai-model-col-actions" /></colgroup><thead><tr><th>模型与能力</th><th>默认用途</th><th>操作</th></tr></thead><tbody>{items.map((model) => <tr key={model.id} data-provider-model-id={model.id}><td><div className="ai-model-name"><strong>{model.name}</strong><CapabilityBadges model={model} /></div><div className="ai-model-id"><code>{model.modelId}</code><button type="button" aria-label={`复制模型 ID：${model.modelId}`} onClick={() => void navigator.clipboard.writeText(model.modelId).then(() => setNotice("已复制模型 ID")).catch(() => setError("复制失败，请手动选择模型 ID"))}>复制</button></div>{!model.hasSecret && <span className="ai-inline-warning">连接缺少密钥</span>}{catalogs[provider.id] && !catalogs[provider.id].catalog.some((entry) => entry.id === model.modelId) && <span className="ai-model-meta">最近目录未列出，仍可测试和使用</span>}<div className="ai-test-results">{(["text", "image"] as const).map((operation) => { const result = model.metadata?.tests?.[operation]; return result ? <span className={result.ok ? "passed" : "failed"} key={operation} title={`${formatTime(result.checkedAt)} · ${result.message}`}>{operation === "text" ? "文字" : "图像"}：{result.ok ? `${result.latencyMs} ms · 通过` : result.message}<small>{formatTime(result.checkedAt)}</small></span> : null; })}{!Object.keys(model.metadata?.tests ?? {}).length && <span className="ai-model-meta">尚未测试调用</span>}</div></td><td className="ai-model-uses">{uses(model) || "—"}</td><td><div className="ai-row-actions"><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openEdit(model)}>编辑</Button><Button size="compact-xs" variant="subtle" color="red" disabled={Boolean(busy)} onClick={() => removeModel(model)}>删除</Button>{supportsText(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "text")}>测试文字</Button>}{supportsImages(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "image")}>试生成 1 张</Button>}</div></td></tr>)}</tbody></table>}</div>;
       })}</div> : <div className="ai-service-empty"><strong>{models.length ? "没有符合条件的模型" : "添加第一个模型"}</strong><p>{models.length ? "换一个关键词或筛选条件试试。" : "连接服务商后，选择文字或图像模型用于创作。"}</p>{!models.length && <Button variant="light" onClick={() => providers.length ? openAdd() : openConnection()}>添加模型</Button>}</div>}
     </section>
-    <section className="ai-service-section"><button className="ai-connection-disclosure" type="button" aria-expanded={connectionsOpen} onClick={() => setConnectionsOpen(!connectionsOpen)}><span><strong>服务连接</strong><small>管理接口地址与 API Key · {providers.length} 个连接</small></span><span aria-hidden="true">{connectionsOpen ? "−" : "+"}</span></button>{connectionsOpen && <div className="ai-connections"><Group justify="space-between"><Text size="sm" c="dimmed">密钥配置与调用检测分别显示。</Text><Button variant="default" size="xs" onClick={() => openConnection()}>添加服务连接</Button></Group>{providers.map((provider) => <article className="ai-connection" key={provider.id}><div><h3>{provider.name} <Badge color={provider.hasSecret ? "gray" : "yellow"} variant="light">{provider.hasSecret ? "密钥已配置" : "缺少密钥"}</Badge></h3><p>{provider.baseUrl}</p><small>{isSpicyApi(provider) ? "文字、图像与角色库" : provider.adapterKind === "openrouter" || new URL(provider.baseUrl).hostname === "openrouter.ai" ? "OpenRouter" : "OpenAI 兼容接口"} · 超时 {provider.timeoutMs / 60000} 分钟</small><small>目录最近同步：{formatTime(catalogs[provider.id]?.syncedAt)}</small></div><div className="ai-connection-actions"><Button size="xs" variant="default" onClick={() => openConnection(provider)}>编辑连接</Button><Button size="xs" variant="default" disabled={Boolean(busy)} loading={busy === `connection:${provider.id}`} onClick={() => void connectionAction(provider, "test")}>检测目录</Button><Button size="xs" variant="subtle" disabled={Boolean(busy) || !provider.hasSecret} onClick={() => void connectionAction(provider, "key")}>移除密钥</Button><Button size="xs" variant="subtle" color="red" disabled={Boolean(busy) || models.some((model) => model.providerId === provider.id)} onClick={() => void connectionAction(provider, "delete")}>删除连接</Button></div></article>)}</div>}</section>
+    <section className="ai-service-section"><button className="ai-connection-disclosure" type="button" aria-expanded={connectionsOpen} onClick={() => setConnectionsOpen(!connectionsOpen)}><span><strong>服务连接</strong><small>管理接口地址与 API Key · {providers.length} 个连接</small></span><span aria-hidden="true">{connectionsOpen ? "−" : "+"}</span></button>{connectionsOpen && <div className="ai-connections"><Group justify="space-between"><Text size="sm" c="dimmed">密钥配置与调用检测分别显示。</Text><Button variant="default" size="xs" onClick={() => openConnection()}>添加服务连接</Button></Group>{providers.map((provider) => <article className="ai-connection" key={provider.id}><div><h3>{provider.name} <Badge color={provider.hasSecret ? "gray" : "yellow"} variant="light">{provider.hasSecret ? "密钥已配置" : "缺少密钥"}</Badge></h3><p>{provider.baseUrl}</p><small>{isSpicyApi(provider) ? "文字、图像与角色库" : provider.adapterKind === "openrouter" || new URL(provider.baseUrl).hostname === "openrouter.ai" ? "OpenRouter" : "OpenAI 兼容接口"} · 超时 {provider.timeoutMs / 60000} 分钟</small><small>目录最近同步：{formatTime(catalogs[provider.id]?.syncedAt)}</small></div><div className="ai-connection-actions"><Button size="xs" variant="default" disabled={Boolean(busy)} onClick={() => openManage(provider)}>管理模型</Button><Button size="xs" variant="default" onClick={() => openConnection(provider)}>编辑连接</Button><Button size="xs" variant="default" disabled={Boolean(busy)} loading={busy === `connection:${provider.id}`} onClick={() => void connectionAction(provider, "test")}>检测目录</Button><Button size="xs" variant="subtle" disabled={Boolean(busy) || !provider.hasSecret} onClick={() => void connectionAction(provider, "key")}>移除密钥</Button><Button size="xs" variant="subtle" color="red" disabled={Boolean(busy) || models.some((model) => model.providerId === provider.id)} onClick={() => void connectionAction(provider, "delete")}>删除连接</Button></div></article>)}</div>}</section>
 
+    <ResponsiveModal opened={Boolean(managing)} onClose={() => { if (!busy) setManaging(null); }} title={`管理模型 · ${managing?.name ?? ""}`} closeButtonProps={{ "aria-label": "关闭模型管理", disabled: Boolean(busy) }} closeOnEscape={!busy} closeOnClickOutside={!busy} size={800} {...formModal}>
+      <div className="ai-add-model-content">
+        <Group justify="space-between"><Text size="sm">{managing?.name} · 共 {managedModels.length} 个已启用模型</Text><Button size="xs" variant="subtle" color="red" disabled={Boolean(busy) || !managedModels.length} onClick={() => requestBulkRemoval(managedModels, true)}>清空全部模型</Button></Group>
+        <Text size="xs" c="dimmed">删除后可从目录重新添加；服务连接与 API Key 会保留。</Text>
+        <TextInput aria-label="搜索要管理的模型" placeholder="搜索模型名称或 ID" value={manageQuery} disabled={Boolean(busy)} onChange={(event) => setManageQuery(event.currentTarget.value)} />
+        <Group justify="space-between"><Checkbox label="全选当前结果" checked={allManagedVisibleSelected} indeterminate={!allManagedVisibleSelected && managedVisible.some((model) => managedSelection.includes(model.id))} disabled={Boolean(busy) || !managedVisible.length} onChange={(event) => { const checked = event.currentTarget.checked; const ids = new Set(managedVisible.map((model) => model.id)); setManagedSelection((current) => checked ? [...new Set([...current, ...ids])] : current.filter((id) => !ids.has(id))); }} /><Button size="compact-xs" variant="subtle" disabled={Boolean(busy) || !managedSelection.length} onClick={() => setManagedSelection([])}>清空选择</Button></Group>
+        <div className="ai-catalog-scroll" aria-label="管理已启用模型">{managedVisible.length ? managedVisible.map((model) => <div className="ai-catalog-row ai-managed-model-row" key={model.id}><Checkbox aria-label={`选择已启用模型 ${model.modelId}`} checked={managedSelection.includes(model.id)} disabled={Boolean(busy)} onChange={(event) => { const checked = event.currentTarget.checked; setManagedSelection((current) => checked ? [...new Set([...current, model.id])] : current.filter((id) => id !== model.id)); }} /><span><strong>{model.name}</strong><code>{model.modelId}</code>{uses(model) && <Text size="xs" c="dimmed">默认用途：{uses(model)}</Text>}</span><Button size="compact-xs" variant="subtle" color="red" disabled={Boolean(busy)} onClick={() => removeModel(model)}>删除</Button></div>) : <div className="ai-service-empty">{managedModels.length ? "没有符合条件的模型" : "此 Provider 暂无已启用模型"}</div>}</div>
+      </div>
+      <footer className="ai-modal-footer"><Text size="sm">已选择 {selectedManagedModels.length} / {managedModels.length} 个模型</Text><Group><Button variant="default" disabled={Boolean(busy)} onClick={() => setManaging(null)}>完成</Button><Button color="red" disabled={Boolean(busy) || !selectedManagedModels.length} onClick={() => requestBulkRemoval(selectedManagedModels)}>删除所选（{selectedManagedModels.length}）</Button></Group></footer>
+    </ResponsiveModal>
+    <ResponsiveModal opened={Boolean(removal)} onClose={() => { if (!busy) setRemoval(null); }} title={removal?.clearAll ? "清空模型" : removal?.provider ? "批量删除模型" : "删除模型"} closeButtonProps={{ "aria-label": "关闭删除确认", disabled: Boolean(busy) }} closeOnEscape={!busy} closeOnClickOutside={!busy} centered size="md">
+      <Stack>
+        {removalError && <Alert color="red" role="alert">{removalError}</Alert>}
+        <Text size="sm">{removal?.clearAll ? `确认清空「${removal.provider?.name}」的全部 ${removal.models.length} 个模型？此操作包含搜索条件之外的模型。` : removal?.provider ? `确认删除「${removal.provider.name}」中所选的 ${removal.models.length} 个模型？` : `确认删除模型「${removal?.models[0]?.name}」？`}</Text>
+        {removal?.provider && <Text size="xs" c="dimmed">{removal.models.slice(0, 5).map((model) => model.name).join("、")}{removal.models.length > 5 ? " 等" : ""}</Text>}
+        {removalUsesDefaults && <Alert color="yellow">所选模型正在用于默认用途。删除后，对应设置将重置；受影响的名称生成和审校设置将恢复继承。</Alert>}
+        <Text size="xs" c="dimmed">模型配置将被删除，可从目录重新添加。服务连接、API Key 和已有创作内容会保留。</Text>
+        <Group justify="flex-end"><Button variant="default" disabled={Boolean(busy)} onClick={() => setRemoval(null)}>取消</Button><Button color="red" loading={busy === "delete"} disabled={Boolean(busy) && busy !== "delete"} onClick={() => void confirmRemoval()}>{removal?.clearAll ? "确认清空" : "确认删除"}</Button></Group>
+      </Stack>
+    </ResponsiveModal>
     <ResponsiveModal opened={adding} onClose={closeAdd} title="添加模型" closeButtonProps={{ "aria-label": "关闭模型添加" }} size={800} {...formModal}>
       <div className="ai-add-model-content"><Select label="服务连接" data={providerOptions} value={addProvider} allowDeselect={false} onChange={(value) => changeAddProvider(value ?? "")} disabled={busy === "enable"} />
         <div className="ai-add-mode" role="group" aria-label="添加方式">{[["catalog", "从目录选择"], ["manual", "手动添加"]].map(([value, label]) => <button type="button" key={value} aria-pressed={addMode === value} onClick={() => { setAddMode(value); setFormError(""); }}>{label}</button>)}</div>

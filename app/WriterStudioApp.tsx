@@ -2552,6 +2552,8 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
   async function copyReaderContent(selectedOnly: boolean) {
     if (selectedOnly && !hasSelectedContent) return;
     const text = selectedOnly && selectionMenu ? displayedContent.slice(selectionMenu.start, selectionMenu.end) : displayedContent;
+    if (selectionMenuTimerRef.current !== null) window.clearTimeout(selectionMenuTimerRef.current);
+    selectionMenuTimerRef.current = null;
     setSelectionMenu(null);
     const copied = await copyTextToClipboard(text);
     onNotice(copied ? selectedOnly ? "已复制选中文字" : "正文已复制" : "复制失败，请检查剪贴板权限");
