@@ -14,6 +14,37 @@ export const PREPARATION_SECTION_GUIDANCE: Record<(typeof PREPARATION_SECTIONS)[
   constraints: "必须保留的事实、因果、作者明确的讲述顺序、负面约束与未决项。",
   expression: "适合本场景的具体手法、有意义的细节、关键节点篇幅和自然收束方式。",
 };
+export const PREPARATION_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    name: "writer_studio_writing_preparation", strict: true,
+    schema: {
+      type: "object", additionalProperties: false, required: ["brief", "questions"],
+      properties: {
+        brief: {
+          type: "object", additionalProperties: false, required: PREPARATION_SECTIONS.map(([key]) => key),
+          properties: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, { type: "string", description: `${title}：${PREPARATION_SECTION_GUIDANCE[key]}必须为非空文本，最多6000字符；不适用或未知时明确说明。` }])),
+        },
+        questions: {
+          type: "array", maxItems: 3,
+          items: {
+            type: "object", additionalProperties: false, required: ["id", "title", "reason", "options"],
+            properties: {
+              id: { type: "string" }, title: { type: "string" }, reason: { type: "string" },
+              options: {
+                type: "array", maxItems: 4,
+                items: {
+                  type: "object", additionalProperties: false, required: ["id", "label", "description"],
+                  properties: { id: { type: "string" }, label: { type: "string" }, description: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
 export type PreparationQuestion = { id: string; title: string; reason: string; options: Array<{ id: string; label: string; description: string }> };
 export type PreparationReply = { answers: Record<string, string>; note: string };
 export type PreparationStrategy = "minimal" | "explore";
@@ -50,25 +81,47 @@ export function isTaskAwaitingAuthor(task: { state: string; phase?: string }) {
   return task.state === "waiting" && (task.phase === "awaiting_author" || task.phase === "awaiting_confirmation");
 }
 
-function requiredText(value: unknown, maximum: number) {
-  if (typeof value !== "string" || !value.trim() || value.length > maximum) throw new Error("准备稿返回格式无效，请重试");
+export class PreparationResponseError extends Error {
+  constructor(message: string) { super(message); this.name = "PreparationResponseError"; }
+}
+function requiredText(value: unknown, maximum: number, field: string, allowEmpty = false) {
+  if (typeof value !== "string" || (!allowEmpty && !value.trim()) || value.length > maximum) throw new PreparationResponseError(`准备稿 ${field} 必须为${allowEmpty ? "" : "非空"}文本，且不超过 ${maximum} 字符，请重试本步骤`);
   return value.trim();
 }
+function preparationRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PreparationResponseError(`准备稿 ${field} 必须为 JSON 对象，请重试本步骤`);
+  return value as Record<string, unknown>;
+}
 export function parsePreparationResponse(text: string) {
-  const value = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
-  if (!value || typeof value.brief !== "object" || !Array.isArray(value.questions) || value.questions.length > 3) throw new Error("准备稿必须包含九项内容及最多三个问题");
-  const brief = PREPARATION_SECTIONS.map(([key, title], index) => `${index + 1}. ${title}\n${requiredText(value.brief[key], 6000)}`).join("\n\n");
+  let parsed: unknown;
+  try { parsed = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); }
+  catch { throw new PreparationResponseError("准备稿不是有效 JSON，请重试本步骤"); }
+  const value = preparationRecord(parsed, "返回值");
+  const sections = preparationRecord(value.brief, "brief");
+  if (!Array.isArray(value.questions) || value.questions.length > 3) throw new PreparationResponseError("准备稿 questions 必须为最多三个问题的数组，无问题时返回 []");
+  const brief = PREPARATION_SECTIONS.map(([key, title], index) => {
+    // Some compatible providers ignore structured output and return localized keys or lists.
+    // Preserve their text, but never fill a missing section or coerce arbitrary objects.
+    let section = Object.hasOwn(sections, key) ? sections[key] : sections[title];
+    if (Array.isArray(section) && section.every(item => typeof item === "string")) section = section.join("\n");
+    return `${index + 1}. ${title}\n${requiredText(section, 6000, `brief.${key}（${title}）`)}`;
+  }).join("\n\n");
   const ids = new Set<string>();
-  const questions: PreparationQuestion[] = value.questions.map((question: Record<string, unknown>) => {
-    const id = requiredText(question.id, 80);
-    if (ids.has(id) || !Array.isArray(question.options) || question.options.length > 4) throw new Error("准备稿问题编号或选项无效");
+  const questions: PreparationQuestion[] = value.questions.map((raw, index) => {
+    const field = `questions[${index}]`;
+    const question = preparationRecord(raw, field);
+    const id = requiredText(question.id, 80, `${field}.id`);
+    const options = question.options === undefined ? [] : question.options;
+    if (ids.has(id) || !Array.isArray(options) || options.length > 4) throw new PreparationResponseError(`准备稿 ${field} 问题编号重复或选项无效`);
     ids.add(id);
     const optionIds = new Set<string>();
-    return { id, title: requiredText(question.title, 500), reason: requiredText(question.reason, 1500), options: question.options.map((option: Record<string, unknown>) => {
-      const optionId = requiredText(option.id, 80);
-      if (optionIds.has(optionId)) throw new Error("准备稿选项编号重复");
+    return { id, title: requiredText(question.title, 500, `${field}.title`), reason: requiredText(question.reason ?? "", 1500, `${field}.reason`, true), options: options.map((raw, optionIndex) => {
+      const optionField = `${field}.options[${optionIndex}]`;
+      const option = preparationRecord(raw, optionField);
+      const optionId = requiredText(option.id, 80, `${optionField}.id`);
+      if (optionIds.has(optionId)) throw new PreparationResponseError(`准备稿 ${optionField}.id 选项编号重复`);
       optionIds.add(optionId);
-      return { id: optionId, label: requiredText(option.label, 500), description: requiredText(option.description, 1500) };
+      return { id: optionId, label: requiredText(option.label, 500, `${optionField}.label`), description: requiredText(option.description ?? "", 1500, `${optionField}.description`, true) };
     }) };
   });
   return { brief, questions };

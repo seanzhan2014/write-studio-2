@@ -52,7 +52,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
   try {
     const provider = await api("/api/providers", "POST", { name: "Preparation integration", baseUrl: fake.baseUrl, secret: "fake-key" });
     const model = await api("/api/models", "POST", { providerId: provider.id, name: "Preparation integration", modelId: "preparation-test", maxInputCharacters: 120000 });
-    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; fake.control.ask = true; }
+    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; fake.control.ask = true; fake.control.unsupportedFormat = false; }
     const create = async (rounds = 2, options = { preparationRequireConfirmation: true }) => (await api("/api/ai/tasks", "POST", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: rounds, instruction: "让人物发现异常，先讨论再写正文", reasoningEffort: "low", ...options }, { "Idempotency-Key": crypto.randomUUID() })).data;
     const paused = (task) => task.phase === "awaiting_author" || task.phase === "awaiting_confirmation" || task.state === "failed";
     const interact = async (task, action, extra = {}) => (await api(`/api/ai/tasks/${task.id}/interaction`, "POST", { action, revision: task.contextOptions.writingPreparation.revision, ...extra })).task;
@@ -95,6 +95,8 @@ test("durable preparation, author discussion and final writing", async (t) => {
       assert.match(prompt, /开场透露的信息、暂缓解释、可用铺垫、揭示时机与触发点/);
       assert.match(prompt, /读者从前文已经知道/);
       assert.match(prompt, /普通表达选择由写作准备自行处理/);
+      assert.equal(fake.control.calls[0].body.response_format.json_schema.name, "writer_studio_writing_preparation");
+      assert.match(fake.control.calls[0].body.messages.at(-1).content, /<output_contract>preparation_json<\/output_contract>/);
       assert.match(fake.control.calls.at(-1).body.messages[0].content, /事件因果|事实、因果/);
       assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /confirmed_writing_brief/);
       assert.equal(task.history.some((entry) => entry.phase === "awaiting_confirmation"), false);
@@ -214,9 +216,26 @@ test("durable preparation, author discussion and final writing", async (t) => {
       assert.equal(task.contextOptions.writingPreparation.round, 1);
       assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /保留这项约束/);
     });
-    await t.test("malformed output retries and preserves a failed task for recovery", async () => {
-      await reset(); fake.control.invalid = 3; let task = await waitTask((await create()).id, (item) => item.state === "failed");
-      assert.equal(task.resultVersionId, undefined); assert.equal(fake.control.calls.length, 3);
+    await t.test("one format correction is automatic and both responses count toward usage", async () => {
+      await reset(); fake.control.invalid = 1; fake.control.ask = false;
+      const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "write"]);
+      assert.match(fake.control.calls[1].body.messages.at(-1).content, /preparation_format_repair/);
+      assert.equal(task.inputTokens, 36); assert.equal(task.outputTokens, 72);
+    });
+    await t.test("providers rejecting structured output can still complete preparation", async () => {
+      await reset(); fake.control.unsupportedFormat = true; fake.control.ask = false;
+      const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "write"]);
+      assert.ok(fake.control.calls[0].body.response_format);
+      assert.equal(fake.control.calls[1].body.response_format, undefined);
+      assert.equal(task.inputTokens, 24); assert.equal(task.outputTokens, 48);
+    });
+    await t.test("malformed output retries are bounded and preserve a failed task for recovery", async () => {
+      await reset(); fake.control.invalid = 6; let task = await waitTask((await create()).id, (item) => item.state === "failed");
+      assert.equal(task.resultVersionId, undefined); assert.equal(fake.control.calls.length, 6);
       await api(`/api/ai/tasks/${task.id}/state`, "POST", { action: "retry" });
       task = await waitTask(task.id, (item) => item.phase === "awaiting_author");
       assert.ok(task.contextOptions.writingPreparation.brief);

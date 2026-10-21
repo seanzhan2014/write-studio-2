@@ -8,7 +8,7 @@ const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method="GET", data, headers={}) { const response=await fetch(`${baseUrl}${path}`,{method,headers:{"Content-Type":"application/json",...headers},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.ok(response.ok,`${response.status}: ${JSON.stringify(body)}`);return body; }
 
 test("learning and model calibration persist, resume and use validated best settings in real generation", async () => {
-  const calls=[]; let evaluation=0; let fail=false;
+  const calls=[]; let evaluation=0; let fail=false; let preparations=0; let invalidPreparations=0;
   const config={style:"通俗而克制的叙述",advancedStyle:{voice:"亲近",additional:"模型建议"},generate:{proseControls:{dialogueDensity:"balanced"},advanced:{detailOrganization:"每次呼应产生意义变化",additional:"使用目标作品的事实"}},scenes:[{name:"对白交锋",when:"人物目标存在分歧",instruction:"用停顿与回避推动交流"}],notes:"来源1：短段落与口语对白"};
   const server=http.createServer(async(req,res)=>{
     let raw="";for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push(body);
@@ -17,7 +17,11 @@ test("learning and model calibration persist, resume and use validated best sett
     if(body.response_format?.json_schema?.name==="writer_studio_generate_review") result={version:1,sourceDigest:body.messages.at(-1).content.match(/sourceDigest=([a-f0-9]{64})/)?.[1],issues:[]};
     else if(system.includes("风格学习助手")||system.includes("审查并修正候选")||system.includes("合并多篇"))result=config;
     else if(system.includes("大纲整理助手"))result={scenes:[{title:"交接",plan:"两位成年人按约定交还书籍，核对后各自离开。",targetWords:300}]};
-    else if(system.includes("写作前准备任务"))result={brief:Object.fromEntries(PREPARATION_SECTIONS.map(([key,title])=>[key,title+"：只按目标大纲写作"])),questions:[]};
+    else if(system.includes("写作前准备任务")){
+      preparations++;
+      result={brief:Object.fromEntries(PREPARATION_SECTIONS.map(([key,title])=>[preparations===2?title:key,preparations===2?[title,"只按目标大纲写作"]:title+"：只按目标大纲写作"])),questions:[]};
+      if(preparations===1||invalidPreparations-->0)result.brief.purpose={text:"模型返回了错误的字段类型"};
+    }
     else if(system.includes("风格对照评估助手")){evaluation++;result={scores:Array(5).fill(evaluation===1?10:16),contentScore:95,evidence:"参考叙述偏简洁，生成稿的解释偏多。",suggestions:"让动作与观察自然交替，压缩无新增意义的解释。"};}
     else if(system.includes("针对固定模型校准"))result={...config,generate:{...config.generate,advanced:{...config.generate.advanced,actionResponse:"动作与观察即时交替"}}};
     else result="两人核对好书籍，向对方道别。门外的脚步声渐渐远去。";
@@ -45,6 +49,19 @@ test("learning and model calibration persist, resume and use validated best sett
     const generated=await api("/api/ai/generate","POST",{outlineId:"outline-current",target:"content",model:model.id,advanced:{additional:"本次手动附加"}});
     assert.ok(generated.text);const prompt=calls.at(-1).messages.map(m=>m.content).join("\n");assert.ok(prompt.includes("动作与观察即时交替"));assert.ok(prompt.includes("本次手动附加"));assert.ok(prompt.includes("人工附加"));
     const prepared=calls.find(c=>c.messages[0].content.includes("写作前准备任务"));assert.ok(prepared.messages[1].content.includes("细节组织方式"));
+    assert.equal(prepared.response_format.json_schema.name,"writer_studio_writing_preparation");
+    assert.ok(prepared.messages[1].content.includes("<output_contract>preparation_json</output_contract>"));
+    const repaired=calls.find(c=>c.messages.at(-1).content.includes("preparation_format_repair"));assert.ok(repaired.messages.at(-1).content.includes("brief.purpose"));
+    assert.ok(job.rounds[0].drafts[0].brief.includes("只按目标大纲写作"));
     const reviewed=calls.find(c=>c.response_format?.json_schema?.name==="writer_studio_generate_review");assert.ok(reviewed.messages[1].content.includes("每次呼应产生意义变化"));assert.ok(reviewed.messages[1].content.includes("人工附加"));
+    // Persist the exact failed preparation step, then retry using the already extracted outlines.
+    job=(await api("/api/style-lab","POST",{articleId:"article-main",kind:"tune",model:model.id,maxRounds:1})).job;
+    while(job.phase==="outline")job=(await api(`/api/style-lab/${job.id}/step`,"POST",{})).job;
+    const outlines=structuredClone(job.payload.outlines);const before=preparations;invalidPreparations=2;
+    job=(await api(`/api/style-lab/${job.id}/step`,"POST",{})).job;
+    assert.equal(job.status,"failed");assert.equal(job.phase,"prepare");assert.match(job.error,/brief.purpose/);assert.equal(preparations-before,2);
+    assert.deepEqual(job.payload.outlines,outlines);
+    job=(await api(`/api/style-lab/${job.id}`,"POST",{action:"retry"})).job;job=await finish(job);
+    assert.deepEqual(job.payload.outlines,outlines);assert.equal(job.rounds[0].drafts.length,2);
   }finally{server.closeAllConnections();server.close();}
 });
