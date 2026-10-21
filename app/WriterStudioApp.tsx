@@ -2169,7 +2169,7 @@ function OutlineWorkspace({
       {!focusMode && (
         <div className="mode-bar" role="tablist" aria-label="工作模式">
           <button className={mode === "write" ? "active" : ""} role="tab" aria-selected={mode === "write"} type="button" onClick={() => onMode("write")}>写作</button>
-          <button className={mode === "chat" ? "active" : ""} role="tab" aria-selected={mode === "chat"} type="button" onClick={() => onMode("chat")}><span>聊天</span>{chatResultReady && <i className="chat-result-ready" title="聊天已生成新回复" aria-label="有新生成的聊天回复" />}</button>
+          <button className={mode === "chat" ? "active" : ""} role="tab" aria-label="聊天" aria-selected={mode === "chat"} type="button" onClick={() => onMode("chat")}><span>聊天</span>{chatResultReady && <i className="chat-result-ready" title="聊天已生成新回复" aria-label="有新生成的聊天回复" />}</button>
           <button className={mode === "generate" ? "active" : ""} role="tab" aria-selected={mode === "generate"} type="button" onClick={() => onMode("generate")}>生成</button>
           <button className={mode === "illustrations" ? "active" : ""} role="tab" aria-selected={mode === "illustrations"} type="button" onClick={() => onMode("illustrations")}>插图</button>
         </div>

@@ -914,7 +914,9 @@ test("AI Generate reuses supplementary instructions only within the same outline
   expect(compactBody.changes.outlines.patch).toHaveLength(1);
   expect(compactBody.changes.outlines.patch[0]).not.toHaveProperty("versions");
   expect(compactBody.changes.outlines.patch[0]).not.toHaveProperty("chat");
-  expect(JSON.stringify(compactBody).length).toBeLessThan(3_000);
+  // Article metadata includes evolving review rules. Measure the edited outline
+  // patch so those defaults do not obscure a full-outline snapshot regression.
+  expect(JSON.stringify(compactBody.changes.outlines.patch).length).toBeLessThan(1_000);
   await expect(saveInstruction).toHaveCount(0);
   await expect(page.locator(".generate-instruction-save-state")).toHaveCount(0);
   await expect.poll(async () => {
@@ -1033,7 +1035,8 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Provider-Remote Writer");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
-  await expect(page.locator(".generate-auto-apply-note")).toContainText("确认后生成正文");
+  await expect(page.locator(".generate-auto-apply-note")).toContainText("先整理写作准备稿");
+  await expect(page.locator(".generate-auto-apply-note")).toContainText("完成后更新当前正文，旧版本保留");
 });
 
 test("workspace AI tabs render before a background save finishes and reuse the preloaded model list", async ({ page }, testInfo) => {
