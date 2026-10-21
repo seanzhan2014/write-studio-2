@@ -1,4 +1,5 @@
 import { normalizeCharacterPhotos } from "@/lib/character-photos";
+import { styleLabSchema } from "./style-lab-schema";
 import { characterPhotoSchema } from "./character-photo-schema";
 import { articleReviewRules, normalizeReviewRuleItems, createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { parseTaskHistory } from "@/lib/task-history";
@@ -201,7 +202,7 @@ export async function ensureDatabase() {
       const db = getDatabase();
       if (await hasCurrentRuntimeSchema(db)) return;
 
-      await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+      await db.batch([...schemaStatements, ...styleLabSchema].map((statement) => db.prepare(statement)));
       if (!isCloudDatabase()) await db.batch(illustrationSchema.map((statement) => db.prepare(statement)));
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);

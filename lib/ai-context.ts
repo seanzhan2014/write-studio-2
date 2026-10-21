@@ -1,5 +1,7 @@
 import { resolvedOutlineContent } from "./outline-content.ts";
 import { outlineDisplayTitle } from "./outline-title.ts";
+import { STYLE_FIELDS, advancedText } from "./advanced-writing.ts";
+import { sceneInstructions } from "./style-learning.ts";
 import { normalizeContentGenerationMode, type ContentGenerationMode } from "./generate-options.ts";
 import { DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, type NamingProfile } from "./naming-options.ts";
 import { normalizeCharacterProfile, resolveOutlineSettings, type ArticleStorySettings, type CharacterProfile, type ChapterSettings, type OutlineSettings } from "./story-settings.ts";
@@ -44,7 +46,7 @@ export type AiContextData = { articles: ContextArticle[] };
 
 export type SelectedAiContext = {
   kind: AiContextKind;
-  article: { id: string; title: string; summary: string; style: string; location: string; negativeConstraints: string; outlineNaming: NamingProfile };
+  article: { id: string; title: string; summary: string; style: string; location: string; negativeConstraints: string; outlineNaming: NamingProfile; calibrationHandled?: boolean };
   currentChapter: { id: string; title: string; inheritedFromChapter?: { id: string; title: string } };
   currentOutline: { id: string; title: string; titleGenerationPending: boolean; plan: string; content: string };
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
@@ -217,7 +219,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
 
   return {
     kind,
-    article: { id: article.id, title: article.title, ...resolvedSettings.story, outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
+    article: { id: article.id, title: article.title, ...resolvedSettings.story, style: [resolvedSettings.story.style, advancedText(article.storySettings?.advancedStyle, STYLE_FIELDS), sceneInstructions(article.storySettings?.styleLibrary?.scenes ?? [])].filter(Boolean).join("\n\n"), outlineNaming: normalizeNamingProfile(article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE) },
     currentChapter: { id: chapter.id, title: chapter.title, inheritedFromChapter: resolvedSettings.inheritedFromChapter },
     currentOutline: {
       id: outline.id,

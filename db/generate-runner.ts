@@ -59,6 +59,7 @@ export function startGenerateReviewRunner() {
       }
       const { dispatchPhotoJobs, executePhotoJob } = await import("./character-photos");
       for (const id of await dispatchPhotoJobs()) void executePhotoJob(id).catch(error => console.error("Automatic photo job failed", error));
+      if (!reviewsOnly) { const { dispatchStyleJobs } = await import("./style-lab"); await dispatchStyleJobs(); }
     } catch (error) {
       console.error("Automatic review dispatcher failed", error);
     } finally { state.busy = false; }

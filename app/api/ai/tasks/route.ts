@@ -1,3 +1,4 @@
+import { GENERATE_FIELDS, normalizeAdvanced, advancedText } from "@/lib/advanced-writing";
 import { parseTaskHistory } from "@/lib/task-history";
 import { taskTargetLabel, taskChangesOutline } from "@/lib/task-target";
 import { registerIllustrationTasks } from "@/db/illustration-tasks";
@@ -8,7 +9,7 @@ import type { AiTask } from "@/app/studio-state";
 import { MAX_REVIEW_ROUNDS, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { selectAiContext } from "@/lib/ai-context";
-import { findModel } from "@/db/ai";
+import { resolveWritingSettings, findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
 import { hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
@@ -105,7 +106,7 @@ export async function POST(request: Request) {
     const rewriteRetention = target === "content" && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
     if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
     if (target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return json({ error: "正文控制参数无效" }, 400);
-    const proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
+    let proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
     const dialogueDensity = proseControls.dialogueDensity;
     const rawTargetWords = body.targetWords == null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0 ? undefined : Number(body.targetWords);
     if (target === "content" && rawTargetWords !== undefined && (!Number.isInteger(rawTargetWords) || rawTargetWords < MIN_GENERATE_TARGET_WORDS || rawTargetWords > MAX_GENERATE_TARGET_WORDS)) return json({ error: `目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数` }, 400);
@@ -126,7 +127,7 @@ export async function POST(request: Request) {
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
     const reviewRuleSnapshot = createReviewRuleSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, reviewInstruction);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
-    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls)) return json({ error: "没有有效规则、审校指令或非自动正文表达控制；请在文章 AI 任务设定中添加规则，或在设置 → AI 任务中关闭审校" }, 422);
+
     const executionOrigin = currentTaskExecutionOrigin();
     const activeCount = Number(await db.prepare("SELECT COUNT(*) AS count FROM ai_tasks WHERE execution_origin=? AND status IN ('queued','running')").bind(executionOrigin).first<number>("count") ?? 0);
     if (activeCount >= 20) return json({ error: "已有 20 个等待或运行中的任务，请先取消一个任务" }, 409);
@@ -175,6 +176,12 @@ export async function POST(request: Request) {
       reviewSourceVersionId = sourceOutline.currentVersionId;
       promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
     }
+    if (target === "content" && snapshot.data) {
+      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
+      const resolved = await resolveWritingSettings(promptContext, configuredModel?.id ?? "", normalizeAdvanced(body.advanced, GENERATE_FIELDS), proseControls);
+      body.advanced = resolved.advanced; proseControls = resolved.proseControls ?? proseControls;
+    }
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls) && !advancedText(body.advanced, GENERATE_FIELDS)) return json({ error: "没有有效审校规则或表达要求" }, 422);
     let rewriteSourceId: string | undefined;
     let rewriteSourceName: string | undefined;
     if (target === "content" && contentMode === "rewrite") {
@@ -202,6 +209,7 @@ export async function POST(request: Request) {
         rewriteRetention,
         rewriteSourceId,
         rewriteSourceName,
+        advanced: normalizeAdvanced(body.advanced, GENERATE_FIELDS),
         ...(body.proseControls !== undefined ? { proseControls } : {}),
         dialogueDensity,
         ...(reviewMaxRounds > 0 && reviewModel ? { reviewMaxRounds, reviewInstruction, reviewStrategy, reviewConfiguredModelId: reviewModel.id, reviewModelId: reviewModel.modelId, reviewModelName: modelSelectionLabel(reviewModel), reviewResolvedReasoningEffort: resolveReasoningEffort(reviewModel, reviewModelMode === "inherit" ? body.reasoningEffort : snapshot.data?.settings.reviewReasoningEffort), reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),

@@ -1,4 +1,5 @@
 "use client";
+import type { GenerateAdvanced } from "@/lib/advanced-writing";
 
 import { normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
 import { normalizeIllustrationStyles, type IllustrationStyle } from "@/lib/illustration-styles";
@@ -224,6 +225,7 @@ export type AiTask = {
     targetWords?: number;
     contentMode?: ContentGenerationMode;
     rewriteRetention?: RewriteRetentionLevel;
+    advanced?: GenerateAdvanced;
     proseControls?: ProseControls;
     /** @deprecated Legacy task snapshot; use proseControls.dialogueDensity. */
     dialogueDensity?: DialogueDensityLevel;

@@ -456,6 +456,10 @@ export function duplicateArticleForCopy(source: Article, requested: ArticleCopyO
   article.type = options.includeMetadata ? source.type : "";
   article.storySettings = options.includeMetadata ? structuredClone(source.storySettings) : { ...EMPTY_ARTICLE_STORY_SETTINGS };
   article.style = options.includeStyle ? source.style : "";
+  if (options.includeStyle) {
+    if (source.storySettings?.advancedStyle) article.storySettings = { ...article.storySettings!, advancedStyle: structuredClone(source.storySettings.advancedStyle) };
+    if (source.storySettings?.styleLibrary) article.storySettings = { ...article.storySettings!, styleLibrary: structuredClone(source.storySettings.styleLibrary) };
+  } else if (article.storySettings) { delete article.storySettings.advancedStyle; delete article.storySettings.styleLibrary; }
   if (!options.includeCharacters) {
     article.characters = [];
     article.relationships = [];

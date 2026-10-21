@@ -1,3 +1,6 @@
+import { STYLE_FIELDS, normalizeAdvanced, type StyleAdvanced } from "./advanced-writing.ts";
+import { normalizeStyleLibrary, type StyleLibrary } from "./style-learning.ts";
+
 export const STORY_FIELD_KEYS = ["summary", "location", "style", "negativeConstraints"] as const;
 export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
 
@@ -7,6 +10,8 @@ export type CharacterProfileKey = typeof CHARACTER_PROFILE_KEYS[number];
 export type ArticleStorySettings = {
   location: string;
   negativeConstraints: string;
+  advancedStyle?: StyleAdvanced;
+  styleLibrary?: StyleLibrary;
 };
 
 export type CharacterProfile = {
@@ -83,6 +88,8 @@ export function normalizeArticleStorySettings(value: unknown): ArticleStorySetti
   return {
     location: text(item.location, 10_000),
     negativeConstraints: text(item.negativeConstraints, 30_000),
+    ...(item.advancedStyle ? { advancedStyle: normalizeAdvanced(item.advancedStyle, STYLE_FIELDS) } : {}),
+    ...(item.styleLibrary ? { styleLibrary: normalizeStyleLibrary(item.styleLibrary) } : {}),
   };
 }
 

@@ -22,6 +22,8 @@ import {
   type StoryFieldKey,
 } from "@/lib/story-settings";
 import { CharacterPhotoEntry } from "./character-photos";
+import { AdvancedWritingFields } from "./advanced-writing";
+import { STYLE_FIELDS } from "@/lib/advanced-writing";
 import { ScrollableDrawer } from "./overlays";
 
 const STORY_LABELS: Record<StoryFieldKey, { label: string; placeholder: string; rows?: number }> = {
@@ -92,6 +94,7 @@ export function ArticleStoryFields({ article }: { article: Article }) {
   const values = { summary: article.summary, style: article.style, ...story };
   return <div className="story-setting-grid">
     {STORY_FIELD_KEYS.filter((key) => key !== "summary").map((key) => <StoryInput key={key} {...STORY_LABELS[key]} value={values[key]} onChange={(value) => update(key, value)} />)}
+    <AdvancedWritingFields title="风格高级设定" fields={STYLE_FIELDS} value={story.advancedStyle ?? {}} onChange={advancedStyle => studio.updateArticle({ storySettings: { ...story, advancedStyle } })} />
   </div>;
 }
 

@@ -1,4 +1,5 @@
 import { isReasoningEffort, type ReasoningEffort } from "./reasoning-options.ts";
+import { GENERATE_FIELDS, normalizeAdvanced, type GenerateAdvanced } from "./advanced-writing.ts";
 
 export const DEFAULT_GENERATE_TARGET_WORDS = 5000;
 export const MIN_GENERATE_TARGET_WORDS = 100;
@@ -34,6 +35,7 @@ export type ProseControls = {
 };
 
 export type AiGenerateOptions = {
+  advanced: GenerateAdvanced;
   model: string;
   /** undefined inherits the model setting; null explicitly omits the parameter. */
   reasoningEffort?: ReasoningEffort | null;
@@ -60,6 +62,7 @@ export const DEFAULT_PROSE_CONTROLS: ProseControls = {
 };
 
 export const DEFAULT_AI_GENERATE_OPTIONS: AiGenerateOptions = {
+  advanced: {},
   model: "",
   reasoningEffort: undefined,
   targetWords: DEFAULT_GENERATE_TARGET_WORDS,
@@ -233,6 +236,7 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     : base.targetWords;
   const reviewRounds = Number(source.reviewMaxRounds ?? base.reviewMaxRounds);
   return {
+    advanced: { ...normalizeAdvanced(base.advanced, GENERATE_FIELDS), ...normalizeAdvanced(source.advanced, GENERATE_FIELDS) },
     model: String(source.model ?? base.model).trim().slice(0, 300),
     reasoningEffort,
     targetWords,

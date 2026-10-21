@@ -9083,3 +9083,22 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .photo-model-resolution { color: var(--text-secondary); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .photo-model-resolution strong { font-weight: 500; }
 .photo-model-resolution button { margin-left: 6px; font-size: 12px; }
+.writing-advanced { border: 1px solid var(--border-soft); border-radius: 12px; min-width: 0; background: var(--surface, transparent); }
+.writing-advanced > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; font-size: 14px; font-weight: 600; }
+.writing-advanced > summary span { color: var(--text-muted, #777); font-size: 12px; font-weight: 400; text-align: right; }
+.writing-advanced-body { padding: 4px 16px 16px; }
+.story-setting-grid > .writing-advanced { grid-column: 1 / -1; }
+.style-lab { display: grid; gap: 16px; min-width: 0; }
+.style-lab h2 { margin: 0 0 6px; }
+.style-lab-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, .55fr); gap: 16px; }
+.style-reference { display: grid; gap: 10px; border-bottom: 1px solid var(--border-soft); padding-bottom: 12px; }
+.style-job-list { display: grid; gap: 10px; }
+.style-job { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 14px; border: 1px solid var(--border-soft); border-radius: 10px; }
+.style-version { padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); display: grid; gap: 8px; }
+.style-comparison { overflow-x: auto; max-width: 100%; }
+.style-comparison table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.style-comparison th, .style-comparison td { border-bottom: 1px solid var(--border-soft); padding: 10px; text-align: left; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+.style-comparison th:first-child { width: 22%; }
+.style-prewrap { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 500px; overflow-y: auto; }
+.style-lab details details { margin-top: 12px; }
+@media (max-width: 767px) { .style-lab-controls { grid-template-columns: 1fr; } .writing-advanced > summary { align-items: flex-start; } }
