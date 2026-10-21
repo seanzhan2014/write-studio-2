@@ -13,7 +13,7 @@ import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PR
 import { illustrationIsActive, illustrationStatusLabels, type IllustrationRecord } from "@/lib/illustration-history";
 import { useStudio } from "@/app/studio-state";
 import { normalizeIllustrationStyles, resolveIllustrationStyle, isIllustrationStylePreset } from "@/lib/illustration-styles";
-import { PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, supportedIllustrationResolution, type IllustrationOptions } from "@/lib/illustration-options";
+import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT, PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, supportedIllustrationResolution, type IllustrationOptions } from "@/lib/illustration-options";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerId?: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
@@ -24,7 +24,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const inheritedOptions = normalizeIllustrationOptions(studio.currentArticle.illustrationSettings);
   const illustrationOptions = normalizeIllustrationOptions(outline?.illustrationOptions ?? inheritedOptions, inheritedOptions);
   const styles = normalizeIllustrationStyles(studio.data.settings.illustrationStyles);
-  const { promptLanguage } = illustrationOptions;
+  const { promptLanguage, additionalPrompt } = illustrationOptions;
   const stylePreset = resolveIllustrationStyle(illustrationOptions.stylePreset, styles).value;
   function rememberOptions(patch: Partial<IllustrationOptions>) {
     studio.updateOutline(outlineId, { illustrationOptions: normalizeIllustrationOptions({ ...illustrationOptions, ...patch }, inheritedOptions) });
@@ -169,8 +169,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
-          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, promptLanguage, model: textModel, ...(characterId ? { characterId } : {}) }
-          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, model: imageModel, ...(characterId ? { characterId } : {}), ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
+          ? { action, background: true, outlineId, content: excerpt.trim() || content, excerpt: excerpt.trim(), style, stylePreset, promptLanguage, additionalPrompt, model: textModel, ...(characterId ? { characterId } : {}) }
+          : { action, background: true, outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, additionalPrompt, model: imageModel, ...(characterId ? { characterId } : {}), ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(aspectRatio ? { aspectRatio } : {}), ...(resolution ? { resolution } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "插图生成失败");
@@ -186,7 +186,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   function usePrompt(record: IllustrationRecord) {
     setPrompt(record.prompt); setStyle(record.style);
-    rememberOptions({ stylePreset: record.stylePreset ?? "auto", ...(record.promptLanguage ? { promptLanguage: record.promptLanguage } : {}) });
+    rememberOptions({ stylePreset: record.stylePreset ?? "auto", ...(record.promptLanguage ? { promptLanguage: record.promptLanguage } : {}), ...(record.additionalPrompt !== undefined ? { additionalPrompt: record.additionalPrompt } : {}) });
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
     setSelectedPrompt(record.kind === "prompt" ? record.id : null);
     formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -215,7 +215,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     try {
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, promptLanguage, ...(characterId ? { characterId } : {}) }),
+        body: JSON.stringify({ action: "save-prompt", outlineId, prompt, excerpt: excerptValid ? excerpt : "", style, stylePreset, promptLanguage, additionalPrompt, ...(characterId ? { characterId } : {}) }),
       });
       const payload = await response.json() as { record: IllustrationRecord; error?: string };
       if (!response.ok) throw new Error(payload.error || "保存失败");
@@ -269,6 +269,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
       <Select label="插图风格" description="用于提示词和图片生成；修改风格后可直接重新生成图片。" data={styles.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
       <Text size="xs" c="dimmed">{styles.find(item => item.value === stylePreset)?.description}</Text>
+      <Textarea label="附加 Prompt" description="默认继承文章图片设定；修改后记住此大纲的设置，可恢复文章图片预设。用于提示词生成和图片生成，留空表示不添加。" placeholder="补充此大纲的图片生成要求" value={additionalPrompt} onChange={event => rememberOptions({ additionalPrompt: event.currentTarget.value })} maxLength={MAX_ILLUSTRATION_ADDITIONAL_PROMPT} minRows={3} maxRows={10} autosize disabled={Boolean(busy)} />
       <Textarea label="画面要求（可选）" description="可补充自定义风格、色调、光线与构图要求。" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !content.trim() || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" description="检查人物、场景与构图后，可直接修改，再交给文生图模型。修改后可保存为新的历史记录。" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />

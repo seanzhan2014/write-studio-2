@@ -16,6 +16,7 @@ import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, PREPARATION_RESPONS
 import { NARRATIVE_CRAFT_RULES, PREPARATION_NARRATIVE_RULES, NARRATIVE_REVIEW_GUIDANCE } from "../lib/narrative-craft";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
 import { illustrationVisualDirection, isIllustrationStylePreset, normalizeIllustrationStyles, type IllustrationStyle } from "../lib/illustration-styles";
+import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT } from "../lib/illustration-options";
 import { validateCharacterReference } from "./character-visuals";
 import { ADVANCED_WRITING_RULES, GENERATE_FIELDS, advancedText, normalizeAdvanced, type GenerateAdvanced } from "../lib/advanced-writing";
 import { compiledStyle, configurationOf, modelConfiguration, modelSettingsFingerprint } from "../lib/style-learning";
@@ -708,14 +709,15 @@ async function illustrationModel(reference: unknown) {
   return model;
 }
 
-async function illustrationDirection(input: { style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle }) {
+async function illustrationDirection(input: { style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; additionalPrompt?: string }) {
   if (input.style !== undefined && (typeof input.style !== "string" || input.style.length > 2000)) throw new AiInputError("画面要求不能超过 2,000 字符");
+  if (input.additionalPrompt !== undefined && (typeof input.additionalPrompt !== "string" || input.additionalPrompt.length > MAX_ILLUSTRATION_ADDITIONAL_PROMPT)) throw new AiInputError("附加 Prompt 不能超过 8,000 字符");
   if (input.stylePreset !== undefined && !isIllustrationStylePreset(input.stylePreset)) throw new AiInputError("请选择有效的插图风格");
   const styles = input.styleSnapshot ? [input.styleSnapshot] : normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
-  return illustrationVisualDirection(input.stylePreset, input.style, styles);
+  return [illustrationVisualDirection(input.stylePreset, input.style, styles), input.additionalPrompt?.trim() ? `附加 Prompt：\n${input.additionalPrompt.trim()}` : ""].filter(Boolean).join("\n");
 }
 
-export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; promptLanguage?: string; model: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
+export async function generateIllustrationPrompt(input: { outlineId: string; content: string; excerpt?: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; promptLanguage?: string; additionalPrompt?: string; model: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.content !== "string" || !input.content.trim()) throw new AiInputError("正文为空，无法生成插图");
   if (input.content.length > MAX_ILLUSTRATION_CONTENT) throw new AiInputError("正文超过 80,000 字符，请先选取片段");
@@ -741,7 +743,7 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 }
 
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; additionalPrompt?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
   const visualDirection = await illustrationDirection(input);

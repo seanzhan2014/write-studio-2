@@ -2240,7 +2240,8 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
   const displayedManuallyExcellent = displayedVersion ? displayedVersion.manualExcellent === true : studio.currentOutline.manualExcellent === true;
   const displayedAutomaticallyExcellent = displayedFragments.length > 0;
   const displayedIsExcellent = displayedManuallyExcellent || displayedAutomaticallyExcellent;
-  const selectedFragmentIsExcellent = Boolean(selectionMenu && displayedFragments.some((fragment) => selectionMenu.start >= fragment.start && selectionMenu.end <= fragment.end));
+  const hasSelectedContent = Boolean(selectionMenu && selectionMenu.end > selectionMenu.start);
+  const selectedFragmentIsExcellent = Boolean(hasSelectedContent && selectionMenu && displayedFragments.some((fragment) => selectionMenu.start >= fragment.start && selectionMenu.end <= fragment.end));
 
   useDismissOnOutside(Boolean(selectionMenu), () => setSelectionMenu(null), ".content-selection-menu");
   useDismissOnOutside(editToolsOpen, () => setEditToolsOpen(false), ".mobile-edit-more, .mobile-edit-overflow-menu");
@@ -2253,17 +2254,19 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
     if (!reader) return false;
     const selected = selectedRangeWithin(reader);
     const selection = window.getSelection();
-    if (!selected || !selection?.rangeCount) return false;
-    const bounds = selection.getRangeAt(0).getBoundingClientRect();
-    const menuWidth = 124;
-    const menuHeight = 98;
+    if (!selected && !point) return false;
+    const bounds = selected && selection?.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : reader.getBoundingClientRect();
+    const menuWidth = 176;
+    const rowHeight = window.matchMedia("(max-width: 767px)").matches ? 44 : 34;
+    const menuHeight = Math.min((selected ? 6 : 4) * rowHeight + (selected ? 21 : 12), window.innerHeight - 16);
     const desiredLeft = point?.x ?? bounds.left + bounds.width / 2 - menuWidth / 2;
     const below = (point?.y ?? bounds.bottom) + 8;
-    const desiredTop = below + menuHeight <= window.innerHeight ? below : bounds.top - menuHeight - 8;
+    const desiredTop = below + menuHeight <= window.innerHeight ? below : (point?.y ?? bounds.top) - menuHeight - 8;
     setSelectionMenu({
       left: Math.max(8, Math.min(desiredLeft, window.innerWidth - menuWidth - 8)),
       top: Math.max(8, Math.min(desiredTop, window.innerHeight - menuHeight - 8)),
-      ...selected,
+      start: selected?.start ?? 0,
+      end: selected?.end ?? 0,
     });
     return true;
   }, []);
@@ -2546,6 +2549,25 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
     if (action === "removed") onNotice("已取消优秀片段");
   }
 
+  async function copyReaderContent(selectedOnly: boolean) {
+    if (selectedOnly && !hasSelectedContent) return;
+    const text = selectedOnly && selectionMenu ? displayedContent.slice(selectionMenu.start, selectionMenu.end) : displayedContent;
+    setSelectionMenu(null);
+    const copied = await copyTextToClipboard(text);
+    onNotice(copied ? selectedOnly ? "已复制选中文字" : "正文已复制" : "复制失败，请检查剪贴板权限");
+  }
+
+  function selectAllReaderContent() {
+    const reader = readerRef.current;
+    if (!reader || !displayedContent) return;
+    const range = document.createRange();
+    range.selectNodeContents(reader);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    showSelectionMenu();
+  }
+
   function openSelectionMenu(event: React.MouseEvent<HTMLDivElement>) {
     const opened = showSelectionMenu({ x: event.clientX, y: event.clientY });
     if (opened || window.matchMedia("(max-width: 767px)").matches) event.preventDefault();
@@ -2596,7 +2618,13 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
           {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
       </div>
-      {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" style={{ left: selectionMenu.left, top: selectionMenu.top }}><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button><button type="button" role="menuitem" onClick={() => { onIllustration(displayedContent, displayedContent.slice(selectionMenu.start, selectionMenu.end)); setSelectionMenu(null); window.getSelection()?.removeAllRanges(); }}>生成插图</button></div>}
+      {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" onMouseDown={(event) => event.preventDefault()} style={{ left: selectionMenu.left, top: selectionMenu.top }}>
+        <button type="button" role="menuitem" disabled={!hasSelectedContent} onClick={() => void copyReaderContent(true)}>复制</button>
+        <button type="button" role="menuitem" disabled={!displayedContent} onClick={() => void copyReaderContent(false)}>复制全文</button>
+        <button type="button" role="menuitem" disabled={!displayedContent} onClick={selectAllReaderContent}>全选</button>
+        <button type="button" role="menuitem" onClick={beginEditing}>编辑正文</button>
+        {hasSelectedContent && <><div className="content-menu-separator" role="separator" /><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button><button type="button" role="menuitem" onClick={() => { onIllustration(displayedContent, displayedContent.slice(selectionMenu.start, selectionMenu.end)); setSelectionMenu(null); window.getSelection()?.removeAllRanges(); }}>生成插图</button></>}
+      </div>}
       {planPeek && <ScrollableDrawer
         opened
         onClose={() => setPlanPeek(false)}

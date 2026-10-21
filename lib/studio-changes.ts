@@ -317,7 +317,7 @@ function validOutlinePatch(value: unknown): value is StudioOutlinePatch {
     if (!optionalString(outline, "title", 80) || !optionalString(outline, "plan", 10_000) || !optionalString(outline, "generateInstruction", 20_000) || !optionalString(outline, "updatedAt", 80)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "settings") && (!isRecord(outline.settings) || JSON.stringify(outline.settings).length > 500_000)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "generateOptions") && outline.generateOptions !== null && (!isRecord(outline.generateOptions) || JSON.stringify(outline.generateOptions).length > 100_000)) return false;
-    if (Object.prototype.hasOwnProperty.call(outline, "illustrationOptions") && outline.illustrationOptions !== null && (!isRecord(outline.illustrationOptions) || JSON.stringify(outline.illustrationOptions).length > 2_000)) return false;
+    if (Object.prototype.hasOwnProperty.call(outline, "illustrationOptions") && outline.illustrationOptions !== null && (!isRecord(outline.illustrationOptions) || JSON.stringify(outline.illustrationOptions).length > 50_000)) return false;
     if (Object.prototype.hasOwnProperty.call(outline, "nameVersions") && !Array.isArray(outline.nameVersions)) return false;
     if (!optionalNullableId(outline, "defaultNameVersionId")) return false;
     if (["archived", "titleGenerationPending"].some((key) => Object.prototype.hasOwnProperty.call(outline, key) && typeof outline[key] !== "boolean")) return false;

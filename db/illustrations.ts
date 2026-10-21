@@ -9,7 +9,7 @@ import type { IllustrationImage, IllustrationPrompt } from "@/lib/image-generati
 import { illustrationTaskRegistration, illustrationTaskRevision, registerIllustrationTasks, syncIllustrationTask } from "./illustration-tasks";
 import { currentTaskExecutionOrigin } from "./task-execution";
 import { isIllustrationStylePreset, normalizeIllustrationStyles, resolveIllustrationStyle, type IllustrationStylePreset, type IllustrationStyle } from "@/lib/illustration-styles";
-import { isIllustrationPromptLanguage, type IllustrationPromptLanguage } from "@/lib/illustration-options";
+import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT, isIllustrationPromptLanguage, type IllustrationPromptLanguage } from "@/lib/illustration-options";
 import { illustrationCharacterReference } from "./character-visuals";
 import type { CharacterReference } from "@/lib/character-visual";
 
@@ -19,6 +19,7 @@ export type IllustrationInput = {
   content?: string; excerpt?: string; style?: string; stylePreset?: IllustrationStylePreset; prompt?: string;
   size?: string; quality?: string; aspectRatio?: string; resolution?: string;
   promptLanguage?: IllustrationPromptLanguage;
+  additionalPrompt?: string;
   styleSnapshot?: IllustrationStyle;
   characterId?: string;
   characterReference?: CharacterReference;
@@ -28,7 +29,8 @@ export async function prepareIllustrationReference(input: Record<string, unknown
   const reference = await illustrationCharacterReference(String(input.outlineId ?? ""), input.characterId);
   const stylePreset = checkedStylePreset(input.stylePreset);
   const styles = normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
-  return { ...request, styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
+  const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
+  return { ...request, ...(additionalPrompt !== undefined ? { additionalPrompt } : {}), styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
 }
 const columns = "h.*,o.title AS outline_title";
 const join = "illustration_history h JOIN outlines o ON o.id=h.outline_id";
@@ -41,6 +43,7 @@ function record(row: Row): IllustrationRecord {
     prompt: String(row.prompt), excerpt: String(row.excerpt), style: String(row.style),
     stylePreset: isIllustrationStylePreset(input.stylePreset) ? input.stylePreset : "auto",
     promptLanguage: isIllustrationPromptLanguage(input.promptLanguage) ? input.promptLanguage : undefined,
+    additionalPrompt: typeof input.additionalPrompt === "string" ? input.additionalPrompt : undefined,
     model: String(row.model_id), modelName: String(row.model_name), archived: Number(row.archived) === 1,
     createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : undefined,
     error: row.error_message ? String(row.error_message) : undefined,
@@ -99,6 +102,9 @@ function checkedStylePreset(value: unknown) {
   if (!isIllustrationStylePreset(value)) throw new AiInputError("请选择有效的插图风格");
   return value;
 }
+function checkedAdditionalPrompt(value: unknown) {
+  return value === undefined ? undefined : checkedText(value, MAX_ILLUSTRATION_ADDITIONAL_PROMPT, "附加 Prompt 不能超过 8,000 字符");
+}
 function checkedPromptLanguage(value: unknown) {
   if (value === undefined) return undefined;
   if (!isIllustrationPromptLanguage(value)) throw new AiInputError("请选择有效的 Prompt 语言");
@@ -116,10 +122,11 @@ export async function saveManualPrompt(input: Row) {
   const style = checkedText(input.style, 2000, "画面要求过长");
   const stylePreset = checkedStylePreset(input.stylePreset);
   const promptLanguage = checkedPromptLanguage(input.promptLanguage);
+  const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
   const characterReference = await illustrationCharacterReference(outlineId, input.characterId);
   const id = crypto.randomUUID(), now = new Date().toISOString();
   await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,input_json,created_at,completed_at) VALUES(?,?,'prompt','success',?,?,?,?,?,?)")
-    .bind(id, outlineId, prompt, excerpt, style, JSON.stringify({ stylePreset, promptLanguage, ...(characterReference ? { characterReference } : {}) }), now, now).run();
+    .bind(id, outlineId, prompt, excerpt, style, JSON.stringify({ stylePreset, promptLanguage, additionalPrompt, ...(characterReference ? { characterReference } : {}) }), now, now).run();
   return getIllustration(id);
 }
 export async function createIllustration(input: Row, id: string) {
@@ -133,6 +140,8 @@ export async function createIllustration(input: Row, id: string) {
   const style = checkedText(input.style, 2000, "画面要求不能超过 2,000 字符");
   const prompt = checkedText(input.prompt, MAX_ILLUSTRATION_PROMPT, "图片 prompt 不能为空，且不能超过 12,000 字符", input.action === "image");
   const body: IllustrationInput = { action: input.action, outlineId, model: model.id, excerpt, style, prompt };
+  const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
+  if (additionalPrompt !== undefined) body.additionalPrompt = additionalPrompt;
   const reference = await illustrationCharacterReference(outlineId, input.characterId);
   if (reference) {
     if (input.action === "image" && reference.visual && reference.visual.providerId !== model.providerId) throw new AiInputError("人物形象与图片模型必须使用同一个图像服务连接");

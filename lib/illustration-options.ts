@@ -5,13 +5,15 @@ export const PROMPT_LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
 ] as const;
 export type IllustrationPromptLanguage = typeof PROMPT_LANGUAGE_OPTIONS[number]["value"];
+export const MAX_ILLUSTRATION_ADDITIONAL_PROMPT = 8000;
 export type IllustrationOptions = {
   promptLanguage: IllustrationPromptLanguage;
   stylePreset: IllustrationStylePreset;
   resolution: string;
+  additionalPrompt: string;
 };
 export const DEFAULT_ILLUSTRATION_OPTIONS: IllustrationOptions = {
-  promptLanguage: "zh", stylePreset: DEFAULT_ILLUSTRATION_STYLE, resolution: "",
+  promptLanguage: "zh", stylePreset: DEFAULT_ILLUSTRATION_STYLE, resolution: "", additionalPrompt: "",
 };
 export const ILLUSTRATION_RESOLUTION_OPTIONS = [
   { value: "", label: "模型默认" },
@@ -32,6 +34,7 @@ export function normalizeIllustrationOptions(value: unknown, fallback = DEFAULT_
     promptLanguage: isIllustrationPromptLanguage(source.promptLanguage) ? source.promptLanguage : base.promptLanguage,
     stylePreset: isIllustrationStylePreset(source.stylePreset) ? source.stylePreset : base.stylePreset,
     resolution: typeof source.resolution === "string" ? source.resolution.trim().slice(0, 100) : base.resolution,
+    additionalPrompt: typeof source.additionalPrompt === "string" ? source.additionalPrompt.slice(0, MAX_ILLUSTRATION_ADDITIONAL_PROMPT) : base.additionalPrompt,
   };
 }
 // Keep the provider's exact spelling (for example 2K vs 2k).

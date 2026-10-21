@@ -1,9 +1,9 @@
 "use client";
 
-import { Select } from "@mantine/core";
+import { Select, Textarea } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { normalizeIllustrationStyles, resolveIllustrationStyle } from "@/lib/illustration-styles";
-import { ILLUSTRATION_RESOLUTION_OPTIONS, PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
+import { ILLUSTRATION_RESOLUTION_OPTIONS, MAX_ILLUSTRATION_ADDITIONAL_PROMPT, PROMPT_LANGUAGE_OPTIONS, normalizeIllustrationOptions, type IllustrationOptions } from "@/lib/illustration-options";
 
 export function ArticleIllustrationSettings() {
   const studio = useStudio();
@@ -22,6 +22,7 @@ export function ArticleIllustrationSettings() {
       <Select label="默认风格" aria-label="文章图片默认风格" data={styles.map(({ value, label }) => ({ value, label }))} value={resolveIllustrationStyle(settings.stylePreset, styles).value} allowDeselect={false} onChange={value => patch({ stylePreset: value as IllustrationOptions["stylePreset"] })} searchable />
       <Select label="默认分辨率" aria-label="文章图片默认分辨率" description="使用所选模型支持的分辨率；不支持时使用模型默认值。" data={resolutions} value={settings.resolution} allowDeselect={false} onChange={value => patch({ resolution: value ?? "" })} />
     </div>
+    <Textarea label="附加 Prompt" aria-label="文章图片附加 Prompt" description="用于图片提示词生成和图片生成；大纲默认继承，可在生成时单独修改。" placeholder="例如：保持人物外貌一致，画面不出现文字或水印。" minRows={3} maxRows={10} autosize maxLength={MAX_ILLUSTRATION_ADDITIONAL_PROMPT} value={settings.additionalPrompt} onChange={event => patch({ additionalPrompt: event.currentTarget.value })} />
     <div className="form-foot"><span>{overridden ? `${overridden} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
   </section>;
 }

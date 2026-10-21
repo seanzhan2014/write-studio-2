@@ -1538,7 +1538,8 @@ test("selecting body text automatically opens the appreciation menu on desktop a
     element.dispatchEvent(event);
     return event.defaultPrevented;
   });
-  expect(nativeContextMenuPrevented).toBe(testInfo.project.name === "mobile-chromium");
+  expect(nativeContextMenuPrevented).toBe(true);
+  await page.keyboard.press("Escape");
   await selectReaderText(reader, "应用内欣赏菜单");
   const menu = page.getByRole("menu", { name: "正文选择菜单" });
   await expect(menu).toBeVisible();
@@ -1551,6 +1552,103 @@ test("selecting body text automatically opens the appreciation menu on desktop a
   }
   await appreciation.click();
   await expect(reader.locator("mark.excellent-fragment")).toHaveText("应用内欣赏菜单");
+});
+
+test("body context menu copies selections and full text, selects all, and enters editing", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text: string) => { (window as Window & { copiedBodyText?: string }).copiedBodyText = text; } },
+    });
+  });
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  const body = "第一段值得欣赏的文字。\n\n第二段保持普通。";
+  target.content = body;
+  target.currentVersionId = null;
+  const current = await (await request.get("/api/state")).json();
+  expect((await request.put("/api/state", {
+    headers: { "If-Match": String(current.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  })).ok()).toBeTruthy();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const reader = page.getByLabel("正文内容");
+  const menu = page.getByRole("menu", { name: "正文选择菜单" });
+  await selectReaderTextAndOpenMenu(reader, "值得欣赏");
+  await menu.getByRole("menuitemcheckbox", { name: "欣赏" }).click();
+  await expect(reader.locator("mark.excellent-fragment")).toHaveText("值得欣赏");
+
+  // Copy across the plain text and highlighted fragment without losing line breaks.
+  await reader.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: innerWidth - 4, clientY: innerHeight - 4 }));
+  });
+  await expectInsideViewport(page, menu);
+  await menu.getByRole("menuitem", { name: "复制", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Window & { copiedBodyText?: string }).copiedBodyText)).toBe(body);
+  await expect(menu).toBeHidden();
+  await selectReaderTextAndOpenMenu(reader, "值得欣赏");
+  await menu.getByRole("menuitem", { name: "复制", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Window & { copiedBodyText?: string }).copiedBodyText)).toBe("值得欣赏");
+
+  await reader.evaluate((element) => {
+    window.getSelection()?.removeAllRanges();
+    element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
+  });
+  await expect(menu.getByRole("menuitem", { name: "复制", exact: true })).toBeDisabled();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "欣赏" })).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "复制全文", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Window & { copiedBodyText?: string }).copiedBodyText)).toBe(body);
+
+  await reader.dispatchEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+  await menu.getByRole("menuitem", { name: "全选", exact: true }).click();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(body);
+  await expect(menu.getByRole("menuitem", { name: "复制", exact: true })).toBeEnabled();
+  await menu.getByRole("menuitem", { name: "编辑正文", exact: true }).click();
+  await expect(menu).toBeHidden();
+  await expect(page.getByLabel("正文编辑器")).toHaveValue(body);
+});
+
+test("body context menu handles empty content and clipboard fallback failures", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } });
+    document.execCommand = (command: string) => {
+      if (command !== "copy") return false;
+      (window as Window & { fallbackBodyText?: string }).fallbackBodyText = (document.activeElement as HTMLTextAreaElement)?.value;
+      return !(window as Window & { failCopy?: boolean }).failCopy;
+    };
+  });
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const reader = page.getByLabel("正文内容");
+  const menu = page.getByRole("menu", { name: "正文选择菜单" });
+  const body = await reader.textContent();
+  await reader.dispatchEvent("contextmenu", { bubbles: true, cancelable: true });
+  await menu.getByRole("menuitem", { name: "复制全文", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as Window & { fallbackBodyText?: string }).fallbackBodyText)).toBe(body);
+  await expect(page.locator(".toast")).toContainText("正文已复制");
+
+  await page.evaluate(() => { (window as Window & { failCopy?: boolean }).failCopy = true; });
+  await reader.dispatchEvent("contextmenu", { bubbles: true, cancelable: true });
+  await menu.getByRole("menuitem", { name: "复制全文", exact: true }).click();
+  await expect(page.locator(".toast")).toContainText("复制失败");
+
+  const fixture = fullStudioFixture();
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.content = "";
+  target.currentVersionId = null;
+  const current = await (await request.get("/api/state")).json();
+  expect((await request.put("/api/state", {
+    headers: { "If-Match": String(current.revision) },
+    data: { data: fixture, conflictResolution: "keep-local" },
+  })).ok()).toBeTruthy();
+  await page.reload();
+  await reader.dispatchEvent("contextmenu", { bubbles: true, cancelable: true });
+  for (const name of ["复制", "复制全文", "全选"]) await expect(menu.getByRole("menuitem", { name, exact: true })).toBeDisabled();
+  await menu.getByRole("menuitem", { name: "编辑正文", exact: true }).click();
+  await expect(page.getByLabel("正文编辑器")).toHaveValue("");
 });
 
 test("body double-click and touch double-tap enter editing without losing the reading position", async ({ page, request }, testInfo) => {

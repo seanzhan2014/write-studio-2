@@ -63,6 +63,7 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
         id: `test-${records.length}`, kind: body!.action === "image" ? "image" : "prompt", outlineId: "outline-current", outlineTitle: "潮汐表",
         prompt: String(body!.prompt || ""), excerpt: String(body!.excerpt || ""), style: String(body!.style || ""), stylePreset: body!.stylePreset as IllustrationRecord["stylePreset"],
         promptLanguage: body!.promptLanguage as IllustrationRecord["promptLanguage"],
+        additionalPrompt: body!.additionalPrompt as IllustrationRecord["additionalPrompt"],
         status: body!.action === "save-prompt" ? "success" : "queued", archived: false, model: String(body!.model || ""), modelName: "测试模型", createdAt: new Date().toISOString(),
       };
       records.unshift(record);
@@ -188,6 +189,8 @@ test("SpicyAPI image model exposes its native aspect ratio and resolution choice
 test("article image presets inherit, persist outline overrides and restore article defaults", async ({ page, request }, testInfo) => {
   test.setTimeout(60_000);
   const { bodies } = await mockIllustrations(page);
+  const articlePrompt = "保持人物一致，无文字和水印。";
+  const outlinePrompt = "柔和光线，细腻的手绘笔触。\n".repeat(200);
   const choose = async (label: string, option: string) => {
     await page.getByRole("combobox", { name: label, exact: true }).click();
     await page.getByRole("option", { name: option, exact: true }).click();
@@ -199,7 +202,8 @@ test("article image presets inherit, persist outline overrides and restore artic
   await choose("文章图片 Prompt 默认语言", "English");
   await choose("文章图片默认风格", "国风水墨");
   await choose("文章图片默认分辨率", "2K");
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "en", stylePreset: "ink", resolution: "2k" });
+  await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill(articlePrompt);
+  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: articlePrompt });
   await page.getByRole("heading", { name: "图片风格", exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `.test-data/article-image-settings-${testInfo.project.name}.png` });
 
@@ -209,33 +213,47 @@ test("article image presets inherit, persist outline overrides and restore artic
     return page.getByRole("region", { name: "插图工作区" });
   };
   let dialog = await openGenerator();
+  await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue(articlePrompt);
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("国风水墨");
   await choose("提示词模型", "测试-文本测试模型");
   await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
   await expect(dialog.getByRole("textbox", { name: "图片 prompt", exact: true })).not.toHaveValue("");
-  expect(bodies.at(-1)).toMatchObject({ action: "prompt", promptLanguage: "en", stylePreset: "ink" });
+  expect(bodies.at(-1)).toMatchObject({ action: "prompt", promptLanguage: "en", stylePreset: "ink", additionalPrompt: articlePrompt });
   await choose("文生图模型", "测试-图片测试模型");
   await expect(dialog.getByRole("combobox", { name: "图像分辨率", exact: true })).toHaveValue("2K");
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
-  expect(bodies.at(-1)).toMatchObject({ action: "image", resolution: "2K", stylePreset: "ink" });
+  expect(bodies.at(-1)).toMatchObject({ action: "image", resolution: "2K", stylePreset: "ink", additionalPrompt: articlePrompt });
   expect(await storedOptions()).toBeNull();
   await choose("插图风格", "日系动漫");
-  await expect.poll(storedOptions).toEqual({ promptLanguage: "en", stylePreset: "anime", resolution: "2k" });
+  await dialog.getByRole("textbox", { name: "附加 Prompt", exact: true }).fill(outlinePrompt);
+  await expect.poll(storedOptions).toEqual({ promptLanguage: "en", stylePreset: "anime", resolution: "2k", additionalPrompt: outlinePrompt });
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
 
   await page.goto("/articles/article-main/info/ai-tasks");
   await choose("文章图片 Prompt 默认语言", "中文");
   await choose("文章图片默认风格", "水彩插画");
   await choose("文章图片默认分辨率", "4K");
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k" });
+  await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("保留水彩纸张纹理。");
+  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
   dialog = await openGenerator();
+  await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue(outlinePrompt);
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("日系动漫");
   await choose("文生图模型", "测试-图片测试模型");
   await expect(dialog.getByRole("combobox", { name: "图像分辨率", exact: true })).toHaveValue("2K");
+  await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩插画：两人在码头相望。");
+  await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
+  await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
+  expect(bodies.at(-1)).toMatchObject({ additionalPrompt: outlinePrompt });
+  await dialog.getByRole("textbox", { name: "附加 Prompt", exact: true }).fill("");
+  await expect.poll(storedOptions).toMatchObject({ additionalPrompt: "" });
+  dialog = await openGenerator();
+  await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("");
+  await choose("文生图模型", "测试-图片测试模型");
   await dialog.getByRole("button", { name: "恢复文章图片预设" }).click();
+  await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("中文");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByText(/当前模型不支持预设分辨率 4k/)).toBeVisible();
@@ -246,6 +264,7 @@ test("article image presets inherit, persist outline overrides and restore artic
   expect(bodies.at(-1)).not.toHaveProperty("resolution");
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
   dialog = await openGenerator("outline-previous");
+  await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("中文");
 });

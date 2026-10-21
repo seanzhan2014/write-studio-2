@@ -1720,7 +1720,9 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 9px;
   box-shadow: 0 10px 30px rgba(28, 29, 36, 0.16);
-  min-width: 124px;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  width: 176px;
   padding: 5px;
   position: fixed;
   z-index: 260;
@@ -1740,7 +1742,7 @@ button:disabled {
   width: 100%;
 }
 
-.content-selection-menu button:hover,
+.content-selection-menu button:not(:disabled):hover,
 .content-selection-menu button:focus-visible {
   background: var(--surface-hover);
   outline: 0;
@@ -1748,6 +1750,16 @@ button:disabled {
 
 .content-selection-menu button.active {
   color: #8a6500;
+}
+
+.content-selection-menu button:disabled {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.content-menu-separator {
+  border-top: 1px solid var(--border);
+  margin: 4px 3px;
 }
 
 .illustration-generator { min-width: 0; }
