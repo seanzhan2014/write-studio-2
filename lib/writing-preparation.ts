@@ -81,7 +81,11 @@ export function isTaskAwaitingAuthor(task: { state: string; phase?: string }) {
   return task.state === "waiting" && (task.phase === "awaiting_author" || task.phase === "awaiting_confirmation");
 }
 
+export type PreparationResponseDiagnostic = { attempt: number; error: string; requestId?: string; provider?: string; finishReason?: string; outputCharacters: number; response: string; truncated: boolean };
 export class PreparationResponseError extends Error {
+  diagnostics: PreparationResponseDiagnostic[] = [];
+  inputTokens = 0;
+  outputTokens = 0;
   constructor(message: string) { super(message); this.name = "PreparationResponseError"; }
 }
 function requiredText(value: unknown, maximum: number, field: string, allowEmpty = false) {

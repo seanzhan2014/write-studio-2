@@ -7,8 +7,11 @@ export type StyleConfiguration = { style: string; advancedStyle: StyleAdvanced; 
 export type ConfigurationVersion = { id: string; name: string; createdAt: string; configuration: StyleConfiguration; model?: string; baseFingerprint?: string; modelFingerprint?: string };
 export type StyleLibrary = { references: ReferenceDocument[]; scenes: ScenePreference[]; versions: ConfigurationVersion[]; calibrations: Record<string, ConfigurationVersion>; locked: string[]; activeVersionId?: string };
 export const MAX_REFERENCE_TOTAL = 240_000;
+export const MIN_STYLE_CONTENT_SCORE = 70;
+export const STYLE_TRIAL_INSTRUCTION = "按固定大纲完成当前场景；仅试写可迁移的表达方式，亲密情节留白，仅保留非露骨的关系变化与剧情作用。";
+export const STYLE_TRIAL_EVALUATION_RULES = "试写与评估共用边界：亲密情节留白，仅比较非露骨的叙事功能、语言、视角、对白及节奏。不得因省略露骨细节而扣风格分或内容分，也不得建议恢复这些细节。内容覆盖只依据本次固定大纲的事件、必要事实和因果判断，不要求还原参考原文中的全部细节。";
 export const SCORE_DIMENSIONS = ["语言与句式", "叙述声音与视角", "心理与对白", "节奏与结构", "细节组织与留白"];
-export const STYLE_SCORE_RUBRIC = "五项各0–20分，按固定维度评价与参考表达是否接近，提供两边的具体依据及可执行的配置调整建议。内容还原另列0–100分，不计入风格总分。不要因更简洁、更文学而加分；不要因没有照搬原句而扣分。";
+export const STYLE_SCORE_RUBRIC = `五项各0–20分，按固定维度评价与参考表达是否接近，提供两边的具体依据及可执行的配置调整建议。内容覆盖另列0–100分，不计入风格总分。不要因更简洁、更文学而加分；不要因没有照搬原句而扣分。${STYLE_TRIAL_EVALUATION_RULES}`;
 
 const rec = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export function normalizeConfiguration(value: unknown): StyleConfiguration {

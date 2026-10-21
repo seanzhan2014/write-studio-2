@@ -12,7 +12,7 @@ import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, namingP
 import { decryptAiSecret, encryptAiSecret } from "../lib/ai-secret";
 import { modelSelectionLabel } from "../lib/model-label";
 import type { ResolvedOutlineSettings } from "../lib/story-settings";
-import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, PREPARATION_RESPONSE_FORMAT, PreparationResponseError, parsePreparationResponse, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, type WritingPreparation } from "../lib/writing-preparation";
+import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, PREPARATION_RESPONSE_FORMAT, PreparationResponseError, parsePreparationResponse, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, type WritingPreparation, type PreparationResponseDiagnostic } from "../lib/writing-preparation";
 import { NARRATIVE_CRAFT_RULES, PREPARATION_NARRATIVE_RULES, NARRATIVE_REVIEW_GUIDANCE } from "../lib/narrative-craft";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
 import { illustrationVisualDirection, isIllustrationStylePreset, normalizeIllustrationStyles, type IllustrationStyle } from "../lib/illustration-styles";
@@ -603,6 +603,12 @@ export class AiUpstreamCompletionError extends Error {
     super(message);
     this.name = "AiUpstreamCompletionError";
   }
+}
+
+export function isRetryableAiError(error: unknown) {
+  if (error instanceof AiUpstreamCompletionError) return error.retryable;
+  if (!(error instanceof Error) || error instanceof AiInputError || error instanceof PreparationResponseError) return false;
+  return /模型返回 (408|429|500|502|503|504)：|模型请求超时|无法连接模型 API|无法解析模型 API 域名/.test(error.message);
 }
 
 function completionText(value: string | Array<{ text?: string }> | undefined) {
@@ -1319,6 +1325,7 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   const parameters = model.metadata?.supportedParameters;
   let responseFormat: typeof PREPARATION_RESPONSE_FORMAT | undefined = Array.isArray(parameters) && !parameters.includes("response_format") ? undefined : PREPARATION_RESPONSE_FORMAT;
   let feedback = "", inputTokens = 0, outputTokens = 0;
+  const diagnostics: PreparationResponseDiagnostic[] = [];
   for (let attempt = 0; ; attempt++) {
     const prompt = generatePrompt(source, instruction + feedback, "content", `${system}\n${NARRATIVE_CRAFT_RULES}\n${PREPARATION_NARRATIVE_RULES}`, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, undefined, input.advanced, "preparation");
     const request = () => upstream(model, prompt.messages, signal, false, { max_tokens: model.maxOutput ?? 16384, ...(responseFormat ? { response_format: responseFormat } : {}) }, input.reasoningEffort);
@@ -1337,7 +1344,11 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
     outputTokens += completion.diagnostics.completionTokens ?? 0;
     try { return { ...parsePreparationResponse(completion.content), inputTokens, outputTokens }; }
     catch (error) {
-      if (!(error instanceof PreparationResponseError) || attempt >= 1 || signal?.aborted) throw error;
+      if (!(error instanceof PreparationResponseError)) throw error;
+      diagnostics.push({ attempt: attempt + 1, error: error.message, requestId: completion.diagnostics.requestId, provider: completion.diagnostics.provider, finishReason: completion.diagnostics.finishReason, outputCharacters: completion.content.length, response: completion.content.slice(0, 8000), truncated: completion.content.length > 8000 });
+      error.diagnostics = diagnostics; error.inputTokens = inputTokens; error.outputTokens = outputTokens;
+      console.warn(JSON.stringify({ event: "ai_preparation_format_error", model: model.modelId, ...completion.diagnostics, attempt: attempt + 1, validationError: error.message, willRepair: attempt < 1 && !signal?.aborted }));
+      if (attempt >= 1 || signal?.aborted) throw error;
       feedback = `\n\n<preparation_format_repair>\n上一次准备稿未通过格式校验：${escapeXml(error.message)}。请依据相同原始资料重新返回完整的准备稿 JSON，使用约定的九个英文键和非空字符串。不要返回解释或最终正文，不要为补齐格式编造事实，未知项明确保留为未知。\n</preparation_format_repair>`;
     }
   }

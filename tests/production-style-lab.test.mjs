@@ -20,7 +20,7 @@ test("production bundle dispatches learning, format-corrected calibration and pr
   await new Promise(resolve => probe.close(resolve));
   const origin = `http://127.0.0.1:${port}`;
   const configuration = { style: "简洁克制的口语叙述", advancedStyle: {}, generate: { advanced: {}, proseControls: {} }, scenes: [], notes: "" };
-  let preparations = 0;
+  let preparations = 0, generationInterrupted = false;
   const model = http.createServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw), system = body.messages[0].content;
@@ -31,7 +31,14 @@ test("production bundle dispatches learning, format-corrected calibration and pr
       preparations++;
       result = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key]) => [key, "核对后道别，只使用既定事实。"])), questions: [] };
       if (preparations === 1) result.brief.purpose = { text: "需要纠正的字段类型" };
-    } else result = "两人核对好书籍，互相道别。脚步声渐渐远去。";
+    } else {
+      if (!generationInterrupted) {
+        generationInterrupted = true;
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ id: "production-retry", provider: "mock-provider", choices: [{ finish_reason: "error", error: { code: 502, metadata: { error_type: "provider_unavailable" } }, message: { content: "" } }] })); return;
+      }
+      result = "两人核对好书籍，互相道别。脚步声渐渐远去。";
+    }
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: typeof result === "string" ? result : JSON.stringify(result) } }], usage: { prompt_tokens: 10, completion_tokens: 20 } }));
   }).listen(0, "127.0.0.1");
@@ -88,6 +95,7 @@ test("production bundle dispatches learning, format-corrected calibration and pr
     const tuned = await until(async () => { const next = (await api(`/api/style-lab/${job.id}`)).job; assert.notEqual(next.status, "failed", next.error); return next.rounds?.[0]?.drafts?.[0]?.text ? next : false; }, "Calibration did not prepare and generate in the background");
     assert.match(tuned.rounds[0].drafts[0].brief, /核对后道别/);
     assert.equal(preparations, 2, "invalid preparation is corrected once in the production bundle");
+    assert.ok(tuned.payload.history.some(event => event.status === "retrying" && event.diagnostics?.requestId === "production-retry"), "production bundle retries the interrupted generation and retains diagnostics");
     await api(`/api/style-lab/${job.id}`, "POST", { action: "stop" });
     const created = (await api("/api/ai/tasks", "POST", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: selectedModel.id, preparationRounds: 0, reviewMaxRounds: 0 }, { "Idempotency-Key": crypto.randomUUID() })).data;
     await until(async () => { const task = (await api("/api/ai/tasks")).tasks.find(item => item.id === created.id); assert.notEqual(task?.state, "failed", task?.error); return task?.state === "success"; }, "Prepared writing did not run in the background");

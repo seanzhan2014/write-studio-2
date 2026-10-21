@@ -8,11 +8,11 @@ const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method="GET", data, headers={}) { const response=await fetch(`${baseUrl}${path}`,{method,headers:{"Content-Type":"application/json",...headers},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.ok(response.ok,`${response.status}: ${JSON.stringify(body)}`);return body; }
 
 test("learning and model calibration persist, resume and use validated best settings in real generation", async () => {
-  const calls=[]; let evaluation=0; let fail=false; let preparations=0; let invalidPreparations=0;
+  const calls=[]; let evaluation=0; let fail=0; let preparations=0; let invalidPreparations=0;
   const config={style:"通俗而克制的叙述",advancedStyle:{voice:"亲近",additional:"模型建议"},generate:{proseControls:{dialogueDensity:"balanced"},advanced:{detailOrganization:"每次呼应产生意义变化",additional:"使用目标作品的事实"}},scenes:[{name:"对白交锋",when:"人物目标存在分歧",instruction:"用停顿与回避推动交流"}],notes:"来源1：短段落与口语对白"};
   const server=http.createServer(async(req,res)=>{
     let raw="";for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);calls.push(body);
-    if(fail){fail=false;res.writeHead(503);res.end("retry this step");return;}
+    if(fail>0){fail--;res.writeHead(503);res.end("retry this step");return;}
     const system=body.messages[0].content; let result;
     if(body.response_format?.json_schema?.name==="writer_studio_generate_review") result={version:1,sourceDigest:body.messages.at(-1).content.match(/sourceDigest=([a-f0-9]{64})/)?.[1],issues:[]};
     else if(system.includes("风格学习助手")||system.includes("审查并修正候选")||system.includes("合并多篇"))result=config;
@@ -40,7 +40,8 @@ test("learning and model calibration persist, resume and use validated best sett
     let article=(await api("/api/state")).data.articles[0];assert.equal(article.style,config.style);assert.equal(article.storySettings.advancedStyle.additional,"人工附加");assert.equal(article.storySettings.styleLibrary.scenes[0].name,"对白交锋");assert.equal(article.storySettings.styleLibrary.versions.length,2);
     assert.ok(calls[0].messages[0].content.includes("情节污染")||calls[0].messages[0].content.includes("情节"));
     job=(await api("/api/style-lab","POST",{articleId:"article-main",kind:"tune",model:model.id,maxRounds:1})).job;
-    fail=true;job=(await api(`/api/style-lab/${job.id}/step`,"POST",{})).job;assert.equal(job.status,"failed");assert.equal(job.phase,"outline");
+    fail=3;job=(await api(`/api/style-lab/${job.id}/step`,"POST",{})).job;assert.equal(job.status,"failed");assert.equal(job.phase,"outline");
+    assert.equal(job.payload.history.filter(event=>event.status==="retrying").length,2);
     job=(await api(`/api/style-lab/${job.id}`,"POST",{action:"retry"})).job;job=await finish(job);
     assert.equal(job.rounds.length,2);assert.equal(job.payload.bestRound,1);assert.equal(job.payload.bestScore,80);
     assert.equal(job.payload.outlines.length,2);assert.equal(job.rounds[1].drafts.length,2);
@@ -60,6 +61,9 @@ test("learning and model calibration persist, resume and use validated best sett
     const outlines=structuredClone(job.payload.outlines);const before=preparations;invalidPreparations=2;
     job=(await api(`/api/style-lab/${job.id}/step`,"POST",{})).job;
     assert.equal(job.status,"failed");assert.equal(job.phase,"prepare");assert.match(job.error,/brief.purpose/);assert.equal(preparations-before,2);
+    const diagnostics=job.payload.history.at(-1).diagnostics;
+    assert.equal(diagnostics.length,2);assert.match(diagnostics[0].error,/brief.purpose/);
+    assert.equal(JSON.parse(diagnostics[1].response).brief.purpose.text,"模型返回了错误的字段类型");
     assert.deepEqual(job.payload.outlines,outlines);
     job=(await api(`/api/style-lab/${job.id}`,"POST",{action:"retry"})).job;job=await finish(job);
     assert.deepEqual(job.payload.outlines,outlines);assert.equal(job.rounds[0].drafts.length,2);

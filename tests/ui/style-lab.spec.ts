@@ -84,3 +84,25 @@ test("learning history is available from the task workspace with pagination, evi
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("style-history-tasks.png"), fullPage: true });
 });
+
+test("unqualified calibration keeps diagnostics visible and offers no configuration to apply", async ({ page, request }) => {
+  const current = await (await request.get("/api/state")).json(), data = fullStudioFixture(); data.tasks = [];
+  await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } });
+  const configuration = normalizeConfiguration({ style: "原风格" });
+  const job = { id: "unqualified", articleId: "article-main", kind: "tune", status: "completed", phase: "completed", model: "model", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z", rounds: [], payload: { base: configuration, best: configuration, references: [], outlines: [], analyses: [], inputTokens: 10, outputTokens: 20, bestRound: 0, bestScore: -1, round: 1, history: [{ at: "2026-10-22T00:00:00Z", status: "retrying", phase: "generate", retry: 1, error: "上游临时不可用", diagnostics: { requestId: "failed-generation", provider: "mock-provider" } }] } };
+  await page.route(/\/api\/style-lab(?:\?.*)?$/, route => route.fulfill({ json: { jobs: [job], active: 0, total: 1, pages: 1, page: 1, executionMode: "server" } }));
+  await page.route("**/api/style-lab/unqualified", route => route.fulfill({ json: { job } }));
+  await page.goto("/articles/article-main/info/ai-tasks");
+  await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  const history = workspace.getByRole("region", { name: "学习历史", exact: true });
+  await expect(history.getByText("未达标", { exact: true })).toBeVisible();
+  await expect(history.getByRole("button", { name: "应用结果", exact: true })).toHaveCount(0);
+  await history.getByRole("button", { name: "查看过程", exact: true }).click();
+  await expect(history.getByText("尚无达标结果", { exact: false })).toBeVisible();
+  await expect(history.getByRole("button", { name: "导出成果配置", exact: true })).toHaveCount(0);
+  await history.locator("summary").filter({ hasText: /^运行历史$/ }).click();
+  await expect(history.getByText("第 1 次重试", { exact: false })).toBeVisible();
+  await history.locator("summary").filter({ hasText: /^响应诊断$/ }).click();
+  await expect(history.getByText("failed-generation", { exact: false })).toBeVisible();
+});
