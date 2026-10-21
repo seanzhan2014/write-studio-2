@@ -155,7 +155,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "17";
+const RUNTIME_SCHEMA_VERSION = "18";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -165,7 +165,11 @@ async function hasCurrentRuntimeSchema(db: SqliteDatabase) {
     const version = await db.prepare("SELECT value_json FROM app_settings WHERE key=?")
       .bind(RUNTIME_SCHEMA_VERSION_KEY)
       .first<string>("value_json");
-    return version === RUNTIME_SCHEMA_VERSION;
+    if (version !== RUNTIME_SCHEMA_VERSION) return false;
+    // A version marker alone must not hide missing additive feature tables.
+    // This also repairs databases marked current by an incomplete deployment.
+    const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('style_lab_jobs','style_lab_rounds','style_lab_artifacts')").all<{ name: string }>();
+    return tables.results?.length === 3;
   } catch {
     // Fresh and legacy databases may not have app_settings yet.
     return false;
