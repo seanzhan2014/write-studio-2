@@ -3,6 +3,12 @@ import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { isCloudDatabase } from "@/db/sqlite";
 import { registerIllustrationTasks } from "./illustration-tasks";
 import { isIllustrationTarget } from "@/lib/task-target";
+// Vinext can fold these modules into its server entry; static imports preserve
+// the named functions that the background dispatcher needs after bundling.
+import { dispatchPhotoJobs, executePhotoJob } from "./character-photos";
+import { dispatchStyleJobs } from "./style-lab";
+import { executeIllustration } from "./illustrations";
+import { POST as executeGenerateTask } from "@/app/api/ai/tasks/[taskId]/execute/route";
 
 const runnerKey = Symbol.for("writer-studio.generate-review-runner");
 type RunnerState = { busy: boolean; timer?: ReturnType<typeof setInterval> };
@@ -49,17 +55,14 @@ export function startGenerateReviewRunner() {
         // another tick from claiming a running task.
         for (const { id, illustration } of chosen) {
           if (illustration) {
-            const { executeIllustration } = await import("./illustrations");
             void executeIllustration(id).catch((error) => console.error("Automatic illustration task failed", error));
           } else {
-            const { POST } = await import("@/app/api/ai/tasks/[taskId]/execute/route");
-            void POST(new Request("http://writer-studio.local/api/ai/tasks/execute", { method: "POST" }), { params: Promise.resolve({ taskId: id }) }).catch((error) => console.error("Automatic review task failed", error));
+            void executeGenerateTask(new Request("http://writer-studio.local/api/ai/tasks/execute", { method: "POST" }), { params: Promise.resolve({ taskId: id }) }).catch((error) => console.error("Automatic review task failed", error));
           }
         }
       }
-      const { dispatchPhotoJobs, executePhotoJob } = await import("./character-photos");
       for (const id of await dispatchPhotoJobs()) void executePhotoJob(id).catch(error => console.error("Automatic photo job failed", error));
-      if (!reviewsOnly) { const { dispatchStyleJobs } = await import("./style-lab"); await dispatchStyleJobs(); }
+      if (!reviewsOnly) await dispatchStyleJobs();
     } catch (error) {
       console.error("Automatic review dispatcher failed", error);
     } finally { state.busy = false; }
