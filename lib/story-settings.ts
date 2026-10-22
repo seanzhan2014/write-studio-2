@@ -1,5 +1,7 @@
 import { STYLE_FIELDS, normalizeAdvanced, type StyleAdvanced } from "./advanced-writing.ts";
 import { normalizeStyleLibrary, type StyleLibrary } from "./style-learning.ts";
+import { normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
+import { normalizeIllustrationOptions, type IllustrationOptions } from "./illustration-options.ts";
 
 export const STORY_FIELD_KEYS = ["summary", "location", "style", "negativeConstraints"] as const;
 export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
@@ -37,6 +39,7 @@ export type ChapterRelationshipSettings = {
 };
 
 export type ChapterSettings = {
+  aiTasks?: { generate?: AiGenerateOptions; illustration?: IllustrationOptions };
   story: Partial<Record<StoryFieldKey, TextSettingOverride>>;
   characters: Record<string, ChapterCharacterSettings>;
   relationships: Record<string, ChapterRelationshipSettings>;
@@ -175,7 +178,12 @@ export function normalizeChapterSettings(value: unknown): ChapterSettings {
       ...(hasEnd ? { end } : {}),
     };
   }
-  return { story, characters, relationships };
+  const tasks = record(item.aiTasks);
+  const aiTasks = {
+    ...(tasks.generate && typeof tasks.generate === "object" ? { generate: normalizeAiGenerateOptions(tasks.generate) } : {}),
+    ...(tasks.illustration && typeof tasks.illustration === "object" ? { illustration: normalizeIllustrationOptions(tasks.illustration) } : {}),
+  };
+  return { story, characters, relationships, ...(Object.keys(aiTasks).length ? { aiTasks } : {}) };
 }
 
 export type StorySettingsArticle = {
@@ -419,7 +427,7 @@ export function resolveOutlineSettings(article: StorySettingsArticle, outlineId:
 
 export function countChapterSettingChanges(value: unknown) {
   const settings = normalizeChapterSettings(value);
-  let count = Object.keys(settings.story).length;
+  let count = Object.keys(settings.story).length + Object.keys(settings.aiTasks ?? {}).length;
   for (const item of Object.values(settings.characters)) count += Object.keys(item.start).length + Object.keys(item.end).length + (item.appears ? 1 : 0);
   for (const item of Object.values(settings.relationships)) count += (item.start ? 1 : 0) + (Object.prototype.hasOwnProperty.call(item, "end") ? 1 : 0) + (item.active ? 1 : 0);
   return count;

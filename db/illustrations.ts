@@ -12,9 +12,11 @@ import { isIllustrationStylePreset, normalizeIllustrationStyles, resolveIllustra
 import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT, isIllustrationPromptLanguage, type IllustrationPromptLanguage } from "@/lib/illustration-options";
 import { illustrationCharacterReference } from "./character-visuals";
 import type { CharacterReference } from "@/lib/character-visual";
+import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 
 type Row = Record<string, unknown>;
 export type IllustrationInput = {
+  taskConcurrency?: number;
   action: "prompt" | "image"; outlineId: string; model: string;
   content?: string; excerpt?: string; style?: string; stylePreset?: IllustrationStylePreset; prompt?: string;
   size?: string; quality?: string; aspectRatio?: string; resolution?: string;
@@ -151,7 +153,10 @@ export async function createIllustration(input: Row, id: string) {
   if (promptLanguage !== undefined) body.promptLanguage = promptLanguage;
   const stylePreset = checkedStylePreset(input.stylePreset);
   if (stylePreset !== undefined) body.stylePreset = stylePreset;
-  const styles = normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
+  const snapshot = await readStudioState();
+  const styles = normalizeIllustrationStyles(snapshot.data?.settings.illustrationStyles);
+  const article = snapshot.data?.articles.find(article => article.chapters.some(chapter => chapter.outlines.some(outline => outline.id === outlineId)));
+  if (article) body.taskConcurrency = Number(resolveAiSettings(article, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks!.taskConcurrency);
   body.styleSnapshot = resolveIllustrationStyle(stylePreset, styles);
   if (input.action === "prompt") {
     const content = checkedText(input.content, MAX_ILLUSTRATION_CONTENT, "正文为空或超过 80,000 字符，请先选取片段", true);
@@ -165,7 +170,7 @@ export async function createIllustration(input: Row, id: string) {
   if (existing) {
     const savedInput = JSON.parse(String(existing.input_json)); delete savedInput._aiTaskRegistered;
     const requestedInput = { ...body };
-    delete savedInput.styleSnapshot; delete requestedInput.styleSnapshot;
+    delete savedInput.styleSnapshot; delete requestedInput.styleSnapshot; delete savedInput.taskConcurrency; delete requestedInput.taskConcurrency;
     if (JSON.stringify(savedInput) !== JSON.stringify(requestedInput)) throw new AiInputError("任务标识已被其他请求使用");
     return record(existing);
   }
@@ -191,7 +196,7 @@ export async function executeIllustration(id: string) {
   const runner = crypto.randomUUID();
   const lease = () => new Date(Date.now() + 90_000).toISOString();
   const now = new Date().toISOString();
-  const capacity = Math.max(1, Math.min(5, Number(JSON.parse(await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json") || "{}").settings?.taskConcurrency) || 2));
+  const capacity = Math.max(1, Math.min(5, Number(JSON.parse(String(row.input_json)).taskConcurrency ?? JSON.parse(await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json") || "{}").settings?.taskConcurrency) || 2));
   const result = await getDatabase().batch([
     getDatabase().prepare(`UPDATE illustration_history SET status='running',runner_id=?,lease_until=? WHERE id=? AND status='queued'
       AND EXISTS(SELECT 1 FROM ai_tasks WHERE id=? AND status='queued' AND execution_origin=?)

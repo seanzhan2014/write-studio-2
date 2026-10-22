@@ -15,6 +15,7 @@ export function illustrationTaskRegistration(id: string) {
       SELECT h.id,o.article_id,o.chapter_id,h.outline_id,CASE h.kind WHEN 'prompt' THEN 'illustration-prompt' ELSE 'illustration-image' END,
         CASE h.kind WHEN 'prompt' THEN COALESCE(NULLIF(h.style,''),'从正文选景并编写插图 prompt') ELSE h.prompt END,h.model_id,?,
         json_object('illustrationId',h.id,'illustrationKind',h.kind,'illustrationInput',json(h.input_json),
+          'taskConcurrency',json_extract(h.input_json,'$.taskConcurrency'),
           'includePrevious',json('false'),'includeCharacters',json(CASE h.kind WHEN 'prompt' THEN 'true' ELSE 'false' END),
           'estimatedCharacters',length(COALESCE(json_extract(h.input_json,'$.content'),h.prompt)),
           'configuredModelId',h.model_id,'modelName',h.model_name),

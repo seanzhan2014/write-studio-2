@@ -217,6 +217,7 @@ export type AiTask = {
     illustrationKind?: "prompt" | "image";
     illustrationInput?: import("@/db/illustrations").IllustrationInput;
     writingPreparation?: import("@/lib/writing-preparation").WritingPreparation;
+    taskConcurrency?: number;
     reasoningEffort?: ReasoningEffort | null;
     resolvedReasoningEffort?: ReasoningEffort | null;
     includePrevious: boolean;

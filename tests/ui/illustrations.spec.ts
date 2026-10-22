@@ -252,12 +252,12 @@ test("article image presets inherit, persist outline overrides and restore artic
   dialog = await openGenerator();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("");
   await choose("文生图模型", "测试-图片测试模型");
-  await dialog.getByRole("button", { name: "恢复文章图片预设" }).click();
+  await dialog.getByRole("group", { name: "全部插图设置继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("中文");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByText(/当前模型不支持预设分辨率 4k/)).toBeVisible();
-  await expect.poll(storedOptions).toBeNull();
+  await expect.poll(async () => (await storedOptions())?.inheritance?.additionalPrompt).toBe("article");
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩插画：两人在码头相望。");
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();

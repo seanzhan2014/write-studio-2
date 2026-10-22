@@ -135,7 +135,7 @@ async function executeTask(taskId: string) {
     }
     const startedAt = new Date().toISOString();
     const claimResult = await db.prepare("UPDATE ai_tasks SET status='running',phase='preparing',attempt=?,started_at=?,completed_at=NULL,last_progress_at=?,received_characters=0,timeout_ms=?,runner_id=?,lease_until=?,error_message=NULL WHERE id=? AND execution_origin=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<=?))) AND ((SELECT COUNT(*) FROM ai_tasks WHERE execution_origin=? AND target<>'chat' AND status='running' AND lease_until>?) + (SELECT COUNT(*) FROM style_lab_jobs WHERE status='running' AND lease_until>strftime('%Y-%m-%dT%H:%M:%fZ','now')) + (SELECT COUNT(*) FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>?)))<?")
-      .bind(Math.max(1, (initialTask.attempt ?? 0) + 1), startedAt, startedAt, timeoutMs, runnerId, leaseTime(), taskId, executionOrigin, startedAt, executionOrigin, startedAt, startedAt, Math.max(1, Math.min(5, Number((await readStudioState()).data?.settings.taskConcurrency) || 2))).run();
+      .bind(Math.max(1, (initialTask.attempt ?? 0) + 1), startedAt, startedAt, timeoutMs, runnerId, leaseTime(), taskId, executionOrigin, startedAt, executionOrigin, startedAt, startedAt, Math.max(1, Math.min(5, Number(initialTask.contextOptions?.taskConcurrency ?? (await readStudioState()).data?.settings.taskConcurrency) || 2))).run();
     const claimed = Number(claimResult.meta?.changes ?? 0) > 0;
     if (claimed) {
       const statements = [db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key='state_revision'").bind(startedAt)];

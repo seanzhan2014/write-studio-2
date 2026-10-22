@@ -1,5 +1,7 @@
 import { isReasoningEffort, type ReasoningEffort } from "./reasoning-options.ts";
 import { GENERATE_FIELDS, normalizeAdvanced, type GenerateAdvanced } from "./advanced-writing.ts";
+import { normalizeSettingInheritance, type SettingInheritance } from "./setting-inheritance.ts";
+import { TASK_PARAMETER_FIELDS, normalizeTaskParameters, type TaskParameters } from "./task-parameters.ts";
 
 export const DEFAULT_GENERATE_TARGET_WORDS = 5000;
 export const MIN_GENERATE_TARGET_WORDS = 100;
@@ -35,6 +37,8 @@ export type ProseControls = {
 };
 
 export type AiGenerateOptions = {
+  tasks?: TaskParameters;
+  inheritance?: SettingInheritance;
   advanced: GenerateAdvanced;
   model: string;
   /** undefined inherits the model setting; null explicitly omits the parameter. */
@@ -236,6 +240,8 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     : base.targetWords;
   const reviewRounds = Number(source.reviewMaxRounds ?? base.reviewMaxRounds);
   return {
+    ...(source.tasks || base.tasks ? { tasks: { ...normalizeTaskParameters(base.tasks), ...normalizeTaskParameters(source.tasks) } } : {}),
+    ...(normalizeSettingInheritance(source.inheritance, GENERATE_SETTING_KEYS) ? { inheritance: normalizeSettingInheritance(source.inheritance, GENERATE_SETTING_KEYS) } : {}),
     advanced: { ...normalizeAdvanced(base.advanced, GENERATE_FIELDS), ...normalizeAdvanced(source.advanced, GENERATE_FIELDS) },
     model: String(source.model ?? base.model).trim().slice(0, 300),
     reasoningEffort,
@@ -254,6 +260,13 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
       : { ...base.firstAppearanceOverrides },
   };
 }
+
+export const GENERATE_SETTING_KEYS = [
+  ...Object.keys(DEFAULT_AI_GENERATE_OPTIONS).filter(key => key !== "advanced" && key !== "proseControls"),
+  ...Object.keys(GENERATE_FIELDS).map(key => `advanced.${key}`),
+  ...Object.keys(DEFAULT_PROSE_CONTROLS).map(key => `proseControls.${key}`),
+  ...TASK_PARAMETER_FIELDS.map(field => `tasks.${field.key}`),
+];
 
 export function normalizeGeneratePresets(value: unknown) {
   if (!Array.isArray(value)) return [];

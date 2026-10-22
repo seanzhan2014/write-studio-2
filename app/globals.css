@@ -9137,3 +9137,12 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .style-prewrap { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 500px; overflow-y: auto; }
 .style-lab details details { margin-top: 12px; }
 @media (max-width: 767px) { .style-lab-controls { grid-template-columns: 1fr; } .writing-advanced > summary { align-items: flex-start; } }
+.ai-settings-inheritance, .task-parameter-settings, .chapter-ai-settings { min-width: 0; margin-bottom: 16px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 10px; }
+.ai-setting-inheritance-details > summary, .task-parameter-settings summary, .chapter-ai-settings summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.ai-setting-inheritance-details { margin-top: 10px; }
+.ai-setting-inheritance-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--border-soft); }
+.ai-setting-inheritance-row small { display: block; color: var(--text-muted); font-size: 11px; }
+.task-parameter-group, .chapter-ai-kind { min-width: 0; margin-top: 12px; padding: 10px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.task-parameter-field { min-width: 0; }
+.task-parameter-field .ai-setting-actions { margin-top: 5px; }
+.task-parameter-settings .mantine-InputWrapper-root, .task-parameter-settings .mantine-Input-input { max-width: 100%; }

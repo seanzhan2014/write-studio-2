@@ -6,6 +6,10 @@ import type { CharacterVisual } from "@/lib/character-visual";
 import { ArticleIllustrationSettings } from "./ui/article-illustration-settings";
 import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "./ui/advanced-writing";
+import { AiSettingsInheritance } from "./ui/ai-settings-inheritance";
+import { TaskParameterSettings } from "./ui/task-parameter-settings";
+import { taskParameterDefaults, taskReasoningEffort, taskNamingProfile, taskReviewSnapshot, type TaskParameters } from "@/lib/task-parameters";
+import { resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 import { StyleJobHistory } from "./ui/style-job-history";
 import { StyleLabPanel, StyleLabRuntime, useActiveStyleCount, useStyleTaskSummary } from "./ui/style-lab";
 import { AiPromptSettings } from "./ui/ai-prompt-settings";
@@ -243,20 +247,23 @@ type ServerTaskInput = {
 
 async function createServerTask(studio: ReturnType<typeof useStudio>, input: ServerTaskInput) {
   const taskId = clientId("task");
+  const taskParameters = resolveAiSettings(studio.currentArticle, input.outlineId, "generate", "outline", studio.data.settings).value.tasks!;
   const response = await fetchServerAction("/api/ai/tasks", {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
     body: JSON.stringify({ ...input, ...(input.target === "content" ? {
-      reviewMaxRounds: normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds),
-      reviewInstruction: normalizeReviewRules(studio.data.settings.generateReviewInstruction),
-      reviewStrategy: normalizeReviewStrategy(studio.data.settings.generateReviewStrategy),
-      reviewModelMode: studio.data.settings.reviewModelMode === "fixed" ? "fixed" : "inherit",
-      reviewModel: studio.data.settings.reviewModel,
+      reviewMaxRounds: normalizeReviewRounds(taskParameters.reviewMaxRounds),
+      reviewInstruction: normalizeReviewRules(taskParameters.reviewInstruction),
+      reviewStrategy: normalizeReviewStrategy(taskParameters.reviewStrategy),
+      reviewModelMode: taskParameters.reviewModelMode === "fixed" ? "fixed" : "inherit",
+      reviewModel: taskParameters.reviewModel,
+      reviewReasoningEffort: taskReasoningEffort(taskParameters.reviewReasoningEffort),
+      reviewReasoningEffortInheritModel: taskParameters.reviewReasoningEffort === "__inherit__",
     } : {}), ...(input.target === "content" && input.model.trim() ? {
-      preparationRounds: input.preparationRounds ?? normalizePreparationRounds(studio.data.settings.preparationMaxRounds),
-      preparationStrategy: input.preparationStrategy ?? normalizePreparationStrategy(studio.data.settings.preparationStrategy),
-      preparationRequireConfirmation: input.preparationRequireConfirmation ?? studio.data.settings.preparationRequireConfirmation === true,
+      preparationRounds: input.preparationRounds ?? normalizePreparationRounds(taskParameters.preparationMaxRounds),
+      preparationStrategy: input.preparationStrategy ?? normalizePreparationStrategy(taskParameters.preparationStrategy),
+      preparationRequireConfirmation: input.preparationRequireConfirmation ?? taskParameters.preparationRequireConfirmation === true,
     } : { preparationRounds: undefined, preparationStrategy: undefined, preparationRequireConfirmation: undefined }) }),
   });
   const payload = await response.json() as { data?: AiTask; revision?: number; message?: string; error?: string };
@@ -284,7 +291,14 @@ async function createServerTask(studio: ReturnType<typeof useStudio>, input: Ser
   return task;
 }
 
-function namingArticleContext(article: Article): NamingArticleContext {
+function namingArticleContext(article: Article, globalSettings: object = {}): NamingArticleContext {
+  const defaults = resolveAiSettings(article, article.id, "generate", "outline", globalSettings).articleDefaults;
+  const namingFor = (id: string, level: "chapter" | "outline") => {
+    const options = resolveAiSettings(article, id, "generate", level, globalSettings).value;
+    const build = (value: AiGenerateOptions) => ({ model: String(value.tasks!.namingModelMode === "fixed" ? value.tasks!.namingModel : value.model), reasoningEffort: taskReasoningEffort(value.tasks!.namingReasoningEffort), chapterNaming: taskNamingProfile(value.tasks!, "chapterNaming"), outlineNaming: taskNamingProfile(value.tasks!, "outlineNaming") });
+    const settings = build(options);
+    return JSON.stringify(settings) === JSON.stringify(build(defaults)) ? undefined : settings;
+  };
   return {
     id: article.id,
     title: article.title,
@@ -296,7 +310,8 @@ function namingArticleContext(article: Article): NamingArticleContext {
       id: chapter.id,
       title: chapter.title,
       archived: chapter.archived,
-      outlines: chapter.outlines.map((outline) => ({ id: outline.id, title: outline.title, plan: outline.plan, archived: outline.archived })),
+      naming: namingFor(chapter.id, "chapter"),
+      outlines: chapter.outlines.map((outline) => ({ id: outline.id, title: outline.title, plan: outline.plan, archived: outline.archived, naming: namingFor(outline.id, "outline") })),
     })),
   };
 }
@@ -446,10 +461,21 @@ function canonicalModelReference(models: ConfiguredModel[], reference: string) {
   return configuredModelForReference(models, reference)?.id ?? reference.trim();
 }
 
-function TaskReasoningSettings({ kind, model, disabled = false }: { kind: "generate" | "chat" | "naming" | "review"; model?: ConfiguredModel; disabled?: boolean }) {
+function updateScopedTaskParameters(studio: ReturnType<typeof useStudio>, level: "article" | "chapter" | "outline", targetId: string, patch: TaskParameters) {
+  const options = resolveAiSettings(studio.currentArticle, targetId, "generate", level === "chapter" ? "chapter" : "outline", studio.data.settings).value;
+  const next = overrideAiSettings(options, { tasks: { ...options.tasks, ...patch } });
+  if (level === "article") studio.updateArticle({ aiGenerateSettings: normalizeAiGenerateOptions({ ...studio.currentArticle.aiGenerateSettings, tasks: { ...studio.currentArticle.aiGenerateSettings.tasks, ...patch } }) });
+  else if (level === "outline") studio.updateOutline(targetId, { generateOptions: next });
+  else { const chapter = studio.currentArticle.chapters.find(chapter => chapter.id === targetId)!; studio.updateChapter(targetId, { settings: { ...chapter.settings!, aiTasks: { ...chapter.settings?.aiTasks, generate: next } } }); }
+}
+
+function TaskReasoningSettings({ kind, model, disabled = false, level = "outline", targetId }: { kind: "generate" | "chat" | "naming" | "review"; model?: ConfiguredModel; disabled?: boolean; level?: "article" | "chapter" | "outline"; targetId?: string }) {
   const studio = useStudio();
   const key = `${kind}ReasoningEffort` as const;
-  return <ReasoningSettings value={studio.data.settings[key]} modelValue={model?.reasoningEffort} disabled={disabled} onChange={(value) => studio.updateSettings({ [key]: value })} />;
+  const id = targetId ?? studio.currentOutline.id;
+  const options = resolveAiSettings(studio.currentArticle, id, "generate", level === "chapter" ? "chapter" : "outline", studio.data.settings).value;
+  const tasks = level === "article" ? { ...taskParameterDefaults(studio.data.settings, studio.currentArticle), ...studio.currentArticle.aiGenerateSettings.tasks } : options.tasks!;
+  return <ReasoningSettings value={kind === "generate" ? options.reasoningEffort : taskReasoningEffort(tasks[key])} modelValue={model?.reasoningEffort} disabled={disabled} onChange={(value) => { if (kind === "generate") studio.updateOutline(id, { generateOptions: overrideAiSettings(options, { reasoningEffort: value }) }); else updateScopedTaskParameters(studio, level, id, { [key]: value === null ? "__omit__" : value ?? "__inherit__" }); }} />;
 }
 
 function modelDisplayLabel(models: ConfiguredModel[], selectedModel: string, fixedModelName?: string) {
@@ -737,13 +763,14 @@ function WriterStudioInner() {
     const currentTime = Date.now();
     const leaseExpired = (task: AiTask) => task.state === "running" && (!task.leaseUntil || new Date(task.leaseUntil).getTime() <= currentTime);
     const runningTasks = currentStudio.data.tasks.filter((task) => task.executionOrigin === currentStudio.executionOrigin && task.target !== "AI Chat" && task.state === "running" && !leaseExpired(task));
-    const available = Math.max(0, currentStudio.data.settings.taskConcurrency - runningTasks.length);
+    const available = Math.max(0, Math.max(currentStudio.data.settings.taskConcurrency, ...currentStudio.data.tasks.filter(task => task.executionOrigin === currentStudio.executionOrigin && task.state === "waiting").map(task => task.contextOptions?.taskConcurrency ?? 1)) - runningTasks.length);
     const occupiedBodyOutlines = new Set([...runningTasks.filter((task) => task.target === "正文"), ...currentStudio.data.tasks.filter((task) => task.target === "正文" && isTaskAwaitingAuthor(task))].map((task) => task.outlineId));
     const dispatchableTasks: AiTask[] = [];
     for (const task of currentStudio.data.tasks
       .filter((task) => task.executionOrigin === currentStudio.executionOrigin && task.target !== "AI Chat" && !isTaskAwaitingAuthor(task) && (task.state === "waiting" || leaseExpired(task)))
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())) {
       if (dispatchableTasks.length >= available) break;
+      if (runningTasks.length + dispatchableTasks.length >= (task.contextOptions?.taskConcurrency ?? currentStudio.data.settings.taskConcurrency)) continue;
       if (task.target === "正文" && occupiedBodyOutlines.has(task.outlineId)) continue;
       dispatchableTasks.push(task);
       if (task.target === "正文") occupiedBodyOutlines.add(task.outlineId);
@@ -1969,15 +1996,20 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
   const [result, setResult] = useState("");
   const [generatedSourceText, setGeneratedSourceText] = useState("");
   const [generatedOutlineTitle, setGeneratedOutlineTitle] = useState("");
-  const selectedModel = studio.data.settings.generateModel;
-  const reasoningEffort = studio.data.settings.generateReasoningEffort;
+  const scopedOptions = resolveAiSettings(studio.currentArticle, target.id, "generate", isChapter ? "chapter" : "outline", studio.data.settings).value;
+  const selectedModel = scopedOptions.model;
+  const reasoningEffort = scopedOptions.reasoningEffort;
   const selectedModelReference = canonicalModelReference(models, selectedModel);
   const targetChapter = studio.currentArticle.chapters.find((chapter) => isChapter ? chapter.id === target.id : chapter.outlines.some((outline) => outline.id === target.id));
   const targetOutline = isChapter ? targetChapter?.outlines.find((outline) => !outline.archived) : targetChapter?.outlines.find((outline) => outline.id === target.id);
   const currentValue = isChapter ? targetChapter?.title ?? target.title : targetOutline?.plan ?? "";
-  const contextSummary = targetChapter && targetOutline ? generateContextSummary(studio.currentArticle, targetOutline, prompt, true, true, isChapter ? "chapter-title" : "outline") : null;
+  const contextSummary = targetChapter && targetOutline ? generateContextSummary(studio.currentArticle, targetOutline, prompt, scopedOptions.includePrevious, scopedOptions.includeCharacters, isChapter ? "chapter-title" : "outline") : null;
+  function saveScopedOptions(next: AiGenerateOptions) {
+    if (isChapter && targetChapter) studio.updateChapter(target.id, { settings: { ...targetChapter.settings!, aiTasks: { ...targetChapter.settings?.aiTasks, generate: next } } });
+    else studio.updateOutline(target.id, { generateOptions: next });
+  }
   function selectGenerateModel(model: string) {
-    studio.updateSettings({ generateModel: model });
+    saveScopedOptions(overrideAiSettings(scopedOptions, { model }));
     void studio.saveNow();
   }
   async function generate() {
@@ -1985,8 +2017,8 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     if (!outlineId) { setError("该章节还没有可用大纲"); return; }
     setLoading(true); setError("");
     try {
-      const context = selectAiContext({ articles: [studio.currentArticle] }, outlineId, isChapter ? "chapter-title" : "outline", { includePrevious: true, includeCharacters: true, instruction: prompt });
-      const response = await fetchServerAction("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, reasoningEffort, target: isChapter ? "chapter-title" : "outline", includePrevious: true, includeCharacters: true, context }) });
+      const context = selectAiContext({ articles: [studio.currentArticle] }, outlineId, isChapter ? "chapter-title" : "outline", { includePrevious: scopedOptions.includePrevious, includeCharacters: scopedOptions.includeCharacters, instruction: prompt });
+      const response = await fetchServerAction("/api/ai/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outlineId, instruction: prompt.trim(), model: selectedModelReference, reasoningEffort, target: isChapter ? "chapter-title" : "outline", includePrevious: scopedOptions.includePrevious, includeCharacters: scopedOptions.includeCharacters, context }) });
       const payload = await response.json() as { text?: string; outlineTitle?: string; error?: string };
       if (!response.ok || !payload.text) throw new Error(payload.error || "生成失败");
       setResult(payload.text);
@@ -2010,7 +2042,8 @@ function StructureGenerateSheet({ target, onClose, onApplied }: { target: { kind
     <div className="structure-request-grid">
       <label className="structure-requirement">生成要求<textarea maxLength={20000} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入生成要求" /></label>
       <label className="structure-model">本次模型<select value={selectedModelReference} onChange={(event) => selectGenerateModel(event.target.value)}><option value="">本地演示引擎</option>{selectedModelReference && !configuredModelForReference(models, selectedModelReference) && <option value={selectedModelReference}>{selectedModelReference}</option>}{models.map((model) => <option value={model.id} key={model.id}>{modelDisplayLabel(models, model.id)}{model.hasSecret ? "" : "（需密钥）"}</option>)}</select></label>
-      <div className="structure-reasoning"><TaskReasoningSettings kind="generate" model={configuredModelForReference(models, selectedModelReference)} disabled={loading} /></div>
+      <AiSettingsInheritance kind="generate" targetId={target.id} level={isChapter ? "chapter" : "outline"} value={scopedOptions} onChange={saveScopedOptions} disabled={loading} />
+      <div className="structure-reasoning"><ReasoningSettings value={reasoningEffort} modelValue={configuredModelForReference(models, selectedModelReference)?.reasoningEffort} onChange={reasoningEffort => saveScopedOptions(overrideAiSettings(scopedOptions, { reasoningEffort }))} disabled={loading} /></div>
     </div>
     {error && <p className="task-error" role="alert">{error}</p>}
     {generated && <div className="structure-compare"><section><span>当前内容</span><p>{currentValue || "（空）"}</p></section><section><span>生成预览</span>{isChapter ? <input value={result} onChange={(event) => setResult(event.target.value)} /> : <textarea value={result} onChange={(event) => setResult(event.target.value)} />}</section></div>}
@@ -2056,8 +2089,9 @@ async function generateWholeChapterNameCandidates(studio: ReturnType<typeof useS
   const outlines = chapter.outlines.filter((item) => !item.archived && item.plan.trim());
   if (chapter.archived || !outlines.length) throw new Error(`「${chapter.title}」没有可供命名的大纲内容`);
   if (studio.data.tasks.some((task) => task.articleId === article.id && task.target === "全部名称" && (task.state === "waiting" || task.state === "running"))) throw new Error("整篇名称任务正在运行，请完成后再生成本章名称");
-  const settings = studio.data.settings;
-  const model = canonicalModelReference(models, settings.namingModelMode === "inherit" ? settings.generateModel : settings.namingModel);
+  const options = resolveAiSettings(article, chapter.id, "generate", "chapter", studio.data.settings).value;
+  const settings = options.tasks!;
+  const model = canonicalModelReference(models, String(settings.namingModelMode === "inherit" ? options.model : settings.namingModel));
   const selectedRecord = configuredModelForReference(models, model);
   if (selectedRecord && !selectedRecord.hasSecret) throw new Error("所选模型还没有载入 API 密钥");
   const response = await fetchServerAction("/api/ai/names", {
@@ -2069,13 +2103,13 @@ async function generateWholeChapterNameCandidates(studio: ReturnType<typeof useS
       target: "chapter",
       includeChapter: true,
       outlineIds: outlines.map((item) => item.id),
-      chapterNaming: article.chapterNaming,
-      outlineNaming: article.outlineNaming,
+      chapterNaming: taskNamingProfile(settings, "chapterNaming"),
+      outlineNaming: taskNamingProfile(settings, "outlineNaming"),
       model,
-      reasoningEffort: settings.namingReasoningEffort,
+      reasoningEffort: taskReasoningEffort(settings.namingReasoningEffort),
       modelLabel: modelDisplayLabel(models, model),
       instruction: "",
-      context: namingArticleContext(article),
+      context: namingArticleContext(article, studio.data.settings),
       persist: true,
     }),
   });
@@ -2179,7 +2213,7 @@ function OutlineWorkspace({
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView key={studio.currentOutline.id} models={models} outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
       {(mode === "illustrations" || illustrationOpened) && <div className="illustration-mode-panel" hidden={mode !== "illustrations"}>
-        <IllustrationGenerator outlineId={studio.currentOutline.id} content={illustrationSource?.content ?? outline.content} selectedExcerpt={illustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={studio.data.settings.illustrationPromptModel || studio.data.settings.generateModel} defaultImageModel={studio.data.settings.illustrationImageModel} onClose={() => onMode("write")} />
+        <IllustrationGenerator outlineId={studio.currentOutline.id} content={illustrationSource?.content ?? outline.content} selectedExcerpt={illustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationPromptModel)} defaultImageModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationImageModel)} onClose={() => onMode("write")} />
       </div>}
       {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定{countOutlineSettingChanges(studio.currentOutline.settings) ? ` · ${countOutlineSettingChanges(studio.currentOutline.settings)}` : ""}</button><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
       {settingsOpen && <OutlineSettingsDrawer outlineId={studio.currentOutline.id} onClose={() => setSettingsOpen(false)} />}
@@ -2741,8 +2775,8 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
   const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
   const inheritedGenerateOptions = normalizeAiGenerateOptions(studio.currentArticle.aiGenerateSettings, DEFAULT_AI_GENERATE_OPTIONS);
-  const initialGenerateOptions = normalizeAiGenerateOptions(studio.currentOutline.generateOptions ?? inheritedGenerateOptions, inheritedGenerateOptions);
-  initialGenerateOptions.advanced = { ...(studio.currentOutline.generateOptions?.advanced ?? {}) };
+  const resolvedGenerateSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings);
+  const initialGenerateOptions = resolvedGenerateSettings.value;
   if (!hasCurrentContent && initialGenerateOptions.contentMode !== "fresh") initialGenerateOptions.contentMode = "fresh";
   const [generateOptions, setGenerateOptions] = useState<AiGenerateOptions>(initialGenerateOptions);
   const generateOptionsRef = useRef(initialGenerateOptions);
@@ -2758,9 +2792,10 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     reasoningEffort,
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
-  const reviewMaxRounds = normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds);
-  const reviewInstruction = normalizeReviewRules(studio.data.settings.generateReviewInstruction);
-  const reviewStrategy = normalizeReviewStrategy(studio.data.settings.generateReviewStrategy);
+  const taskParameters = resolvedGenerateSettings.value.tasks!;
+  const reviewMaxRounds = normalizeReviewRounds(taskParameters.reviewMaxRounds);
+  const reviewInstruction = normalizeReviewRules(taskParameters.reviewInstruction);
+  const reviewStrategy = normalizeReviewStrategy(taskParameters.reviewStrategy);
   const [prompt, setPrompt] = useState(() => initialPrompt || storedPromptAtOpen);
   const [savedPrompt, setSavedPrompt] = useState(storedPromptAtOpen);
   const [promptSaving, setPromptSaving] = useState(false);
@@ -2811,23 +2846,28 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const promptDirty = normalizedPrompt !== savedPrompt;
 
   const rememberGenerateOptions = useCallback((patch: Partial<AiGenerateOptions>) => {
-    const next = normalizeAiGenerateOptions({ ...generateOptionsRef.current, ...patch }, studio.currentArticle.aiGenerateSettings);
-    next.advanced = { ...(patch.advanced ?? generateOptionsRef.current.advanced) };
+    const next = normalizeAiGenerateOptions(overrideAiSettings(generateOptionsRef.current, patch), studio.currentArticle.aiGenerateSettings);
     if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
     generateOptionsRef.current = next;
     setGenerateOptions(next);
     studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
   }, [hasCurrentContent, studio]);
 
-  const resetGenerateOptions = useCallback(() => {
-    const next = normalizeAiGenerateOptions(studio.currentArticle.aiGenerateSettings, DEFAULT_AI_GENERATE_OPTIONS);
-    if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
+  const applyInheritedGenerateOptions = (next: AiGenerateOptions) => {
     generateOptionsRef.current = next;
     setGenerateOptions(next);
     setTargetWordsInput(next.targetWords > 0 ? String(next.targetWords) : "");
-    studio.updateOutline(studio.currentOutline.id, { generateOptions: null });
-    setNotice("已恢复使用文章生成预设。");
-  }, [hasCurrentContent, studio]);
+    studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
+  };
+
+  useEffect(() => {
+    const next = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value;
+    if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
+    if (JSON.stringify(next) === JSON.stringify(generateOptionsRef.current)) return;
+    if (next.targetWords !== generateOptionsRef.current.targetWords) setTargetWordsInput(next.targetWords > 0 ? String(next.targetWords) : "");
+    generateOptionsRef.current = next;
+    setGenerateOptions(next);
+  }, [studio.currentArticle, studio.currentOutline.id, studio.data.settings, hasCurrentContent]);
 
   useEffect(() => {
     const previous = lastSyncedOutlineRef.current;
@@ -2917,11 +2957,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
-    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction))) && !hasActiveProseControls(proseControls) && !advancedText({ ...inheritedGenerateOptions.advanced, ...generateOptions.advanced }, GENERATE_FIELDS)) { setNotice("请在文章 AI 任务设定中添加审校规则，或在设置 → AI 任务中添加审校指令、关闭审校。"); return; }
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction))) && !hasActiveProseControls(proseControls) && !advancedText({ ...inheritedGenerateOptions.advanced, ...generateOptions.advanced }, GENERATE_FIELDS)) { setNotice("请在文章 AI 任务设定中添加审校规则，或在设置 → AI 任务中添加审校指令、关闭审校。"); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction)))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
       const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
@@ -2934,6 +2974,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         currentPlan: outlinePlanDraft,
         firstAppearanceCharacterIds: effectiveFirstAppearanceIds,
       });
+      promptContext.article.outlineNaming = taskNamingProfile(taskParameters, "outlineNaming");
       await createServerTask(studio, {
         articleId: studio.currentArticle.id,
         chapterId: studio.currentChapter.id,
@@ -2954,7 +2995,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         advanced: generateOptions.advanced,
         proseControls,
         dialogueDensity: proseControls.dialogueDensity,
-        reviewRuleSnapshot: createReviewRuleSnapshot(studio.currentArticle, normalizeReviewRules(reviewInstruction)),
+        reviewRuleSnapshot: taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction)),
         reviewMaxRounds,
         reviewInstruction: normalizeReviewRules(reviewInstruction),
         firstAppearanceCharacterIds: effectiveFirstAppearanceIds,
@@ -2989,8 +3030,9 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         <section className="generate-command-card">
           {studio.currentOutline.generateOptions && <div className="generate-settings-source" role="status">
             <span><Icon name="settings" /><span>正在使用此大纲最近的生成设置</span></span>
-            <Button variant="subtle" size="compact-sm" type="button" onClick={resetGenerateOptions}>恢复文章预设</Button>
           </div>}
+          <AiSettingsInheritance kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} />
+          <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} />
           <section className="generate-outline-editor">
             <div className="generate-outline-editor-heading">
               <label htmlFor="generate-outline-plan">大纲内容</label>
@@ -3092,7 +3134,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
             </div>}
           </div>
-          <GenerateAdvancedFields value={generateOptions.advanced} inherited={inheritedGenerateOptions.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => { const advanced = { ...generateOptions.advanced }; delete advanced[key as keyof typeof advanced]; rememberGenerateOptions({ advanced }); }} />
+          <GenerateAdvancedFields value={generateOptions.advanced} inherited={inheritedGenerateOptions.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [`advanced.${key}`]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [`advanced.${key}`]))} />
           <section className="generate-advanced-options" aria-labelledby="generate-reference-heading">
             <div className="generate-section-heading"><span id="generate-reference-heading">参考与推理</span></div>
             <div className="generate-advanced-options-body">
@@ -3112,7 +3154,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
               <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
             </div>
-            <p className="generate-auto-apply-note">{selectedModelReference ? studio.data.settings.preparationRequireConfirmation === true ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "先整理写作准备稿，无待答问题后自动写正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
+            <p className="generate-auto-apply-note">{selectedModelReference ? taskParameters.preparationRequireConfirmation === true ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "先整理写作准备稿，无待答问题后自动写正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
           </div>
         </section>
 
@@ -3284,11 +3326,17 @@ function ChatMessageContent({ text }: { text: string }) {
 function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }: { models: ConfiguredModel[]; outlineId?: string; outlineTitle: string; onUseAsGenerate: (text: string) => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId) ?? studio.currentOutline;
-  const chatModelRecord = configuredModelForReference(models, studio.data.settings.chatModel);
-  const chatModelReference = chatModelRecord?.id ?? studio.data.settings.chatModel.trim();
+  const chatOptions = resolveAiSettings(studio.currentArticle, outline.id, "generate", "outline", studio.data.settings).value;
+  const chatParameters = chatOptions.tasks!;
+  const chatModelRecord = configuredModelForReference(models, String(chatParameters.chatModel));
+  const chatModelReference = chatModelRecord?.id ?? String(chatParameters.chatModel).trim();
   const chatbotName = chatbotDisplayName(models, chatModelReference);
   const session = activeChatSession(outline);
   const message = session?.draft ?? "";
+  const chatContextSetting = (key: "chatIncludePrevious" | "chatIncludeCharacters", fallback: boolean) => outline.generateOptions?.tasks?.[key] !== undefined || studio.currentArticle.aiGenerateSettings.tasks?.[key] !== undefined || chatOptions.inheritance?.["tasks." + key] ? chatParameters[key] === true : fallback;
+  const chatIncludePrevious = chatContextSetting("chatIncludePrevious", session?.includePrevious ?? true);
+  const chatIncludeCharacters = chatContextSetting("chatIncludeCharacters", session?.includeCharacters ?? true);
+  const editChatParameter = (patch: TaskParameters) => updateScopedTaskParameters(studio, "outline", outline.id, patch);
   const activeChatTask = studio.data.tasks.find((task) => task.target === "AI Chat" && task.outlineId === outline.id && (task.state === "waiting" || task.state === "running"));
   const sessionChatTask = activeChatTask?.contextOptions?.sessionId === session?.id ? activeChatTask : undefined;
   const isStreaming = Boolean(activeChatTask);
@@ -3335,7 +3383,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       : activeChatTask ? "正在向模型发送请求…" : "正在思考…");
   let chatContext: ReturnType<typeof selectAiContext> | undefined;
   try {
-    chatContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: session?.includePrevious, includeCharacters: session?.includeCharacters, sessionId: session?.id });
+    chatContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: chatIncludePrevious, includeCharacters: chatIncludeCharacters, sessionId: session?.id });
   } catch { /* The active UI never intentionally opens an archived target. */ }
   const previous = chatContext?.previousOutlines ?? [];
   const matchedCharacters = chatContext?.characters ?? [];
@@ -3437,14 +3485,14 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       const userMessage: Message = { id: clientId("message-user"), role: "user", text: question, createdAt: new Date().toISOString() };
       const submittedMessages = addUser ? [...targetSession.messages, userMessage] : targetSession.messages;
       const submittedTitle = addUser && targetSession.title === "新对话" ? question.slice(0, 24) : targetSession.title;
-      let promptContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, sessionId: targetSessionId });
+      let promptContext = selectAiContext({ articles: [studio.currentArticle] }, outline.id, "chat", { includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), sessionId: targetSessionId });
       promptContext = { ...promptContext, recentMessages: submittedMessages.slice(-20).map((item) => ({ role: item.role, text: item.text })) };
       const submitResponse = await fetchServerAction(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
         method: "POST",
         signal: AbortSignal.timeout(15_000),
         cache: "no-store",
         headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
-        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, reasoningEffort: studio.data.settings.chatReasoningEffort, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
+        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
       });
       const submitted = await submitResponse.json() as { revision?: number; task?: AiTask; messages?: Message[]; sessionTitle?: string; sessionUpdatedAt?: string; error?: string };
       if (!submitResponse.ok || submitted.revision === undefined || !submitted.task || !submitted.messages) throw new Error(submitted.error || "消息提交失败");
@@ -3458,7 +3506,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       setChatResponseStage({ taskId, stage: "requesting-model" });
       try {
         if (controller.signal.aborted) return;
-        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, reasoningEffort: studio.data.settings.chatReasoningEffort, includePrevious: targetSession.includePrevious, includeCharacters: targetSession.includeCharacters, context: promptContext }) });
+        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
         setChatResponseStage({ taskId, stage: "waiting-first-token" });
         const reader = response.body.getReader();
@@ -3586,6 +3634,7 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       </header>
 
       <div className="chat-thread" ref={chatThreadRef}>
+        <TaskParameterSettings level="outline" targetId={outline.id} groups={["聊天"]} models={models} />
         {!session.messages.length && !chatBusy && <div className="chat-empty"><span><Icon name="spark" /></span><h2>和 {chatbotName} 讨论「{outlineTitle}」</h2><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, prompt); composerRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
         {session.messages.map((item, index) => {
           const isError = item.role === "assistant" && item.text.includes("错误：");
@@ -3612,11 +3661,11 @@ function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice }
       </div>
 
       <div className="chat-composer-wrap">
-        <details className="chat-reasoning-options"><summary>推理强度 · {studio.data.settings.chatReasoningEffort === undefined ? "沿用模型" : studio.data.settings.chatReasoningEffort ?? "不发送参数"}</summary><TaskReasoningSettings kind="chat" model={chatModelRecord} disabled={chatBusy} /></details>
-        {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="聊天上下文"><header><div><span className="ui-title">本次上下文</span><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={session.includePrevious} onChange={(event) => studio.setChatSetting(outline.id, "includePrevious", event.target.checked)} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{session.includePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={session.includeCharacters} onChange={(event) => studio.setChatSetting(outline.id, "includeCharacters", event.target.checked)} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{session.includeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
+        <details className="chat-reasoning-options"><summary>推理强度 · {taskReasoningEffort(chatParameters.chatReasoningEffort) === undefined ? "沿用模型" : taskReasoningEffort(chatParameters.chatReasoningEffort) ?? "不发送参数"}</summary><TaskReasoningSettings kind="chat" model={chatModelRecord} disabled={chatBusy} /></details>
+        {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="聊天上下文"><header><div><span className="ui-title">本次上下文</span><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={chatIncludePrevious} onChange={(event) => { studio.setChatSetting(outline.id, "includePrevious", event.target.checked); editChatParameter({ chatIncludePrevious: event.target.checked }); }} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{chatIncludePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={chatIncludeCharacters} onChange={(event) => { studio.setChatSetting(outline.id, "includeCharacters", event.target.checked); editChatParameter({ chatIncludeCharacters: event.target.checked }); }} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{chatIncludeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
           <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { studio.setChatDraft(outline.id, event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="聊天消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { studio.updateSettings({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地演示引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { editChatParameter({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地演示引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { studio.setChatDraft(outline.id, message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>
@@ -4044,7 +4093,10 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
   const studio = useStudio();
   const models = useConfiguredModels();
   const article = studio.currentArticle;
-  const settings = studio.data.settings;
+  const scopeId = target === "outline" ? outline?.id ?? "" : chapter?.id ?? article.id;
+  const scopedOptions = resolveAiSettings(article, scopeId, "generate", target === "chapter" ? "chapter" : "outline", studio.data.settings).value;
+  const scopedParameters = target === "article" ? { ...taskParameterDefaults(studio.data.settings, article), ...article.aiGenerateSettings.tasks } : scopedOptions.tasks!;
+  const settings = { ...studio.data.settings, generateModel: scopedOptions.model, namingModelMode: scopedParameters.namingModelMode === "fixed" ? "fixed" as const : "inherit" as const, namingModel: String(scopedParameters.namingModel), namingReasoningEffort: taskReasoningEffort(scopedParameters.namingReasoningEffort) };
   const visibleChapters = article.chapters.filter((item) => studio.data.settings.showArchived || !item.archived);
   const eligibleOutlines = (item: Chapter) => item.outlines.filter((candidate) => !candidate.archived && candidate.plan.trim());
   const eligibleChapters = visibleChapters.filter((item) => !item.archived && eligibleOutlines(item).length);
@@ -4066,9 +4118,9 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
   ];
 
   function selectNamingModel(value: string | null) {
-    if (!value || value === "__inherit__") studio.updateSettings({ namingModelMode: "inherit" });
-    else if (value === "__local__") studio.updateSettings({ namingModelMode: "fixed", namingModel: "" });
-    else studio.updateSettings({ namingModelMode: "fixed", namingModel: value });
+    if (!value || value === "__inherit__") updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "inherit" });
+    else if (value === "__local__") updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "fixed", namingModel: "" });
+    else updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "fixed", namingModel: value });
     setError("");
     void studio.saveNow();
   }
@@ -4079,13 +4131,13 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
       body: JSON.stringify({
         articleId: article.id,
         chapterId: targetChapter.id,
-        chapterNaming: article.chapterNaming,
-        outlineNaming: article.outlineNaming,
+        chapterNaming: taskNamingProfile(scopedParameters, "chapterNaming"),
+        outlineNaming: taskNamingProfile(scopedParameters, "outlineNaming"),
         model: selectedModelReference,
         reasoningEffort: settings.namingReasoningEffort,
         modelLabel: modelDisplayLabel(models, selectedModelReference),
         instruction: instruction.trim(),
-        context: namingArticleContext(article),
+        context: namingArticleContext(article, studio.data.settings),
         persist: true,
         ...body,
       }),
@@ -4132,12 +4184,12 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
         includePrevious: false,
         includeCharacters: false,
         estimatedCharacters,
-        chapterNaming: article.chapterNaming,
-        outlineNaming: article.outlineNaming,
+        chapterNaming: taskNamingProfile(scopedParameters, "chapterNaming"),
+        outlineNaming: taskNamingProfile(scopedParameters, "outlineNaming"),
         timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
-        namingContext: namingArticleContext(article),
+        namingContext: namingArticleContext(article, studio.data.settings),
       });
-      onNotice(`已创建后台任务，将用一次模型请求生成 ${eligibleChapters.length} 个章节和 ${eligibleOutlineCount} 个大纲的名称`);
+      onNotice(`已创建后台任务，将按各级设置生成 ${eligibleChapters.length} 个章节和 ${eligibleOutlineCount} 个大纲的名称`);
       onTaskCreated();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "后台名称任务创建失败"); }
   }
@@ -4172,7 +4224,7 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
     <div className="full-chapter-generation-bar">
       <Select label="名称生成模型" data={modelData} value={namingSelection} allowDeselect={false} disabled={Boolean(activeAllTask)} onChange={selectNamingModel} />
       <Textarea label="补充命名要求（可选）" maxLength={20_000} autosize minRows={2} maxRows={5} value={instruction} disabled={Boolean(activeAllTask)} placeholder="例如：避免剧透，保持海洋意象" onChange={(event) => setInstruction(event.currentTarget.value)} />
-      <div className="name-generation-reasoning"><TaskReasoningSettings kind="naming" model={selectedRecord} disabled={Boolean(activeAllTask)} /></div>
+      <div className="name-generation-reasoning"><TaskReasoningSettings kind="naming" level={target} targetId={scopeId} model={selectedRecord} disabled={Boolean(activeAllTask)} /></div>
       <Button leftSection={<Icon name="spark" />} loading={activeAllTask?.state === "running"} disabled={Boolean(activeAllTask) || missingSecret || !eligibleChapters.length} onClick={() => void generateAll()}>{activeAllTask ? "全部名称生成中" : "生成全部名称"}</Button>
     </div>
     {activeAllTask && <Alert color="studio">全部名称正在后台{activeAllTask.state === "waiting" ? "排队" : "生成"}，可以收起本区域；完成后候选名称会自动出现。</Alert>}
@@ -4185,6 +4237,7 @@ function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTaskCreated
   const state = normalizeNameVersionState(item.id, item.title, item.nameVersions, item.defaultNameVersionId, target === "chapter" ? article.updatedAt : outline!.updatedAt, target === "chapter" ? 120 : 80);
   const canGenerate = target === "chapter" ? eligibleOutlines(chapter).length > 0 : Boolean(outline!.plan.trim());
   return <div className="unified-naming-editor">
+    <TaskParameterSettings level={target} targetId={scopeId} groups={["命名"]} models={models} />
     <div className="unified-naming-heading"><span>{target === "chapter" ? "章节名称" : "大纲名称"}</span><Button variant="light" size="xs" leftSection={<Icon name="spark" />} loading={busy} disabled={busy || Boolean(activeAllTask) || !canGenerate} onClick={() => void generateOne()}>AI 生成候选</Button></div>
     <NameVersionChooser kind={kind} entityId={item.id} title={item.title} versions={state.nameVersions} defaultVersionId={state.defaultNameVersionId} onSelect={(versionId) => void selectDefault(kind, item.id, versionId)} onAdd={(title) => void addManual(kind, item.id, title)} onDelete={(versionId) => void deleteName(kind, item.id, versionId)} />
     {error && <Alert color="red">{error}</Alert>}
@@ -4997,6 +5050,7 @@ function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (view: Vi
       {view === "info-ai-tasks" && <div className="article-ai-task-settings">
         <StyleLabPanel />
         <ArticleGenerateSettings />
+        <TaskParameterSettings level="article" targetId={studio.currentArticle.id} />
         <ArticleIllustrationSettings />
         <div className="form-card article-ai-task-section"><ArticleReviewRulesPage /></div>
         <ArticleChapterNames />

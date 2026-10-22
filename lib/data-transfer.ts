@@ -272,6 +272,7 @@ function cloneChapterSettings(value: unknown, ids: IdMaps): ChapterSettings {
   const source = normalizeChapterSettings(value);
   return {
     story: structuredClone(source.story),
+    ...(source.aiTasks ? { aiTasks: { ...structuredClone(source.aiTasks), ...(source.aiTasks.generate ? { generate: { ...structuredClone(source.aiTasks.generate), firstAppearanceOverrides: Object.fromEntries(Object.entries(source.aiTasks.generate.firstAppearanceOverrides).map(([id, value]) => [mapped(ids.characters, id), value]).filter(([id]) => Boolean(id))) } } : {}) } } : {}),
     characters: Object.fromEntries(Object.entries(source.characters).map(([id, settings]) => [mapped(ids.characters, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
     relationships: Object.fromEntries(Object.entries(source.relationships).map(([id, settings]) => [mapped(ids.relationships, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
   };

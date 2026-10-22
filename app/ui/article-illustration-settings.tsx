@@ -23,6 +23,8 @@ export function ArticleIllustrationSettings() {
       <Select label="默认分辨率" aria-label="文章图片默认分辨率" description="使用所选模型支持的分辨率；不支持时使用模型默认值。" data={resolutions} value={settings.resolution} allowDeselect={false} onChange={value => patch({ resolution: value ?? "" })} />
     </div>
     <Textarea label="附加 Prompt" aria-label="文章图片附加 Prompt" description="用于图片提示词生成和图片生成；大纲默认继承，可在生成时单独修改。" placeholder="例如：保持人物外貌一致，画面不出现文字或水印。" minRows={3} maxRows={10} autosize maxLength={MAX_ILLUSTRATION_ADDITIONAL_PROMPT} value={settings.additionalPrompt} onChange={event => patch({ additionalPrompt: event.currentTarget.value })} />
+    <Textarea label="默认画面要求" value={settings.scenePrompt ?? ""} maxLength={2000} autosize minRows={2} onChange={event => patch({ scenePrompt: event.currentTarget.value })} />
+    <div className="article-generate-basics"><Textarea label="默认画面比例" placeholder="模型默认" value={settings.aspectRatio ?? ""} maxLength={100} onChange={event => patch({ aspectRatio: event.currentTarget.value })} /><Textarea label="默认图片画质" placeholder="模型默认" value={settings.quality ?? ""} maxLength={100} onChange={event => patch({ quality: event.currentTarget.value })} /></div>
     <div className="form-foot"><span>{overridden ? `${overridden} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
   </section>;
 }

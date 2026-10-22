@@ -563,7 +563,7 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
-  await expect(page.getByLabel("同时生成大纲名")).not.toBeChecked();
+  await expect(page.getByLabel("同时生成大纲名", { exact: true })).not.toBeChecked();
   await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
   await expect(page.getByRole("radio", { name: /改写正文/ })).toBeEnabled();
   await expect(page.getByRole("radio", { name: /续写正文/ })).toBeEnabled();
@@ -974,14 +974,13 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
   await page.reload();
   await expect.poll(() => numericValue("正文目标字数")).toBe(7200);
 
-  await page.getByRole("button", { name: "恢复文章预设" }).click();
-  await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await page.getByRole("group", { name: "全部生成设置继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
   await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: StudioData };
-    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions;
-  }).toBeNull();
+    return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions?.inheritance?.targetWords;
+  }).toBe("article");
 
   await page.goto("/articles/article-main/info/ai-tasks");
   await expect(page.getByRole("heading", { name: "生成" })).toBeVisible();

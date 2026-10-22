@@ -14,6 +14,8 @@ import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
 import { hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
+import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
+import { taskReviewSnapshot } from "@/lib/task-parameters";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 import { recoverChatTasks } from "@/db/chat-tasks";
@@ -83,6 +85,8 @@ export async function POST(request: Request) {
     const body = await request.json() as TaskBody;
     const effortError = reasoningEffortError(body.reasoningEffort);
     if (effortError) return json({ error: effortError }, 400);
+    const reviewEffortError = reasoningEffortError(body.reviewReasoningEffort);
+    if (reviewEffortError) return json({ error: reviewEffortError }, 400);
     const articleId = String(body.articleId ?? "");
     const chapterId = String(body.chapterId ?? "");
     const outlineId = String(body.outlineId ?? "");
@@ -125,7 +129,9 @@ export async function POST(request: Request) {
       FROM outlines o JOIN chapters c ON c.id=o.chapter_id JOIN articles a ON a.id=o.article_id
       WHERE o.id=? AND o.article_id=? AND o.chapter_id=?`).bind(outlineId, articleId, chapterId).first<Record<string, unknown>>();
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
-    const reviewRuleSnapshot = createReviewRuleSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, reviewInstruction);
+    const sourceArticle = snapshot.data?.articles.find(article => article.id === articleId);
+    const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks! : {};
+    const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, scopedParameters, reviewInstruction);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
 
     const executionOrigin = currentTaskExecutionOrigin();
@@ -197,6 +203,7 @@ export async function POST(request: Request) {
       // Browser snapshots may still contain an older queued/running copy and
       // must never be allowed to replace the lease or terminal result.
       serverManaged: true,
+      taskConcurrency: Math.max(1, Math.min(5, Number(scopedParameters.taskConcurrency) || 2)),
       reasoningEffort: body.reasoningEffort,
       resolvedReasoningEffort: resolveReasoningEffort(configuredModel, body.reasoningEffort),
       includePrevious: body.includePrevious !== false,
@@ -212,7 +219,7 @@ export async function POST(request: Request) {
         advanced: normalizeAdvanced(body.advanced, GENERATE_FIELDS),
         ...(body.proseControls !== undefined ? { proseControls } : {}),
         dialogueDensity,
-        ...(reviewMaxRounds > 0 && reviewModel ? { reviewMaxRounds, reviewInstruction, reviewStrategy, reviewConfiguredModelId: reviewModel.id, reviewModelId: reviewModel.modelId, reviewModelName: modelSelectionLabel(reviewModel), reviewResolvedReasoningEffort: resolveReasoningEffort(reviewModel, reviewModelMode === "inherit" ? body.reasoningEffort : snapshot.data?.settings.reviewReasoningEffort), reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
+        ...(reviewMaxRounds > 0 && reviewModel ? { reviewMaxRounds, reviewInstruction, reviewStrategy, reviewConfiguredModelId: reviewModel.id, reviewModelId: reviewModel.modelId, reviewModelName: modelSelectionLabel(reviewModel), reviewResolvedReasoningEffort: resolveReasoningEffort(reviewModel, body.reviewReasoningEffortInheritModel === true ? undefined : body.reviewReasoningEffort === undefined ? reviewModelMode === "inherit" ? body.reasoningEffort : snapshot.data?.settings.reviewReasoningEffort : body.reviewReasoningEffort as ReasoningOptions["reasoningEffort"]), reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
         includeOutlineTitle: body.includeOutlineTitle === true || undefined,
         includeExcellentFragments: body.includeExcellentFragments === true || undefined,
         excellentFragmentIds: body.includeExcellentFragments === true ? uniqueStrings(body.excellentFragmentIds) : undefined,

@@ -1407,6 +1407,7 @@ export type NameGenerationResult = {
   maxInputCharacters: number;
 };
 
+type ScopedNamingSettings = { model: string; reasoningEffort?: ReasoningOptions["reasoningEffort"]; chapterNaming: NamingProfile; outlineNaming: NamingProfile };
 export type NamingArticleContext = {
   id: string;
   title: string;
@@ -1418,7 +1419,8 @@ export type NamingArticleContext = {
     id: string;
     title: string;
     archived: boolean;
-    outlines: Array<{ id: string; title: string; plan: string; archived: boolean }>;
+    naming?: ScopedNamingSettings;
+    outlines: Array<{ id: string; title: string; plan: string; archived: boolean; naming?: ScopedNamingSettings }>;
   }>;
 };
 
@@ -1485,6 +1487,25 @@ export async function generateNames(input: { articleId: string; chapterId: strin
   const article = supplied ?? state?.data?.articles.find((item) => item.id === input.articleId);
   const chapter = article?.chapters.find((item) => item.id === input.chapterId);
   if (!article || !chapter || chapter.archived) throw new AiInputError("命名目标不存在或已归档");
+  const scopedOutlines = input.target === "chapter" ? chapter.outlines.filter(outline => !outline.archived && outline.plan.trim() && (!input.outlineIds || input.outlineIds.includes(outline.id))) : [];
+  if (supplied && scopedOutlines.some(outline => (outline as NamingArticleContext["chapters"][number]["outlines"][number]).naming)) {
+    const result: NameGenerationResult = { outlineTitles: [], inputCharacters: 0, maxInputCharacters: Infinity };
+    if (input.includeChapter !== false) {
+      const named = await generateNames({ ...input, outlineIds: [] }, signal);
+      result.chapterTitle = named.chapterTitle;
+      result.inputCharacters += named.inputCharacters;
+      result.maxInputCharacters = named.maxInputCharacters;
+    }
+    for (const outline of scopedOutlines) {
+      const scope = (outline as NamingArticleContext["chapters"][number]["outlines"][number]).naming;
+      const named = await generateNames({ ...input, ...scope, target: "outline", outlineId: outline.id }, signal);
+      result.outlineTitles.push(...named.outlineTitles);
+      result.inputCharacters += named.inputCharacters;
+      result.maxInputCharacters = Math.min(result.maxInputCharacters, named.maxInputCharacters);
+    }
+    if (new Set(result.outlineTitles.map(item => item.title)).size !== result.outlineTitles.length) throw new AiInputError("模型返回了重复的大纲名称");
+    return result;
+  }
   const instruction = String(input.instruction ?? "").trim().slice(0, 20000);
   const model = await findModel(input.model);
   if (input.model && !model) throw new AiInputError("所选名称生成模型不存在，请重新选择");
@@ -1584,6 +1605,28 @@ export async function generateArticleNames(input: { articleId: string; chapterNa
     .map((chapter) => ({ chapter, outlines: chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()) }))
     .filter((item) => item.outlines.length > 0);
   if (!chapters.length) throw new AiInputError("文章没有包含大纲内容的章节，无法生成名称");
+
+  // Mixed chapter/outline settings need separate requests so each model and format is honored.
+  if (supplied?.chapters.some(chapter => chapter.naming || chapter.outlines.some(outline => outline.naming))) {
+    const result: ArticleNameGenerationResult = { chapterTitles: [], outlineTitles: [], inputCharacters: 0, maxInputCharacters: Infinity };
+    for (const { chapter, outlines } of chapters) {
+      const chapterScope = (chapter as NamingArticleContext["chapters"][number]).naming;
+      const generated = await generateNames({ ...input, ...chapterScope, chapterId: chapter.id, target: "chapter", includeChapter: true, outlineIds: [], context: supplied }, signal);
+      if (generated.chapterTitle) result.chapterTitles.push({ id: chapter.id, title: generated.chapterTitle });
+      result.inputCharacters += generated.inputCharacters;
+      result.maxInputCharacters = Math.min(result.maxInputCharacters, generated.maxInputCharacters);
+      for (const outline of outlines) {
+        const scope = (outline as NamingArticleContext["chapters"][number]["outlines"][number]).naming ?? chapterScope;
+        const named = await generateNames({ ...input, ...scope, chapterId: chapter.id, outlineId: outline.id, target: "outline", context: supplied }, signal);
+        result.outlineTitles.push(...named.outlineTitles.map(item => ({ ...item, chapterId: chapter.id })));
+        result.inputCharacters += named.inputCharacters;
+        result.maxInputCharacters = Math.min(result.maxInputCharacters, named.maxInputCharacters);
+      }
+    }
+    if (new Set(result.chapterTitles.map(item => item.title)).size !== result.chapterTitles.length) throw new AiInputError("模型返回了重复的章节名称");
+    if (new Set(result.outlineTitles.map(item => item.title)).size !== result.outlineTitles.length) throw new AiInputError("模型返回了重复的大纲名称");
+    return result;
+  }
 
   const instruction = String(input.instruction ?? "").trim().slice(0, 20_000);
   const model = await findModel(input.model);
