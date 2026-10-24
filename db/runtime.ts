@@ -70,7 +70,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS versions (
     id TEXT PRIMARY KEY NOT NULL, outline_id TEXT NOT NULL REFERENCES outlines(id) ON DELETE CASCADE,
     name TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, model_id TEXT, model_name TEXT, prompt TEXT,
-    task_id TEXT, rewrite_source_id TEXT, rewrite_source_name TEXT, review_report_json TEXT, outline_snapshot_json TEXT, setting_snapshot_json TEXT, manual_excellent INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    task_id TEXT, rewrite_source_id TEXT, rewrite_source_name TEXT, review_report_json TEXT, outline_snapshot_json TEXT, setting_snapshot_json TEXT, last_selected_at TEXT, manual_excellent INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS versions_outline_created_idx ON versions(outline_id, created_at DESC)",
   `CREATE TABLE IF NOT EXISTS excellent_fragments (
@@ -156,7 +156,7 @@ const schemaStatements = [
 // Bump this whenever ensureDatabase gains a schema-shape requirement. A
 // persisted marker lets new Worker isolates skip dozens of idempotent DDL and
 // PRAGMA calls after the database has already been brought up to date.
-const RUNTIME_SCHEMA_VERSION = "19";
+const RUNTIME_SCHEMA_VERSION = "20";
 const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
 let initialized: Promise<void> | null = null;
@@ -170,7 +170,8 @@ async function hasCurrentRuntimeSchema(db: SqliteDatabase) {
     // A version marker alone must not hide missing additive feature tables.
     // This also repairs databases marked current by an incomplete deployment.
     const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('style_lab_jobs','style_lab_rounds','style_lab_artifacts')").all<{ name: string }>();
-    return tables.results?.length === 3;
+    const columns = await db.prepare("PRAGMA table_info(versions)").all<{ name: string }>();
+    return tables.results?.length === 3 && Boolean(columns.results?.some((column) => column.name === "last_selected_at"));
   } catch {
     // Fresh and legacy databases may not have app_settings yet.
     return false;
@@ -231,6 +232,7 @@ export async function ensureDatabase() {
       await ensureVersionOutlineSnapshotColumn(db);
       await ensureVersionModelNameColumn(db);
       await ensureVersionRewriteSourceColumns(db);
+      await ensureVersionSelectionColumn(db);
       await ensureBodyExcellentColumns(db);
       await ensureAiTaskProgressColumns(db);
       await ensureGenerateReviewColumns(db);
@@ -302,6 +304,11 @@ async function ensureVersionRewriteSourceColumns(db: SqliteDatabase) {
   const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
   if (!columns.includes("rewrite_source_id")) await db.prepare("ALTER TABLE versions ADD COLUMN rewrite_source_id TEXT").run();
   if (!columns.includes("rewrite_source_name")) await db.prepare("ALTER TABLE versions ADD COLUMN rewrite_source_name TEXT").run();
+}
+
+async function ensureVersionSelectionColumn(db: SqliteDatabase) {
+  const columns = rows(await db.prepare("PRAGMA table_info('versions')").all<Record<string, unknown>>()).map((row) => String(row.name));
+  if (!columns.includes("last_selected_at")) await db.prepare("ALTER TABLE versions ADD COLUMN last_selected_at TEXT").run();
 }
 
 async function ensureNameVersionColumns(db: SqliteDatabase) {
@@ -658,6 +665,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           prompt: row.prompt ? String(row.prompt) : undefined, taskId: row.task_id ? String(row.task_id) : undefined,
           rewriteSourceId: row.rewrite_source_id ? String(row.rewrite_source_id) : undefined,
           rewriteSourceName: row.rewrite_source_name ? String(row.rewrite_source_name) : undefined,
+          lastSelectedAt: row.last_selected_at ? String(row.last_selected_at) : undefined,
           outlineSnapshot: row.outline_snapshot_json ? safeJson<{ title: string; plan: string } | undefined>(row.outline_snapshot_json, undefined) : undefined,
           settingSnapshot: row.setting_snapshot_json ? safeJson(row.setting_snapshot_json, undefined) : undefined,
           manualExcellent: bool(row.manual_excellent),
@@ -898,7 +906,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
-          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
+          statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json,last_selected_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null, version.lastSelectedAt ?? null]));
           uniqueExcellentFragments(version.content, version.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         });
         uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
@@ -1048,7 +1056,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=?").bind(outline.id));
     const usedFragmentIds = new Set<string>();
     for (const version of outline.versions) {
-      statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
+      statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json,last_selected_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, outline.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null, version.lastSelectedAt ?? null]));
       uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
     }
     uniqueExcellentFragments(outline.content, outline.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
@@ -1117,7 +1125,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
       statements.push(db.prepare("DELETE FROM excellent_fragments WHERE outline_id=? AND version_id IS NOT NULL").bind(item.id));
       statements.push(db.prepare("DELETE FROM versions WHERE outline_id=?").bind(item.id));
       for (const version of item.versions ?? []) {
-        statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, item.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null]));
+        statements.push(insert(db, "INSERT INTO versions(id,outline_id,name,text,source,model_id,model_name,prompt,task_id,rewrite_source_id,rewrite_source_name,outline_snapshot_json,setting_snapshot_json,manual_excellent,created_at,review_report_json,review_rule_snapshot_json,last_selected_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [version.id, item.id, version.name, version.content, version.source === "AI Generate" ? "ai-generate" : version.source === "AI Chat" ? "ai-chat" : version.source === "AI Review" ? "ai-review" : version.source === "未保存内容" ? "unsaved" : "manual", version.modelId ?? null, version.model ?? null, version.prompt ?? null, version.taskId ?? null, version.rewriteSourceId ?? null, version.rewriteSourceName ?? null, version.outlineSnapshot ? JSON.stringify(version.outlineSnapshot) : null, version.settingSnapshot ? JSON.stringify(version.settingSnapshot) : null, version.manualExcellent ? 1 : 0, version.createdAt, version.reviewReport ? JSON.stringify(version.reviewReport) : null, version.reviewRuleSnapshot ? JSON.stringify(version.reviewRuleSnapshot) : null, version.lastSelectedAt ?? null]));
         uniqueExcellentFragments(version.content, version.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, item.id, version.id, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
       }
     }

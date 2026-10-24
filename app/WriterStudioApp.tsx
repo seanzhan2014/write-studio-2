@@ -5670,7 +5670,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
               <button type="button" disabled={isDefault} onClick={() => { studio.setDefaultVersion(studio.currentOutline.id, version.id); onNotice("已设为默认正文"); }}>{isDefault ? "已默认" : "设为默认"}</button>
               <button type="button" onClick={() => void saveVersionAs(version)}>另存</button>
               <button type="button" onClick={() => { const name = window.prompt("重命名版本", version.name); if (name?.trim()) studio.renameVersion(studio.currentOutline.id, version.id, name.trim()); }}>重命名</button>
-              <button className="danger-text" type="button" disabled={isCurrent || isDefault} title={isCurrent ? "请先切换当前正文" : isDefault ? "请先取消默认正文" : undefined} onClick={() => { if (window.confirm("删除这个版本？")) studio.deleteVersion(studio.currentOutline.id, version.id); }}>删除</button>
+              <button className="danger-text" type="button" disabled={isDefault} title={isDefault ? "请先取消默认正文" : undefined} onClick={() => { if (window.confirm(isCurrent ? "删除当前版本？删除后将恢复上次设为当前的版本；没有历史记录时使用最新版本。" : "删除这个版本？")) { studio.deleteVersion(studio.currentOutline.id, version.id); if (isCurrent || selectedVersionId === version.id) onClearPreview(); } }}>删除</button>
             </div>
           </article>;
         })}

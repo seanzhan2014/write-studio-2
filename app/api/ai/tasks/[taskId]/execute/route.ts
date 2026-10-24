@@ -10,7 +10,7 @@ import { applyStudioChanges, ensureDatabase, getDatabase, readStudioState } from
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { aiGenerateContentName, localTimestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
+import { selectOutlineVersion, currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
 import { appendNameVersion, normalizeNameVersionState } from "@/lib/name-versions";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { diffStudioData } from "@/lib/studio-changes";
@@ -356,7 +356,7 @@ async function executeTask(taskId: string) {
               }
             : undefined;
           found.outline.versions.unshift(version, ...(directContentBackup ? [directContentBackup] : []));
-          if (!sourceChanged) found.outline.currentVersionId = version.id;
+          if (!sourceChanged) Object.assign(found.outline, selectOutlineVersion(found.outline, version.id, completedAt));
           found.outline.state = "saved";
           found.outline.updatedAt = completedAt;
           task.resultVersionId = version.id;

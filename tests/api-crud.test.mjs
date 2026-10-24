@@ -254,7 +254,7 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(content.data.data.defaultVersionId, null);
   });
 
-  await t.test("keeps versions immutable and blocks deleting current versions", async () => {
+  await t.test("keeps version content immutable and allows deleting the last current version", async () => {
     let revision = await resetFixture();
     const renamed = await api("/api/versions/version-manual", {
       method: "PATCH", headers: { "If-Match": String(revision) }, body: { name: "只改名称", content: "禁止修改的正文", source: "AI Generate" },
@@ -268,18 +268,40 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(applied.response.status, 200, applied.text);
     revision = applied.data.revision;
     const removed = await api("/api/versions/version-manual", { method: "DELETE", headers: { "If-Match": String(revision) } });
-    assert.equal(removed.response.status, 400, removed.text);
-    assert.match(removed.data.message, /当前正文不能删除/);
-    const switched = await api("/api/outlines/outline-current/content", { method: "PUT", headers: { "If-Match": String(revision) }, body: { text: "切回工作正文" } });
-    assert.equal(switched.response.status, 200, switched.text);
-    revision = switched.data.revision;
-    const deleted = await api("/api/versions/version-manual", { method: "DELETE", headers: { "If-Match": String(revision) } });
-    assert.equal(deleted.response.status, 200, deleted.text);
+    assert.equal(removed.response.status, 200, removed.text);
     const state = await api("/api/state");
     const outline = state.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
-    assert.equal(outline.content, "切回工作正文");
+    assert.equal(outline.content, "林澈看向顾屿，确认潮汐表上的时间。");
     assert.equal(outline.currentVersionId, null);
     assert.equal(outline.versions.length, 0);
+  });
+
+  await t.test("deleting current restores persisted selection history before falling back to the newest version", async () => {
+    let revision = await resetFixture((fixture) => {
+      const outline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+      const base = outline.versions[0];
+      outline.versions = [
+        { ...base, id: "newest", content: "最新正文", createdAt: "2026-10-23T00:00:00Z" },
+        { ...base, id: "old", content: "较早正文", createdAt: "2026-10-21T00:00:00Z" },
+        { ...base, id: "middle", content: "中间正文", createdAt: "2026-10-22T00:00:00Z" },
+      ];
+    });
+    for (const versionId of ["old", "middle", "old"]) {
+      const selected = await api(`/api/versions/${versionId}/apply`, { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
+      assert.equal(selected.response.status, 200, selected.text);
+      revision = selected.data.revision;
+    }
+    for (const [deleted, expected, text] of [["old", "middle", "中间正文"], ["middle", "newest", "最新正文"], ["newest", null, "林澈看向顾屿，确认潮汐表上的时间。"]]) {
+      const result = await api(`/api/versions/${deleted}`, { method: "DELETE", headers: { "If-Match": String(revision) } });
+      assert.equal(result.response.status, 200, result.text);
+      revision = result.data.revision;
+      const content = await api("/api/outlines/outline-current/content");
+      assert.equal(content.data.data.currentVersionId, expected);
+      assert.equal(content.data.data.text, text);
+      const state = await api("/api/state");
+      const outline = state.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+      assert.equal(outline.versions.some((version) => version.id === deleted), false);
+    }
   });
 
   await t.test("edits chat history without mixing sessions and can clear one outline only", async () => {

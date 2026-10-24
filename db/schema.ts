@@ -91,6 +91,7 @@ export const versions = sqliteTable("versions", {
   reviewRuleSnapshotJson: text("review_rule_snapshot_json"),
   outlineSnapshotJson: text("outline_snapshot_json"),
   settingSnapshotJson: text("setting_snapshot_json"),
+  lastSelectedAt: text("last_selected_at"),
   manualExcellent: integer("manual_excellent", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("versions_outline_created_idx").on(table.outlineId, table.createdAt)]);

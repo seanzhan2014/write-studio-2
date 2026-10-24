@@ -1356,6 +1356,49 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   expect({ currentVersionId: outline.currentVersionId, defaultVersionId: outline.defaultVersionId, versionCount: outline.versions.length }).toEqual({ currentVersionId: "version-manual", defaultVersionId: "version-manual", versionCount: 1 });
 });
 
+test("current body version deletion restores selection history across reloads and falls back to newest", async ({ page, request }, testInfo) => {
+  test.setTimeout(60_000);
+  const fixture = fullStudioFixture() as unknown as StudioData;
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  const base = target.versions[0];
+  target.versions = [
+    { ...base, id: "newest", name: "最新版本", content: "最新正文", createdAt: "2026-10-23T00:00:00Z" },
+    { ...base, id: "old", name: "较早版本", content: "较早正文", createdAt: "2026-10-21T00:00:00Z" },
+    { ...base, id: "middle", name: "中间版本", content: "中间正文", createdAt: "2026-10-22T00:00:00Z" },
+  ];
+  const current = await (await request.get("/api/state")).json();
+  const saved = await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fixture, conflictResolution: "keep-local" } });
+  expect(saved.ok()).toBeTruthy();
+  const openVersions = () => page.getByRole("button", { name: testInfo.project.name === "mobile-chromium" ? "选择正文版本" : "版本", exact: true }).click();
+  const version = (name: string) => page.locator(".version-list article").filter({ hasText: name });
+  const waitForCurrent = (id: string | null) => expect.poll(async () => {
+    const state = await (await request.get("/api/state")).json();
+    return state.data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").currentVersionId;
+  }).toBe(id);
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await openVersions();
+  for (const name of ["较早版本", "中间版本", "较早版本"]) {
+    await version(name).getByRole("button", { name: "设为当前", exact: true }).click();
+    await expect(version(name).getByRole("button", { name: "已当前", exact: true })).toBeDisabled();
+  }
+  await waitForCurrent("old");
+  await page.reload();
+  await openVersions();
+  page.on("dialog", (dialog) => dialog.accept());
+  for (const [name, expected, body] of [["较早版本", "middle", "中间正文"], ["中间版本", "newest", "最新正文"], ["最新版本", null, target.content]] as const) {
+    const remove = version(name).getByRole("button", { name: "删除", exact: true });
+    await expect(remove).toBeEnabled();
+    await remove.click();
+    await expect(version(name)).toHaveCount(0);
+    await waitForCurrent(expected);
+    await page.getByRole("button", { name: "关闭正文版本" }).click();
+    await expect(page.getByLabel("正文内容", { exact: true })).toContainText(body);
+    await page.reload();
+    await openVersions();
+  }
+  await expect(page.locator(".version-list article")).toHaveCount(1);
+});
+
 test("desktop direct current body creates one version when set as default", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   const current = await request.get("/api/state");

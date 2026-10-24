@@ -8,7 +8,7 @@ export type VersionedOutlineContent = {
   contentOverride?: boolean;
   /** Legacy migration field. Runtime code must not use it as current state. */
   sourceVersionId?: string;
-  versions: Array<{ id: string; name?: string; content: string; outlineSnapshot?: { title: string; plan: string } }>;
+  versions: Array<{ id: string; name?: string; content: string; createdAt?: string; lastSelectedAt?: string; outlineSnapshot?: { title: string; plan: string } }>;
 };
 
 export function defaultOutlineVersion<T extends VersionedOutlineContent>(outline: T) {
@@ -39,4 +39,37 @@ export function resolvedOutlineSnapshot(outline: VersionedOutlineContent) {
   return currentOutlineVersion(outline)?.outlineSnapshot
     ?? outline.contentOutlineSnapshot
     ?? { title: "", plan: "" };
+}
+
+const timestamp = (value?: string) => value ? Date.parse(value) || 0 : 0;
+
+/** Record selection order independently of version creation time. */
+export function selectOutlineVersion<T extends VersionedOutlineContent>(outline: T, versionId: string | null, updatedAt = new Date().toISOString()): T {
+  if (versionId && !outline.versions.some((version) => version.id === versionId)) return outline;
+  const previous = currentOutlineVersion(outline);
+  if (outline.currentVersionId === versionId) return outline;
+  const selectedAt = Math.max(timestamp(updatedAt), ...outline.versions.map((version) => timestamp(version.lastSelectedAt) + 2));
+  return {
+    ...outline,
+    currentVersionId: versionId,
+    updatedAt,
+    versions: outline.versions.map((version) => version.id === versionId
+      ? { ...version, lastSelectedAt: new Date(selectedAt).toISOString() }
+      : version.id === previous?.id && !version.lastSelectedAt
+        ? { ...version, lastSelectedAt: new Date(selectedAt - 1).toISOString() }
+        : version),
+  };
+}
+
+export function deleteOutlineVersion<T extends VersionedOutlineContent>(outline: T, versionId: string, updatedAt = new Date().toISOString()): T {
+  if (outline.defaultVersionId === versionId || !outline.versions.some((version) => version.id === versionId)) return outline;
+  const versions = outline.versions.filter((version) => version.id !== versionId);
+  const next = { ...outline, versions, updatedAt };
+  if (currentOutlineVersion(outline)?.id !== versionId) return next;
+  const previous = versions.reduce<T["versions"][number] | undefined>((latest, version) => {
+    if (!latest) return version;
+    const selectionOrder = timestamp(version.lastSelectedAt) - timestamp(latest.lastSelectedAt);
+    return selectionOrder > 0 || (selectionOrder === 0 && timestamp(version.createdAt) > timestamp(latest.createdAt)) ? version : latest;
+  }, undefined);
+  return selectOutlineVersion(next, previous?.id ?? null, updatedAt);
 }

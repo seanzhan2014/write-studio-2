@@ -18,7 +18,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { DEFAULT_AI_GENERATE_OPTIONS, DEFAULT_GENERATE_TARGET_WORDS, normalizeAiGenerateOptions, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment, type ExcellentFragment } from "@/lib/excellent-fragments.mjs";
-import { currentOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot } from "@/lib/outline-content";
+import { currentOutlineVersion, deleteOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot, selectOutlineVersion } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { articleReviewRules, createDefaultReviewRules, type ReviewRule, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { normalizeReviewPresets } from "@/lib/review-options";
@@ -82,6 +82,8 @@ export type Version = {
   content: string;
   source: "手动" | "AI Generate" | "AI Chat" | "AI Review" | "未保存内容";
   createdAt: string;
+  /** Most recent selection as current body, retained across saves and reloads. */
+  lastSelectedAt?: string;
   model?: string;
   modelId?: string;
   prompt?: string;
@@ -1842,7 +1844,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       const versionId = makeId("version");
       const existing = dataRef.current.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
       const version: Version = { id: versionId, name: timestampContentName(updatedAt), content: text, source: "AI Chat", createdAt: updatedAt, outlineSnapshot: existing ? resolvedOutlineSnapshot(existing) : { title: "", plan: "" }, manualExcellent: existing ? activeManualExcellent(existing) : false, excellentFragments: existing ? cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(existing), text, activeExcellentFragments(existing))) : [] };
-      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, currentVersionId: versionId, updatedAt, versions: [version, ...item.versions] } : item) })) })) };
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? selectOutlineVersion({ ...item, versions: [version, ...item.versions] }, versionId, updatedAt) : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
       return enqueueSave(snapshot);
@@ -2004,7 +2006,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     setCurrentVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId || (versionId && !item.versions.some((version) => version.id === versionId))) return item;
-        return { ...item, currentVersionId: versionId ?? null, updatedAt: new Date().toISOString() };
+        return selectOutlineVersion(item, versionId ?? null);
       }) })) })) }));
     },
     setDefaultVersion(outlineId, versionId) {
@@ -2018,7 +2020,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
         if (item.id !== outlineId) return item;
         const selected = item.versions.find((version) => version.id === versionId);
-        return selected ? { ...item, currentVersionId: selected.id, updatedAt: new Date().toISOString() } : item;
+        return selected ? selectOutlineVersion(item, selected.id) : item;
       }) })) })) }));
     },
     applyVersionWithBackup(outlineId, versionId) {
@@ -2032,7 +2034,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         if (!selected) return item;
         const inheritedOutlineSnapshot = resolvedOutlineSnapshot(item);
         const backup: Version = { id: backupId, name: `应用 AI 前 · ${new Date().toLocaleString("zh-CN")}`, content: resolvedOutlineContent(item), source: "手动", createdAt, outlineSnapshot: inheritedOutlineSnapshot ?? { title: item.title, plan: item.plan }, manualExcellent: activeManualExcellent(item), excellentFragments: cloneExcellentFragments(resolvedOutlineContent(item), activeExcellentFragments(item)) };
-        return { ...item, currentVersionId: selected.id, updatedAt: createdAt, versions: [backup, ...item.versions] };
+        return selectOutlineVersion({ ...item, versions: [backup, ...item.versions] }, selected.id, createdAt);
       }) })) })) }));
       return backupId;
     },
@@ -2041,8 +2043,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     },
     deleteVersion(outlineId, versionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => {
-        if (item.id !== outlineId || item.currentVersionId === versionId || item.defaultVersionId === versionId) return item;
-        return { ...item, versions: item.versions.filter((version) => version.id !== versionId) };
+        return item.id === outlineId ? deleteOutlineVersion(item, versionId) : item;
       }) })) })) }));
     },
     createChatSession(outlineId, title = "新对话", messages = []) {

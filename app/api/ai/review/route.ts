@@ -4,7 +4,7 @@ import { AiInputError, reviewChapter, type AiReviewInput } from "@/db/ai";
 import { applyStudioChanges, readStudioState } from "@/db/runtime";
 import { aiReviewContentName, resolvedOutlineContentName } from "@/lib/content-name.mjs";
 import { reviewSourceDigest, type ReviewOutlineSource } from "@/lib/ai-review.mjs";
-import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
+import { selectOutlineVersion, currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { createReviewRuleSnapshot, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { normalizeReviewPresets } from "@/lib/review-options";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments } from "@/lib/excellent-fragments.mjs";
@@ -163,7 +163,7 @@ export async function POST(request: Request) {
           excellentFragments: cloneExcellentFragments(text, reanchorExcellentFragments(resolvedOutlineContent(outline), text, activeExcellentFragments(outline))),
         };
         outline.versions.unshift(version);
-        outline.currentVersionId = versionId;
+        Object.assign(outline, selectOutlineVersion(outline, versionId, createdAt));
         outline.updatedAt = createdAt;
         outline.state = "saved";
         updated.push({ outlineId: outline.id, versionId, name, text });

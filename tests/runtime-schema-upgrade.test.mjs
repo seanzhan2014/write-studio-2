@@ -9,7 +9,7 @@ import { styleLabSchema } from "../db/style-lab-schema.ts";
 function runtimeHarness(cloud = false) {
   const source = readFileSync(new URL("../db/runtime.ts", import.meta.url), "utf8");
   const parsed = ts.createSourceFile("runtime.ts", source, ts.ScriptTarget.Latest, true);
-  const functions = ["hasCurrentRuntimeSchema", "ensureDatabase", "ensureAiGenerateSettingsColumns", "ensureStorySettingColumns", "rows"];
+  const functions = ["hasCurrentRuntimeSchema", "ensureDatabase", "ensureAiGenerateSettingsColumns", "ensureStorySettingColumns", "ensureVersionSelectionColumn", "rows"];
   const variables = ["schemaStatements", "RUNTIME_SCHEMA_VERSION", "RUNTIME_SCHEMA_VERSION_KEY", "initialized"];
   const selected = parsed.statements.filter(node => ts.isFunctionDeclaration(node)
     ? functions.includes(node.name?.text)
@@ -34,6 +34,17 @@ function runtimeHarness(cloud = false) {
   const runtime = Function(...Object.keys(context), `${code}\nreturn { ensureDatabase, schemaStatements, version: RUNTIME_SCHEMA_VERSION, newIsolate() { initialized = null; } };`)(...Object.values(context));
   return { native, runtime, writes: () => writes };
 }
+
+test("a current database missing version selection history upgrades without losing versions", async () => {
+  const { native, runtime } = runtimeHarness();
+  try {
+    for (const sql of runtime.schemaStatements) native.exec(sql);
+    native.exec("ALTER TABLE versions DROP COLUMN last_selected_at");
+    native.prepare("INSERT INTO app_settings VALUES('runtime_schema_version',?,'2026-10-24')").run(runtime.version);
+    await runtime.ensureDatabase();
+    assert.ok(native.prepare("PRAGMA table_info(versions)").all().some(column => column.name === "last_selected_at"));
+  } finally { native.close(); }
+});
 
 test("a database marked current before image settings upgrades without losing articles", async () => {
   const { native, runtime } = runtimeHarness();
