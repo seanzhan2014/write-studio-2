@@ -83,7 +83,7 @@ function useModalDrag(opened: boolean, enabled: boolean) {
   }, [enabled, reset]);
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!enabled || event.button !== 0) return;
+    if (!enabled || event.button !== 0 || event.pointerType === "touch") return;
     const surface = event.currentTarget.closest<HTMLElement>(".ws-modal-content");
     if (!surface) return;
     event.preventDefault();
@@ -167,8 +167,10 @@ export function ResponsiveModal({
   ...props
 }: ResponsiveModalProps) {
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
+  const finePointer = useMediaQuery("(hover: hover) and (pointer: fine)") ?? false;
   const useFullScreen = fullScreen ?? (mobileFullScreen && compact);
-  const draggable = !useFullScreen;
+  // A wide touch viewport can be a phone in landscape, not a desktop.
+  const draggable = !useFullScreen && finePointer;
   const drag = useModalDrag(props.opened, draggable);
   return <Modal
     {...props}

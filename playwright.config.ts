@@ -40,6 +40,17 @@ export default defineConfig({
       },
     },
     {
+      name: "mobile-webkit-layout",
+      grep: /mobile content surfaces have no horizontal overflow/,
+      use: {
+        browserName: "webkit",
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 1,
+        hasTouch: true,
+        isMobile: true,
+      },
+    },
+    {
       name: "mobile-webkit-swipe",
       grep: /mobile outline swipe archives and restores without opening the more menu/,
       use: {
