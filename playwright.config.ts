@@ -41,7 +41,7 @@ export default defineConfig({
     },
     {
       name: "mobile-webkit-layout",
-      grep: /mobile content surfaces have no horizontal overflow/,
+      grep: /mobile (?:content surfaces have no horizontal overflow|generation page stays inside)/,
       use: {
         browserName: "webkit",
         viewport: { width: 390, height: 844 },

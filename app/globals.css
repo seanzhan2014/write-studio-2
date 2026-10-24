@@ -4424,13 +4424,19 @@ kbd {
 .generate-view {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior-x: none;
 }
 
 .generate-page {
   margin: 0 auto;
   max-width: 900px;
+  min-width: 0;
   padding: 34px 40px 80px;
+  width: 100%;
 }
 
 .generate-page-header {
@@ -4475,6 +4481,7 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 13px;
   box-shadow: 0 4px 18px rgba(33, 31, 25, 0.05);
+  min-width: 0;
   padding: 19px;
 }
 
@@ -7797,8 +7804,7 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   }
 
   .generate-first-appearance-heading small,
-  .generate-mode-options button > span:not(.ui-title),
-  .generate-auto-apply-note {
+  .generate-mode-options button > span:not(.ui-title) {
     white-space: nowrap;
   }
 
@@ -8456,6 +8462,7 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .generate-auto-apply-note {
   font-size: var(--font-meta);
   margin-top: 5px;
+  white-space: normal;
 }
 
 /* AI Review keeps one scroll owner and a stable action bar. */

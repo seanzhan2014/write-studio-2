@@ -722,7 +722,6 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
     ".generate-outline-title-toggle .ui-label",
     ".generate-outline-title-toggle small",
     ".generate-context-copy .ui-title",
-    ".generate-auto-apply-note",
   ].join(","));
   const textMetrics = await singleLineText.evaluateAll((elements) => elements.map((element) => {
     const style = getComputedStyle(element);

@@ -46,6 +46,7 @@ test.beforeEach(async ({ request }) => {
   const article = data.articles[0];
   article.title = longText.slice(0, 120);
   article.chapters[0].title = longText.slice(0, 100);
+  article.chapters[0].outlines[0].title = longText.slice(0, 100);
   article.chapters[0].outlines[1].title = longText.slice(0, 100);
   article.chapters[0].outlines[1].content = `${longText}\n${"正常正文内容。\n".repeat(100)}`;
   article.characters[0].name = longText.slice(0, 60);
@@ -56,6 +57,46 @@ test.beforeEach(async ({ request }) => {
     data: { data, conflictResolution: "keep-local" },
   })).ok()).toBeTruthy();
 });
+
+for (const width of [320, 390, 430, 844]) {
+  test(`mobile generation page stays inside its scroll owner at ${width}px`, async ({ page, request }, testInfo) => {
+    test.skip(!testInfo.project.name.startsWith("mobile-"), "mobile layout");
+    await page.setViewportSize({ width, height: width === 844 ? 390 : 844 });
+    const current = await (await request.get("/api/state")).json();
+    current.data.articles[0].aiGenerateSettings.model = "mobile-long-model";
+    current.data.settings.generatePresets = ["日常对话", longText];
+    expect((await request.put("/api/state", {
+      headers: { "If-Match": String(current.revision) },
+      data: { data: current.data, conflictResolution: "keep-local" },
+    })).ok()).toBeTruthy();
+    await page.route("**/api/models", route => route.fulfill({ json: { models: [{
+      id: "mobile-long-model", modelId: longText, name: longText,
+      providerName: "测试服务", hasSecret: true,
+    }] } }));
+    await page.goto("/articles/article-main/outlines/outline-current/generate");
+    await expect(page.getByRole("combobox", { name: "本次模型", exact: true })).toHaveValue(/unbrokentext/);
+    await expect(page.locator(".generate-auto-apply-note")).toHaveCSS("white-space", "normal");
+    const view = page.locator(".generate-view");
+    const surfaces = [view, page.locator(".generate-page"), page.locator(".generate-command-card"), page.locator(".ai-settings-inheritance")];
+    for (const surface of surfaces) await expectVerticalSurface(page, surface);
+
+    await page.locator(".ai-setting-inheritance-details > summary").click();
+    const parameters = page.locator(".generate-command-card > .task-parameter-settings");
+    await parameters.locator(":scope > summary").click();
+    for (const summary of await parameters.locator(".task-parameter-group > summary").all()) await summary.click();
+    await page.locator(".generate-command-card > .writing-advanced > summary").click();
+    for (const surface of [...surfaces, parameters]) await expectVerticalSurface(page, surface);
+
+    await view.evaluate(element => { element.scrollTop = 0; });
+    if (testInfo.project.name === "mobile-chromium") {
+      await swipe(page, view, true);
+      expect(await view.evaluate(element => element.scrollLeft)).toBe(0);
+      await swipe(page, view, false);
+      await expect.poll(() => view.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    }
+    await page.screenshot({ path: `.test-data/generation-${testInfo.project.name}-${width}.png` });
+  });
+}
 
 for (const width of [320, 390, 667]) {
   test(`mobile content surfaces have no horizontal overflow at ${width}px`, async ({ page }, testInfo) => {
