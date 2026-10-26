@@ -221,6 +221,7 @@ export async function POST(request: Request) {
         dialogueDensity,
         ...(reviewMaxRounds > 0 && reviewModel ? { reviewMaxRounds, reviewInstruction, reviewStrategy, reviewConfiguredModelId: reviewModel.id, reviewModelId: reviewModel.modelId, reviewModelName: modelSelectionLabel(reviewModel), reviewResolvedReasoningEffort: resolveReasoningEffort(reviewModel, body.reviewReasoningEffortInheritModel === true ? undefined : body.reviewReasoningEffort === undefined ? reviewModelMode === "inherit" ? body.reasoningEffort : snapshot.data?.settings.reviewReasoningEffort : body.reviewReasoningEffort as ReasoningOptions["reasoningEffort"]), reviewRules: reviewRulesText(reviewRuleSnapshot), reviewRuleSnapshot, reviewSourceContent, reviewSourceVersionId } : {}),
         includeOutlineTitle: body.includeOutlineTitle === true || undefined,
+        includeClosingSummary: body.includeClosingSummary === true,
         includeExcellentFragments: body.includeExcellentFragments === true || undefined,
         excellentFragmentIds: body.includeExcellentFragments === true ? uniqueStrings(body.excellentFragmentIds) : undefined,
         firstAppearanceCharacterIds: body.includeCharacters === false ? [] : firstAppearanceCharacterIds,

@@ -462,6 +462,21 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(modelServer.received.length, receivedBefore, "archived targets must never reach the model service");
   });
 
+  await t.test("direct generation only requests a closing summary when explicitly enabled", async () => {
+    for (const endpoint of ["/api/ai/generate", "/api/ai/generate-stream"]) {
+      for (const includeClosingSummary of [undefined, false, true, "true"]) {
+        const result = await api(endpoint, { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", includeClosingSummary } });
+        assert.equal(result.response.status, 200, result.text);
+        const prompt = modelServer.received.at(-1).body.messages.at(-1).content;
+        assert.ok(prompt.includes(`<closing_summary enabled="${includeClosingSummary === true}">`));
+        assert.match(prompt, includeClosingSummary === true ? /在正文结尾增加一段简短、自然的总体描写或总结/ : /不得额外添加回顾全篇/);
+      }
+    }
+    const outline = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "outline", instruction: "补充大纲", includeClosingSummary: true } });
+    assert.equal(outline.response.status, 200, outline.text);
+    assert.doesNotMatch(modelServer.received.at(-1).body.messages.at(-1).content, /<closing_summary/);
+  });
+
   await t.test("allows content generation without an instruction and only sends an explicit target length", async () => {
     const generated = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "", model: "捕获模型", target: "content", targetWords: 6200 } });
     assert.equal(generated.response.status, 200, generated.text);

@@ -166,6 +166,7 @@ async function executeTask(taskId: string) {
               reasoningEffort: taskReasoningEffort(initialTask.contextOptions), context: initialTask.contextOptions?.promptContext,
               includePrevious: initialTask.contextOptions?.includePrevious, includeCharacters: initialTask.contextOptions?.includeCharacters,
               contentMode: initialTask.contextOptions?.contentMode, targetWords: initialTask.contextOptions?.targetWords,
+              includeClosingSummary: initialTask.contextOptions?.includeClosingSummary === true,
               rewriteRetention: initialTask.contextOptions?.rewriteRetention, advanced: initialTask.contextOptions?.advanced, proseControls: initialTask.contextOptions?.proseControls,
             }, preparation, upstreamController.signal);
             break;
@@ -220,6 +221,7 @@ async function executeTask(taskId: string) {
               dialogueDensity: initialTask.contextOptions?.dialogueDensity,
               firstAppearanceCharacterIds: initialTask.contextOptions?.firstAppearanceCharacterIds,
               includeOutlineTitle: initialTask.contextOptions?.includeOutlineTitle === true,
+              includeClosingSummary: initialTask.contextOptions?.includeClosingSummary === true,
               context: initialTask.contextOptions?.promptContext,
               writingBrief: preparation?.stage === "writing" ? preparation.brief : undefined,
             }, upstreamController.signal);

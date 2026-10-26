@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_AI_GENERATE_OPTIONS, normalizeAiGenerateOptions } from "../lib/generate-options.ts";
 
+test("closing summaries default off, inherit defaults and allow an explicit opt-out", () => {
+  assert.equal(DEFAULT_AI_GENERATE_OPTIONS.includeClosingSummary, false);
+  assert.equal(normalizeAiGenerateOptions({}).includeClosingSummary, false);
+  assert.equal(normalizeAiGenerateOptions({ includeClosingSummary: "true" }).includeClosingSummary, false);
+  const defaults = normalizeAiGenerateOptions({ includeClosingSummary: true });
+  assert.equal(normalizeAiGenerateOptions({}, defaults).includeClosingSummary, true);
+  assert.equal(normalizeAiGenerateOptions({ includeClosingSummary: false }, defaults).includeClosingSummary, false);
+});
+
 test("AI Generate options inherit article defaults and normalize outline overrides", () => {
   const articleDefaults = normalizeAiGenerateOptions({
     ...DEFAULT_AI_GENERATE_OPTIONS,

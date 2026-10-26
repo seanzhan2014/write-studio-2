@@ -256,6 +256,7 @@ export type AiTask = {
     generatedOutlineTitle?: string;
     generatedOutlineTitleError?: string;
     includeOutlineTitle?: boolean;
+    includeClosingSummary?: boolean;
     chapterNamingSnapshot?: NamingProfile;
     outlineNamingSnapshot?: NamingProfile;
     nameChapterCount?: number;

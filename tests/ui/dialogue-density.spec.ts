@@ -7,6 +7,41 @@ test.beforeEach(async ({ request }) => {
   expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fullStudioFixture() } })).ok()).toBeTruthy();
 });
 
+test("closing summary defaults off, inherits article settings and persists an explicit opt-out", async ({ page, request }, testInfo) => {
+  await page.goto("/articles/article-main/info/ai-tasks");
+  const toggle = page.getByRole("checkbox", { name: "生成收尾总结", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.includeClosingSummary).toBe(true);
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.includeClosingSummary).toBe(false);
+  await page.reload();
+  await expect(toggle).not.toBeChecked();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  await toggle.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("closing-summary.png"), fullPage: true });
+});
+
+test("changing only the closing summary choice creates a distinct generation request", async ({ page }) => {
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const toggle = page.getByRole("checkbox", { name: "生成收尾总结", exact: true });
+  await expect(toggle).not.toBeChecked();
+  for (const enabled of [false, true]) {
+    await toggle.setChecked(enabled);
+    const pending = page.waitForResponse((response) => response.url().endsWith("/api/ai/tasks") && response.request().method() === "POST");
+    await page.getByRole("button", { name: "开始生成", exact: true }).click();
+    const response = await pending;
+    expect(response.ok()).toBeTruthy();
+    const task = (await response.json()).data as AiTask;
+    expect(task.contextOptions?.includeClosingSummary).toBe(enabled);
+    await page.clock.setFixedTime(new Date(task.createdAt));
+  }
+  await page.getByRole("button", { name: "开始生成", exact: true }).click();
+  await expect(page.getByText("相同生成请求已在队列中。", { exact: true })).toBeVisible();
+});
+
 test("prose controls support keyboard selection, mode guidance and narrow touch targets", async ({ page }, testInfo) => {
   if (testInfo.project.name === "mobile-chromium") await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");

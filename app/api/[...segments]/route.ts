@@ -231,6 +231,7 @@ export async function POST(request: Request, context: RouteContext) {
         dialogueDensity: target === "正文" ? proseControls.dialogueDensity : undefined,
         ...(target === "正文" && rewriteRetention ? { rewriteRetention } : {}),
         ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
+        ...(target === "正文" ? { includeClosingSummary: body.includeClosingSummary === true } : {}),
         outlinePlanSnapshot: promptContext?.currentOutline.plan ?? found.outline.plan,
         outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? found.outline.title).slice(0, 80),
         ...(target === "全部名称" ? {

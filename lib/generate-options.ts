@@ -51,6 +51,7 @@ export type AiGenerateOptions = {
   includeCharacters: boolean;
   includeExcellentFragments: boolean;
   includeOutlineTitle: boolean;
+  includeClosingSummary: boolean;
   reviewMaxRounds: number;
   reviewInstruction: string;
   firstAppearanceOverrides: Record<string, boolean>;
@@ -77,6 +78,7 @@ export const DEFAULT_AI_GENERATE_OPTIONS: AiGenerateOptions = {
   includeCharacters: true,
   includeExcellentFragments: false,
   includeOutlineTitle: false,
+  includeClosingSummary: false,
   reviewMaxRounds: 0,
   reviewInstruction: "",
   firstAppearanceOverrides: {},
@@ -253,6 +255,7 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     includeCharacters: typeof source.includeCharacters === "boolean" ? source.includeCharacters : base.includeCharacters,
     includeExcellentFragments: typeof source.includeExcellentFragments === "boolean" ? source.includeExcellentFragments : base.includeExcellentFragments,
     includeOutlineTitle: typeof source.includeOutlineTitle === "boolean" ? source.includeOutlineTitle : base.includeOutlineTitle,
+    includeClosingSummary: typeof source.includeClosingSummary === "boolean" ? source.includeClosingSummary : base.includeClosingSummary,
     reviewMaxRounds: Number.isInteger(reviewRounds) ? Math.max(0, Math.min(10, reviewRounds)) : base.reviewMaxRounds,
     reviewInstruction: String(source.reviewInstruction ?? base.reviewInstruction).slice(0, 20_000),
     firstAppearanceOverrides: Object.prototype.hasOwnProperty.call(source, "firstAppearanceOverrides")

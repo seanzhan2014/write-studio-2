@@ -77,6 +77,21 @@ test("Generate review API executes durable loops and reports the final draft", a
       } finally { release?.(); reviewer.close(); }
     });
 
+    await t.test("closing summary selection survives preparation, generation, review and revision", async () => {
+      for (const includeClosingSummary of [undefined, true]) {
+        await reset(); fake.control.calls = []; fake.control.mode = "pass";
+        const task = await create(2, undefined, { includeClosingSummary, preparationRounds: 0, preparationRequireConfirmation: false });
+        assert.equal(task.contextOptions.includeClosingSummary, includeClosingSummary === true);
+        const completed = await waitTask(task.id);
+        assert.equal(completed.state, "success", completed.error);
+        assert.equal(completed.contextOptions.includeClosingSummary, includeClosingSummary === true);
+        assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "generate", "review", "revise", "review"]);
+        for (const call of fake.control.calls) {
+          assert.ok(call.body.messages.at(-1).content.includes(`<closing_summary enabled="${includeClosingSummary === true}">`), `${call.kind} must preserve the closing choice`);
+        }
+      }
+    });
+
     await t.test("default review follows the submitted generation model and minimum prompts", async () => {
       await reset(); fake.control.calls = []; fake.control.mode = "clean";
       const task = await create(2);
