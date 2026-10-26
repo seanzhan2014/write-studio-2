@@ -119,6 +119,11 @@ export const PARAGRAPH_LENGTH_OPTIONS: Array<{ value: ParagraphLengthLevel; labe
   { value: "long", label: "长", description: "允许较完整地展开动作、观察和思绪，但不把无关内容强行合并。" },
 ];
 
+export const CLOSING_SUMMARY_OPTIONS = [
+  { value: "off", label: "不需要", description: "在当前情节自然停笔，不额外添加总体描写或总结。" },
+  { value: "on", label: "需要", description: "结尾增加一段简短、自然的总体描写或总结。" },
+] as const;
+
 export function isDialogueDensity(value: unknown): value is DialogueDensityLevel {
   return DIALOGUE_DENSITY_LEVELS.includes(value as DialogueDensityLevel);
 }

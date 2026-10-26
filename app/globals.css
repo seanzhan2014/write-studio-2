@@ -4657,6 +4657,7 @@ kbd {
 .dialogue-density-control > small { display: block; margin-top: 4px; }
 .prose-control-options,
 .dialogue-density-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.closing-summary-control .prose-control-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .prose-control-options label,
 .dialogue-density-options label { position: relative; display: grid; place-items: center; min-width: 44px; min-height: 46px; padding: 6px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--app-bg); color: var(--text-primary); font-size: var(--font-label); cursor: pointer; }
 .prose-control-options label.selected,

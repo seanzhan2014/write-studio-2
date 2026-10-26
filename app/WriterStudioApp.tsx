@@ -76,7 +76,7 @@ import { detectFirstAppearanceCharacters, selectAiContext, summarizeAiContext, t
 import type { NamingArticleContext } from "@/db/ai";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { DEFAULT_AI_GENERATE_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, descriptionDetailLabel, dialogueDensityLabel, hasActiveProseControls, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeAiGenerateOptions, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { DEFAULT_AI_GENERATE_OPTIONS, CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, descriptionDetailLabel, dialogueDensityLabel, hasActiveProseControls, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeAiGenerateOptions, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
@@ -3115,8 +3115,8 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               <ProseControlRow id="description-detail" label="描写细度" value={proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => rememberGenerateOptions({ proseControls: { ...proseControls, descriptionDetail } })} />
               <ProseControlRow id="narrative-pace" label="叙事节奏" value={proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => rememberGenerateOptions({ proseControls: { ...proseControls, narrativePace } })} />
               <ProseControlRow id="paragraph-length" label="段落长度" value={proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => rememberGenerateOptions({ proseControls: { ...proseControls, paragraphLength } })} />
+              <ProseControlRow id="closing-summary" label="收尾总结" value={includeClosingSummary ? "on" : "off"} options={CLOSING_SUMMARY_OPTIONS} onChange={(value) => rememberGenerateOptions({ includeClosingSummary: value === "on" })} className="closing-summary-control" />
             </div>
-            <Checkbox mt="md" label="生成收尾总结" description="结尾增加一段总体描写或总结；默认关闭，在当前情节自然停笔。" checked={includeClosingSummary} onChange={(event) => rememberGenerateOptions({ includeClosingSummary: event.currentTarget.checked })} />
             {generationMode === "continue" && <small>这些控制仅影响新增正文，已有正文保持原样。</small>}
             {generationMode === "rewrite" && rewriteRetention === "high" && hasActiveProseControls(proseControls) && <small>优先保留原文结构，正文表达控制只作有限调整。</small>}
             {!selectedModelReference && (hasActiveProseControls(proseControls) || includeClosingSummary) && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
@@ -5113,8 +5113,8 @@ function ArticleGenerateSettings() {
         <ProseControlRow id="article-description-detail" label="描写细度" value={settings.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...settings.proseControls, descriptionDetail } })} />
         <ProseControlRow id="article-narrative-pace" label="叙事节奏" value={settings.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...settings.proseControls, narrativePace } })} />
         <ProseControlRow id="article-paragraph-length" label="段落长度" value={settings.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...settings.proseControls, paragraphLength } })} />
+        <ProseControlRow id="article-closing-summary" label="收尾总结" value={settings.includeClosingSummary ? "on" : "off"} options={CLOSING_SUMMARY_OPTIONS} onChange={(value) => patchSettings({ includeClosingSummary: value === "on" })} className="closing-summary-control" />
       </div>
-      <Checkbox mt="md" label="生成收尾总结" description="结尾增加一段总体描写或总结；默认关闭，在当前情节自然停笔。" checked={settings.includeClosingSummary} onChange={(event) => patchSettings({ includeClosingSummary: event.currentTarget.checked })} />
     </section>
     <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} />
     <section className="article-generate-block article-generate-references" aria-labelledby="article-generate-reference-title">
