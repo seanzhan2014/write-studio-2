@@ -1,0 +1,124 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+
+const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
+const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
+const connection = { baseUrl: "https://civitai.com/api/v1", secret: "fake-civitai-key", modelId: id, timeoutMs: 5000 };
+function mockFetch(t, handler) {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => { const call = { url: new URL(url), ...init, body: init?.body ? JSON.parse(init.body) : undefined }; calls.push(call); return handler(call, calls); });
+  return calls;
+}
+
+test("existing Civitai URLs are detected and use separate native catalog and generation hosts", () => {
+  for (const baseUrl of ["https://civitai.com", "https://civitai.com/api/v1/", "https://orchestration.civitai.com"]) {
+    assert.equal(isCivitai({ baseUrl }), true);
+    assert.deepEqual(civitaiBaseUrls(baseUrl), { catalog: "https://civitai.com/api/v1", generation: "https://orchestration.civitai.com/v2/consumer" });
+  }
+  assert.equal(isCivitai({ baseUrl: "https://civitai.com.evil.example/v1" }), false);
+  assert.equal(isCivitai({ adapterKind: "civitai", baseUrl: "https://proxy.example" }), true);
+  assert.deepEqual(civitaiBaseUrls("https://proxy.example/civitai/api/v1"), { catalog: "https://proxy.example/civitai/api/v1", generation: "https://proxy.example/civitai/v2/consumer" });
+});
+
+test("bounded native pages select callable checkpoints, not model resources or LoRAs", async t => {
+  const calls = mockFetch(t, call => Response.json({ items: [resource, { ...resource, type: "LORA", id: 2 }, { ...resource, supportsGeneration: false, id: 3 }, { ...resource, mode: "Archived", id: 4 }, { ...resource, id: 5, modelVersions: [{ id: 6, baseModel: "Flux.1 D" }] }], metadata: { nextCursor: String(Number(call.url.searchParams.get("cursor") || 0) + 1) } }));
+  const result = await discoverCivitaiCatalog(connection.baseUrl, connection.secret);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map(call => call.url.searchParams.get("cursor")), [null, "1", "2"]);
+  assert.ok(calls.every(call => call.url.pathname === "/api/v1/models" && call.url.searchParams.get("limit") === "10" && call.url.searchParams.get("types") === "Checkpoint" && call.url.searchParams.get("supportsGeneration") === "true" && call.headers.Authorization === `Bearer ${connection.secret}`));
+  assert.equal(result.catalog.length, 1);
+  assert.equal(result.catalog[0].id, id);
+  assert.equal(result.catalog[0].name, "Painter · v1");
+  assert.deepEqual(result.catalog[0].metadata.outputModalities, ["image"]);
+  assert.deepEqual(result.catalog[0].metadata.inputModalities, ["text"]);
+  assert.equal(result.catalog[0].metadata.supportedParameters.size.values[0], "1024x1024");
+  assert.ok(result.warnings.some(warning => warning.includes("部分热门模型")));
+  assert.ok(!JSON.stringify(result).includes(connection.secret));
+});
+
+test("catalog uses canonical AIRs and recognizes SD1 and SDXL-family versions", async t => {
+  mockFetch(t, () => Response.json({ items: ["SD 1.5", "Pony", "Illustrious", "NoobAI"].map((baseModel, index) => ({ ...resource, id: index + 1, modelVersions: [{ id: index + 2, baseModel }] })), metadata: {} }));
+  const result = await discoverCivitaiCatalog(connection.baseUrl, "");
+  assert.equal(result.catalog.length, 4);
+  assert.equal(result.catalog.find(entry => entry.id.includes(":sd1:"))?.metadata.supportedParameters.size.values[0], "512x512");
+});
+
+test("pagination rejects foreign hosts without sending them the key and stops repeated cursors", async t => {
+  const calls = mockFetch(t, () => Response.json({ items: [resource], metadata: { nextPage: "https://evil.example/api/v1/models?cursor=secret" } }));
+  await assert.rejects(discoverCivitaiCatalog(connection.baseUrl, connection.secret), /分页地址/);
+  assert.equal(calls.length, 1);
+  t.mock.restoreAll();
+  const repeats = mockFetch(t, () => Response.json({ items: [resource], metadata: { nextCursor: "same" } }));
+  await discoverCivitaiCatalog(connection.baseUrl, connection.secret);
+  assert.equal(repeats.length, 2);
+});
+
+test("later page failures preserve successful entries with redacted warnings", async t => {
+  mockFetch(t, (_call, calls) => calls.length === 1 ? Response.json({ items: [resource], metadata: { nextCursor: "next" } }) : new Response(`Bearer ${connection.secret}`, { status: 503 }));
+  const result = await discoverCivitaiCatalog(connection.baseUrl, connection.secret);
+  assert.equal(result.catalog.length, 1);
+  assert.ok(result.warnings.some(warning => warning.includes("后续目录未完成")));
+  assert.ok(!JSON.stringify(result).includes(connection.secret));
+});
+
+test("oversized streaming pages are canceled before buffering the entire response", async t => {
+  let canceled = false;
+  mockFetch(t, () => new Response(new ReadableStream({ pull(controller) { controller.enqueue(new Uint8Array(1_000_001)); }, cancel() { canceled = true; } })));
+  await assert.rejects(discoverCivitaiCatalog(connection.baseUrl, ""), /单页响应过大/);
+  assert.equal(canceled, true);
+});
+
+test("empty and malformed native catalogs have actionable errors", async t => {
+  for (const [payload, message] of [[{ data: [resource] }, /格式无效/], [{ items: [] }, /Checkpoint/]]) {
+    t.mock.restoreAll(); mockFetch(t, () => Response.json(payload));
+    await assert.rejects(discoverCivitaiCatalog(connection.baseUrl, ""), message);
+  }
+});
+
+test("native image input validates the AIR, prompt, dimensions and unsupported controls before submitting", () => {
+  assert.deepEqual(civitaiImageInput(id, "A landscape", { size: "1216x832" }), { engine: "sdcpp", ecosystem: "sdxl", operation: "createImage", checkpointModel: id, prompt: "A landscape", width: 1216, height: 832, quantity: 1 });
+  assert.equal(civitaiImageInput("urn:air:sd1:checkpoint:civitai:4384@128713", "A tree").width, 512);
+  for (const invalid of ["101055", id.replace("checkpoint", "lora"), id.replace("sdxl", "flux1")]) assert.throws(() => civitaiImageInput(invalid, "test"), /AIR ID/);
+  assert.throws(() => civitaiImageInput(id, "x".repeat(10_001)), /提示词/);
+  assert.throws(() => civitaiImageInput(id, "test", { size: "1025x1024" }), /倍数/);
+  assert.throws(() => civitaiImageInput(id, "test", { size: "4096x4096" }), /倍数/);
+  assert.throws(() => civitaiImageInput(id, "test", { referenceImages: ["https://example.com/image.png"] }), /参考图/);
+  assert.throws(() => civitaiImageInput(id, "test", { resolution: "4k" }), /模型默认/);
+});
+
+test("native generation submits once and polls for imageGen output without OpenAI endpoints", async t => {
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => { const timer = setInterval(() => { clearInterval(timer); callback(...args); }, delay === 2000 ? 1 : delay); return timer; });
+  const calls = mockFetch(t, (call, calls) => calls.length === 1 ? Response.json({ id: "wf_test", status: "processing" }, { status: 202 }) : Response.json({ id: "wf_test", status: "succeeded", steps: [{ output: { images: [{ url: "https://images.example/output.png" }] } }] }));
+  const result = await generateCivitaiImage(connection, "A lighthouse");
+  assert.deepEqual(result, { data: [{ url: "https://images.example/output.png" }] });
+  assert.equal(calls[0].url.href, "https://orchestration.civitai.com/v2/consumer/workflows?wait=0");
+  assert.equal(calls[1].url.pathname, "/v2/consumer/workflows/wf_test");
+  assert.equal(calls[0].body.steps[0].input.checkpointModel, id);
+  assert.equal(calls[0].body.steps[0].input.quantity, 1);
+  assert.equal(calls[0].body.steps[0].$type, "imageGen");
+  assert.ok(calls[0].body.externalId);
+  assert.ok(calls.every(call => call.headers.Authorization === `Bearer ${connection.secret}`));
+  assert.equal(calls.filter(call => call.method === "POST").length, 1);
+});
+
+test("failed, missing, malformed and timed-out workflows never retry submission or leak credentials", async t => {
+  for (const [payload, message] of [[{ id: "wf_failed", status: "failed", steps: [{ reason: `invalid ${connection.secret}` }] }, /wf_failed/], [{ status: "succeeded" }, /任务 ID/], [{ id: "wf_no_image", status: "succeeded", steps: [] }, /没有返回可用图片/], [{ id: "wf_invalid", status: "unknown" }, /未知任务状态/]]) {
+    t.mock.restoreAll(); const calls = mockFetch(t, () => Response.json(payload));
+    await assert.rejects(generateCivitaiImage(connection, "A tree"), error => { assert.match(error.message, message); assert.ok(!error.message.includes(connection.secret)); return true; });
+    assert.equal(calls.length, 1);
+  }
+  t.mock.restoreAll();
+  const calls = mockFetch(t, () => Response.json({ id: "wf_timeout", status: "preparing" }));
+  await assert.rejects(generateCivitaiImage({ ...connection, timeoutMs: 5 }, "A tree"), /超时.*wf_timeout/);
+  assert.equal(calls.length, 1);
+});
+
+test("an already canceled request sends no generation call", async t => {
+  const calls = mockFetch(t, () => { throw new Error("must not fetch"); });
+  await assert.rejects(generateCivitaiImage(connection, "A tree", {}, AbortSignal.abort()), /停止等待/);
+  assert.equal(calls.length, 0);
+});

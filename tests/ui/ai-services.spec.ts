@@ -9,6 +9,41 @@ test.beforeEach(async ({ request, page }) => {
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });
 
+test("Civitai connections automatically select the image adapter and enable native catalog models", async ({ page }, info) => {
+  let provider: Record<string, unknown> | undefined;
+  let enabled: Record<string, unknown> | undefined;
+  const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
+  await page.route("**/api/providers", async route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { providers: provider ? [provider] : [] } });
+    const input = route.request().postDataJSON();
+    expect(input.adapterKind).toBe("civitai");
+    provider = { ...input, id: "civitai", hasSecret: true, modelCount: 0 };
+    await route.fulfill({ status: 201, json: provider });
+  });
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: route.request().method() === "GET" ? null : { catalog: [{ id, name: "Civitai Painter", metadata: imageMetadata }], warnings: ["当前分批展示部分热门模型"], syncedAt: new Date().toISOString() } }));
+  await page.route("**/api/models/bulk", route => { enabled = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { models: [{ id: "painter" }] } }); });
+  await page.goto("/settings/models");
+  await page.getByRole("button", { name: "服务连接", exact: false }).click();
+  await page.getByRole("button", { name: "添加服务连接", exact: true }).click();
+  const connection = page.getByRole("dialog", { name: "添加服务连接", exact: true });
+  await connection.getByRole("textbox", { name: "连接名称", exact: true }).fill("Civitai");
+  await connection.getByRole("textbox", { name: "接口地址", exact: true }).fill("https://civitai.com/api/v1");
+  await expect(connection.getByRole("alert")).toContainText("生成插图");
+  await connection.locator('input[autocomplete="new-password"]').fill("fake-civitai-key");
+  await connection.getByText("高级设置", { exact: true }).click();
+  await expect(connection.getByRole("combobox", { name: "接口适配", exact: true })).toHaveValue("Civitai（图像生成）");
+  await connection.getByRole("button", { name: "保存连接", exact: true }).click();
+  const catalog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  await expect(catalog.getByRole("alert")).toContainText("分批展示");
+  await catalog.getByRole("checkbox", { name: `选择模型 ${id}`, exact: true }).check();
+  await page.screenshot({ path: info.outputPath("civitai-catalog.png"), fullPage: true });
+  await catalog.getByRole("button", { name: "启用 1 个模型", exact: true }).click();
+  await expect(catalog).toBeHidden();
+  expect(enabled?.modelIds).toEqual([id]);
+  expect(enabled?.metadataByModelId).toEqual({ [id]: imageMetadata });
+});
+
 test("capability filters keep image models out of writing defaults and persist image assignment", async ({ page, request }, info) => {
   const models = [
     { id: "writer", providerId: "p", providerName: "创作服务", name: "Writer", modelId: "writer-pro", hasSecret: true, metadata: textMetadata },

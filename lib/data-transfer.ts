@@ -15,7 +15,7 @@ export type TransferScope = "outline" | "article" | "articles" | "system-config"
 export type PortableAiProvider = {
   id: string;
   name: string;
-  adapterKind: "openai-compatible" | "openrouter" | "spicyapi";
+  adapterKind: "openai-compatible" | "openrouter" | "spicyapi" | "civitai";
   baseUrl: string;
   timeoutMs: number;
   hadApiKey: boolean;
@@ -567,7 +567,7 @@ export function duplicateArticlesForImport(articles: Article[], tasks: AiTask[],
 
 export function portableProviders(providers: Array<Omit<PortableAiProvider, "hadApiKey"> & { hadApiKey?: boolean; hasSecret?: boolean }>): PortableAiProvider[] {
   return providers.map((provider) => ({
-    id: String(provider.id), name: String(provider.name), adapterKind: provider.adapterKind === "spicyapi" ? "spicyapi" : provider.adapterKind === "openrouter" ? "openrouter" : "openai-compatible",
+    id: String(provider.id), name: String(provider.name), adapterKind: provider.adapterKind === "civitai" ? "civitai" : provider.adapterKind === "spicyapi" ? "spicyapi" : provider.adapterKind === "openrouter" ? "openrouter" : "openai-compatible",
     baseUrl: String(provider.baseUrl), timeoutMs: Number(provider.timeoutMs), hadApiKey: Boolean(provider.hadApiKey ?? provider.hasSecret),
   }));
 }

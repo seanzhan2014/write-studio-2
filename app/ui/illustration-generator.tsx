@@ -7,6 +7,7 @@ import { characterPhotos } from "@/lib/character-photos";
 import { CharacterReferenceSummary } from "./character-visual";
 import { resolveOutlineSettings } from "@/lib/story-settings";
 import { isSpicyApi } from "@/lib/spicy-api";
+import { isCivitai } from "@/lib/civitai-api";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, type IllustrationImage } from "@/lib/image-generation";
@@ -143,7 +144,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     : referenceCapability?.required ? "此模型需要参考图，请先选择已绑定形象的人物。" : "";
   const sizes = imageRecord ? imageParameterValues(imageRecord, "size").filter((value) => /^\d+x\d+$/.test(value)) : [];
   const qualities = imageRecord ? imageParameterValues(imageRecord, "quality") : [];
-  const taskImageService = Boolean(imageRecord && isSpicyApi(imageRecord));
+  const taskImageService = Boolean(imageRecord && (isSpicyApi(imageRecord) || isCivitai(imageRecord)));
   const nativeImageOptions = taskImageService || imageRecord?.adapterKind === "openrouter" || imageRecord?.baseUrl?.startsWith("https://openrouter.ai/");
   const ratios = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "aspect_ratio") : [];
   const resolutions = imageRecord && nativeImageOptions ? imageParameterValues(imageRecord, "resolution") : [];
