@@ -7,8 +7,9 @@ export type ModelMetadata = {
   contextLength?: number;
   tests?: Partial<Record<"text" | "image", ModelTestResult>>;
 };
-export type CatalogModel = { id: string; name: string; metadata: ModelMetadata };
+export type CatalogModel = { id: string; name: string; metadata: ModelMetadata; searchTerms?: string[] };
 export type ModelCatalog = { catalog: CatalogModel[]; syncedAt: string; warnings: string[] };
+export type ModelCatalogPage = ModelCatalog & { nextCursor: string | null; scanned: number };
 export type CapabilityModel = { metadata?: ModelMetadata | null };
 
 export function normalizeModelMetadata(value: unknown): ModelMetadata {

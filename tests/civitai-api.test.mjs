@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
 const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
 const connection = { baseUrl: "https://civitai.com/api/v1", secret: "fake-civitai-key", modelId: id, timeoutMs: 5000 };
@@ -22,6 +22,53 @@ test("existing Civitai URLs are detected and use separate native catalog and gen
   assert.equal(isCivitai({ baseUrl: "https://civitai.com.evil.example/v1" }), false);
   assert.equal(isCivitai({ adapterKind: "civitai", baseUrl: "https://proxy.example" }), true);
   assert.deepEqual(civitaiBaseUrls("https://proxy.example/civitai/api/v1"), { catalog: "https://proxy.example/civitai/api/v1", generation: "https://proxy.example/civitai/v2/consumer" });
+});
+
+test("complete catalog pages expose every callable version with numeric and name search terms", async t => {
+  const older = { id: 128079, name: "v0.9", baseModel: "SDXL 1.0", supportsGeneration: true };
+  const calls = mockFetch(t, () => Response.json({ items: [{ ...resource, modelVersions: [...resource.modelVersions, older, { ...older, id: 3, supportsGeneration: false }] }], metadata: { nextCursor: "next|cursor" } }));
+  const page = await readCivitaiCatalogPage(connection.baseUrl, connection.secret);
+  assert.equal(page.catalog.length, 2);
+  assert.deepEqual(page.catalog[1].searchTerms, ["Painter", "v0.9", "101055", "128079"]);
+  assert.equal(page.nextCursor, "next|cursor");
+  assert.equal(page.scanned, 1);
+  assert.equal(calls[0].url.searchParams.get("sort"), "Newest");
+  assert.equal(calls[0].url.searchParams.has("query"), false, "full-text search would omit valid substring/glob matches");
+  assert.equal(calls[0].headers.Authorization, `Bearer ${connection.secret}`);
+});
+
+test("catalog paging continues beyond three pages, including empty compatible pages and opaque cursors", async t => {
+  const calls = mockFetch(t, call => {
+    const index = Number(call.url.searchParams.get("cursor") || 0);
+    return Response.json({ items: index === 2 ? [{ ...resource, type: "LORA" }] : [{ ...resource, id: index + 1 }], metadata: index < 6 ? { nextCursor: String(index + 1) } : {} });
+  });
+  let cursor, count = 0;
+  do {
+    const page = await readCivitaiCatalogPage(connection.baseUrl, connection.secret, cursor);
+    cursor = page.nextCursor; count += page.catalog.length;
+  } while (cursor);
+  assert.equal(calls.length, 7); assert.equal(count, 6);
+});
+
+test("quick keyword previews use provider search without narrowing full traversal", async t => {
+  const calls = mockFetch(t, () => Response.json({ items: [resource], metadata: {} }));
+  await readCivitaiCatalogPage(connection.baseUrl, connection.secret, null, undefined, "Painter");
+  await readCivitaiCatalogPage(connection.baseUrl, connection.secret);
+  assert.equal(calls[0].url.searchParams.get("query"), "Painter");
+  assert.equal(calls[1].url.searchParams.has("query"), false);
+});
+
+test("full catalog paging refuses broken pagination instead of declaring a complete search", async t => {
+  for (const metadata of [{ nextCursor: "same" }, { nextPage: "https://evil.example/api/v1/models?cursor=x" }, { nextPage: "https://civitai.com/api/v1/models?page=2" }]) {
+    t.mock.restoreAll(); const calls = mockFetch(t, () => Response.json({ items: [resource], metadata }));
+    await assert.rejects(readCivitaiCatalogPage(connection.baseUrl, connection.secret, "same"), /游标|分页/);
+    assert.equal(calls.length, 1);
+  }
+  t.mock.restoreAll(); const calls = mockFetch(t, () => Response.json({ items: [] }));
+  await assert.rejects(readCivitaiCatalogPage(connection.baseUrl, connection.secret, 123), /游标无效/);
+  assert.equal(calls.length, 0);
+  const page = await readCivitaiCatalogPage(connection.baseUrl, connection.secret);
+  assert.deepEqual(page.catalog, []); assert.equal(page.nextCursor, null);
 });
 
 test("bounded native pages select callable checkpoints, not model resources or LoRAs", async t => {

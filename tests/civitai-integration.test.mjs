@@ -14,6 +14,10 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
     calls.push({ path: request.url, authorization: request.headers.authorization, body: raw ? JSON.parse(raw) : null });
     if (request.url === "/output.png") { response.writeHead(200, { "Content-Type": "image/png" }); return response.end(Buffer.from(png, "base64")); }
     response.setHeader("Content-Type", "application/json");
+    if (request.url.includes("sort=Newest")) {
+      const index = Number(new URL(request.url, "http://test").searchParams.get("cursor") || 0);
+      return response.end(JSON.stringify({ items: [{ id: index + 1, name: `Catalog Painter ${index}`, type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: index + 10, name: "new", baseModel: "SDXL 1.0" }, { id: index + 100, name: "old", baseModel: "SDXL 1.0" }] }], metadata: index < 4 ? { nextCursor: String(index + 1) } : {} }));
+    }
     if (request.url.startsWith("/api/v1/models?")) return response.end(JSON.stringify({ items: [{ id: 101055, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] }], metadata: {} }));
     if (request.url === "/v2/consumer/workflows?wait=0") { response.statusCode = 202; return response.end(JSON.stringify({ id: "wf_integration", status: "processing" })); }
     if (request.url === "/v2/consumer/workflows/wf_integration") return response.end(JSON.stringify({ id: "wf_integration", status: "succeeded", steps: [{ output: { images: [{ url: `http://127.0.0.1:${server.address().port}/output.png` }] } }] }));
@@ -42,6 +46,17 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
   assert.equal(discovered.catalog[0].id, id);
   assert.deepEqual(discovered.catalog[0].metadata.outputModalities, ["image"]);
   assert.deepEqual((await api(`/api/providers/${provider.id}/discover`)).catalog, discovered.catalog);
+  let cursor = null;
+  const completeCatalog = [];
+  do {
+    const page = await api(`/api/providers/${provider.id}/catalog-pages`, { cursor });
+    completeCatalog.push(...page.catalog); cursor = page.nextCursor;
+  } while (cursor);
+  assert.equal(completeCatalog.length, 10, "all five pages and both versions are available");
+  assert.ok(completeCatalog.some(entry => entry.id.endsWith("5@104")));
+  assert.deepEqual((await api(`/api/providers/${provider.id}/discover`)).catalog, discovered.catalog, "search pages do not overwrite the saved default catalog");
+  const invalid = await fetch(`${baseUrl}/api/providers/${provider.id}/catalog-pages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cursor: 123 }) });
+  assert.equal(invalid.status, 400);
   model = (await api("/api/models/bulk", { providerId: provider.id, modelIds: [id], metadataByModelId: { [id]: discovered.catalog[0].metadata } })).models[0];
   assert.equal(model.adapterKind, "civitai");
   const before = (await api("/api/state")).data.articles;

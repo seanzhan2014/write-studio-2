@@ -9,6 +9,75 @@ test.beforeEach(async ({ request, page }) => {
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });
 
+test("Civitai wildcard search traverses every page and retains late-page selections across queries", async ({ page }, info) => {
+  test.setTimeout(60_000);
+  let requests = 0;
+  let enabled: Record<string, unknown> | undefined;
+  const provider = { id: "civitai", name: "Civitai", baseUrl: "https://civitai.com/api/v1", adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 };
+  const lateId = "urn:air:sdxl:checkpoint:civitai:719@7019";
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [provider] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: { catalog: [{ id: "popular", name: "Popular model", metadata: imageMetadata }], syncedAt: new Date().toISOString(), warnings: [] } }));
+  await page.route("**/api/providers/civitai/catalog-pages", route => {
+    if (route.request().postDataJSON().hint) return route.fulfill({ json: { catalog: [], nextCursor: null, scanned: 0, warnings: [] } });
+    requests++;
+    const cursor = route.request().postDataJSON().cursor;
+    const index = cursor == null ? 0 : Number(cursor);
+    const catalog = Array.from({ length: 20 }, (_, item) => ({ id: `urn:air:sdxl:checkpoint:civitai:${(index + 1) * 100 + item}@${(index + 1) * 1000 + item}`, name: `WAI-${index}-${item} · v1`, searchTerms: [`WAI-${index}-${item}`], metadata: imageMetadata }));
+    return route.fulfill({ json: { catalog, nextCursor: index < 6 ? String(index + 1) : null, scanned: 20, syncedAt: new Date().toISOString(), warnings: [] } });
+  });
+  await page.route("**/api/models/bulk", route => { enabled = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { models: [{ id: "late-model" }] } }); });
+  await page.goto("/settings/models");
+  await page.locator(".ai-service-intro").getByRole("button", { name: "添加模型", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  const search = dialog.getByRole("textbox", { name: "搜索目录模型", exact: true });
+  await search.fill("*wai*");
+  await expect(dialog.getByRole("status").filter({ hasText: "搜索完成" })).toContainText("140 个匹配版本");
+  await expect(dialog.getByRole("checkbox", { name: /^选择模型 / })).toHaveCount(140);
+  await dialog.getByRole("checkbox", { name: `选择模型 ${lateId}`, exact: true }).check();
+  expect(requests).toBe(7);
+  await search.fill("WAI-6-?");
+  await expect(dialog.getByRole("checkbox", { name: /^选择模型 / })).toHaveCount(10);
+  await expect(dialog.getByRole("status").filter({ hasText: "搜索完成" })).toContainText("10 个匹配版本");
+  expect(requests).toBe(7);
+  await search.fill("urn:*@7019");
+  await expect(dialog.getByRole("checkbox", { name: /^选择模型 / })).toHaveCount(1);
+  await expect(dialog.getByRole("checkbox", { name: `选择模型 ${lateId}`, exact: true })).toBeChecked();
+  await page.screenshot({ path: info.outputPath("civitai-wildcard-search.png"), fullPage: true });
+  await search.fill("");
+  await expect(dialog.getByRole("checkbox", { name: `选择模型 ${lateId}`, exact: true })).toBeChecked();
+  await dialog.getByRole("button", { name: "启用 1 个模型", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(enabled?.modelIds).toEqual([lateId]);
+  expect(enabled?.metadataByModelId).toEqual({ [lateId]: imageMetadata });
+});
+
+test("Civitai search keeps partial results on failure and resumes from the failed page", async ({ page }) => {
+  const cursors: Array<string | null> = [];
+  let fail = true;
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "civitai", name: "Civitai", baseUrl: "https://civitai.com/api/v1", adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: { catalog: [], warnings: [], syncedAt: new Date().toISOString() } }));
+  await page.route("**/api/providers/civitai/catalog-pages", route => {
+    if (route.request().postDataJSON().hint) return route.fulfill({ json: { catalog: [], nextCursor: null, scanned: 0, warnings: [] } });
+    const cursor = route.request().postDataJSON().cursor;
+    cursors.push(cursor);
+    if (cursor === "next" && fail) { fail = false; return route.fulfill({ status: 503, json: { error: "Civitai 暂时限流" } }); }
+    return route.fulfill({ json: { catalog: [{ id: cursor ? "painter-old" : "painter-new", name: cursor ? "Painter Old" : "Painter New", metadata: imageMetadata }], nextCursor: cursor ? null : "next", scanned: 1, warnings: [], syncedAt: new Date().toISOString() } });
+  });
+  await page.goto("/settings/models");
+  await page.locator(".ai-service-intro").getByRole("button", { name: "添加模型", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  await dialog.getByRole("textbox", { name: "搜索目录模型", exact: true }).fill("Painter*");
+  await expect(dialog.getByRole("alert")).toContainText("搜索尚未完成");
+  await expect(dialog.getByRole("status").filter({ hasText: "搜索完成" })).toHaveCount(0);
+  await dialog.getByRole("checkbox", { name: "选择模型 painter-new", exact: true }).check();
+  await dialog.getByRole("button", { name: "继续搜索", exact: true }).click();
+  await expect(dialog.getByRole("status").filter({ hasText: "搜索完成" })).toContainText("2 个匹配版本");
+  await expect(dialog.getByRole("checkbox", { name: "选择模型 painter-new", exact: true })).toBeChecked();
+  expect(cursors).toEqual([null, "next", "next"]);
+});
+
 test("Civitai connections automatically select the image adapter and enable native catalog models", async ({ page }, info) => {
   let provider: Record<string, unknown> | undefined;
   let enabled: Record<string, unknown> | undefined;

@@ -1,4 +1,4 @@
-import type { CatalogModel, ModelCatalog } from "./ai-model-capabilities";
+import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-capabilities";
 
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
 type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] };
@@ -59,17 +59,58 @@ function ecosystem(baseModel = "") {
 
 function sizes(family: string) { return family === "sd1" ? ["512x512", "768x512", "512x768"] : ["1024x1024", "1216x832", "832x1216", "1344x768", "768x1344", "1536x640", "640x1536"]; }
 
-function entry(resource: Resource): CatalogModel | null {
-  if (resource.type !== "Checkpoint" || resource.mode || !resource.supportsGeneration) return null;
+function entries(resource: Resource): CatalogModel[] {
+  if (resource?.type !== "Checkpoint" || resource.mode || !resource.supportsGeneration) return [];
+  const models: CatalogModel[] = [];
   for (const version of resource.modelVersions ?? []) {
     if (version.supportsGeneration === false) continue;
     const family = ecosystem(version.baseModel);
     const id = version.air || (family && Number.isSafeInteger(resource.id) && Number(resource.id) > 0 && Number.isSafeInteger(version.id) && Number(version.id) > 0 ? `urn:air:${family}:checkpoint:civitai:${resource.id}@${version.id}` : "");
     const match = id.match(AIR);
     if (!match) continue;
-    return { id, name: `${resource.name || resource.id} · ${version.name || version.id}`.slice(0, 200), metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { size: { type: "enum", values: sizes(match[1]) } } } };
+    models.push({ id, name: `${resource.name || resource.id} · ${version.name || version.id}`.slice(0, 200), searchTerms: [resource.name, version.name, resource.id, version.id].filter(value => value != null).map(String), metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { size: { type: "enum", values: sizes(match[1]) } } } });
   }
-  return null;
+  return models;
+}
+
+function nextCatalogCursor(metadata: { nextCursor?: string | number; nextPage?: string } | undefined, endpoint: string) {
+  if (metadata?.nextCursor != null && String(metadata.nextCursor)) return String(metadata.nextCursor);
+  if (!metadata?.nextPage) return null;
+  const next = new URL(metadata.nextPage, endpoint), expected = new URL(endpoint);
+  if (next.origin !== expected.origin || next.pathname !== expected.pathname) throw new Error("Civitai 返回了无效的目录分页地址");
+  const cursor = next.searchParams.get("cursor");
+  if (!cursor) throw new Error("Civitai 目录分页缺少游标，搜索尚未完成");
+  return cursor;
+}
+
+// One bounded upstream request per call. The caller follows every cursor, so a
+// complete scan has no page limit and cannot exceed a Worker's request lifetime.
+// Avoid Civitai's full-text query: it is not a superset of substring/glob matches.
+export async function readCivitaiCatalogPage(baseUrl: string, secret: string, cursor?: string | null, signal?: AbortSignal, hint?: string): Promise<ModelCatalogPage> {
+  if (cursor != null && (typeof cursor !== "string" || cursor.length > 8192)) throw new Error("Civitai 目录游标无效");
+  if (hint != null && (typeof hint !== "string" || hint.length > 200)) throw new Error("Civitai 搜索关键词无效");
+  const timeout = AbortSignal.timeout(30_000);
+  const requestSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
+  const endpoint = `${civitaiBaseUrls(baseUrl).catalog}/models`;
+  const url = new URL(endpoint);
+  url.searchParams.set("limit", String(PAGE_SIZE));
+  url.searchParams.set("types", "Checkpoint");
+  url.searchParams.set("supportsGeneration", "true");
+  url.searchParams.set("primaryFileOnly", "true");
+  if (hint?.trim()) url.searchParams.set("query", hint.trim());
+  else url.searchParams.set("sort", "Newest");
+  if (cursor) url.searchParams.set("cursor", cursor);
+  try {
+    const payload = await api<{ items?: Resource[]; metadata?: { nextCursor?: string | number; nextPage?: string } }>(url.href, secret, requestSignal);
+    if (!Array.isArray(payload?.items)) throw new Error("Civitai 模型目录格式无效");
+    const nextCursor = nextCatalogCursor(payload.metadata, endpoint);
+    if (nextCursor && nextCursor === cursor) throw new Error("Civitai 返回了重复的目录游标，搜索尚未完成");
+    const catalog = [...new Map(payload.items.flatMap(entries).map(model => [model.id, model])).values()];
+    return { catalog, scanned: payload.items.length, nextCursor, syncedAt: new Date().toISOString(), warnings: [] };
+  } catch (error) {
+    if (timeout.aborted) throw new Error("读取 Civitai 目录超时，可继续搜索以重试当前分页");
+    throw error;
+  }
 }
 
 export async function discoverCivitaiCatalog(baseUrl: string, secret: string): Promise<ModelCatalog> {
@@ -91,7 +132,7 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
       try { payload = await api(url.href, secret, signal); }
       catch (error) { if (!catalog.size) throw error; warnings.push(`已保留成功获取的模型，后续目录未完成：${redact(error instanceof Error ? error.message : error, secret)}`); break; }
       if (!Array.isArray(payload?.items)) throw new Error("Civitai 模型目录格式无效");
-      for (const resource of payload.items) { const model = entry(resource); if (model) catalog.set(model.id, model); }
+      for (const resource of payload.items) { const model = entries(resource)[0]; if (model) catalog.set(model.id, model); }
       const metadata = payload.metadata;
       cursor = metadata?.nextCursor == null ? "" : String(metadata.nextCursor);
       if (!cursor && metadata?.nextPage) {
@@ -105,7 +146,7 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
       seen.add(cursor);
     }
     if (!catalog.size) throw new Error("Civitai 未返回可用的 SD1.5 / SDXL Checkpoint，可手动添加对应版本的 AIR ID");
-    if (more) warnings.push("Civitai 目录较大，当前分批展示部分热门模型；其他模型可通过手动添加输入完整 AIR ID。");
+    if (more) warnings.push("Civitai 目录较大，当前分批展示部分热门模型；输入名称或 ID 可搜索完整目录，支持 * 和 ? 通配符。");
     warnings.push("当前支持 SD1.5、SDXL（含 Pony、Illustrious、NoobAI）的 Checkpoint 文生图；暂不支持单独使用 LoRA 或人物参考图。");
     return { catalog: [...catalog.values()].sort((a, b) => a.name.localeCompare(b.name)), syncedAt: new Date().toISOString(), warnings };
   } catch (error) {

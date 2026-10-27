@@ -5,7 +5,8 @@ import { useMediaQuery } from "@mantine/hooks";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStudio, type StudioSettings } from "@/app/studio-state";
 import type { AiModelRecord, AiProviderRecord } from "@/db/ai";
-import { catalogEntry, manualModelMetadata, supportsImages, supportsText, type CatalogModel, type ModelCatalog, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { catalogEntry, manualModelMetadata, supportsImages, supportsText, type CatalogModel, type ModelCatalog, type ModelCatalogPage, type ModelMetadata } from "@/lib/ai-model-capabilities";
+import { matchesCatalogModel } from "@/lib/model-catalog-search";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { isSpicyApi } from "@/lib/spicy-api";
@@ -16,15 +17,17 @@ import { ResponsiveModal } from "./overlays";
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 
 type Model = AiModelRecord;
+type CatalogScan = { catalog: Map<string, CatalogModel>; cursor: string | null; scanned: number; complete: boolean; seen: Set<string> };
+type CatalogScanSnapshot = { providerId: string; catalog: CatalogModel[]; scanned: number; complete: boolean };
 const capabilityOptions = [{ value: "text", label: "文字生成" }, { value: "image", label: "图像生成" }, { value: "both", label: "文字与图像生成" }];
 const emptyConnection = { name: "", baseUrl: "https://api.openai.com/v1", secret: "", adapterKind: "openai-compatible", timeoutMinutes: 2 };
 const formatTime = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未同步";
 const matchesReference = (model: Model, reference?: string) => Boolean(reference && [model.id, model.name, modelSelectionLabel(model)].includes(reference));
 const modelKind = (model: Model) => supportsImages(model) ? supportsText(model) ? "both" : "image" : "text";
 
-async function jsonRequest<T>(path: string, body?: unknown, method = body === undefined ? "GET" : "POST"): Promise<T> {
+async function jsonRequest<T>(path: string, body?: unknown, method = body === undefined ? "GET" : "POST", signal?: AbortSignal): Promise<T> {
   const response = await (method === "GET" ? fetchFromServer : fetchServerAction)(path, {
-    method, cache: "no-store", ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+    method, cache: "no-store", signal, ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
   });
   if (response.status === 204 && response.ok) return undefined as T;
   const result = await response.json();
@@ -64,6 +67,12 @@ export function AiServices() {
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [catalogNotice, setCatalogNotice] = useState("");
   const requestRef = useRef(0);
+  const scanCache = useRef(new Map<string, CatalogScan>());
+  const scanController = useRef<AbortController | null>(null);
+  const [scanSnapshot, setScanSnapshot] = useState<CatalogScanSnapshot | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [scanAttempt, setScanAttempt] = useState(0);
   const [editing, setEditing] = useState<Model | null>(null);
   const [editForm, setEditForm] = useState({ providerId: "", name: "", modelId: "", kind: "text", systemPrompt: "", maxInput: DEFAULT_MAX_INPUT_CHARACTERS, reasoningEffort: null as ReasoningEffort | null });
   const [preview, setPreview] = useState<string | null>(null);
@@ -96,16 +105,65 @@ export function AiServices() {
   const inheritLabel = `继承正文生成 · ${generateLabel ? modelSelectionLabel(generateLabel) : "本地演示引擎"}`;
   const providerOptions = providers.map((provider) => ({ value: provider.id, label: provider.name }));
   const currentCatalog = catalogs[addProvider];
+  const civitaiProvider = isCivitai(providers.find(provider => provider.id === addProvider) ?? {});
+  const fullCatalogSearch = civitaiProvider && Boolean(catalogQuery.trim());
+  const scan = scanSnapshot?.providerId === addProvider ? scanSnapshot : null;
   const enabledIds = new Set(models.filter((model) => model.providerId === addProvider).map((model) => model.modelId));
-  const candidates = currentCatalog?.catalog ?? [];
-  const visibleCandidates = candidates.filter((entry) => {
-    const match = `${entry.id} ${entry.name}`.toLowerCase().includes(catalogQuery.toLowerCase());
-    return match && (catalogFilter === "all" || catalogFilter === "new" && !enabledIds.has(entry.id) || catalogFilter === "selected" && selected.includes(entry.id) || catalogFilter === "text" && entry.metadata.outputModalities.includes("text") || catalogFilter === "image" && supportsImages(entry));
-  });
+  const candidates = fullCatalogSearch ? scan?.catalog ?? [] : [...new Map([...(currentCatalog?.catalog ?? []), ...(scan?.catalog.filter(entry => selected.includes(entry.id)) ?? [])].map(entry => [entry.id, entry])).values()];
+  const matchedCandidates = candidates.filter(entry => matchesCatalogModel(entry, catalogQuery));
+  const visibleCandidates = matchedCandidates.filter(entry => catalogFilter === "all" || catalogFilter === "new" && !enabledIds.has(entry.id) || catalogFilter === "selected" && selected.includes(entry.id) || catalogFilter === "text" && entry.metadata.outputModalities.includes("text") || catalogFilter === "image" && supportsImages(entry));
   const selectable = (entry: CatalogModel) => !enabledIds.has(entry.id) && (!entry.metadata.outputModalities.length || supportsText(entry) || supportsImages(entry));
   const parsedManual = [...new Set(manualIds.split(/[\n,，]/).map((id) => id.trim()).filter(Boolean))].filter((id) => !enabledIds.has(id));
   const selectedNew = selected.filter((id) => !enabledIds.has(id));
   const addingIds = addMode === "manual" ? parsedManual : selectedNew;
+
+  useEffect(() => {
+    setScanError("");
+    if (!adding || addMode !== "catalog" || !fullCatalogSearch) return;
+    const controller = new AbortController();
+    scanController.current = controller;
+    const existing = scanCache.current.get(addProvider);
+    if (existing) setScanSnapshot({ providerId: addProvider, catalog: [...existing.catalog.values()], scanned: existing.scanned, complete: existing.complete });
+    setScanBusy(true);
+    const timer = setTimeout(() => { void scanFullCatalog(addProvider, catalogQuery, controller.signal); }, 350);
+    return () => { clearTimeout(timer); controller.abort(); setScanBusy(false); };
+  }, [adding, addMode, addProvider, fullCatalogSearch, catalogQuery, scanAttempt]);
+
+  async function scanFullCatalog(providerId: string, query: string, signal: AbortSignal) {
+    let scan = scanCache.current.get(providerId);
+    if (!scan) { scan = { catalog: new Map((catalogs[providerId]?.catalog ?? []).map(entry => [entry.id, entry])), cursor: null, scanned: 0, complete: false, seen: new Set() }; scanCache.current.set(providerId, scan); }
+    try {
+      // Show useful hits quickly, then scan the full catalog to include matches
+      // the provider's full-text index cannot find (substring, ? and ID globs).
+      const hint = query.split(/[?*]+/).map(value => value.trim()).sort((a, b) => b.length - a.length)[0];
+      if (!scan.complete && hint) {
+        try {
+          const preview = await jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { hint }, "POST", signal);
+          if (signal.aborted) return;
+          for (const entry of preview.catalog) scan.catalog.set(entry.id, entry);
+        } catch { if (signal.aborted) return; /* Full traversal remains authoritative. */ }
+        setScanSnapshot({ providerId, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: false });
+      }
+      while (!scan.complete && !signal.aborted) {
+        const page = await jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { cursor: scan.cursor }, "POST", signal);
+        if (signal.aborted) return;
+        if (!Array.isArray(page.catalog) || (page.nextCursor !== null && (typeof page.nextCursor !== "string" || !page.nextCursor))) throw new Error("服务返回了无效的目录分页");
+        if (page.nextCursor && scan.seen.has(page.nextCursor)) throw new Error("Civitai 返回了重复的分页游标");
+        for (const entry of page.catalog) scan.catalog.set(entry.id, entry);
+        scan.scanned += page.scanned;
+        scan.cursor = page.nextCursor;
+        scan.complete = page.nextCursor === null;
+        if (page.nextCursor) scan.seen.add(page.nextCursor);
+        setScanSnapshot({ providerId, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: scan.complete });
+      }
+    } catch (cause) {
+      if (!signal.aborted) setScanError(`${cause instanceof Error ? cause.message : "目录搜索失败"}。已保留读取的结果，搜索尚未完成，可继续搜索。`);
+    } finally { if (!signal.aborted) setScanBusy(false); }
+  }
+  function restartCatalogSearch() {
+    scanController.current?.abort(); scanCache.current.delete(addProvider); setScanSnapshot(null); setScanError(""); setScanAttempt(value => value + 1);
+  }
+  function stopCatalogSearch() { scanController.current?.abort(); setScanBusy(false); }
 
   async function refreshCatalog(providerId = addProvider) {
     const request = ++requestRef.current;
@@ -116,7 +174,7 @@ export function AiServices() {
       const catalog = result.catalog ?? (result.models ?? []).map(catalogEntry).filter((entry): entry is CatalogModel => entry !== null);
       const old = new Set(catalogs[providerId]?.catalog.map((entry) => entry.id) ?? []);
       setCatalogs((current) => ({ ...current, [providerId]: { catalog, syncedAt: result.syncedAt || new Date().toISOString(), warnings: result.warnings ?? [] } }));
-      setSelected((values) => values.filter((id) => catalog.some((entry) => entry.id === id)));
+      setSelected((values) => values.filter((id) => catalog.some((entry) => entry.id === id) || scanCache.current.get(providerId)?.catalog.has(id)));
       setCatalogNotice(`已同步 ${catalog.length} 个模型${old.size ? `，新发现 ${catalog.filter((entry) => !old.has(entry.id)).length} 个` : ""}`);
     } catch (cause) { if (request === requestRef.current) setFormError(cause instanceof Error ? cause.message : "目录同步失败"); }
     finally { if (request === requestRef.current) setCatalogBusy(false); }
@@ -134,7 +192,7 @@ export function AiServices() {
     setBusy("enable"); setFormError("");
     try {
       const metadataByModelId = Object.fromEntries(addingIds.map((id) => {
-        const discovered = addMode === "catalog" ? candidates.find((entry) => entry.id === id)?.metadata : null;
+        const discovered = addMode === "catalog" ? (candidates.find((entry) => entry.id === id) ?? scanCache.current.get(addProvider)?.catalog.get(id))?.metadata : null;
         return [id, discovered?.outputModalities.length ? discovered : manualModelMetadata(manualKind as "text" | "image" | "both")];
       }));
       const result = await jsonRequest<{ models: Model[] }>("/api/models/bulk", { providerId: addProvider, modelIds: addingIds, metadataByModelId });
@@ -270,7 +328,7 @@ export function AiServices() {
       <div className="ai-model-tools"><TextInput aria-label="搜索已启用模型" placeholder="搜索模型名称、ID 或服务商" value={query} onChange={(event) => setQuery(event.currentTarget.value)} /><div className="ai-filter-tabs" role="group" aria-label="模型筛选">{[["all", "全部"], ["text", "文字"], ["image", "图像"], ["used", "默认使用中"], ["failed", "检测失败"]].map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
       {loading ? <Text p="md" role="status">正在加载模型配置…</Text> : visible.length || unfiltered && providers.length ? <div className="ai-model-groups">{providers.map((provider) => {
         const items = visible.filter((model) => model.providerId === provider.id); if (!items.length && !unfiltered) return null;
-        return <div className="ai-model-group" key={provider.id}><div className="ai-model-group-title"><h3>{provider.name}</h3><span>{items.length} 个模型</span><div className="ai-model-group-actions"><Button size="compact-xs" variant="default" disabled={Boolean(busy)} onClick={() => openManage(provider)}>管理模型</Button><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openAdd(provider.id)}>添加模型</Button></div></div>{!items.length && <div className="ai-service-empty">暂无已启用模型，可从目录添加模型。</div>}{items.length > 0 && <table className="ai-model-table"><colgroup><col className="ai-model-col-name" /><col className="ai-model-col-uses" /><col className="ai-model-col-actions" /></colgroup><thead><tr><th>模型与能力</th><th>默认用途</th><th>操作</th></tr></thead><tbody>{items.map((model) => <tr key={model.id} data-provider-model-id={model.id}><td><div className="ai-model-name"><strong>{model.name}</strong><CapabilityBadges model={model} /></div><div className="ai-model-id"><code>{model.modelId}</code><button type="button" aria-label={`复制模型 ID：${model.modelId}`} onClick={() => void navigator.clipboard.writeText(model.modelId).then(() => setNotice("已复制模型 ID")).catch(() => setError("复制失败，请手动选择模型 ID"))}>复制</button></div>{!model.hasSecret && <span className="ai-inline-warning">连接缺少密钥</span>}{catalogs[provider.id] && !catalogs[provider.id].catalog.some((entry) => entry.id === model.modelId) && <span className="ai-model-meta">最近目录未列出，仍可测试和使用</span>}<div className="ai-test-results">{(["text", "image"] as const).map((operation) => { const result = model.metadata?.tests?.[operation]; return result ? <span className={result.ok ? "passed" : "failed"} key={operation} title={`${formatTime(result.checkedAt)} · ${result.message}`}>{operation === "text" ? "文字" : "图像"}：{result.ok ? `${result.latencyMs} ms · 通过` : result.message}<small>{formatTime(result.checkedAt)}</small></span> : null; })}{!Object.keys(model.metadata?.tests ?? {}).length && <span className="ai-model-meta">尚未测试调用</span>}</div></td><td className="ai-model-uses">{uses(model) || "—"}</td><td><div className="ai-row-actions"><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openEdit(model)}>编辑</Button><Button size="compact-xs" variant="subtle" color="red" disabled={Boolean(busy)} onClick={() => removeModel(model)}>删除</Button>{supportsText(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "text")}>测试文字</Button>}{supportsImages(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "image")}>试生成 1 张</Button>}</div></td></tr>)}</tbody></table>}</div>;
+        return <div className="ai-model-group" key={provider.id}><div className="ai-model-group-title"><h3>{provider.name}</h3><span>{items.length} 个模型</span><div className="ai-model-group-actions"><Button size="compact-xs" variant="default" disabled={Boolean(busy)} onClick={() => openManage(provider)}>管理模型</Button><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openAdd(provider.id)}>添加模型</Button></div></div>{!items.length && <div className="ai-service-empty">暂无已启用模型，可从目录添加模型。</div>}{items.length > 0 && <table className="ai-model-table"><colgroup><col className="ai-model-col-name" /><col className="ai-model-col-uses" /><col className="ai-model-col-actions" /></colgroup><thead><tr><th>模型与能力</th><th>默认用途</th><th>操作</th></tr></thead><tbody>{items.map((model) => <tr key={model.id} data-provider-model-id={model.id}><td><div className="ai-model-name"><strong>{model.name}</strong><CapabilityBadges model={model} /></div><div className="ai-model-id"><code>{model.modelId}</code><button type="button" aria-label={`复制模型 ID：${model.modelId}`} onClick={() => void navigator.clipboard.writeText(model.modelId).then(() => setNotice("已复制模型 ID")).catch(() => setError("复制失败，请手动选择模型 ID"))}>复制</button></div>{!model.hasSecret && <span className="ai-inline-warning">连接缺少密钥</span>}{!isCivitai(provider) && catalogs[provider.id] && !catalogs[provider.id].catalog.some((entry) => entry.id === model.modelId) && <span className="ai-model-meta">最近目录未列出，仍可测试和使用</span>}<div className="ai-test-results">{(["text", "image"] as const).map((operation) => { const result = model.metadata?.tests?.[operation]; return result ? <span className={result.ok ? "passed" : "failed"} key={operation} title={`${formatTime(result.checkedAt)} · ${result.message}`}>{operation === "text" ? "文字" : "图像"}：{result.ok ? `${result.latencyMs} ms · 通过` : result.message}<small>{formatTime(result.checkedAt)}</small></span> : null; })}{!Object.keys(model.metadata?.tests ?? {}).length && <span className="ai-model-meta">尚未测试调用</span>}</div></td><td className="ai-model-uses">{uses(model) || "—"}</td><td><div className="ai-row-actions"><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => openEdit(model)}>编辑</Button><Button size="compact-xs" variant="subtle" color="red" disabled={Boolean(busy)} onClick={() => removeModel(model)}>删除</Button>{supportsText(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "text")}>测试文字</Button>}{supportsImages(model) && <Button size="compact-xs" variant="default" disabled={Boolean(busy) || !model.hasSecret} loading={busy === `test:${model.id}`} onClick={() => void testModels([model], "image")}>试生成 1 张</Button>}</div></td></tr>)}</tbody></table>}</div>;
       })}</div> : <div className="ai-service-empty"><strong>{models.length ? "没有符合条件的模型" : "添加第一个模型"}</strong><p>{models.length ? "换一个关键词或筛选条件试试。" : "连接服务商后，选择文字或图像模型用于创作。"}</p>{!models.length && <Button variant="light" onClick={() => providers.length ? openAdd() : openConnection()}>添加模型</Button>}</div>}
     </section>
     <section className="ai-service-section"><button className="ai-connection-disclosure" type="button" aria-expanded={connectionsOpen} onClick={() => setConnectionsOpen(!connectionsOpen)}><span><strong>服务连接</strong><small>管理接口地址与 API Key · {providers.length} 个连接</small></span><span aria-hidden="true">{connectionsOpen ? "−" : "+"}</span></button>{connectionsOpen && <div className="ai-connections"><Group justify="space-between"><Text size="sm" c="dimmed">密钥配置与调用检测分别显示。</Text><Button variant="default" size="xs" onClick={() => openConnection()}>添加服务连接</Button></Group>{providers.map((provider) => <article className="ai-connection" key={provider.id}><div><h3>{provider.name} <Badge color={provider.hasSecret ? "gray" : "yellow"} variant="light">{provider.hasSecret ? "密钥已配置" : "缺少密钥"}</Badge></h3><p>{provider.baseUrl}</p><small>{isCivitai(provider) ? "Civitai（图像生成）" : isSpicyApi(provider) ? "文字、图像与角色库" : provider.adapterKind === "openrouter" || new URL(provider.baseUrl).hostname === "openrouter.ai" ? "OpenRouter" : "OpenAI 兼容接口"} · 超时 {provider.timeoutMs / 60000} 分钟</small><small>目录最近同步：{formatTime(catalogs[provider.id]?.syncedAt)}</small></div><div className="ai-connection-actions"><Button size="xs" variant="default" disabled={Boolean(busy)} onClick={() => openManage(provider)}>管理模型</Button><Button size="xs" variant="default" onClick={() => openConnection(provider)}>编辑连接</Button><Button size="xs" variant="default" disabled={Boolean(busy)} loading={busy === `connection:${provider.id}`} onClick={() => void connectionAction(provider, "test")}>检测目录</Button><Button size="xs" variant="subtle" disabled={Boolean(busy) || !provider.hasSecret} onClick={() => void connectionAction(provider, "key")}>移除密钥</Button><Button size="xs" variant="subtle" color="red" disabled={Boolean(busy) || models.some((model) => model.providerId === provider.id)} onClick={() => void connectionAction(provider, "delete")}>删除连接</Button></div></article>)}</div>}</section>
@@ -299,8 +357,8 @@ export function AiServices() {
       <div className="ai-add-model-content"><Select label="服务连接" data={providerOptions} value={addProvider} allowDeselect={false} onChange={(value) => changeAddProvider(value ?? "")} disabled={busy === "enable"} />
         <div className="ai-add-mode" role="group" aria-label="添加方式">{[["catalog", "从目录选择"], ["manual", "手动添加"]].map(([value, label]) => <button type="button" key={value} aria-pressed={addMode === value} onClick={() => { setAddMode(value); setFormError(""); }}>{label}</button>)}</div>
         {formError && <Alert color="red" role="alert">{formError}</Alert>}
-        {addMode === "catalog" ? <><div className="ai-catalog-heading"><div><Text size="sm">{candidates.length} 个目录模型 · 已启用 {enabledIds.size} 个</Text><Text size="xs" c="dimmed">最近同步：{formatTime(currentCatalog?.syncedAt)}</Text></div><Button size="xs" variant="default" loading={catalogBusy} disabled={!addProvider || busy === "enable"} onClick={() => void refreshCatalog()}>刷新目录</Button></div>{catalogNotice && <Text size="sm" role="status">{catalogNotice}</Text>}{currentCatalog?.warnings.map((warning) => <Alert color="yellow" key={warning}>{warning}</Alert>)}<TextInput aria-label="搜索目录模型" placeholder="搜索模型名称或 ID" value={catalogQuery} onChange={(event) => setCatalogQuery(event.currentTarget.value)} /><div className="ai-filter-tabs" role="group" aria-label="目录筛选">{[["new", "未启用"], ["all", "全部"], ["text", "文字"], ["image", "图像"], ["selected", `已选 ${selected.length}`]].map(([value,label]) => <button type="button" key={value} aria-pressed={catalogFilter === value} onClick={() => setCatalogFilter(value)}>{label}</button>)}</div><div className="ai-catalog-scroll" aria-label="可添加的模型" aria-busy={catalogBusy}>
-          {catalogBusy && !candidates.length ? <div className="ai-service-empty" role="status">正在获取模型目录…</div> : visibleCandidates.length ? visibleCandidates.map((entry) => <label className={`ai-catalog-row ${enabledIds.has(entry.id) ? "is-enabled" : ""}`} key={entry.id}><Checkbox aria-label={`选择模型 ${entry.id}`} checked={selected.includes(entry.id)} disabled={!selectable(entry) || Boolean(busy)} onChange={(event) => { const checked = event.currentTarget.checked; setSelected((values) => checked ? [...values, entry.id].slice(0, 100) : values.filter((id) => id !== entry.id)); }} /><span><strong>{entry.name}</strong><code>{entry.id}</code></span>{enabledIds.has(entry.id) ? <Badge variant="light" color="gray">已启用</Badge> : <CapabilityBadges model={entry} />}</label>) : <div className="ai-service-empty">{candidates.length ? "没有符合条件的模型" : "暂无目录，可重试或手动添加模型"}</div>}
+        {addMode === "catalog" ? <><div className="ai-catalog-heading"><div><Text size="sm">{fullCatalogSearch ? matchedCandidates.length : candidates.length} {fullCatalogSearch ? "个匹配版本" : "个目录模型"} · 已启用 {enabledIds.size} 个</Text><Text size="xs" c="dimmed">最近同步：{formatTime(currentCatalog?.syncedAt)}</Text></div><Button size="xs" variant="default" loading={catalogBusy} disabled={!addProvider || busy === "enable" || scanBusy} onClick={() => fullCatalogSearch ? restartCatalogSearch() : void refreshCatalog()}>{fullCatalogSearch ? "重新搜索" : "刷新目录"}</Button></div>{catalogNotice && !fullCatalogSearch && <Text size="sm" role="status">{catalogNotice}</Text>}{!fullCatalogSearch && currentCatalog?.warnings.map((warning) => <Alert color="yellow" key={warning}>{warning}</Alert>)}<TextInput aria-label="搜索目录模型" placeholder={civitaiProvider ? "搜索完整 Civitai 目录，例如 *illustrious*" : "搜索模型名称或 ID"} description={civitaiProvider ? "搜索可用的 SD1.5/SDXL Checkpoint 及全部版本。支持名称、数字 ID 或 AIR ID，不区分大小写。* 匹配任意长度，? 匹配一个字符。不加通配符时按包含匹配。" : undefined} maxLength={200} value={catalogQuery} onChange={(event) => { setCatalogQuery(event.currentTarget.value); if (civitaiProvider) setCatalogFilter("all"); }} />{fullCatalogSearch && <><Text size="sm" role="status">{scan?.complete ? `搜索完成，已遍历完整目录，找到 ${matchedCandidates.length} 个匹配版本` : `${scanBusy ? "正在搜索完整目录" : "搜索尚未完成"}：已扫描 ${scan?.scanned ?? 0} 个资源，找到 ${matchedCandidates.length} 个匹配版本`}</Text>{scanError && <Alert color="red" role="alert">{scanError}</Alert>}{!scan?.complete && <Group><Button size="compact-xs" variant="subtle" onClick={() => scanBusy ? stopCatalogSearch() : setScanAttempt(value => value + 1)}>{scanBusy ? "停止搜索" : "继续搜索"}</Button></Group>}</>}<div className="ai-filter-tabs" role="group" aria-label="目录筛选">{[["new", "未启用"], ["all", "全部"], ["text", "文字"], ["image", "图像"], ["selected", `已选 ${selected.length}`]].map(([value,label]) => <button type="button" key={value} aria-pressed={catalogFilter === value} onClick={() => setCatalogFilter(value)}>{label}</button>)}</div><div className="ai-catalog-scroll" aria-label="可添加的模型" aria-busy={catalogBusy || scanBusy}>
+          {(catalogBusy || scanBusy) && !visibleCandidates.length ? <div className="ai-service-empty" role="status">{fullCatalogSearch ? "正在遍历 Civitai 目录，符合条件的模型会陆续显示…" : "正在获取模型目录…"}</div> : visibleCandidates.length ? visibleCandidates.map((entry) => <label className={`ai-catalog-row ${enabledIds.has(entry.id) ? "is-enabled" : ""}`} key={entry.id}><Checkbox aria-label={`选择模型 ${entry.id}`} checked={selected.includes(entry.id)} disabled={!selectable(entry) || Boolean(busy)} onChange={(event) => { const checked = event.currentTarget.checked; setSelected((values) => checked ? [...values, entry.id].slice(0, 100) : values.filter((id) => id !== entry.id)); }} /><span><strong>{entry.name}</strong><code>{entry.id}</code></span>{enabledIds.has(entry.id) ? <Badge variant="light" color="gray">已启用</Badge> : <CapabilityBadges model={entry} />}</label>) : <div className="ai-service-empty">{fullCatalogSearch ? scan?.complete ? "没有符合条件的模型" : "搜索尚未完成，可继续搜索" : candidates.length ? "没有符合条件的模型" : "暂无目录，可重试或手动添加模型"}</div>}
         </div><Group justify="space-between"><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => setSelected((values) => [...new Set([...values, ...visibleCandidates.filter(selectable).map((entry) => entry.id)])].slice(0, 100))}>选择当前结果（最多 100 个）</Button><Button size="compact-xs" variant="subtle" onClick={() => setSelected([])}>清空选择</Button></Group>{selectedNew.some((id) => !candidates.find((entry) => entry.id === id)?.metadata.outputModalities.length) && <Select label="未提供能力信息的模型按此类型添加" data={capabilityOptions} value={manualKind} allowDeselect={false} onChange={(value) => setManualKind(value || "text")} />}</> : <><Textarea label="模型 ID" description="支持逗号或换行分隔；已启用的 ID 会自动跳过。" value={manualIds} onChange={(event) => setManualIds(event.currentTarget.value)} minRows={4} /><Select label="模型能力" data={capabilityOptions} value={manualKind} allowDeselect={false} onChange={(value) => setManualKind(value || "text")} /><Text size="xs" c="dimmed">能力用于筛选；实际调用是否可用，以接口支持和测试结果为准。</Text></>}
       </div><footer className="ai-modal-footer"><Text size="sm">将启用 {addingIds.length} 个新模型</Text><Group><Button variant="default" onClick={closeAdd} disabled={busy === "enable"}>取消</Button><Button onClick={() => void enableModels()} loading={busy === "enable"} disabled={!addProvider || !addingIds.length || addingIds.length > 100 || catalogBusy}>启用 {addingIds.length} 个模型</Button></Group></footer>
     </ResponsiveModal>
