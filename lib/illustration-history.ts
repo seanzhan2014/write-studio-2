@@ -7,6 +7,7 @@ export type IllustrationRecord = {
   status: IllustrationStatus; prompt: string; excerpt: string; style: string; stylePreset?: IllustrationStylePreset;
   promptLanguage?: IllustrationPromptLanguage;
   additionalPrompt?: string;
+  negativePrompt?: string;
   model: string; modelName: string; archived: boolean; error?: string;
   src?: string; revisedPrompt?: string; createdAt: string; completedAt?: string;
   characterReference?: import("./character-visual").CharacterReference;

@@ -29,5 +29,6 @@ export function IllustrationTaskResult({ id, prompt, image }: { id: string; prom
       <Button component="a" href={`${record.src}?download=1`} download variant="default">下载图片</Button>
     </>}
     {prompt && <div className="task-detail-result" aria-label="任务结果">{prompt}</div>}
+    {record?.negativePrompt && <div><Text size="sm" fw={600}>Negative Prompt</Text><div className="task-detail-result" aria-label="负向提示词结果">{record.negativePrompt}</div></div>}
   </Stack>;
 }

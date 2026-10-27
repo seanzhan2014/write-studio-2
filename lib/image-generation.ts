@@ -1,9 +1,10 @@
-export type IllustrationPrompt = { excerpt: string; prompt: string };
+export type IllustrationPrompt = { excerpt: string; prompt: string; negativePrompt: string };
 export type IllustrationImage = { src: string; revisedPrompt?: string };
 
 export const MAX_ILLUSTRATION_CONTENT = 80000;
 export const MAX_ILLUSTRATION_EXCERPT = 3000;
 export const MAX_ILLUSTRATION_PROMPT = 12000;
+export const MAX_ILLUSTRATION_NEGATIVE_PROMPT = 4000;
 
 export function parseIllustrationPrompt(raw: string, content: string, selectedExcerpt = ""): IllustrationPrompt {
   let value: unknown;
@@ -13,10 +14,12 @@ export function parseIllustrationPrompt(raw: string, content: string, selectedEx
   const result = value as Record<string, unknown>;
   const excerpt = typeof result.excerpt === "string" ? result.excerpt.trim() : "";
   const prompt = typeof result.prompt === "string" ? result.prompt.trim() : "";
+  const negativePrompt = typeof result.negativePrompt === "string" ? result.negativePrompt.trim() : "";
   if (!excerpt || excerpt.length > MAX_ILLUSTRATION_EXCERPT || !content.includes(excerpt)) throw new Error("AI 选取的片段不在正文中，请重新生成");
   if (selectedExcerpt && excerpt !== selectedExcerpt.trim()) throw new Error("AI 改动了选中的片段，请重新生成");
   if (!prompt || prompt.length > MAX_ILLUSTRATION_PROMPT) throw new Error("AI 返回的图片 prompt 为空或过长，请重新生成");
-  return { excerpt, prompt };
+  if (!negativePrompt || negativePrompt.length > MAX_ILLUSTRATION_NEGATIVE_PROMPT) throw new Error("AI 返回的 Negative Prompt 为空或过长，请重新生成");
+  return { excerpt, prompt, negativePrompt };
 }
 
 export function parseIllustrationImage(payload: unknown): IllustrationImage {

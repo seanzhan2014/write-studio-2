@@ -4,6 +4,8 @@ import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT, normalizeIllustrationOptions, suppo
 import { fullStudioFixture } from "./fixtures.mjs";
 
 test("image settings normalize inherited values and preserve explicit model defaults", () => {
+  assert.equal(normalizeIllustrationOptions().promptLanguage, "en");
+  assert.equal(normalizeIllustrationOptions({ promptLanguage: "zh" }).promptLanguage, "en");
   const article = normalizeIllustrationOptions({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: "保持人物一致" });
   assert.deepEqual(normalizeIllustrationOptions(undefined, article), article);
   assert.deepEqual(normalizeIllustrationOptions({ resolution: "" }, article), { ...article, resolution: "" });
@@ -48,7 +50,7 @@ test("image presets and outline overrides survive snapshots, incremental saves a
     state = await api("/api/state");
     article = state.data.articles[0];
     outline = article.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === "outline-current");
-    assert.deepEqual(article.illustrationSettings, { promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "柔和光线" });
+    assert.deepEqual(article.illustrationSettings, { promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "柔和光线" });
     assert.equal(outline.illustrationOptions.stylePreset, "anime");
     assert.equal(outline.illustrationOptions.additionalPrompt, longPrompt);
     await api("/api/outlines/outline-current", { illustrationOptions: { additionalPrompt: "" } }, "PATCH");

@@ -15,7 +15,7 @@ import { modelSelectionLabel } from "../lib/model-label";
 import type { ResolvedOutlineSettings } from "../lib/story-settings";
 import { PREPARATION_SECTIONS, PREPARATION_SECTION_GUIDANCE, PREPARATION_RESPONSE_FORMAT, PreparationResponseError, parsePreparationResponse, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, type WritingPreparation, type PreparationResponseDiagnostic } from "../lib/writing-preparation";
 import { NARRATIVE_CRAFT_RULES, PREPARATION_NARRATIVE_RULES, NARRATIVE_REVIEW_GUIDANCE } from "../lib/narrative-craft";
-import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
+import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, MAX_ILLUSTRATION_NEGATIVE_PROMPT, parseIllustrationImage, parseIllustrationPrompt } from "../lib/image-generation";
 import { illustrationVisualDirection, isIllustrationStylePreset, normalizeIllustrationStyles, type IllustrationStyle } from "../lib/illustration-styles";
 import { MAX_ILLUSTRATION_ADDITIONAL_PROMPT } from "../lib/illustration-options";
 import { validateCharacterReference } from "./character-visuals";
@@ -752,7 +752,8 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 从提供的正文中逐字选取一个连续片段（不超过 3,000 字符），优先选有明确人物、行动、场景且能表现为单幅画面的段落；若提供 selectedExcerpt，必须逐字使用它。
 写一个可直接交给文生图模型的完整 prompt，包含主体、人物外貌与服饰、地点、动作、构图、光线、色彩和氛围。遵循原文和人物设定，不引入后续情节；未说明的视觉细节可以合理补足，不改变故事事实。
 画面只表现一个时刻，不做多场景拼接或多格漫画。遵循作者指定的插图风格与画面要求；未指定风格时默认采用细腻的文学插图。默认无文字、无水印。
-只输出 JSON：{"excerpt":"逐字正文片段","prompt":"完整图片提示词"}。${input.promptLanguage === "en" ? "prompt 字段必须使用英语（English）编写。" : "prompt 字段必须使用中文编写。"}excerpt 字段始终保留原文语言，逐字引用，不得翻译。`;
+同时编写独立的 negativePrompt，列出需要排除的画面元素与常见瑕疵，例如文字、水印、模糊、错误的人体结构、多余肢体、重复人物、多格拼接；结合本次画面调整，不得排除原文需要的主体、风格或情节。negativePrompt 不超过 4,000 字符。
+只输出 JSON：{"excerpt":"逐字正文片段","prompt":"完整英文图片提示词","negativePrompt":"英文负向提示词"}。prompt 字段必须使用英语（English）编写，negativePrompt 字段也必须使用英语编写；即使参考资料或旧设置指定中文，也必须将视觉要求翻译为英文。excerpt 字段始终保留原文语言，逐字引用，不得翻译。`;
   const selectedCharacter = input.characterReference ? { name: input.characterReference.name, age: input.characterReference.age, appearance: input.characterReference.appearance } : undefined;
   const user = JSON.stringify({ content: input.content, selectedExcerpt: excerpt, visualDirection, article: source.article, characters: source.characters, ...(selectedCharacter ? { selectedCharacter, direction: "选择包含此人物的单人物画面，明确写出人物姓名和当前外貌，身份特征将由参考图补充。" } : {}) });
   const characters = system.length + user.length;
@@ -763,7 +764,7 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 }
 
 
-export async function generateIllustrationImage(input: { outlineId: string; prompt: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; additionalPrompt?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
+export async function generateIllustrationImage(input: { outlineId: string; prompt: string; negativePrompt?: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; additionalPrompt?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
   const visualDirection = await illustrationDirection(input);
@@ -772,12 +773,13 @@ export async function generateIllustrationImage(input: { outlineId: string; prom
   if (!supportsImages(model)) throw new AiInputError("请选择已标记图像生成能力的模型");
   const reference = input.characterReference;
   const referenceImages = reference ? await validateCharacterReference(reference, model.providerId) : undefined;
+  if (input.negativePrompt !== undefined && (typeof input.negativePrompt !== "string" || input.negativePrompt.length > MAX_ILLUSTRATION_NEGATIVE_PROMPT)) throw new AiInputError("Negative Prompt 不能超过 4,000 字符");
   const characterDirection = reference ? `\n\n人物身份参考：所有附图均为同一人物“${reference.name}”，按输入顺序参考其身份特征。保持脸型、五官和体态一致。当前年龄：${reference.age || "以画面要求为准"}；当前外貌：${reference.appearance || "遵循正文提示词"}。服饰、动作、表情及场景遵循本次画面要求。` : "";
   const prompt = input.prompt.trim() + characterDirection + (visualDirection ? `\n\n画面风格与要求（如与上文的风格描述冲突，以此处为准；保持原有主体、人物、场景与动作）：\n${visualDirection}` : "");
   return requestModelImage(model, prompt, { ...input, referenceImages }, signal);
 }
 
-export async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] } = {}, signal?: AbortSignal) {
+export async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string } = {}, signal?: AbortSignal) {
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   if (isCivitai(model)) return parseIllustrationImage(await generateCivitaiImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
@@ -788,6 +790,8 @@ export async function requestModelImage(model: AiModelRecord, prompt: string, op
   const size = options.size || (!options.aspectRatio && !options.resolution ? supportedSizes.find((value) => /^\d+x\d+$/.test(value)) || (openRouter && knownParameters && !Array.isArray(knownParameters) && !("size" in knownParameters) ? undefined : "1024x1024") : undefined);
   if (size && (!/^\d{2,5}x\d{2,5}$/.test(size) || Number(size.split("x")[0]) > 8192 || Number(size.split("x")[1]) > 8192)) throw new AiInputError("图片尺寸无效");
   const sizes = imageParameterValues(model, "size");
+  // OpenAI-compatible image endpoints do not share a negative-prompt field.
+  if (options.negativePrompt?.trim()) prompt += `\n\nNegative prompt (elements to avoid):\n${options.negativePrompt.trim()}`;
   if (options.size && sizes.length && !sizes.includes(options.size)) throw new AiInputError("此模型不支持所选尺寸");
   for (const [field, value] of [["aspect_ratio", options.aspectRatio], ["resolution", options.resolution]] as const) {
     if (value && (!openRouter || !imageParameterValues(model, field).includes(value))) throw new AiInputError("此接口或模型不支持所选图像参数");

@@ -20,7 +20,7 @@ test("custom style prompts reach both image steps and queued jobs retain their s
     let raw = ""; for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw); calls.push(body);
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify(request.url.endsWith("/images/generations") ? { data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=" }] } : { choices: [{ message: { content: JSON.stringify({ excerpt: content, prompt: "海边的灯塔，蓝色夜景。" }) } }] }));
+    response.end(JSON.stringify(request.url.endsWith("/images/generations") ? { data: [{ b64_json: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=" }] } : { choices: [{ message: { content: JSON.stringify({ excerpt: content, prompt: "A lighthouse by the sea at night, blue tones.", negativePrompt: "text, watermark, blurry" }) } }] }));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   let provider;

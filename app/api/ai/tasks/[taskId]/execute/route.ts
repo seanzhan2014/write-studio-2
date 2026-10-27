@@ -1,5 +1,6 @@
 import { parseTaskHistory } from "@/lib/task-history";
 import { isIllustrationTarget } from "@/lib/task-target";
+import { illustrationExecutionResponse } from "@/app/api/ai/illustrations/execute";
 import { canWritePreparedProse, preparationNeedsConfirmation } from "@/lib/writing-preparation";
 import { taskReasoningEffort } from "@/lib/reasoning-options";
 import { generateWithReview } from "@/db/generate-review";
@@ -422,7 +423,6 @@ export async function POST(_request: Request, context: RouteContext) {
   await ensureDatabase();
   const target = await getDatabase().prepare("SELECT target FROM ai_tasks WHERE id=?").bind(taskId).first<string>("target");
   if (isIllustrationTarget(target)) {
-    const { illustrationExecutionResponse } = await import("@/app/api/ai/illustrations/execute");
     return illustrationExecutionResponse(taskId);
   }
   if (!isCloudDatabase() && process.env.WRITER_STUDIO_TEST_MODE !== "1") {

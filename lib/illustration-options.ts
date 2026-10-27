@@ -2,10 +2,10 @@ import { DEFAULT_ILLUSTRATION_STYLE, isIllustrationStylePreset, type Illustratio
 import { normalizeSettingInheritance, type SettingInheritance } from "./setting-inheritance.ts";
 
 export const PROMPT_LANGUAGE_OPTIONS = [
-  { value: "zh", label: "中文" },
   { value: "en", label: "English" },
 ] as const;
-export type IllustrationPromptLanguage = typeof PROMPT_LANGUAGE_OPTIONS[number]["value"];
+// Accept older saved language values while generating new prompts in English.
+export type IllustrationPromptLanguage = "zh" | "en";
 export const MAX_ILLUSTRATION_ADDITIONAL_PROMPT = 8000;
 export type IllustrationOptions = {
   quality?: string;
@@ -19,7 +19,7 @@ export type IllustrationOptions = {
 };
 export const ILLUSTRATION_SETTING_KEYS = ["promptLanguage", "stylePreset", "resolution", "additionalPrompt", "quality", "aspectRatio", "scenePrompt"];
 export const DEFAULT_ILLUSTRATION_OPTIONS: IllustrationOptions = {
-  promptLanguage: "zh", stylePreset: DEFAULT_ILLUSTRATION_STYLE, resolution: "", additionalPrompt: "",
+  promptLanguage: "en", stylePreset: DEFAULT_ILLUSTRATION_STYLE, resolution: "", additionalPrompt: "",
 };
 export const ILLUSTRATION_RESOLUTION_OPTIONS = [
   { value: "", label: "模型默认" },
@@ -39,7 +39,7 @@ export function normalizeIllustrationOptions(value: unknown, fallback = DEFAULT_
   return {
     ...(normalizeSettingInheritance(source.inheritance, ILLUSTRATION_SETTING_KEYS) ? { inheritance: normalizeSettingInheritance(source.inheritance, ILLUSTRATION_SETTING_KEYS) } : {}),
     ...Object.fromEntries(["quality", "aspectRatio", "scenePrompt"].filter(key => typeof source[key] === "string" || typeof (base as unknown as Record<string, unknown>)[key] === "string").map(key => [key, String(source[key] ?? (base as unknown as Record<string, unknown>)[key]).slice(0, key === "scenePrompt" ? 2000 : 100)])),
-    promptLanguage: isIllustrationPromptLanguage(source.promptLanguage) ? source.promptLanguage : base.promptLanguage,
+    promptLanguage: "en",
     stylePreset: isIllustrationStylePreset(source.stylePreset) ? source.stylePreset : base.stylePreset,
     resolution: typeof source.resolution === "string" ? source.resolution.trim().slice(0, 100) : base.resolution,
     additionalPrompt: typeof source.additionalPrompt === "string" ? source.additionalPrompt.slice(0, MAX_ILLUSTRATION_ADDITIONAL_PROMPT) : base.additionalPrompt,

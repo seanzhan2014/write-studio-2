@@ -5,6 +5,7 @@ import type { AiTask } from "../../app/studio-state";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=";
 const excerpt = "林澈看向顾屿";
+const negativePrompt = "text, watermark, blurry, extra limbs, duplicate characters";
 
 async function mockIllustrations(page: Page, promptText = "码头上两人相望，水彩插图，无文字。") {
   const records: IllustrationRecord[] = [];
@@ -29,7 +30,7 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
     await (record.kind === "prompt" ? control.holdPrompt : control.holdImage);
     if (executions.get(record.id) !== attempt || record.status as string === "cancelled") return;
     if (record.kind === "image" && control.failImage) { record.status = "error"; record.error = "图片服务暂时不可用"; }
-    else { record.status = "success"; if (record.kind === "prompt") { record.prompt = promptText; record.excerpt = excerpt; } else record.src = `/api/ai/illustrations/${record.id}/image`; }
+    else { record.status = "success"; if (record.kind === "prompt") { record.prompt = promptText; record.negativePrompt = negativePrompt; record.excerpt = excerpt; } else record.src = `/api/ai/illustrations/${record.id}/image`; }
   };
   await page.route("**/api/state", async route => {
     if (route.request().method() !== "GET") return route.continue();
@@ -64,6 +65,7 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
         prompt: String(body!.prompt || ""), excerpt: String(body!.excerpt || ""), style: String(body!.style || ""), stylePreset: body!.stylePreset as IllustrationRecord["stylePreset"],
         promptLanguage: body!.promptLanguage as IllustrationRecord["promptLanguage"],
         additionalPrompt: body!.additionalPrompt as IllustrationRecord["additionalPrompt"],
+        negativePrompt: body!.negativePrompt as string | undefined,
         status: body!.action === "save-prompt" ? "success" : "queued", archived: false, model: String(body!.model || ""), modelName: "测试模型", createdAt: new Date().toISOString(),
       };
       records.unshift(record);
@@ -199,7 +201,8 @@ test("article image presets inherit, persist outline overrides and restore artic
   const storedOptions = async () => (await storedArticle()).chapters.flatMap((chapter: { outlines: { id: string; illustrationOptions: unknown }[] }) => chapter.outlines).find((outline: { id: string }) => outline.id === "outline-current").illustrationOptions;
   await page.goto("/articles/article-main/info/ai-tasks");
   await expect(page.getByRole("heading", { name: "图片风格", exact: true })).toBeVisible();
-  await choose("文章图片 Prompt 默认语言", "English");
+  await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toHaveValue("English");
+  await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toBeDisabled();
   await choose("文章图片默认风格", "国风水墨");
   await choose("文章图片默认分辨率", "2K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill(articlePrompt);
@@ -232,11 +235,10 @@ test("article image presets inherit, persist outline overrides and restore artic
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
 
   await page.goto("/articles/article-main/info/ai-tasks");
-  await choose("文章图片 Prompt 默认语言", "中文");
   await choose("文章图片默认风格", "水彩插画");
   await choose("文章图片默认分辨率", "4K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("保留水彩纸张纹理。");
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "zh", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
+  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
   dialog = await openGenerator();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue(outlinePrompt);
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
@@ -254,7 +256,7 @@ test("article image presets inherit, persist outline overrides and restore artic
   await choose("文生图模型", "测试-图片测试模型");
   await dialog.getByRole("group", { name: "全部插图设置继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
-  await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("中文");
+  await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByText(/当前模型不支持预设分辨率 4k/)).toBeVisible();
   await expect.poll(async () => (await storedOptions())?.inheritance?.additionalPrompt).toBe("article");
@@ -266,7 +268,7 @@ test("article image presets inherit, persist outline overrides and restore artic
   dialog = await openGenerator("outline-previous");
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
-  await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("中文");
+  await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
 });
 
 test("illustration workflow permits prompt edits, image retry and download without modifying prose", async ({ page, request }) => {
@@ -288,8 +290,11 @@ test("illustration workflow permits prompt edits, image retry and download witho
   await page.getByRole("option", { name: /文本测试模型/ }).click();
   await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
   await expect(dialog.getByRole("textbox", { name: "正文片段", exact: true })).toHaveValue(excerpt);
+  await expect(dialog.getByRole("textbox", { name: "Negative Prompt（负向提示词）", exact: true })).toHaveValue(negativePrompt);
+  expect(bodies[0].promptLanguage).toBe("en");
   expect(bodies[0].excerpt).toBe("");
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("编辑后的水彩插图 prompt");
+  await dialog.getByRole("textbox", { name: "Negative Prompt（负向提示词）", exact: true }).fill("watermark, text, blurry faces");
   await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
   await page.getByRole("option", { name: /图片测试模型/ }).click();
   await dialog.getByRole("combobox", { name: "画面比例", exact: true }).click();
@@ -302,7 +307,7 @@ test("illustration workflow permits prompt edits, image retry and download witho
   control.failImage = false;
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
-  expect(bodies.at(-1)).toMatchObject({ action: "image", model: "image", prompt: "编辑后的水彩插图 prompt", aspectRatio: "16:9", resolution: "2K" });
+  expect(bodies.at(-1)).toMatchObject({ action: "image", model: "image", prompt: "编辑后的水彩插图 prompt", negativePrompt: "watermark, text, blurry faces", aspectRatio: "16:9", resolution: "2K" });
   expect(requestKeys).toHaveLength(3);
   expect(requestKeys.every(key => typeof key === "string" && key.length > 0)).toBeTruthy();
   expect(new Set(requestKeys).size).toBe(requestKeys.length);
@@ -310,6 +315,37 @@ test("illustration workflow permits prompt edits, image retry and download witho
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
   await expect(page.getByRole("region", { name: "正文内容", exact: true })).toContainText("林澈看向顾屿，确认潮汐表上的时间。");
   expect((await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].content).toBe("林澈看向顾屿，确认潮汐表上的时间。");
+});
+
+test("English prompt and negative prompt can be edited, saved and restored together", async ({ page }) => {
+  const englishPrompt = "Two people on a pier, soft watercolor, cool colors, side lighting.";
+  const { records, bodies } = await mockIllustrations(page, englishPrompt);
+  await page.goto("/articles/article-main/outlines/outline-current/illustrations");
+  const dialog = page.getByRole("region", { name: "插图工作区" });
+  const negative = dialog.getByRole("textbox", { name: "Negative Prompt（负向提示词）", exact: true });
+  await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
+  await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();
+  await page.getByRole("option", { name: /文本测试模型/ }).click();
+  await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
+  await expect(dialog.getByRole("textbox", { name: "图片 prompt", exact: true })).toHaveValue(englishPrompt);
+  await expect(negative).toHaveValue(negativePrompt);
+  await negative.fill("watermark, extra fingers, comic panels");
+  await dialog.getByRole("button", { name: "保存 prompt 到历史", exact: true }).click();
+  await expect(dialog.getByText("Prompt 已添加到历史。", { exact: true })).toBeVisible();
+  expect(bodies.at(-1)).toMatchObject({ action: "save-prompt", prompt: englishPrompt, negativePrompt: "watermark, extra fingers, comic panels" });
+  await page.reload();
+  await dialog.getByRole("tab", { name: "Prompt 历史", exact: true }).click();
+  const saved = dialog.locator(".illustration-history-card").filter({ hasText: "watermark, extra fingers, comic panels" });
+  await expect(saved).toHaveCount(1);
+  await saved.getByRole("button", { name: "使用此 prompt", exact: true }).click();
+  await expect(negative).toHaveValue("watermark, extra fingers, comic panels");
+  // Older records have no negative prompt; loading one must clear the draft.
+  delete records.find(record => record.model === "text")!.negativePrompt;
+  await dialog.getByRole("button", { name: "刷新历史", exact: true }).click();
+  await dialog.locator(".illustration-history-card").filter({ hasText: negativePrompt }).waitFor({ state: "detached" });
+  await dialog.locator(".illustration-history-card").last().getByRole("button", { name: "使用此 prompt", exact: true }).click();
+  await expect(negative).toHaveValue("");
+  await page.screenshot({ path: `.test-data/illustration-negative-prompt-${test.info().project.name}.png` });
 });
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }, { width: 667, height: 375 }, { width: 390, height: 480 }]) {

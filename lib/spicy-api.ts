@@ -12,7 +12,7 @@ type SpicyModel = {
   enabled?: boolean; available?: boolean;
   inputSchema?: SchemaField;
 };
-export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] };
+export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string };
 export type SpicyAsset = { id: string; uri: string; name?: string; kind?: string; contentType?: string; previewUrl?: string };
 export type SpicyCharacter = { id: string; kind: string; name: string; note?: string; cover?: SpicyAsset | null; assets?: SpicyAsset[]; count?: number; updatedAt?: string };
 export type SpicyTask = {
@@ -153,6 +153,12 @@ export function spicyImageInput(model: SpicyModel, prompt: string, options: Spic
   if (!prompt.trim() || prompt.length < (fields.prompt.minLength ?? 1) || prompt.length > (fields.prompt.maxLength ?? 12000)) throw new Error(`此模型的提示词长度应为 ${fields.prompt.minLength ?? 1}–${fields.prompt.maxLength ?? 12000} 字符`);
   if (options.size && (options.aspectRatio || options.resolution)) throw new Error("尺寸与比例、分辨率请分别选择一种方式");
   const input: Record<string, unknown> = { prompt };
+  if (options.negativePrompt?.trim()) {
+    const key = ["negative_prompt", "negativePrompt"].find(key => fields[key]?.type === "string");
+    if (key) input[key] = options.negativePrompt.trim();
+    else input.prompt = `${prompt}\n\nNegative prompt (elements to avoid):\n${options.negativePrompt.trim()}`;
+    if (String(input.prompt).length > (fields.prompt.maxLength ?? 12000)) throw new Error("加入 Negative Prompt 后超过此模型的提示词长度上限");
+  }
   const reference = spicyReferenceField(schema);
   if (options.referenceImages?.length) {
     if (!reference) throw new Error("此模型不支持人物参考图，请刷新目录并选择支持参考图的模型");

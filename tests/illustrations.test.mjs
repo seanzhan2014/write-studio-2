@@ -10,12 +10,13 @@ const code = ts.transpileModule(readFileSync(new URL("../lib/image-generation.ts
 const { parseIllustrationPrompt, parseIllustrationImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const content = "林澈看向顾屿，确认潮汐表上的时间。";
 const excerpt = "林澈看向顾屿";
-const prompt = "文学插图：两人站在码头，侧光勾勒人物轮廓，冷色调，无文字。";
+const prompt = "Literary illustration of two people on a pier, side lighting, cool colors, no text.";
+const negativePrompt = "text, watermark, blurry, extra limbs, duplicate characters, comic panels";
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=";
 
 test("illustration selection rejects invented or changed source fragments and missing prompts", () => {
-  assert.deepEqual(parseIllustrationPrompt(`\`\`\`json\n${JSON.stringify({ excerpt, prompt })}\n\`\`\``, content, excerpt), { excerpt, prompt });
-  for (const value of [{ excerpt: "未来发生的事情", prompt }, { excerpt: content, prompt }, { excerpt, prompt: "" }]) {
+  assert.deepEqual(parseIllustrationPrompt(`\`\`\`json\n${JSON.stringify({ excerpt, prompt, negativePrompt })}\n\`\`\``, content, excerpt), { excerpt, prompt, negativePrompt });
+  for (const value of [{ excerpt: "未来发生的事情", prompt, negativePrompt }, { excerpt: content, prompt, negativePrompt }, { excerpt, prompt: "", negativePrompt }, { excerpt, prompt }, { excerpt, prompt, negativePrompt: "" }, { excerpt, prompt, negativePrompt: 1 }, { excerpt, prompt, negativePrompt: "x".repeat(4001) }]) {
     assert.throws(() => parseIllustrationPrompt(JSON.stringify(value), content, excerpt));
   }
   assert.throws(() => parseIllustrationPrompt("不是 JSON", content));
@@ -50,7 +51,7 @@ test("real illustration API uses separate text/image requests and preserves pros
     if (delayImage && request.url.endsWith("/images/generations")) await new Promise(resolve => { imageGate = resolve; });
     response.writeHead(failImage && request.url.endsWith("/images/generations") ? 503 : 200, { "Content-Type": "application/json" });
     if (request.url.endsWith("/images/generations")) response.end(JSON.stringify(failImage ? { error: "fake-illustration-secret" } : { data: [remoteImage ? { url: `http://127.0.0.1:${server.address().port}/generated.png` } : { b64_json: png }] }));
-    else response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ excerpt: invalidSelection ? "不属于正文" : excerpt, prompt }) } }] }));
+    else response.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ excerpt: invalidSelection ? "不属于正文" : excerpt, prompt, negativePrompt }) } }] }));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   let provider;
@@ -78,7 +79,8 @@ test("real illustration API uses separate text/image requests and preserves pros
   const before = await api("/api/state");
   const additionalPrompt = "保持人物外貌一致，不出现文字。";
   const selected = await send({ action: "prompt", content, excerpt, model: textModel.id, stylePreset: "watercolor", style: "冷色调", additionalPrompt });
-  assert.equal(selected.status, 200); assert.deepEqual(await selected.json(), { excerpt, prompt });
+  assert.equal(selected.status, 200); assert.deepEqual(await selected.json(), { excerpt, prompt, negativePrompt });
+  assert.ok((await api("/api/ai/illustrations?outlineId=outline-current")).records.some(record => record.prompt === prompt && record.negativePrompt === negativePrompt));
   assert.equal(calls.at(-1).path, "/v1/chat/completions");
   assert.equal(calls.at(-1).body.model, "text-model");
   const source = JSON.parse(calls.at(-1).body.messages.at(-1).content);
@@ -88,7 +90,11 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.ok(!JSON.stringify(source).includes("后续正文秘密"));
   const auto = await send({ action: "prompt", content, model: textModel.id });
   assert.equal(auto.status, 200);
-  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用中文/);
+  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用英语/);
+  assert.match(calls.at(-1).body.messages[0].content, /negativePrompt 字段也必须使用英语/);
+  const legacyLanguage = await send({ action: "prompt", content, promptLanguage: "zh", model: textModel.id });
+  assert.equal(legacyLanguage.status, 200);
+  assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用英语/);
   const english = await send({ action: "prompt", content, promptLanguage: "en", model: textModel.id });
   assert.equal(english.status, 200);
   assert.match(calls.at(-1).body.messages[0].content, /prompt 字段必须使用英语/);
@@ -97,12 +103,22 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.equal(generated.status, 200); assert.equal((await generated.json()).src, `data:image/png;base64,${png}`);
   assert.deepEqual(calls.at(-1).body, { model: "image-model", prompt: `${prompt} 额外编辑`, n: 1, size: "1024x1024" });
   assert.equal(calls.at(-1).authorization, "Bearer fake-illustration-secret");
-  const styledImage = await send({ action: "image", prompt, stylePreset: "ink", style: "淡青色", additionalPrompt, model: imageModel.id });
+  const styledImage = await send({ action: "image", prompt, negativePrompt, stylePreset: "ink", style: "淡青色", additionalPrompt, model: imageModel.id });
   assert.equal(styledImage.status, 200);
   assert.ok(calls.at(-1).body.prompt.startsWith(prompt));
   assert.match(calls.at(-1).body.prompt, /国风水墨/); assert.match(calls.at(-1).body.prompt, /淡青色/);
   assert.match(calls.at(-1).body.prompt, /以此处为准/);
   assert.ok(calls.at(-1).body.prompt.includes(additionalPrompt));
+  assert.ok(calls.at(-1).body.prompt.endsWith(`Negative prompt (elements to avoid):\n${negativePrompt}`));
+  for (const action of ["prompt", "image", "save-prompt"]) {
+    for (const value of [12, "x".repeat(4001)]) {
+      const count = calls.length;
+      const invalid = { action, content, prompt, negativePrompt: value, model: action === "image" ? imageModel.id : textModel.id };
+      assert.equal((await send(invalid)).status, 400);
+      if (action !== "save-prompt") assert.equal((await send({ ...invalid, background: true })).status, 400);
+      assert.equal(calls.length, count);
+    }
+  }
   for (const action of ["prompt", "image", "save-prompt"]) {
     for (const value of [12, "长".repeat(8001)]) {
       const count = calls.length;
@@ -123,10 +139,11 @@ test("real illustration API uses separate text/image requests and preserves pros
   failImage = false; assert.equal((await send({ action: "image", prompt, model: imageModel.id })).status, 200);
 
   // Library records live independently of the prose snapshot and revisions.
-  const manual = (await api("/api/ai/illustrations", { action: "save-prompt", outlineId: "outline-current", prompt, excerpt, style: "淡青色", stylePreset: "ink", additionalPrompt })).record;
+  const manual = (await api("/api/ai/illustrations", { action: "save-prompt", outlineId: "outline-current", prompt, negativePrompt, excerpt, style: "淡青色", stylePreset: "ink", additionalPrompt })).record;
   assert.equal(manual.status, "success");
   assert.equal(manual.stylePreset, "ink");
   assert.equal(manual.additionalPrompt, additionalPrompt);
+  assert.equal(manual.negativePrompt, negativePrompt);
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`)).record.stylePreset, "ink");
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "archive" }, "PATCH")).record.archived, true);
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`, { action: "restore" }, "PATCH")).record.archived, false);
@@ -145,6 +162,8 @@ test("real illustration API uses separate text/image requests and preserves pros
   // No browser or execute request is needed for self-hosted background work.
   const savedPrompt = await waitFor(job.id, "success");
   assert.equal(savedPrompt.prompt, prompt);
+  assert.equal(savedPrompt.negativePrompt, negativePrompt);
+  assert.equal((await api("/api/ai/illustrations", backgroundBody, "POST", { "Idempotency-Key": key })).record.negativePrompt, negativePrompt);
   assert.equal(savedPrompt.stylePreset, "anime");
   assert.equal(savedPrompt.promptLanguage, "en");
   assert.equal(savedPrompt.additionalPrompt, additionalPrompt);
@@ -152,14 +171,16 @@ test("real illustration API uses separate text/image requests and preserves pros
   assert.match(JSON.parse(calls.at(-1).body.messages.at(-1).content).visualDirection, /日系动漫/);
   assert.ok(JSON.parse(calls.at(-1).body.messages.at(-1).content).visualDirection.includes(additionalPrompt));
   remoteImage = true;
-  const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, stylePreset: "flat", additionalPrompt, model: imageModel.id })).record;
+  const imageJob = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", prompt: savedPrompt.prompt, negativePrompt: savedPrompt.negativePrompt, stylePreset: "flat", additionalPrompt, model: imageModel.id })).record;
   const callsBefore = calls.length;
   await Promise.all([1, 2].map(() => fetch(`${baseUrl}/api/ai/illustrations/${imageJob.id}/execute`, { method: "POST" }).then(response => response.text())));
   const savedImage = await waitFor(imageJob.id, "success");
   assert.equal(savedImage.stylePreset, "flat");
   assert.equal(savedImage.additionalPrompt, additionalPrompt);
+  assert.equal(savedImage.negativePrompt, negativePrompt);
   assert.equal(savedImage.prompt, prompt, "Style selection must preserve the editable prompt");
   assert.match(calls.at(-1).body.prompt, /扁平插画/);
+  assert.ok(calls.at(-1).body.prompt.includes(negativePrompt));
   assert.ok(calls.at(-1).body.prompt.includes(additionalPrompt));
   assert.ok(calls.length <= callsBefore + 1, "Concurrent dispatch must not duplicate model calls");
   assert.ok(savedImage.src.startsWith("/api/ai/illustrations/"));
@@ -218,6 +239,7 @@ test("real illustration API uses separate text/image requests and preserves pros
   revised.tasks = revised.tasks.filter(task => task.id !== job.id);
   await api("/api/state", { data: revised }, "PUT", { "If-Match": String(after.revision) });
   assert.equal((await api(`/api/ai/illustrations/${manual.id}`)).record.prompt, prompt, "Saving a full studio snapshot must preserve library history");
+  assert.equal((await api(`/api/ai/illustrations/${manual.id}`)).record.negativePrompt, negativePrompt);
   assert.equal((await api(`/api/ai/illustrations/${job.id}`)).record.prompt, prompt, "Removing an AI task must retain its saved prompt");
   assert.ok(!(await api("/api/ai/tasks")).tasks.some(task => task.id === job.id), "Removed AI tasks must not reappear from library backfill");
   assert.equal((await api("/api/ai/tasks")).tasks.find(task => task.id === retried.id).target, "插图", "Full snapshot persistence must retain illustration task targets");

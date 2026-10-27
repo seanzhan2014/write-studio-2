@@ -1,7 +1,7 @@
 import { AiInputError, findModel, generateIllustrationImage, generateIllustrationPrompt } from "./ai";
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { deleteIllustrationAsset, saveIllustrationAsset } from "./illustration-assets";
-import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT } from "@/lib/image-generation";
+import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, MAX_ILLUSTRATION_NEGATIVE_PROMPT } from "@/lib/image-generation";
 import { supportsImages, supportsText } from "@/lib/ai-model-capabilities";
 import type { IllustrationRecord } from "@/lib/illustration-history";
 import { isCloudDatabase } from "./sqlite";
@@ -22,6 +22,7 @@ export type IllustrationInput = {
   size?: string; quality?: string; aspectRatio?: string; resolution?: string;
   promptLanguage?: IllustrationPromptLanguage;
   additionalPrompt?: string;
+  negativePrompt?: string;
   styleSnapshot?: IllustrationStyle;
   characterId?: string;
   characterReference?: CharacterReference;
@@ -32,7 +33,9 @@ export async function prepareIllustrationReference(input: Record<string, unknown
   const stylePreset = checkedStylePreset(input.stylePreset);
   const styles = normalizeIllustrationStyles((await readStudioState()).data?.settings.illustrationStyles);
   const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
-  return { ...request, ...(additionalPrompt !== undefined ? { additionalPrompt } : {}), styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
+  const negativePrompt = checkedNegativePrompt(input.negativePrompt);
+  checkedPromptLanguage(input.promptLanguage);
+  return { ...request, ...(input.action === "prompt" ? { promptLanguage: "en" as const } : {}), ...(negativePrompt !== undefined ? { negativePrompt } : {}), ...(additionalPrompt !== undefined ? { additionalPrompt } : {}), styleSnapshot: resolveIllustrationStyle(stylePreset, styles), ...(reference ? { characterReference: reference } : {}) };
 }
 const columns = "h.*,o.title AS outline_title";
 const join = "illustration_history h JOIN outlines o ON o.id=h.outline_id";
@@ -46,6 +49,7 @@ function record(row: Row): IllustrationRecord {
     stylePreset: isIllustrationStylePreset(input.stylePreset) ? input.stylePreset : "auto",
     promptLanguage: isIllustrationPromptLanguage(input.promptLanguage) ? input.promptLanguage : undefined,
     additionalPrompt: typeof input.additionalPrompt === "string" ? input.additionalPrompt : undefined,
+    negativePrompt: typeof input._generatedNegativePrompt === "string" ? input._generatedNegativePrompt : typeof input.negativePrompt === "string" ? input.negativePrompt : undefined,
     model: String(row.model_id), modelName: String(row.model_name), archived: Number(row.archived) === 1,
     createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : undefined,
     error: row.error_message ? String(row.error_message) : undefined,
@@ -90,7 +94,7 @@ export async function saveCompletedIllustration(input: IllustrationInput, output
   const asset = "src" in output ? await saveIllustrationAsset(output.src) : undefined;
   try {
     await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,model_id,model_name,input_json,asset_key,mime_type,revised_prompt,created_at,completed_at) VALUES(?,?,?,'success',?,?,?,?,?,?,?,?,?,?,?)")
-      .bind(id, input.outlineId, input.action, "prompt" in output ? output.prompt : input.prompt || "", "excerpt" in output ? output.excerpt : input.excerpt || "", input.style || "", model?.id || input.model, model?.name || input.model, JSON.stringify(input), asset?.key ?? null, asset?.mime ?? null, "revisedPrompt" in output ? output.revisedPrompt ?? null : null, now, now).run();
+      .bind(id, input.outlineId, input.action, "prompt" in output ? output.prompt : input.prompt || "", "excerpt" in output ? output.excerpt : input.excerpt || "", input.style || "", model?.id || input.model, model?.name || input.model, JSON.stringify({ ...input, ...("negativePrompt" in output ? { _generatedNegativePrompt: output.negativePrompt } : {}) }), asset?.key ?? null, asset?.mime ?? null, "revisedPrompt" in output ? output.revisedPrompt ?? null : null, now, now).run();
     await getDatabase().batch([...illustrationTaskRegistration(id), illustrationTaskRevision(now)]);
     return getIllustration(id);
   } catch (error) { if (asset) await deleteIllustrationAsset(asset.key).catch(() => {}); throw error; }
@@ -106,6 +110,9 @@ function checkedStylePreset(value: unknown) {
 }
 function checkedAdditionalPrompt(value: unknown) {
   return value === undefined ? undefined : checkedText(value, MAX_ILLUSTRATION_ADDITIONAL_PROMPT, "附加 Prompt 不能超过 8,000 字符");
+}
+function checkedNegativePrompt(value: unknown) {
+  return value === undefined ? undefined : checkedText(value, MAX_ILLUSTRATION_NEGATIVE_PROMPT, "Negative Prompt 不能超过 4,000 字符");
 }
 function checkedPromptLanguage(value: unknown) {
   if (value === undefined) return undefined;
@@ -125,10 +132,11 @@ export async function saveManualPrompt(input: Row) {
   const stylePreset = checkedStylePreset(input.stylePreset);
   const promptLanguage = checkedPromptLanguage(input.promptLanguage);
   const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
+  const negativePrompt = checkedNegativePrompt(input.negativePrompt);
   const characterReference = await illustrationCharacterReference(outlineId, input.characterId);
   const id = crypto.randomUUID(), now = new Date().toISOString();
   await getDatabase().prepare("INSERT INTO illustration_history(id,outline_id,kind,status,prompt,excerpt,style,input_json,created_at,completed_at) VALUES(?,?,'prompt','success',?,?,?,?,?,?)")
-    .bind(id, outlineId, prompt, excerpt, style, JSON.stringify({ stylePreset, promptLanguage, additionalPrompt, ...(characterReference ? { characterReference } : {}) }), now, now).run();
+    .bind(id, outlineId, prompt, excerpt, style, JSON.stringify({ stylePreset, promptLanguage, additionalPrompt, negativePrompt, ...(characterReference ? { characterReference } : {}) }), now, now).run();
   return getIllustration(id);
 }
 export async function createIllustration(input: Row, id: string) {
@@ -142,6 +150,8 @@ export async function createIllustration(input: Row, id: string) {
   const style = checkedText(input.style, 2000, "画面要求不能超过 2,000 字符");
   const prompt = checkedText(input.prompt, MAX_ILLUSTRATION_PROMPT, "图片 prompt 不能为空，且不能超过 12,000 字符", input.action === "image");
   const body: IllustrationInput = { action: input.action, outlineId, model: model.id, excerpt, style, prompt };
+  const negativePrompt = checkedNegativePrompt(input.negativePrompt);
+  if (negativePrompt !== undefined) body.negativePrompt = negativePrompt;
   const additionalPrompt = checkedAdditionalPrompt(input.additionalPrompt);
   if (additionalPrompt !== undefined) body.additionalPrompt = additionalPrompt;
   const reference = await illustrationCharacterReference(outlineId, input.characterId);
@@ -150,7 +160,8 @@ export async function createIllustration(input: Row, id: string) {
     body.characterId = reference.characterId; body.characterReference = reference;
   }
   const promptLanguage = checkedPromptLanguage(input.promptLanguage);
-  if (promptLanguage !== undefined) body.promptLanguage = promptLanguage;
+  if (input.action === "prompt") body.promptLanguage = "en";
+  else if (promptLanguage !== undefined) body.promptLanguage = promptLanguage;
   const stylePreset = checkedStylePreset(input.stylePreset);
   if (stylePreset !== undefined) body.stylePreset = stylePreset;
   const snapshot = await readStudioState();
@@ -169,6 +180,7 @@ export async function createIllustration(input: Row, id: string) {
   const existing = await illustrationRow(id);
   if (existing) {
     const savedInput = JSON.parse(String(existing.input_json)); delete savedInput._aiTaskRegistered;
+    delete savedInput._generatedNegativePrompt;
     const requestedInput = { ...body };
     delete savedInput.styleSnapshot; delete requestedInput.styleSnapshot; delete savedInput.taskConcurrency; delete requestedInput.taskConcurrency;
     if (JSON.stringify(savedInput) !== JSON.stringify(requestedInput)) throw new AiInputError("任务标识已被其他请求使用");
@@ -220,9 +232,11 @@ export async function executeIllustration(id: string) {
   try {
     const input = JSON.parse(String(row.input_json)) as IllustrationInput;
     let prompt = String(row.prompt), excerpt = String(row.excerpt), revisedPrompt: string | undefined;
+    let generatedNegativePrompt: string | undefined;
     if (input.action === "prompt") {
       const generated = await generateIllustrationPrompt({ ...input, content: input.content! }, controller.signal);
       prompt = generated.prompt; excerpt = generated.excerpt;
+      generatedNegativePrompt = generated.negativePrompt;
     } else {
       const image = await generateIllustrationImage({ ...input, prompt: input.prompt! }, controller.signal);
       const savingAt = new Date().toISOString();
@@ -234,8 +248,8 @@ export async function executeIllustration(id: string) {
     }
     const completed = new Date().toISOString();
     const saved = await getDatabase().batch([
-      getDatabase().prepare("UPDATE illustration_history SET status='success',prompt=?,excerpt=?,asset_key=?,mime_type=?,revised_prompt=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
-        .bind(prompt, excerpt, asset?.key ?? null, asset?.mime ?? null, revisedPrompt ?? null, completed, id, runner),
+      getDatabase().prepare("UPDATE illustration_history SET status='success',prompt=?,excerpt=?,input_json=json_patch(input_json,?),asset_key=?,mime_type=?,revised_prompt=?,completed_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status='running' AND runner_id=?")
+        .bind(prompt, excerpt, JSON.stringify(generatedNegativePrompt !== undefined ? { _generatedNegativePrompt: generatedNegativePrompt } : {}), asset?.key ?? null, asset?.mime ?? null, revisedPrompt ?? null, completed, id, runner),
       syncIllustrationTask(id, completed), illustrationTaskRevision(completed),
     ]);
     if (!Number(saved[0].meta?.changes) && asset) await deleteIllustrationAsset(asset.key);

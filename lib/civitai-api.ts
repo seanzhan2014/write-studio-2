@@ -1,7 +1,7 @@
 import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-capabilities";
 
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
-type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[] };
+type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string };
 type Resource = { id?: number; name?: string; type?: string; mode?: string; supportsGeneration?: boolean; modelVersions?: Version[] };
 type Version = { id?: number; name?: string; baseModel?: string; air?: string; supportsGeneration?: boolean };
 type Workflow = { id?: string; status?: string; steps?: Array<{ reason?: unknown; blockedReason?: unknown; output?: { images?: Array<{ url?: string }>; blobs?: Array<{ url?: string }> } }> };
@@ -166,7 +166,7 @@ export function civitaiImageInput(modelId: string, prompt: string, options: Imag
   const width = Number(dimensions?.[1]), height = Number(dimensions?.[2]);
   if (!dimensions || [width, height].some(value => value < 64 || value > 2048 || value % 16)) throw new Error("Civitai 图片宽高须为 64–2048 且为 16 的倍数");
   // The OpenAPI schema calls this checkpointModel (the recipe prose uses model).
-  return { engine: "sdcpp", ecosystem: match[1], operation: "createImage", checkpointModel: modelId, prompt: prompt.trim(), width, height, quantity: 1 };
+  return { engine: "sdcpp", ecosystem: match[1], operation: "createImage", checkpointModel: modelId, prompt: prompt.trim(), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}), width, height, quantity: 1 };
 }
 
 function pause(ms: number, signal: AbortSignal) {
