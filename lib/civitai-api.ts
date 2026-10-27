@@ -10,6 +10,19 @@ const PAGE_SIZE = 10;
 const MAX_PAGES = 3;
 const MAX_RESPONSE_BYTES = 5_000_000;
 
+export function isCivitaiAirQuery(value: string) {
+  return /^(?:(?:urn:)?air:|civitai:)/i.test(value.trim()) && !/[?*]/.test(value);
+}
+
+export function parseCivitaiAir(value: string) {
+  const full = /^(?:urn:)?air:([a-z0-9_-]+):([a-z0-9_-]+):civitai:([1-9]\d*)(?:@([1-9]\d*))?$/i.exec(value.trim());
+  const short = /^civitai:([1-9]\d*)@([1-9]\d*)$/i.exec(value.trim());
+  if (!full && !short) return null;
+  const modelId = full?.[3] ?? short![1], versionId = full?.[4] ?? short?.[2] ?? null;
+  if (![modelId, ...(versionId ? [versionId] : [])].every(id => Number.isSafeInteger(Number(id)))) return null;
+  return { modelId, versionId, ecosystem: full?.[1].toLowerCase(), type: full?.[2].toLowerCase() };
+}
+
 export function isCivitai(provider: { adapterKind?: string; baseUrl?: string }) {
   if (provider.adapterKind === "civitai") return true;
   try { return ["civitai.com", "www.civitai.com", "orchestration.civitai.com"].includes(new URL(provider.baseUrl || "").hostname); } catch { return false; }
@@ -81,6 +94,35 @@ function nextCatalogCursor(metadata: { nextCursor?: string | number; nextPage?: 
   const cursor = next.searchParams.get("cursor");
   if (!cursor) throw new Error("Civitai 目录分页缺少游标，搜索尚未完成");
   return cursor;
+}
+
+export async function findCivitaiModelByAir(baseUrl: string, secret: string, air: string, signal?: AbortSignal): Promise<ModelCatalogPage> {
+  const parsed = typeof air === "string" && air.length <= 200 ? parseCivitaiAir(air) : null;
+  if (!parsed) throw new Error("AIR 格式无效，例如 urn:air:sdxl:checkpoint:civitai:101055@128078");
+  if (parsed.ecosystem && (!["sd1", "sdxl"].includes(parsed.ecosystem) || parsed.type !== "checkpoint")) throw new Error("此 AIR 不是当前支持的 SD1.5 / SDXL Checkpoint");
+  const timeout = AbortSignal.timeout(30_000);
+  const requestSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
+  const endpoint = civitaiBaseUrls(baseUrl).catalog;
+  try {
+    let version: (Version & { modelId?: number }) | undefined;
+    if (parsed.versionId) {
+      version = await api(`${endpoint}/model-versions/${parsed.versionId}`, secret, requestSignal);
+      if (String(version?.id) !== parsed.versionId || String(version?.modelId) !== parsed.modelId) throw new Error("AIR 中的模型 ID 与版本 ID 不对应，请检查序列号");
+    }
+    const resource = await api<Resource>(`${endpoint}/models/${parsed.modelId}`, secret, requestSignal);
+    if (String(resource?.id) !== parsed.modelId) throw new Error("Civitai 返回的模型与 AIR 不对应");
+    const prefix = parsed.ecosystem ? `urn:air:${parsed.ecosystem}:${parsed.type}:civitai:${parsed.modelId}@` : null;
+    const catalog = entries(version ? { ...resource, modelVersions: [version] } : resource).filter(model => {
+      const resolved = parseCivitaiAir(model.id);
+      return resolved?.modelId === parsed.modelId && (!parsed.versionId || resolved.versionId === parsed.versionId) && (!prefix || model.id.startsWith(prefix));
+    });
+    if (!catalog.length) throw new Error("AIR 对应模型当前不可用，或不是支持的 SD1.5 / SDXL Checkpoint");
+    return { catalog, nextCursor: null, scanned: 1, syncedAt: new Date().toISOString(), warnings: [] };
+  } catch (error) {
+    if (timeout.aborted) throw new Error("根据 AIR 查询模型超时，请重试");
+    if (error instanceof Error && error.message.includes("（404）")) throw new Error("未找到此 AIR 对应的模型或版本，请检查序列号及访问权限");
+    throw error;
+  }
 }
 
 // One bounded upstream request per call. The caller follows every cursor, so a

@@ -9,6 +9,49 @@ test.beforeEach(async ({ request, page }) => {
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });
 
+test("Civitai AIR lookup bypasses a completed scan and retains the canonical model when search is cleared", async ({ page }) => {
+  test.setTimeout(60000);
+  const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
+  let scans = 0;
+  const lookups: string[] = [];
+  let enabled: Record<string, unknown> | undefined;
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "civitai", name: "Civitai", baseUrl: "https://civitai.com/api/v1", adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: { catalog: [], warnings: [] } }));
+  await page.route("**/api/providers/civitai/catalog-pages", route => {
+    const body = route.request().postDataJSON();
+    if (body.air) {
+      lookups.push(body.air);
+      if (body.air.endsWith("@999")) return route.fulfill({ status: 400, json: { error: "未找到此 AIR 对应的模型或版本" } });
+      return route.fulfill({ json: { catalog: [{ id, name: "Exact AIR Painter", metadata: imageMetadata }], nextCursor: null, scanned: 1, warnings: [] } });
+    }
+    scans++;
+    return route.fulfill({ json: { catalog: [], nextCursor: null, scanned: 0, warnings: [] } });
+  });
+  await page.route("**/api/models/bulk", route => { enabled = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { models: [{ id: "exact-model" }] } }); });
+  await page.goto("/settings/models");
+  await page.locator(".ai-service-intro").getByRole("button", { name: "添加模型", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  const search = dialog.getByRole("textbox", { name: "搜索目录模型", exact: true });
+  await search.fill("*");
+  await expect(dialog.getByRole("status").filter({ hasText: "搜索完成" })).toBeVisible();
+  expect(scans).toBe(1);
+  await search.fill(id.toUpperCase());
+  await expect(dialog.getByRole("status").filter({ hasText: "AIR 查询完成" })).toContainText("1 个匹配版本");
+  await dialog.getByRole("checkbox", { name: `选择模型 ${id}`, exact: true }).check();
+  await search.fill("civitai:101055@999");
+  await expect(dialog.getByRole("alert")).toContainText("未找到此 AIR");
+  await expect(dialog.getByRole("status").filter({ hasText: "AIR 查询完成" })).toHaveCount(0);
+  expect(scans).toBe(1);
+  expect(lookups).toEqual([id.toUpperCase(), "civitai:101055@999"]);
+  await search.fill("");
+  await expect(dialog.getByRole("checkbox", { name: `选择模型 ${id}`, exact: true })).toBeChecked();
+  await dialog.getByRole("button", { name: "启用 1 个模型", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(enabled?.modelIds).toEqual([id]);
+  expect(enabled?.metadataByModelId).toEqual({ [id]: imageMetadata });
+});
+
 test("Civitai wildcard search traverses every page and retains late-page selections across queries", async ({ page }, info) => {
   test.setTimeout(60_000);
   let requests = 0;

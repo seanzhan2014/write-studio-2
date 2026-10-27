@@ -14,6 +14,8 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
     calls.push({ path: request.url, authorization: request.headers.authorization, body: raw ? JSON.parse(raw) : null });
     if (request.url === "/output.png") { response.writeHead(200, { "Content-Type": "image/png" }); return response.end(Buffer.from(png, "base64")); }
     response.setHeader("Content-Type", "application/json");
+    if (request.url === "/api/v1/model-versions/128078") return response.end(JSON.stringify({ id: 128078, modelId: 101055, name: "v1", baseModel: "SDXL 1.0", air: id }));
+    if (request.url === "/api/v1/models/101055") return response.end(JSON.stringify({ id: 101055, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [] }));
     if (request.url.includes("sort=Newest")) {
       const index = Number(new URL(request.url, "http://test").searchParams.get("cursor") || 0);
       return response.end(JSON.stringify({ items: [{ id: index + 1, name: `Catalog Painter ${index}`, type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: index + 10, name: "new", baseModel: "SDXL 1.0" }, { id: index + 100, name: "old", baseModel: "SDXL 1.0" }] }], metadata: index < 4 ? { nextCursor: String(index + 1) } : {} }));
@@ -46,6 +48,11 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
   assert.equal(discovered.catalog[0].id, id);
   assert.deepEqual(discovered.catalog[0].metadata.outputModalities, ["image"]);
   assert.deepEqual((await api(`/api/providers/${provider.id}/discover`)).catalog, discovered.catalog);
+  const beforeAirLookup = calls.length;
+  const exactAir = await api(`/api/providers/${provider.id}/catalog-pages`, { air: id });
+  assert.equal(exactAir.catalog[0].id, id);
+  assert.equal(exactAir.nextCursor, null);
+  assert.deepEqual(calls.slice(beforeAirLookup).map(call => call.path), ["/api/v1/model-versions/128078", "/api/v1/models/101055"]);
   let cursor = null;
   const completeCatalog = [];
   do {

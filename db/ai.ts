@@ -1,6 +1,6 @@
 import { catalogEntry, normalizeModelMetadata, supportsText, supportsImages, imageParameterValues, type ModelMetadata, type ModelCatalog, type CatalogModel, type ModelTestResult } from "../lib/ai-model-capabilities";
 import { discoverSpicyCatalog, generateSpicyImage, isSpicyApi, spicyChatBaseUrl } from "../lib/spicy-api";
-import { discoverCivitaiCatalog, readCivitaiCatalogPage, generateCivitaiImage, isCivitai } from "../lib/civitai-api";
+import { discoverCivitaiCatalog, readCivitaiCatalogPage, findCivitaiModelByAir, generateCivitaiImage, isCivitai } from "../lib/civitai-api";
 import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, type ReasoningEffort, type ReasoningOptions } from "../lib/reasoning-options";
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
@@ -549,11 +549,12 @@ export async function discoverProviderCatalog(id: string) {
   return result;
 }
 export async function discoverProviderModelIds(id: string) { return (await discoverProviderCatalog(id)).catalog.map((entry) => entry.id); }
-export async function readProviderCatalogPage(id: string, cursor?: string | null, signal?: AbortSignal, hint?: string) {
+export async function readProviderCatalogPage(id: string, cursor?: string | null, signal?: AbortSignal, hint?: string, air?: string) {
   const provider = await findProvider(id);
   if (!provider) throw new Error("服务连接不存在");
   if (!isCivitai(provider)) throw new Error("此服务连接不支持完整目录分页搜索");
-  return readCivitaiCatalogPage(provider.baseUrl, await readProviderSecret(id), cursor, signal, hint);
+  const secret = await readProviderSecret(id);
+  return air !== undefined ? findCivitaiModelByAir(provider.baseUrl, secret, air, signal) : readCivitaiCatalogPage(provider.baseUrl, secret, cursor, signal, hint);
 }
 export async function testProvider(id: string) {
   const started = Date.now();

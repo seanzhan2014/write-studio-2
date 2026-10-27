@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, isCivitaiAirQuery, parseCivitaiAir, findCivitaiModelByAir, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
 const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
 const connection = { baseUrl: "https://civitai.com/api/v1", secret: "fake-civitai-key", modelId: id, timeoutMs: 5000 };
@@ -22,6 +22,51 @@ test("existing Civitai URLs are detected and use separate native catalog and gen
   assert.equal(isCivitai({ baseUrl: "https://civitai.com.evil.example/v1" }), false);
   assert.equal(isCivitai({ adapterKind: "civitai", baseUrl: "https://proxy.example" }), true);
   assert.deepEqual(civitaiBaseUrls("https://proxy.example/civitai/api/v1"), { catalog: "https://proxy.example/civitai/api/v1", generation: "https://proxy.example/civitai/v2/consumer" });
+});
+
+test("AIR input is recognized without treating wildcard AIR patterns as exact lookups", () => {
+  assert.deepEqual(parseCivitaiAir(` ${id.toUpperCase()} `), { modelId: "101055", versionId: "128078", ecosystem: "sdxl", type: "checkpoint" });
+  assert.deepEqual(parseCivitaiAir("civitai:101055@128078"), { modelId: "101055", versionId: "128078", ecosystem: undefined, type: undefined });
+  assert.equal(parseCivitaiAir("air:sdxl:checkpoint:civitai:101055").versionId, null);
+  assert.equal(isCivitaiAirQuery(id), true);
+  assert.equal(isCivitaiAirQuery("civitai:101055@128078"), true);
+  assert.equal(isCivitaiAirQuery("urn:air:sdxl:*@128078"), false);
+  assert.equal(isCivitaiAirQuery("Painter"), false);
+  for (const invalid of ["urn:air:sdxl:checkpoint:civitai:0@1", "urn:air:sdxl:checkpoint:civitai:1@0", "urn:air:sdxl:checkpoint:evil:1@2", "civitai:1@9007199254740992", "urn:air:broken"]) assert.equal(parseCivitaiAir(invalid), null);
+});
+
+test("exact AIR lookup fetches the requested version directly even if the model catalog omits it", async t => {
+  const calls = mockFetch(t, call => call.url.pathname.includes("model-versions") ? Response.json({ ...resource.modelVersions[0], modelId: resource.id, air: id }) : Response.json({ ...resource, modelVersions: [{ id: 999999, name: "new", baseModel: "SDXL 1.0" }] }));
+  const result = await findCivitaiModelByAir(connection.baseUrl, connection.secret, id.toUpperCase());
+  assert.deepEqual(calls.map(call => call.url.pathname), ["/api/v1/model-versions/128078", "/api/v1/models/101055"]);
+  assert.equal(result.catalog.length, 1); assert.equal(result.catalog[0].id, id);
+  assert.equal(result.nextCursor, null);
+  assert.ok(calls.every(call => call.headers.Authorization === `Bearer ${connection.secret}` && !call.url.search));
+});
+
+test("abbreviated AIRs resolve to canonical IDs and model AIRs return the model's versions", async t => {
+  const calls = mockFetch(t, call => call.url.pathname.includes("model-versions") ? Response.json({ ...resource.modelVersions[0], modelId: resource.id, air: id }) : Response.json({ ...resource, modelVersions: [...resource.modelVersions, { id: 128079, name: "old", baseModel: "SDXL 1.0" }] }));
+  assert.equal((await findCivitaiModelByAir(connection.baseUrl, "", "civitai:101055@128078")).catalog[0].id, id);
+  calls.length = 0;
+  const result = await findCivitaiModelByAir(connection.baseUrl, "", "air:sdxl:checkpoint:civitai:101055");
+  assert.equal(result.catalog.length, 2); assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, "/api/v1/models/101055");
+});
+
+test("AIR lookups reject mismatched models, unsupported resources and inaccessible versions without scanning", async t => {
+  let calls = mockFetch(t, () => Response.json({ ...resource.modelVersions[0], modelId: 999 }));
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", id), /不对应/);
+  assert.equal(calls.length, 1);
+  t.mock.restoreAll(); calls = mockFetch(t, () => Response.json({}));
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", id.replace("checkpoint", "lora")), /不是当前支持/);
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", "urn:air:invalid"), /格式无效/);
+  assert.equal(calls.length, 0);
+  t.mock.restoreAll(); calls = mockFetch(t, () => new Response("not found", { status: 404 }));
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", id), /未找到此 AIR/);
+  assert.equal(calls.length, 1);
+  t.mock.restoreAll();
+  mockFetch(t, call => call.url.pathname.includes("model-versions") ? Response.json({ ...resource.modelVersions[0], modelId: resource.id, air: id.replace("101055@", "999@") }) : Response.json(resource));
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", "civitai:101055@128078"), /当前不可用/);
 });
 
 test("complete catalog pages expose every callable version with numeric and name search terms", async t => {
