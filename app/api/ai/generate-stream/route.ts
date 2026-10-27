@@ -1,7 +1,7 @@
 import { reasoningEffortError } from "@/lib/reasoning-options";
 import { AiInputError, assertAiTargetAvailable, generateText } from "@/db/ai";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
-import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { normalizeClosingSummaryLength, isClosingSummaryLength, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 
 export async function POST(request: Request) {
   let body: Parameters<typeof generateText>[0];
@@ -24,6 +24,8 @@ export async function POST(request: Request) {
   if (body.target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return Response.json({ error: "正文控制参数无效" }, { status: 400 });
   body.proseControls = body.target === "content" ? normalizeProseControls(body.proseControls, body.dialogueDensity) : undefined;
   body.dialogueDensity = body.proseControls?.dialogueDensity;
+  if (body.target === "content" && body.closingSummaryLength !== undefined && !isClosingSummaryLength(body.closingSummaryLength)) return Response.json({ error: "收尾长度无效" }, { status: 400 });
+  body.closingSummaryLength = normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary);
   body.includeExcellentFragments = body.target === "content" && body.includeExcellentFragments === true;
   body.excellentFragmentIds = body.includeExcellentFragments && Array.isArray(body.excellentFragmentIds) ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200) : undefined;
   const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;

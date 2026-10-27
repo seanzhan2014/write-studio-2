@@ -18,7 +18,7 @@ export const AI_SETTING_LABELS: Record<string, string> = {
   model: "模型", reasoningEffort: "推理设置", targetWords: "目标字数", contentMode: "生成方式", rewriteRetention: "原文保留度",
   includePrevious: "包含前面大纲", includeCharacters: "包含相关人物", includeExcellentFragments: "参考优秀片段", includeOutlineTitle: "同时生成大纲名",
   reviewMaxRounds: "审校轮次", reviewInstruction: "审校指令", firstAppearanceOverrides: "人物出场",
-  includeClosingSummary: "收尾总结",
+  closingSummaryLength: "收尾总结",
   "proseControls.dialogueDensity": "对话密度", "proseControls.introspectionDensity": "内心活动", "proseControls.descriptionDetail": "描写细度", "proseControls.narrativePace": "叙事节奏", "proseControls.paragraphLength": "段落长度",
   promptLanguage: "生成 Prompt 的语言", stylePreset: "插图风格", resolution: "分辨率", additionalPrompt: "附加 Prompt",
   quality: "图片画质", aspectRatio: "画面比例", scenePrompt: "画面要求",
@@ -40,8 +40,8 @@ function normalize(kind: AiSettingsKind, value: unknown, fallback?: TaskOptions)
 }
 function resolve(kind: AiSettingsKind, raw: TaskOptions | null | undefined, article: TaskOptions, previous: TaskOptions, baseline = article) {
   const value = normalize(kind, raw ?? baseline, baseline);
-  for (const [key, mode] of Object.entries(raw?.inheritance ?? {})) writeAiSetting(value, key, readAiSetting(mode === "article" ? article : previous, key));
-  return value;
+  for (const [key, mode] of Object.entries(raw ? normalize(kind, raw).inheritance ?? {} : {})) writeAiSetting(value, key, readAiSetting(mode === "article" ? article : previous, key));
+  return normalize(kind, value);
 }
 
 /** Previous outlines are scoped to the current chapter; its first outline falls back to the previous active chapter. */

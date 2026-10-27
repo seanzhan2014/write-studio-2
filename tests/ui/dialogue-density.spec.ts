@@ -10,17 +10,17 @@ test.beforeEach(async ({ request }) => {
 test("closing summary defaults off, inherits article settings and persists an explicit opt-out", async ({ page, request }, testInfo) => {
   await page.goto("/articles/article-main/info/ai-tasks");
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
-  await expect(summary.getByRole("radio", { name: "不需要", exact: true })).toBeChecked();
-  await summary.getByRole("radio", { name: "不需要", exact: true }).focus();
+  await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
+  await summary.getByRole("radio", { name: "无", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
-  await expect(summary.getByRole("radio", { name: "需要", exact: true })).toBeChecked();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.includeClosingSummary).toBe(true);
+  await expect(summary.getByRole("radio", { name: "短", exact: true })).toBeChecked();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.closingSummaryLength).toBe("short");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await expect(summary.getByRole("radio", { name: "需要", exact: true })).toBeChecked();
-  await summary.getByRole("radio", { name: "不需要", exact: true }).check();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.includeClosingSummary).toBe(false);
+  await expect(summary.getByRole("radio", { name: "短", exact: true })).toBeChecked();
+  await summary.getByRole("radio", { name: "无", exact: true }).check();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.closingSummaryLength).toBe("none");
   await page.reload();
-  await expect(summary.getByRole("radio", { name: "不需要", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   await summary.scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("closing-summary.png"), fullPage: true });
@@ -29,15 +29,16 @@ test("closing summary defaults off, inherits article settings and persists an ex
 test("changing only the closing summary choice creates a distinct generation request", async ({ page }) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
-  await expect(summary.getByRole("radio", { name: "不需要", exact: true })).toBeChecked();
-  for (const enabled of [false, true]) {
-    await summary.getByRole("radio", { name: enabled ? "需要" : "不需要", exact: true }).check();
+  await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
+  for (const [length, label] of [["none", "无"], ["short", "短"], ["medium", "中"], ["long", "长"]] as const) {
+    await summary.getByRole("radio", { name: label, exact: true }).check();
     const pending = page.waitForResponse((response) => response.url().endsWith("/api/ai/tasks") && response.request().method() === "POST");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const response = await pending;
     expect(response.ok()).toBeTruthy();
     const task = (await response.json()).data as AiTask;
-    expect(task.contextOptions?.includeClosingSummary).toBe(enabled);
+    expect(task.contextOptions?.closingSummaryLength).toBe(length);
+    expect(task.contextOptions?.includeClosingSummary).toBe(length !== "none");
     await page.clock.setFixedTime(new Date(task.createdAt));
   }
   await page.getByRole("button", { name: "开始生成", exact: true }).click();
@@ -58,7 +59,7 @@ test("prose controls support keyboard selection, mode guidance and narrow touch 
   await expect(description.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
   await expect(pace.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
   await expect(paragraph.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
-  await expect(summary.getByRole("radio", { name: "不需要", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   await group.getByRole("radio", { name: "自动", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(group.getByRole("radio", { name: "低", exact: true })).toBeChecked();

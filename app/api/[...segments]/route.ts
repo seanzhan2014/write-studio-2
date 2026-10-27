@@ -8,7 +8,7 @@ import { findModel, type NamingArticleContext } from "@/db/ai";
 import { applyStudioChanges, clearBusinessData, readStudioState, searchDocuments } from "@/db/runtime";
 import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
-import { MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { normalizeClosingSummaryLength, isClosingSummaryLength, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { deleteOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot, selectOutlineVersion } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
@@ -180,6 +180,8 @@ export async function POST(request: Request, context: RouteContext) {
     if (target === "正文" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) throw new Error("对话密度无效");
     if (target === "正文" && body.proseControls !== undefined && !isProseControls(body.proseControls)) throw new Error("正文控制参数无效");
     const proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
+    if (target === "正文" && body.closingSummaryLength !== undefined && !isClosingSummaryLength(body.closingSummaryLength)) throw new Error("收尾长度无效");
+    const closingSummaryLength = normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary);
     const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;
     const targetWords = targetWordsUnset ? undefined : Number(body.targetWords);
     if (target === "正文" && targetWords !== undefined && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数`);
@@ -231,7 +233,7 @@ export async function POST(request: Request, context: RouteContext) {
         dialogueDensity: target === "正文" ? proseControls.dialogueDensity : undefined,
         ...(target === "正文" && rewriteRetention ? { rewriteRetention } : {}),
         ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
-        ...(target === "正文" ? { includeClosingSummary: body.includeClosingSummary === true } : {}),
+        ...(target === "正文" ? { closingSummaryLength, includeClosingSummary: closingSummaryLength !== "none" } : {}),
         outlinePlanSnapshot: promptContext?.currentOutline.plan ?? found.outline.plan,
         outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? found.outline.title).slice(0, 80),
         ...(target === "全部名称" ? {

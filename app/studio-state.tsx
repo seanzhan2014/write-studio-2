@@ -257,6 +257,7 @@ export type AiTask = {
     generatedOutlineTitleError?: string;
     includeOutlineTitle?: boolean;
     includeClosingSummary?: boolean;
+    closingSummaryLength?: import("@/lib/generate-options").ClosingSummaryLength;
     chapterNamingSnapshot?: NamingProfile;
     outlineNamingSnapshot?: NamingProfile;
     nameChapterCount?: number;

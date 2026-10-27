@@ -4,7 +4,7 @@ import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, t
 import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
 import { AiContextSelectionError, selectAiContext, type AiContextKind, type AiContextOptions, type SelectedAiContext } from "../lib/ai-context";
 import { applyReviewEdits, createReviewBlocks, parseReviewResponse, reviewSourceDigest, type ReviewOutlineSource } from "../lib/ai-review.mjs";
-import { DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeOptionalGenerateTargetWords, normalizeRewriteRetentionLevel, normalizeProseControls, type ContentGenerationMode, type RewriteRetentionLevel, type DialogueDensityLevel, type ProseControls } from "../lib/generate-options";
+import { normalizeClosingSummaryLength, type ClosingSummaryLength, DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeOptionalGenerateTargetWords, normalizeRewriteRetentionLevel, normalizeProseControls, type ContentGenerationMode, type RewriteRetentionLevel, type DialogueDensityLevel, type ProseControls } from "../lib/generate-options";
 import { normalizeReviewPresets } from "../lib/review-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleSnapshot, hasReviewRules, type ReviewRule, type ReviewRuleSnapshot } from "../lib/review-rules.mjs";
 import { DEFAULT_MAX_INPUT_CHARACTERS, normalizeMaxInputCharacters } from "../lib/model-options";
@@ -1197,15 +1197,18 @@ function chatPrompt(source: PromptSource, instruction: string, system: string, m
   };
 }
 
-function closingSummaryConstraint(includeClosingSummary?: boolean) {
-  const enabled = includeClosingSummary === true;
-  const instruction = enabled
-    ? "在正文结尾增加一段简短、自然的总体描写或总结，呼应本次情节，避免重复已写内容或引入新事实。"
-    : "在最后一个具体动作、对白或事件处自然停笔，完整写完当前句子；不得额外添加回顾全篇、概括局势、总结人物心境、升华主题或全景式总体描写的收尾段。";
-  return `\n<closing_summary enabled="${enabled}">${instruction}写作准备与审校也必须遵循此选择；续写时仅作用于新增正文，已有正文保持原样。</closing_summary>`;
+function closingSummaryConstraint(value?: ClosingSummaryLength, legacyInclude?: boolean) {
+  const length = normalizeClosingSummaryLength(value, legacyInclude);
+  const instructions: Record<ClosingSummaryLength, string> = {
+    none: "在最后一个具体动作、对白或事件处自然停笔，完整写完当前句子；不得额外添加回顾全篇、概括局势、总结人物心境、升华主题或全景式总体描写的收尾段。",
+    short: "在正文结尾用一到两句话作简短、自然的总体描写或总结，轻轻呼应当前情节，不展开成长段。",
+    medium: "在正文结尾用一个自然段作总体描写或总结，适度展开情节余韵和人物感受，不延伸为多个段落。",
+    long: "在正文结尾用两到三个自然段充分展开总体描写或总结，让情节余韵和人物感受逐步收束。",
+  };
+  return `\n<closing_summary enabled="${length !== "none"}" length="${length}">${instructions[length]}收尾篇幅计入目标字数，篇幅较短时相应压缩，不为凑长度重复内容或引入新事实。写作准备与审校也必须遵循此选择；续写时仅作用于新增正文，已有正文保持原样。</closing_summary>`;
 }
 
-function generatePrompt(source: PromptSource, instruction: string, target: GenerateTarget, system: string, targetWords?: number, contentMode: ContentGenerationMode = "fresh", rewriteRetention?: RewriteRetentionLevel, maxInputCharacters = DEFAULT_MAX_INPUT_CHARACTERS, proseControls?: ProseControls, legacyDialogueDensity?: DialogueDensityLevel, writingBrief?: string, advanced?: GenerateAdvanced, stage: "writing" | "preparation" = "writing", includeClosingSummary?: boolean) {
+function generatePrompt(source: PromptSource, instruction: string, target: GenerateTarget, system: string, targetWords?: number, contentMode: ContentGenerationMode = "fresh", rewriteRetention?: RewriteRetentionLevel, maxInputCharacters = DEFAULT_MAX_INPUT_CHARACTERS, proseControls?: ProseControls, legacyDialogueDensity?: DialogueDensityLevel, writingBrief?: string, advanced?: GenerateAdvanced, stage: "writing" | "preparation" = "writing", closingSummaryLength?: ClosingSummaryLength) {
   const outputContract = stage === "preparation" ? "preparation_json" : contentMode === "continue" ? "continuation_only" : "complete_candidate";
   const normalizedTargetWords = normalizeOptionalGenerateTargetWords(targetWords);
   const normalizedRewriteRetention = normalizeRewriteRetentionLevel(rewriteRetention);
@@ -1214,7 +1217,7 @@ function generatePrompt(source: PromptSource, instruction: string, target: Gener
   const advancedRequirement = advancedText(advanced, GENERATE_FIELDS);
   const proseConstraint = target === "content" ? proseControlsConstraint(proseControls, legacyDialogueDensity) + (advancedRequirement ? `\n<advanced_expression>${escapeXml(advancedRequirement)}\n${escapeXml(ADVANCED_WRITING_RULES)}</advanced_expression>` : "") : "";
   if (proseConstraint) system += `\n${PROSE_CONTROL_RULES}`;
-  const constraints = target === "content" ? `<generation_constraints>\n${xmlElement("content_mode", contentMode)}\n${xmlElement("output_contract", outputContract)}${targetConstraint}${rewriteConstraint}${proseConstraint}${closingSummaryConstraint(includeClosingSummary)}\n</generation_constraints>` : "";
+  const constraints = target === "content" ? `<generation_constraints>\n${xmlElement("content_mode", contentMode)}\n${xmlElement("output_contract", outputContract)}${targetConstraint}${rewriteConstraint}${proseConstraint}${closingSummaryConstraint(closingSummaryLength)}\n</generation_constraints>` : "";
   const request = [instruction.trim() ? `<current_request>\n${escapeXml(instruction)}\n</current_request>` : "", writingBrief ? `<confirmed_writing_brief>\n${escapeXml(writingBrief)}\n</confirmed_writing_brief>` : ""].filter(Boolean).join("\n\n");
   const fitted = fitPrompt({
     system, instruction, source, maxInputCharacters,
@@ -1247,11 +1250,11 @@ function generatePrompt(source: PromptSource, instruction: string, target: Gener
   };
 }
 
-export async function buildContext(outlineId: string, instruction: string, options: { includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; sessionId?: string; target?: GenerateTarget; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; advanced?: GenerateAdvanced; proseControls?: ProseControls; dialogueDensity?: DialogueDensityLevel; firstAppearanceCharacterIds?: string[]; includeClosingSummary?: boolean } = {}) {
+export async function buildContext(outlineId: string, instruction: string, options: { includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; sessionId?: string; target?: GenerateTarget; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; advanced?: GenerateAdvanced; proseControls?: ProseControls; dialogueDensity?: DialogueDensityLevel; firstAppearanceCharacterIds?: string[]; includeClosingSummary?: boolean; closingSummaryLength?: ClosingSummaryLength } = {}) {
   const target = options.target ?? "content";
   const source = await selectPromptContext(outlineId, target, { ...options, instruction });
   const system = GENERATE_SYSTEM_PROMPTS[target];
-  const prompt = generatePrompt(source, instruction, target, system, options.targetWords, normalizeContentGenerationMode(options.contentMode), options.rewriteRetention, DEFAULT_MAX_INPUT_CHARACTERS, options.proseControls, options.dialogueDensity, undefined, options.advanced, "writing", options.includeClosingSummary);
+  const prompt = generatePrompt(source, instruction, target, system, options.targetWords, normalizeContentGenerationMode(options.contentMode), options.rewriteRetention, DEFAULT_MAX_INPUT_CHARACTERS, options.proseControls, options.dialogueDensity, undefined, options.advanced, "writing", normalizeClosingSummaryLength(options.closingSummaryLength, options.includeClosingSummary));
   return { article: source.article, chapter: source.currentChapter, outline: source.currentOutline, previousCount: source.previousOutlines.length, people: source.characters.map((item) => item.name), text: prompt.context, characters: prompt.context.length };
 }
 
@@ -1294,7 +1297,7 @@ function generateMaxTokens(model: AiModelRecord, target: GenerateTarget) {
   return 65_536;
 }
 
-export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; advanced?: GenerateAdvanced; proseControls?: ProseControls; dialogueDensity?: DialogueDensityLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean; includeClosingSummary?: boolean; context?: SelectedAiContext; writingBrief?: string } & ReasoningOptions, signal?: AbortSignal) {
+export async function generateText(input: { outlineId: string; instruction?: string; model?: string; target: GenerateTarget; includePrevious?: boolean; includeCharacters?: boolean; includeExcellentFragments?: boolean; excellentFragmentIds?: string[]; targetWords?: number; contentMode?: ContentGenerationMode; rewriteRetention?: RewriteRetentionLevel; advanced?: GenerateAdvanced; proseControls?: ProseControls; dialogueDensity?: DialogueDensityLevel; firstAppearanceCharacterIds?: string[]; includeOutlineTitle?: boolean; includeClosingSummary?: boolean; closingSummaryLength?: ClosingSummaryLength; context?: SelectedAiContext; writingBrief?: string } & ReasoningOptions, signal?: AbortSignal) {
   const contentMode = normalizeContentGenerationMode(input.contentMode);
   const rewriteRetention = normalizeRewriteRetentionLevel(input.rewriteRetention);
   const source = suppliedPromptContext(input.context, input.outlineId, input.target)
@@ -1312,7 +1315,7 @@ export async function generateText(input: { outlineId: string; instruction?: str
   const outlineNaming = normalizeNamingProfile(source.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, targetWords ?? DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
-  const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循作者已确认的写作准备稿；原始资料中的事实与约束仍有效。未決项不得擅自写成事实。` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", input.includeClosingSummary);
+  const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循作者已确认的写作准备稿；原始资料中的事实与约束仍有效。未決项不得擅自写成事实。` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary));
   const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target) }, input.reasoningEffort);
   const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
   const completion = completionResult(payload, handle, "模型生成");
@@ -1349,7 +1352,7 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   let feedback = "", inputTokens = 0, outputTokens = 0;
   const diagnostics: PreparationResponseDiagnostic[] = [];
   for (let attempt = 0; ; attempt++) {
-    const prompt = generatePrompt(source, instruction + feedback, "content", `${system}\n${NARRATIVE_CRAFT_RULES}\n${PREPARATION_NARRATIVE_RULES}`, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, undefined, input.advanced, "preparation", input.includeClosingSummary);
+    const prompt = generatePrompt(source, instruction + feedback, "content", `${system}\n${NARRATIVE_CRAFT_RULES}\n${PREPARATION_NARRATIVE_RULES}`, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, undefined, input.advanced, "preparation", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary));
     const request = () => upstream(model, prompt.messages, signal, false, { max_tokens: model.maxOutput ?? 16384, ...(responseFormat ? { response_format: responseFormat } : {}) }, input.reasoningEffort);
     let handle;
     try { handle = await request(); }
@@ -1702,6 +1705,7 @@ export type GeneratedTextReviewInput = ReasoningOptions & {
   advanced?: GenerateAdvanced; proseControls?: ProseControls;
   dialogueDensity?: DialogueDensityLevel;
   includeClosingSummary?: boolean;
+  closingSummaryLength?: ClosingSummaryLength;
   rewriteRetention?: RewriteRetentionLevel;
   writingBrief?: string;
   context: SelectedAiContext;
@@ -1755,7 +1759,7 @@ ${proseConstraint ? `${PROSE_CONTROL_RULES}
     renderReviewRequirements(ruleSnapshot),
     optionalXmlElement("generation_instruction", input.instruction), xmlElement("target_words", input.targetWords ? String(input.targetWords) : "不限"),
     optionalXmlElement("confirmed_writing_brief", input.writingBrief),
-    `<generation_constraints>\n${xmlElement("content_mode", normalizeContentGenerationMode(input.contentMode))}${input.contentMode === "rewrite" ? `\n${xmlElement("rewrite_retention", REWRITE_RETENTION_INSTRUCTIONS[normalizeRewriteRetentionLevel(input.rewriteRetention)], ` level="${normalizeRewriteRetentionLevel(input.rewriteRetention)}"`)}` : ""}${proseConstraint}${closingSummaryConstraint(input.includeClosingSummary)}\n</generation_constraints>`,
+    `<generation_constraints>\n${xmlElement("content_mode", normalizeContentGenerationMode(input.contentMode))}${input.contentMode === "rewrite" ? `\n${xmlElement("rewrite_retention", REWRITE_RETENTION_INSTRUCTIONS[normalizeRewriteRetentionLevel(input.rewriteRetention)], ` level="${normalizeRewriteRetentionLevel(input.rewriteRetention)}"`)}` : ""}${proseConstraint}${closingSummaryConstraint(input.closingSummaryLength, input.includeClosingSummary)}\n</generation_constraints>`,
     xmlElement("reference_context", JSON.stringify(compactPromptValue(input.context))),
     xmlElement("previous_issues", JSON.stringify(input.issues)),
     `<current_draft outline_id="${escapeXml(input.outlineId)}">\n${blocks}\n</current_draft>`,

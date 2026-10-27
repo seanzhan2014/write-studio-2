@@ -78,16 +78,16 @@ test("Generate review API executes durable loops and reports the final draft", a
     });
 
     await t.test("closing summary selection survives preparation, generation, review and revision", async () => {
-      for (const includeClosingSummary of [undefined, true]) {
+      for (const closingSummaryLength of ["none", "short", "medium", "long"]) {
         await reset(); fake.control.calls = []; fake.control.mode = "pass";
-        const task = await create(2, undefined, { includeClosingSummary, preparationRounds: 0, preparationRequireConfirmation: false });
-        assert.equal(task.contextOptions.includeClosingSummary, includeClosingSummary === true);
+        const task = await create(2, undefined, { closingSummaryLength, preparationRounds: 0, preparationRequireConfirmation: false });
+        assert.equal(task.contextOptions.closingSummaryLength, closingSummaryLength);
         const completed = await waitTask(task.id);
         assert.equal(completed.state, "success", completed.error);
-        assert.equal(completed.contextOptions.includeClosingSummary, includeClosingSummary === true);
+        assert.equal(completed.contextOptions.closingSummaryLength, closingSummaryLength);
         assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "generate", "review", "revise", "review"]);
         for (const call of fake.control.calls) {
-          assert.ok(call.body.messages.at(-1).content.includes(`<closing_summary enabled="${includeClosingSummary === true}">`), `${call.kind} must preserve the closing choice`);
+          assert.ok(call.body.messages.at(-1).content.includes(`<closing_summary enabled="${closingSummaryLength !== "none"}" length="${closingSummaryLength}">`), `${call.kind} must preserve the closing choice`);
         }
       }
     });

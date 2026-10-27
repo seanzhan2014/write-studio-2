@@ -14,6 +14,22 @@ function fixture() {
   ] };
 }
 
+test("closing length inheritance migrates legacy switches and follows later article changes", () => {
+  const article = fixture();
+  article.aiGenerateSettings = normalizeAiGenerateOptions({ closingSummaryLength: "long" });
+  article.chapters[0].outlines[1].generateOptions = { includeClosingSummary: false, inheritance: { includeClosingSummary: "article" } };
+  let value = resolveAiSettings(article, "b", "generate").value;
+  assert.equal(value.closingSummaryLength, "long");
+  assert.equal(value.includeClosingSummary, true);
+  article.aiGenerateSettings.closingSummaryLength = "medium";
+  value = resolveAiSettings(article, "b", "generate").value;
+  assert.equal(value.closingSummaryLength, "medium");
+  article.chapters[0].outlines[1].generateOptions = overrideAiSettings(value, { closingSummaryLength: "none" });
+  value = resolveAiSettings(article, "b", "generate").value;
+  assert.equal(value.closingSummaryLength, "none");
+  assert.equal(value.includeClosingSummary, false);
+});
+
 test("each setting follows the previous outline, then previous chapter, then article", () => {
   const article = fixture();
   let resolved = resolveAiSettings(article, "b", "generate");

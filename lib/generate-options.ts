@@ -23,6 +23,9 @@ export type NarrativePaceLevel = typeof NARRATIVE_PACE_LEVELS[number];
 export const PARAGRAPH_LENGTH_LEVELS = ["auto", "short", "balanced", "long"] as const;
 export type ParagraphLengthLevel = typeof PARAGRAPH_LENGTH_LEVELS[number];
 
+export const CLOSING_SUMMARY_LENGTHS = ["none", "short", "medium", "long"] as const;
+export type ClosingSummaryLength = typeof CLOSING_SUMMARY_LENGTHS[number];
+
 export const DIALOGUE_DENSITY_LEVELS = PROSE_DENSITY_LEVELS;
 export type DialogueDensityLevel = ProseDensityLevel;
 export type IntrospectionDensityLevel = ProseDensityLevel;
@@ -52,6 +55,7 @@ export type AiGenerateOptions = {
   includeExcellentFragments: boolean;
   includeOutlineTitle: boolean;
   includeClosingSummary: boolean;
+  closingSummaryLength: ClosingSummaryLength;
   reviewMaxRounds: number;
   reviewInstruction: string;
   firstAppearanceOverrides: Record<string, boolean>;
@@ -79,6 +83,7 @@ export const DEFAULT_AI_GENERATE_OPTIONS: AiGenerateOptions = {
   includeExcellentFragments: false,
   includeOutlineTitle: false,
   includeClosingSummary: false,
+  closingSummaryLength: "none",
   reviewMaxRounds: 0,
   reviewInstruction: "",
   firstAppearanceOverrides: {},
@@ -120,9 +125,23 @@ export const PARAGRAPH_LENGTH_OPTIONS: Array<{ value: ParagraphLengthLevel; labe
 ];
 
 export const CLOSING_SUMMARY_OPTIONS = [
-  { value: "off", label: "不需要", description: "在当前情节自然停笔，不额外添加总体描写或总结。" },
-  { value: "on", label: "需要", description: "结尾增加一段简短、自然的总体描写或总结。" },
+  { value: "none", label: "无", description: "在当前情节自然停笔，不额外添加总体描写或总结。" },
+  { value: "short", label: "短", description: "用一两句话简短收尾，轻轻呼应当前情节。" },
+  { value: "medium", label: "中", description: "用一个自然段收尾，适度展开总体描写或总结。" },
+  { value: "long", label: "长", description: "用两到三个自然段充分收尾，展开余韵与总体描写。" },
 ] as const;
+
+export function isClosingSummaryLength(value: unknown): value is ClosingSummaryLength {
+  return CLOSING_SUMMARY_LENGTHS.includes(value as ClosingSummaryLength);
+}
+
+export function normalizeClosingSummaryLength(value: unknown, legacyInclude?: unknown): ClosingSummaryLength {
+  return isClosingSummaryLength(value) ? value : legacyInclude === true ? "short" : "none";
+}
+
+export function closingSummaryLengthLabel(value: unknown, legacyInclude?: unknown): string {
+  return CLOSING_SUMMARY_OPTIONS.find(option => option.value === normalizeClosingSummaryLength(value, legacyInclude))!.label;
+}
 
 export function isDialogueDensity(value: unknown): value is DialogueDensityLevel {
   return DIALOGUE_DENSITY_LEVELS.includes(value as DialogueDensityLevel);
@@ -246,9 +265,17 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     ? normalizeGenerateTargetWords(source.targetWords)
     : base.targetWords;
   const reviewRounds = Number(source.reviewMaxRounds ?? base.reviewMaxRounds);
+  const closingSummaryLength = isClosingSummaryLength(source.closingSummaryLength)
+    ? source.closingSummaryLength
+    : typeof source.includeClosingSummary === "boolean"
+      ? normalizeClosingSummaryLength(undefined, source.includeClosingSummary)
+      : base.closingSummaryLength;
+  const inheritance = { ...optionRecord(source.inheritance) };
+  if (inheritance.includeClosingSummary !== undefined && inheritance.closingSummaryLength === undefined) inheritance.closingSummaryLength = inheritance.includeClosingSummary;
+  delete inheritance.includeClosingSummary;
   return {
     ...(source.tasks || base.tasks ? { tasks: { ...normalizeTaskParameters(base.tasks), ...normalizeTaskParameters(source.tasks) } } : {}),
-    ...(normalizeSettingInheritance(source.inheritance, GENERATE_SETTING_KEYS) ? { inheritance: normalizeSettingInheritance(source.inheritance, GENERATE_SETTING_KEYS) } : {}),
+    ...(normalizeSettingInheritance(inheritance, GENERATE_SETTING_KEYS) ? { inheritance: normalizeSettingInheritance(inheritance, GENERATE_SETTING_KEYS) } : {}),
     advanced: { ...normalizeAdvanced(base.advanced, GENERATE_FIELDS), ...normalizeAdvanced(source.advanced, GENERATE_FIELDS) },
     model: String(source.model ?? base.model).trim().slice(0, 300),
     reasoningEffort,
@@ -260,7 +287,8 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     includeCharacters: typeof source.includeCharacters === "boolean" ? source.includeCharacters : base.includeCharacters,
     includeExcellentFragments: typeof source.includeExcellentFragments === "boolean" ? source.includeExcellentFragments : base.includeExcellentFragments,
     includeOutlineTitle: typeof source.includeOutlineTitle === "boolean" ? source.includeOutlineTitle : base.includeOutlineTitle,
-    includeClosingSummary: typeof source.includeClosingSummary === "boolean" ? source.includeClosingSummary : base.includeClosingSummary,
+    includeClosingSummary: closingSummaryLength !== "none",
+    closingSummaryLength,
     reviewMaxRounds: Number.isInteger(reviewRounds) ? Math.max(0, Math.min(10, reviewRounds)) : base.reviewMaxRounds,
     reviewInstruction: String(source.reviewInstruction ?? base.reviewInstruction).slice(0, 20_000),
     firstAppearanceOverrides: Object.prototype.hasOwnProperty.call(source, "firstAppearanceOverrides")
@@ -270,7 +298,7 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
 }
 
 export const GENERATE_SETTING_KEYS = [
-  ...Object.keys(DEFAULT_AI_GENERATE_OPTIONS).filter(key => key !== "advanced" && key !== "proseControls"),
+  ...Object.keys(DEFAULT_AI_GENERATE_OPTIONS).filter(key => key !== "advanced" && key !== "proseControls" && key !== "includeClosingSummary"),
   ...Object.keys(GENERATE_FIELDS).map(key => `advanced.${key}`),
   ...Object.keys(DEFAULT_PROSE_CONTROLS).map(key => `proseControls.${key}`),
   ...TASK_PARAMETER_FIELDS.map(field => `tasks.${field.key}`),
