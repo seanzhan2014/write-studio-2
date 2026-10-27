@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, isCivitaiAirQuery, parseCivitaiAir, findCivitaiModelByAir, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, isCivitaiAirQuery, splitCivitaiAirQueries, lookupCivitaiAirBatch, parseCivitaiAir, findCivitaiModelByAir, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
 const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
 const connection = { baseUrl: "https://civitai.com/api/v1", secret: "fake-civitai-key", modelId: id, timeoutMs: 5000 };
@@ -42,6 +42,43 @@ test("exact AIR lookup fetches the requested version directly even if the model 
   assert.equal(result.catalog.length, 1); assert.equal(result.catalog[0].id, id);
   assert.equal(result.nextCursor, null);
   assert.ok(calls.every(call => call.headers.Authorization === `Bearer ${connection.secret}` && !call.url.search));
+});
+
+test("AIR batches split mixed separators and deduplicate identifiers case-insensitively", () => {
+  assert.deepEqual(splitCivitaiAirQueries(` ,; ${id},${id.toUpperCase()};civitai:2@3，civitai:4@5；civitai:6@7\tcivitai:8@9\ncivitai:10@11 `), [id, "civitai:2@3", "civitai:4@5", "civitai:6@7", "civitai:8@9", "civitai:10@11"]);
+  assert.equal(isCivitaiAirQuery(`bad; ${id}`), true);
+  assert.equal(isCivitaiAirQuery("Painter XL"), false);
+  assert.equal(isCivitaiAirQuery("urn:air:sdxl:*"), false);
+});
+
+test("AIR batches bound concurrency, preserve successful results and merge canonical IDs in input order", async () => {
+  const calls = [], progress = [];
+  let active = 0, peak = 0;
+  const result = await lookupCivitaiAirBatch("civitai:1@2,civitai:2@3;CIVITAI:1@2 civitai:3@4 civitai:4@5 civitai:5@6", async air => {
+    calls.push(air); active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, air === "civitai:1@2" ? 15 : 2));
+    active--;
+    if (air === "civitai:2@3") throw new Error("未找到模型");
+    const entry = { id: air === "civitai:3@4" ? "civitai:1@2" : air };
+    return { catalog: [entry] };
+  }, new AbortController().signal, batch => progress.push(batch));
+  assert.equal(peak, 3); assert.equal(calls.length, 5);
+  assert.deepEqual(result.catalog.map(entry => entry.id), ["civitai:1@2", "civitai:4@5", "civitai:5@6"]);
+  assert.deepEqual(result.failures, [{ air: "civitai:2@3", message: "未找到模型" }]);
+  assert.equal(result.total, 5); assert.equal(result.processed, 5);
+  assert.deepEqual(progress.map(batch => batch.processed), [0, 1, 2, 3, 4, 5]);
+  assert.equal(progress[0].catalog.length, 0);
+});
+
+test("canceling an AIR batch prevents queued lookups and stale progress", async () => {
+  const controller = new AbortController();
+  const calls = [], progress = [];
+  await assert.rejects(lookupCivitaiAirBatch("civitai:1@2 civitai:2@3 civitai:3@4 civitai:4@5", async air => {
+    calls.push(air); controller.abort(); return { catalog: [] };
+  }, controller.signal, batch => progress.push(batch)), { name: "AbortError" });
+  assert.ok(calls.length <= 3); assert.ok(!calls.includes("civitai:4@5"));
+  assert.deepEqual(progress.map(batch => batch.processed), [0]);
+  await assert.rejects(lookupCivitaiAirBatch(id, () => { throw Error("must not call"); }, controller.signal), { name: "AbortError" });
 });
 
 test("abbreviated AIRs resolve to canonical IDs and model AIRs return the model's versions", async t => {

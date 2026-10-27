@@ -10,8 +10,46 @@ const PAGE_SIZE = 10;
 const MAX_PAGES = 3;
 const MAX_RESPONSE_BYTES = 5_000_000;
 
+export function splitCivitaiAirQueries(value: string) {
+  const seen = new Set<string>();
+  return value.split(/[,;，；\s]+/u).filter(value => {
+    const key = value.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+
 export function isCivitaiAirQuery(value: string) {
-  return /^(?:(?:urn:)?air:|civitai:)/i.test(value.trim()) && !/[?*]/.test(value);
+  return !/[?*]/.test(value) && splitCivitaiAirQueries(value).some(air => /^(?:(?:urn:)?air:|civitai:)/i.test(air));
+}
+
+export type CivitaiAirBatch = { catalog: CatalogModel[]; processed: number; total: number; failures: Array<{ air: string; message: string }> };
+
+export async function lookupCivitaiAirBatch(value: string, lookup: (air: string) => Promise<ModelCatalogPage>, signal: AbortSignal, onProgress?: (batch: CivitaiAirBatch) => void): Promise<CivitaiAirBatch> {
+  const airs = splitCivitaiAirQueries(value);
+  const results: CatalogModel[][] = [], failures: CivitaiAirBatch["failures"] = [];
+  let next = 0, processed = 0;
+  const snapshot = (): CivitaiAirBatch => ({ catalog: [...new Map(results.flat().map(entry => [entry.id, entry])).values()], processed, total: airs.length, failures: [...failures] });
+  signal.throwIfAborted();
+  onProgress?.(snapshot());
+  await Promise.all(Array.from({ length: Math.min(3, airs.length) }, async () => {
+    while (next < airs.length) {
+      signal.throwIfAborted();
+      const index = next++, air = airs[index];
+      try {
+        const page = await lookup(air);
+        signal.throwIfAborted();
+        results[index] = page.catalog;
+      } catch (cause) {
+        signal.throwIfAborted();
+        failures.push({ air, message: cause instanceof Error ? cause.message : "查询失败" });
+      }
+      processed++;
+      onProgress?.(snapshot());
+    }
+  }));
+  signal.throwIfAborted();
+  return snapshot();
 }
 
 export function parseCivitaiAir(value: string) {
