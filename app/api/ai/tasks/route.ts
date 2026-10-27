@@ -11,7 +11,7 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { selectAiContext } from "@/lib/ai-context";
 import { resolveWritingSettings, findModel } from "@/db/ai";
 import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
-import { normalizeClosingSummaryLength, isClosingSummaryLength, hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { normalizeClosingSummaryLength, isClosingSummaryLengthInput, hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
     if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
     if (target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return json({ error: "正文控制参数无效" }, 400);
     let proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
-    if (target === "content" && body.closingSummaryLength !== undefined && !isClosingSummaryLength(body.closingSummaryLength)) return json({ error: "收尾长度无效" }, 400);
+    if (target === "content" && body.closingSummaryLength !== undefined && !isClosingSummaryLengthInput(body.closingSummaryLength)) return json({ error: "收尾长度无效" }, 400);
     const closingSummaryLength = normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary);
     const dialogueDensity = proseControls.dialogueDensity;
     const rawTargetWords = body.targetWords == null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0 ? undefined : Number(body.targetWords);

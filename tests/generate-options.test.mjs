@@ -11,12 +11,13 @@ test("closing summaries default off, inherit defaults and allow an explicit opt-
   assert.equal(normalizeAiGenerateOptions({ includeClosingSummary: false }, defaults).includeClosingSummary, false);
   assert.equal(normalizeAiGenerateOptions({}).closingSummaryLength, "none");
   assert.equal(defaults.closingSummaryLength, "short");
-  for (const closingSummaryLength of ["none", "short", "medium", "long"]) {
+  for (const closingSummaryLength of ["none", "short", "medium", "auto"]) {
     const normalized = normalizeAiGenerateOptions({ closingSummaryLength, includeClosingSummary: true });
     assert.equal(normalized.closingSummaryLength, closingSummaryLength);
     assert.equal(normalized.includeClosingSummary, closingSummaryLength !== "none");
     assert.equal(normalizeAiGenerateOptions({}, normalized).closingSummaryLength, closingSummaryLength);
   }
+  assert.equal(normalizeAiGenerateOptions({ closingSummaryLength: "long" }).closingSummaryLength, "auto");
   assert.deepEqual(normalizeAiGenerateOptions({ inheritance: { includeClosingSummary: "article" } }).inheritance, { closingSummaryLength: "article" });
 });
 

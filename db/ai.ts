@@ -1201,9 +1201,9 @@ function closingSummaryConstraint(value?: ClosingSummaryLength, legacyInclude?: 
   const length = normalizeClosingSummaryLength(value, legacyInclude);
   const instructions: Record<ClosingSummaryLength, string> = {
     none: "在最后一个具体动作、对白或事件处自然停笔，完整写完当前句子；不得额外添加回顾全篇、概括局势、总结人物心境、升华主题或全景式总体描写的收尾段。",
-    short: "在正文结尾用一到两句话作简短、自然的总体描写或总结，轻轻呼应当前情节，不展开成长段。",
-    medium: "在正文结尾用一个自然段作总体描写或总结，适度展开情节余韵和人物感受，不延伸为多个段落。",
-    long: "在正文结尾用两到三个自然段充分展开总体描写或总结，让情节余韵和人物感受逐步收束。",
+    short: "在正文结尾只用一句完整的话作总体描写或总结，轻轻呼应当前情节，不拆成多句，也不展开为额外段落。",
+    medium: "在正文结尾只用一个自然段作总体描写或总结，适度展开情节余韵和人物感受，不延伸为多个段落。",
+    auto: "根据当前大纲、情节落点、文风及目标字数，自行判断是否需要总体收尾及其篇幅；适合直接停笔时不添加总结，避免固定套路和重复概括。",
   };
   return `\n<closing_summary enabled="${length !== "none"}" length="${length}">${instructions[length]}收尾篇幅计入目标字数，篇幅较短时相应压缩，不为凑长度重复内容或引入新事实。写作准备与审校也必须遵循此选择；续写时仅作用于新增正文，已有正文保持原样。</closing_summary>`;
 }

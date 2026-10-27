@@ -23,7 +23,7 @@ export type NarrativePaceLevel = typeof NARRATIVE_PACE_LEVELS[number];
 export const PARAGRAPH_LENGTH_LEVELS = ["auto", "short", "balanced", "long"] as const;
 export type ParagraphLengthLevel = typeof PARAGRAPH_LENGTH_LEVELS[number];
 
-export const CLOSING_SUMMARY_LENGTHS = ["none", "short", "medium", "long"] as const;
+export const CLOSING_SUMMARY_LENGTHS = ["none", "short", "medium", "auto"] as const;
 export type ClosingSummaryLength = typeof CLOSING_SUMMARY_LENGTHS[number];
 
 export const DIALOGUE_DENSITY_LEVELS = PROSE_DENSITY_LEVELS;
@@ -126,17 +126,21 @@ export const PARAGRAPH_LENGTH_OPTIONS: Array<{ value: ParagraphLengthLevel; labe
 
 export const CLOSING_SUMMARY_OPTIONS = [
   { value: "none", label: "无", description: "在当前情节自然停笔，不额外添加总体描写或总结。" },
-  { value: "short", label: "短", description: "用一两句话简短收尾，轻轻呼应当前情节。" },
-  { value: "medium", label: "中", description: "用一个自然段收尾，适度展开总体描写或总结。" },
-  { value: "long", label: "长", description: "用两到三个自然段充分收尾，展开余韵与总体描写。" },
+  { value: "short", label: "1句", description: "只用一句完整的话收尾，轻轻呼应当前情节。" },
+  { value: "medium", label: "1段", description: "只用一个自然段收尾，适度展开总体描写或总结。" },
+  { value: "auto", label: "自动", description: "根据情节需要决定是否收尾及篇幅，避免固定套路。" },
 ] as const;
 
 export function isClosingSummaryLength(value: unknown): value is ClosingSummaryLength {
   return CLOSING_SUMMARY_LENGTHS.includes(value as ClosingSummaryLength);
 }
 
+export function isClosingSummaryLengthInput(value: unknown): value is ClosingSummaryLength | "long" {
+  return isClosingSummaryLength(value) || value === "long";
+}
+
 export function normalizeClosingSummaryLength(value: unknown, legacyInclude?: unknown): ClosingSummaryLength {
-  return isClosingSummaryLength(value) ? value : legacyInclude === true ? "short" : "none";
+  return value === "long" ? "auto" : isClosingSummaryLength(value) ? value : legacyInclude === true ? "short" : "none";
 }
 
 export function closingSummaryLengthLabel(value: unknown, legacyInclude?: unknown): string {
@@ -265,8 +269,8 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     ? normalizeGenerateTargetWords(source.targetWords)
     : base.targetWords;
   const reviewRounds = Number(source.reviewMaxRounds ?? base.reviewMaxRounds);
-  const closingSummaryLength = isClosingSummaryLength(source.closingSummaryLength)
-    ? source.closingSummaryLength
+  const closingSummaryLength = isClosingSummaryLengthInput(source.closingSummaryLength)
+    ? normalizeClosingSummaryLength(source.closingSummaryLength)
     : typeof source.includeClosingSummary === "boolean"
       ? normalizeClosingSummaryLength(undefined, source.includeClosingSummary)
       : base.closingSummaryLength;

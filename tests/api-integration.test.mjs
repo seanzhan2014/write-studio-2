@@ -469,13 +469,13 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
         assert.equal(result.response.status, 200, result.text);
         const prompt = modelServer.received.at(-1).body.messages.at(-1).content;
         assert.ok(prompt.includes(`<closing_summary enabled="${includeClosingSummary === true}" length="${includeClosingSummary === true ? "short" : "none"}">`));
-        assert.match(prompt, includeClosingSummary === true ? /用一到两句话/ : /不得额外添加回顾全篇/);
+        assert.match(prompt, includeClosingSummary === true ? /只用一句完整的话/ : /不得额外添加回顾全篇/);
       }
-      for (const [closingSummaryLength, instruction] of [["none", /不得额外添加回顾全篇/], ["short", /用一到两句话/], ["medium", /用一个自然段/], ["long", /用两到三个自然段/]]) {
+      for (const [closingSummaryLength, instruction] of [["none", /不得额外添加回顾全篇/], ["short", /只用一句完整的话/], ["medium", /只用一个自然段/], ["auto", /自行判断是否需要总体收尾及其篇幅/], ["long", /自行判断是否需要总体收尾及其篇幅/]]) {
         const result = await api(endpoint, { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", closingSummaryLength } });
         assert.equal(result.response.status, 200, result.text);
         const prompt = modelServer.received.at(-1).body.messages.at(-1).content;
-        assert.ok(prompt.includes(`length="${closingSummaryLength}"`));
+        assert.ok(prompt.includes(`length="${closingSummaryLength === "long" ? "auto" : closingSummaryLength}"`));
         assert.match(prompt, instruction);
       }
       const invalid = await api(endpoint, { method: "POST", body: { outlineId: "outline-current", model: "捕获模型", target: "content", closingSummaryLength: "huge" } });

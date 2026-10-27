@@ -13,10 +13,10 @@ test("closing summary defaults off, inherits article settings and persists an ex
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
-  await expect(summary.getByRole("radio", { name: "短", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.closingSummaryLength).toBe("short");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await expect(summary.getByRole("radio", { name: "短", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).check();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.closingSummaryLength).toBe("none");
   await page.reload();
@@ -30,7 +30,7 @@ test("changing only the closing summary choice creates a distinct generation req
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
-  for (const [length, label] of [["none", "无"], ["short", "短"], ["medium", "中"], ["long", "长"]] as const) {
+  for (const [length, label] of [["none", "无"], ["short", "1句"], ["medium", "1段"], ["auto", "自动"]] as const) {
     await summary.getByRole("radio", { name: label, exact: true }).check();
     const pending = page.waitForResponse((response) => response.url().endsWith("/api/ai/tasks") && response.request().method() === "POST");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();

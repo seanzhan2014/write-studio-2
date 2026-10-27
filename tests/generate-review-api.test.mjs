@@ -78,7 +78,7 @@ test("Generate review API executes durable loops and reports the final draft", a
     });
 
     await t.test("closing summary selection survives preparation, generation, review and revision", async () => {
-      for (const closingSummaryLength of ["none", "short", "medium", "long"]) {
+      for (const closingSummaryLength of ["none", "short", "medium", "auto"]) {
         await reset(); fake.control.calls = []; fake.control.mode = "pass";
         const task = await create(2, undefined, { closingSummaryLength, preparationRounds: 0, preparationRequireConfirmation: false });
         assert.equal(task.contextOptions.closingSummaryLength, closingSummaryLength);
