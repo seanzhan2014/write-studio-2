@@ -17,8 +17,9 @@ import { ResponsiveModal } from "./overlays";
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 
 type Model = AiModelRecord;
+type CatalogSearch = { providerId: string; query: string; mode: "provider" | "full"; attempt: number };
 type CatalogScan = { catalog: Map<string, CatalogModel>; cursor: string | null; scanned: number; complete: boolean; seen: Set<string> };
-type CatalogScanSnapshot = { providerId: string; catalog: CatalogModel[]; scanned: number; complete: boolean; air?: string; airBatch?: CivitaiAirBatch };
+type CatalogScanSnapshot = { key: string; catalog: CatalogModel[]; scanned: number; complete: boolean; airBatch?: CivitaiAirBatch };
 const capabilityOptions = [{ value: "text", label: "文字生成" }, { value: "image", label: "图像生成" }, { value: "both", label: "文字与图像生成" }];
 const emptyConnection = { name: "", baseUrl: "https://api.openai.com/v1", secret: "", adapterKind: "openai-compatible", timeoutMinutes: 2 };
 const formatTime = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未同步";
@@ -60,6 +61,8 @@ export function AiServices() {
   const [addProvider, setAddProvider] = useState("");
   const [addMode, setAddMode] = useState("catalog");
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogSearch, setCatalogSearch] = useState<CatalogSearch | null>(null);
+  const [catalogSearchMode, setCatalogSearchMode] = useState<"provider" | "full">("provider");
   const [catalogFilter, setCatalogFilter] = useState("new");
   const [selected, setSelected] = useState<string[]>([]);
   const [manualIds, setManualIds] = useState("");
@@ -68,11 +71,11 @@ export function AiServices() {
   const [catalogNotice, setCatalogNotice] = useState("");
   const requestRef = useRef(0);
   const scanCache = useRef(new Map<string, CatalogScan>());
+  const searchPageCache = useRef(new Map<string, CatalogScan>());
   const scanController = useRef<AbortController | null>(null);
   const [scanSnapshot, setScanSnapshot] = useState<CatalogScanSnapshot | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanError, setScanError] = useState("");
-  const [scanAttempt, setScanAttempt] = useState(0);
   const [editing, setEditing] = useState<Model | null>(null);
   const [editForm, setEditForm] = useState({ providerId: "", name: "", modelId: "", kind: "text", systemPrompt: "", maxInput: DEFAULT_MAX_INPUT_CHARACTERS, reasoningEffort: null as ReasoningEffort | null });
   const [preview, setPreview] = useState<string | null>(null);
@@ -106,13 +109,16 @@ export function AiServices() {
   const providerOptions = providers.map((provider) => ({ value: provider.id, label: provider.name }));
   const currentCatalog = catalogs[addProvider];
   const civitaiProvider = isCivitai(providers.find(provider => provider.id === addProvider) ?? {});
-  const fullCatalogSearch = civitaiProvider && Boolean(catalogQuery.trim());
-  const exactAirSearch = civitaiProvider && isCivitaiAirQuery(catalogQuery);
-  const airSearchKey = exactAirSearch ? splitCivitaiAirQueries(catalogQuery).join("\n").toLowerCase() : undefined;
-  const scan = scanSnapshot?.providerId === addProvider && scanSnapshot.air === airSearchKey ? scanSnapshot : null;
+  const activeCatalogQuery = catalogSearch?.providerId === addProvider ? catalogSearch.query : "";
+  const fullCatalogSearch = civitaiProvider && Boolean(activeCatalogQuery);
+  const exactAirSearch = civitaiProvider && isCivitaiAirQuery(activeCatalogQuery);
+  const providerSearch = fullCatalogSearch && catalogSearch?.mode === "provider";
+  const searchKey = `${addProvider}\n${catalogSearch?.mode}\n${activeCatalogQuery.toLowerCase()}`;
+  const scan = scanSnapshot?.key === searchKey ? scanSnapshot : null;
+  const searchEdited = catalogQuery.trim() !== activeCatalogQuery || fullCatalogSearch && catalogSearchMode !== catalogSearch?.mode;
   const enabledIds = new Set(models.filter((model) => model.providerId === addProvider).map((model) => model.modelId));
   const candidates = fullCatalogSearch ? scan?.catalog ?? [] : [...new Map([...(currentCatalog?.catalog ?? []), ...[...(scanCache.current.get(addProvider)?.catalog.values() ?? [])].filter(entry => selected.includes(entry.id))].map(entry => [entry.id, entry])).values()];
-  const matchedCandidates = exactAirSearch ? candidates : candidates.filter(entry => matchesCatalogModel(entry, catalogQuery));
+  const matchedCandidates = exactAirSearch || providerSearch && !/[?*]/.test(activeCatalogQuery) ? candidates : candidates.filter(entry => matchesCatalogModel(entry, activeCatalogQuery));
   const visibleCandidates = matchedCandidates.filter(entry => catalogFilter === "all" || catalogFilter === "new" && !enabledIds.has(entry.id) || catalogFilter === "selected" && selected.includes(entry.id) || catalogFilter === "text" && entry.metadata.outputModalities.includes("text") || catalogFilter === "image" && supportsImages(entry));
   const selectable = (entry: CatalogModel) => !enabledIds.has(entry.id) && (!entry.metadata.outputModalities.length || supportsText(entry) || supportsImages(entry));
   const parsedManual = [...new Set(manualIds.split(/[\n,，]/).map((id) => id.trim()).filter(Boolean))].filter((id) => !enabledIds.has(id));
@@ -124,55 +130,56 @@ export function AiServices() {
     if (!adding || addMode !== "catalog" || !fullCatalogSearch) return;
     const controller = new AbortController();
     scanController.current = controller;
-    const existing = !exactAirSearch && scanCache.current.get(addProvider);
-    if (existing) setScanSnapshot({ providerId: addProvider, catalog: [...existing.catalog.values()], scanned: existing.scanned, complete: existing.complete });
     setScanBusy(true);
-    const timer = setTimeout(() => { void scanFullCatalog(addProvider, catalogQuery, controller.signal); }, 350);
-    return () => { clearTimeout(timer); controller.abort(); setScanBusy(false); };
-  }, [adding, addMode, addProvider, fullCatalogSearch, exactAirSearch, catalogQuery, scanAttempt]);
+    void scanFullCatalog(addProvider, activeCatalogQuery, catalogSearch!.mode, searchKey, controller.signal);
+    return () => { controller.abort(); setScanBusy(false); };
+  }, [adding, addMode, addProvider, catalogSearch]);
 
-  async function scanFullCatalog(providerId: string, query: string, signal: AbortSignal) {
-    let scan = scanCache.current.get(providerId);
-    if (!scan) { scan = { catalog: new Map((catalogs[providerId]?.catalog ?? []).map(entry => [entry.id, entry])), cursor: null, scanned: 0, complete: false, seen: new Set() }; scanCache.current.set(providerId, scan); }
+  async function scanFullCatalog(providerId: string, query: string, mode: CatalogSearch["mode"], key: string, signal: AbortSignal) {
+    let pool = scanCache.current.get(providerId);
+    if (!pool) { pool = { catalog: new Map((catalogs[providerId]?.catalog ?? []).map(entry => [entry.id, entry])), cursor: null, scanned: 0, complete: false, seen: new Set() }; scanCache.current.set(providerId, pool); }
     try {
       if (isCivitaiAirQuery(query)) {
-        const air = splitCivitaiAirQueries(query).join("\n").toLowerCase();
         const batch = await lookupCivitaiAirBatch(query, air => jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { air }, "POST", signal), signal, airBatch => {
-          for (const entry of airBatch.catalog) scan.catalog.set(entry.id, entry);
-          setScanSnapshot({ providerId, air, catalog: airBatch.catalog, scanned: airBatch.processed, complete: airBatch.processed === airBatch.total && !airBatch.failures.length, airBatch });
+          for (const entry of airBatch.catalog) pool.catalog.set(entry.id, entry);
+          setScanSnapshot({ key, catalog: airBatch.catalog, scanned: airBatch.processed, complete: airBatch.processed === airBatch.total && !airBatch.failures.length, airBatch });
         });
         if (batch.failures.length) setScanError(batch.failures.map(({ air, message }) => `${air}：${message}`).join("；") + "。可重新查询 AIR，成功的结果已保留。");
         return;
       }
-      // Show useful hits quickly, then scan the full catalog to include matches
-      // the provider's full-text index cannot find (substring, ? and ID globs).
-      const hint = query.split(/[?*]+/).map(value => value.trim()).sort((a, b) => b.length - a.length)[0];
-      if (!scan.complete && hint) {
-        try {
-          const preview = await jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { hint }, "POST", signal);
-          if (signal.aborted) return;
-          for (const entry of preview.catalog) scan.catalog.set(entry.id, entry);
-        } catch { if (signal.aborted) return; /* Full traversal remains authoritative. */ }
-        setScanSnapshot({ providerId, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: false });
-      }
+      if (query.length > 200) throw new Error("名称或通配符搜索请勿超过 200 字符；多个 AIR 可直接粘贴查询");
+      const hint = mode === "provider" ? query.split(/[?*]+/).map(value => value.trim()).sort((a, b) => b.length - a.length)[0] : undefined;
+      if (mode === "provider" && !hint) throw new Error("官方搜索需要至少一个关键词；仅含通配符时请选择全目录匹配");
+      const cacheKey = mode === "full" ? `${providerId}\nfull` : key;
+      let scan = searchPageCache.current.get(cacheKey);
+      if (!scan) { scan = { catalog: new Map(), cursor: null, scanned: 0, complete: false, seen: new Set() }; searchPageCache.current.set(cacheKey, scan); }
+      setScanSnapshot({ key, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: scan.complete });
       while (!scan.complete && !signal.aborted) {
-        const page = await jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { cursor: scan.cursor }, "POST", signal);
+        const page = await jsonRequest<ModelCatalogPage>(`/api/providers/${encodeURIComponent(providerId)}/catalog-pages`, { cursor: scan.cursor, ...(hint ? { hint } : {}) }, "POST", signal);
         if (signal.aborted) return;
         if (!Array.isArray(page.catalog) || (page.nextCursor !== null && (typeof page.nextCursor !== "string" || !page.nextCursor))) throw new Error("服务返回了无效的目录分页");
         if (page.nextCursor && scan.seen.has(page.nextCursor)) throw new Error("Civitai 返回了重复的分页游标");
-        for (const entry of page.catalog) scan.catalog.set(entry.id, entry);
+        for (const entry of page.catalog) { scan.catalog.set(entry.id, entry); pool.catalog.set(entry.id, entry); }
         scan.scanned += page.scanned;
         scan.cursor = page.nextCursor;
         scan.complete = page.nextCursor === null;
         if (page.nextCursor) scan.seen.add(page.nextCursor);
-        setScanSnapshot({ providerId, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: scan.complete });
+        setScanSnapshot({ key, catalog: [...scan.catalog.values()], scanned: scan.scanned, complete: scan.complete });
       }
     } catch (cause) {
       if (!signal.aborted) setScanError(`${cause instanceof Error ? cause.message : "目录搜索失败"}${isCivitaiAirQuery(query) ? "。可重新查询 AIR。" : "。已保留读取的结果，搜索尚未完成，可继续搜索。"}`);
     } finally { if (!signal.aborted) setScanBusy(false); }
   }
+  function submitCatalogSearch() {
+    scanController.current?.abort(); setScanSnapshot(null); setScanError("");
+    const query = catalogQuery.trim();
+    const key = `${addProvider}\n${catalogSearchMode}\n${query.toLowerCase()}`;
+    if (catalogSearch?.query === query && catalogSearch.mode === catalogSearchMode) searchPageCache.current.delete(catalogSearchMode === "full" ? `${addProvider}\nfull` : key);
+    setCatalogSearch(query ? { providerId: addProvider, query, mode: catalogSearchMode, attempt: (catalogSearch?.attempt ?? 0) + 1 } : null);
+    setCatalogFilter("all");
+  }
   function restartCatalogSearch() {
-    scanController.current?.abort(); if (!exactAirSearch) scanCache.current.delete(addProvider); setScanSnapshot(null); setScanError(""); setScanAttempt(value => value + 1);
+    scanController.current?.abort(); searchPageCache.current.delete(catalogSearch?.mode === "full" ? `${addProvider}\nfull` : searchKey); setScanSnapshot(null); setScanError(""); setCatalogSearch(value => value && { ...value, attempt: value.attempt + 1 });
   }
   function stopCatalogSearch() { scanController.current?.abort(); setScanBusy(false); }
 
@@ -192,11 +199,11 @@ export function AiServices() {
   }
   function closeAdd() { requestRef.current += 1; setAdding(false); setCatalogBusy(false); }
   function openAdd(providerId = providers[0]?.id ?? "") {
-    setAddProvider(providerId); setAdding(true); setAddMode("catalog"); setCatalogQuery(""); setCatalogFilter("new"); setSelected([]); setManualIds(""); setManualKind(isCivitai(providers.find(provider => provider.id === providerId) ?? {}) ? "image" : "text"); setFormError(""); setCatalogNotice("");
+    setAddProvider(providerId); setAdding(true); setAddMode("catalog"); setCatalogQuery(""); setCatalogSearch(null); setCatalogSearchMode("provider"); setCatalogFilter("new"); setSelected([]); setManualIds(""); setManualKind(isCivitai(providers.find(provider => provider.id === providerId) ?? {}) ? "image" : "text"); setFormError(""); setCatalogNotice("");
     if (providerId && !catalogs[providerId]) void refreshCatalog(providerId);
   }
   function changeAddProvider(id: string) {
-    requestRef.current += 1; setCatalogBusy(false); setAddProvider(id); setManualKind(isCivitai(providers.find(provider => provider.id === id) ?? {}) ? "image" : "text"); setSelected([]); setFormError(""); setCatalogNotice("");
+    requestRef.current += 1; setCatalogBusy(false); setAddProvider(id); setCatalogQuery(""); setCatalogSearch(null); setScanSnapshot(null); setManualKind(isCivitai(providers.find(provider => provider.id === id) ?? {}) ? "image" : "text"); setSelected([]); setFormError(""); setCatalogNotice("");
     if (id && !catalogs[id]) void refreshCatalog(id);
   }
   async function enableModels() {
@@ -368,8 +375,8 @@ export function AiServices() {
       <div className="ai-add-model-content"><Select label="服务连接" data={providerOptions} value={addProvider} allowDeselect={false} onChange={(value) => changeAddProvider(value ?? "")} disabled={busy === "enable"} />
         <div className="ai-add-mode" role="group" aria-label="添加方式">{[["catalog", "从目录选择"], ["manual", "手动添加"]].map(([value, label]) => <button type="button" key={value} aria-pressed={addMode === value} onClick={() => { setAddMode(value); setFormError(""); }}>{label}</button>)}</div>
         {formError && <Alert color="red" role="alert">{formError}</Alert>}
-        {addMode === "catalog" ? <><div className="ai-catalog-heading"><div><Text size="sm">{fullCatalogSearch ? matchedCandidates.length : candidates.length} {fullCatalogSearch ? "个匹配版本" : "个目录模型"} · 已启用 {enabledIds.size} 个</Text><Text size="xs" c="dimmed">最近同步：{formatTime(currentCatalog?.syncedAt)}</Text></div><Button size="xs" variant="default" loading={catalogBusy} disabled={!addProvider || busy === "enable" || scanBusy} onClick={() => fullCatalogSearch ? restartCatalogSearch() : void refreshCatalog()}>{exactAirSearch ? "重新查询 AIR" : fullCatalogSearch ? "重新搜索" : "刷新目录"}</Button></div>{catalogNotice && !fullCatalogSearch && <Text size="sm" role="status">{catalogNotice}</Text>}{!fullCatalogSearch && currentCatalog?.warnings.map((warning) => <Alert color="yellow" key={warning}>{warning}</Alert>)}<Textarea autosize minRows={1} maxRows={4} aria-label="搜索目录模型" placeholder={civitaiProvider ? "搜索名称、通配符或多个 AIR ID" : "搜索模型名称或 ID"} description={civitaiProvider ? "搜索可用的 SD1.5/SDXL Checkpoint 及全部版本。支持名称、数字 ID 或 AIR ID，不区分大小写。多个 AIR 可用逗号、分号、空格或换行分隔，自动去重并直接查询。* 匹配任意长度，? 匹配一个字符。不加通配符时按包含匹配。" : undefined} maxLength={civitaiProvider ? 20000 : 200} value={catalogQuery} onChange={(event) => { setCatalogQuery(event.currentTarget.value); if (civitaiProvider) setCatalogFilter("all"); }} />{fullCatalogSearch && <><Text size="sm" role="status">{scan?.complete ? `${exactAirSearch ? "AIR 查询完成" : "搜索完成，已遍历完整目录"}，找到 ${matchedCandidates.length} 个匹配版本` : exactAirSearch ? `${scanBusy ? "正在根据 AIR 查询模型版本" : scan?.airBatch?.processed === scan?.airBatch?.total ? "AIR 查询结束" : "AIR 查询尚未完成"}：已查询 ${scan?.airBatch?.processed ?? 0}/${scan?.airBatch?.total ?? splitCivitaiAirQueries(catalogQuery).length} 项，找到 ${matchedCandidates.length} 个匹配版本${scan?.airBatch?.failures.length ? `，失败 ${scan.airBatch.failures.length} 项` : ""}` : `${scanBusy ? "正在搜索完整目录" : "搜索尚未完成"}：已扫描 ${scan?.scanned ?? 0} 个资源，找到 ${matchedCandidates.length} 个匹配版本`}</Text>{scanError && <Alert color="red" role="alert">{scanError}</Alert>}{!scan?.complete && <Group><Button size="compact-xs" variant="subtle" onClick={() => scanBusy ? stopCatalogSearch() : setScanAttempt(value => value + 1)}>{exactAirSearch ? scanBusy ? "停止查询" : "重新查询" : scanBusy ? "停止搜索" : "继续搜索"}</Button></Group>}</>}<div className="ai-filter-tabs" role="group" aria-label="目录筛选">{[["new", "未启用"], ["all", "全部"], ["text", "文字"], ["image", "图像"], ["selected", `已选 ${selected.length}`]].map(([value,label]) => <button type="button" key={value} aria-pressed={catalogFilter === value} onClick={() => setCatalogFilter(value)}>{label}</button>)}</div><div className="ai-catalog-scroll" aria-label="可添加的模型" aria-busy={catalogBusy || scanBusy}>
-          {(catalogBusy || scanBusy) && !visibleCandidates.length ? <div className="ai-service-empty" role="status">{exactAirSearch ? "正在根据 AIR 查询模型版本…" : fullCatalogSearch ? "正在遍历 Civitai 目录，符合条件的模型会陆续显示…" : "正在获取模型目录…"}</div> : visibleCandidates.length ? visibleCandidates.map((entry) => <label className={`ai-catalog-row ${enabledIds.has(entry.id) ? "is-enabled" : ""}`} key={entry.id}><Checkbox aria-label={`选择模型 ${entry.id}`} checked={selected.includes(entry.id)} disabled={!selectable(entry) || Boolean(busy)} onChange={(event) => { const checked = event.currentTarget.checked; setSelected((values) => checked ? [...values, entry.id].slice(0, 100) : values.filter((id) => id !== entry.id)); }} /><span><strong>{entry.name}</strong><code>{entry.id}</code></span>{enabledIds.has(entry.id) ? <Badge variant="light" color="gray">已启用</Badge> : <CapabilityBadges model={entry} />}</label>) : <div className="ai-service-empty">{fullCatalogSearch ? scan?.complete ? "没有符合条件的模型" : exactAirSearch ? "未取得 AIR 查询结果，可重新查询" : "搜索尚未完成，可继续搜索" : candidates.length ? "没有符合条件的模型" : "暂无目录，可重试或手动添加模型"}</div>}
+        {addMode === "catalog" ? <><div className="ai-catalog-heading"><div><Text size="sm">{fullCatalogSearch ? matchedCandidates.length : candidates.length} {fullCatalogSearch ? "个匹配版本" : "个目录模型"} · 已启用 {enabledIds.size} 个</Text><Text size="xs" c="dimmed">最近同步：{formatTime(currentCatalog?.syncedAt)}</Text></div><Button size="xs" variant="default" loading={catalogBusy} disabled={!addProvider || busy === "enable" || scanBusy} onClick={() => fullCatalogSearch ? restartCatalogSearch() : void refreshCatalog()}>{exactAirSearch ? "重新查询 AIR" : fullCatalogSearch ? "重新搜索" : "刷新目录"}</Button></div>{catalogNotice && !fullCatalogSearch && <Text size="sm" role="status">{catalogNotice}</Text>}{!fullCatalogSearch && currentCatalog?.warnings.map((warning) => <Alert color="yellow" key={warning}>{warning}</Alert>)}<Group align="flex-end" wrap="nowrap"><Textarea style={{ flex: 1, minWidth: 0 }} autosize minRows={1} maxRows={4} aria-label="搜索目录模型" placeholder={civitaiProvider ? "输入名称、通配符或多个 AIR ID，再点击搜索" : "搜索模型名称或 ID"} description={civitaiProvider ? "支持 SD1.5/SDXL Checkpoint。多个 AIR 可用逗号、分号、空格或换行分隔。* 匹配任意长度，? 匹配一个字符。" : undefined} maxLength={civitaiProvider ? 20000 : 200} value={catalogQuery} onChange={(event) => { const value = event.currentTarget.value; setCatalogQuery(value); if (!value.trim()) { scanController.current?.abort(); setCatalogSearch(null); setScanSnapshot(null); setScanError(""); } }} /><Button disabled={!addProvider || !catalogQuery.trim() || busy === "enable" || scanBusy && !searchEdited} onClick={submitCatalogSearch}>搜索</Button></Group>{civitaiProvider && <Select label="搜索范围" description="官方搜索按关键词查找，通配符筛选其返回结果；需要完整通配符匹配时请选择全目录匹配。AIR 始终直接查询。" data={[{ value: "provider", label: "Civitai 官方搜索（较快）" }, { value: "full", label: "全目录匹配（较慢）" }]} value={catalogSearchMode} allowDeselect={false} onChange={value => setCatalogSearchMode(value === "full" ? "full" : "provider")} />}{searchEdited && <Text size="xs" c="dimmed" role="status">输入已修改，点击“搜索”更新结果。</Text>}{fullCatalogSearch && <><Text size="sm" role="status">{scan?.complete ? `${exactAirSearch ? "AIR 查询完成" : providerSearch ? "搜索完成，已读取全部官方搜索结果" : "搜索完成，已遍历完整目录"}，找到 ${matchedCandidates.length} 个匹配版本` : exactAirSearch ? `${scanBusy ? "正在根据 AIR 查询模型版本" : scan?.airBatch?.processed === scan?.airBatch?.total ? "AIR 查询结束" : "AIR 查询尚未完成"}：已查询 ${scan?.airBatch?.processed ?? 0}/${scan?.airBatch?.total ?? splitCivitaiAirQueries(activeCatalogQuery).length} 项，找到 ${matchedCandidates.length} 个匹配版本${scan?.airBatch?.failures.length ? `，失败 ${scan.airBatch.failures.length} 项` : ""}` : `${scanBusy ? providerSearch ? "正在搜索 Civitai" : "正在搜索完整目录" : "搜索尚未完成"}：已扫描 ${scan?.scanned ?? 0} 个资源，找到 ${matchedCandidates.length} 个匹配版本`}</Text>{scanError && <Alert color="red" role="alert">{scanError}</Alert>}{!scan?.complete && <Group><Button size="compact-xs" variant="subtle" onClick={() => scanBusy ? stopCatalogSearch() : setCatalogSearch(value => value && { ...value, attempt: value.attempt + 1 })}>{exactAirSearch ? scanBusy ? "停止查询" : "重新查询" : scanBusy ? "停止搜索" : "继续搜索"}</Button></Group>}</>}<div className="ai-filter-tabs" role="group" aria-label="目录筛选">{[["new", "未启用"], ["all", "全部"], ["text", "文字"], ["image", "图像"], ["selected", `已选 ${selected.length}`]].map(([value,label]) => <button type="button" key={value} aria-pressed={catalogFilter === value} onClick={() => setCatalogFilter(value)}>{label}</button>)}</div><div className="ai-catalog-scroll" aria-label="可添加的模型" aria-busy={catalogBusy || scanBusy}>
+          {(catalogBusy || scanBusy) && !visibleCandidates.length ? <div className="ai-service-empty" role="status">{exactAirSearch ? "正在根据 AIR 查询模型版本…" : fullCatalogSearch ? providerSearch ? "正在读取 Civitai 官方搜索结果…" : "正在遍历 Civitai 目录，符合条件的模型会陆续显示…" : "正在获取模型目录…"}</div> : visibleCandidates.length ? visibleCandidates.map((entry) => <label className={`ai-catalog-row ${enabledIds.has(entry.id) ? "is-enabled" : ""}`} key={entry.id}><Checkbox aria-label={`选择模型 ${entry.id}`} checked={selected.includes(entry.id)} disabled={!selectable(entry) || Boolean(busy)} onChange={(event) => { const checked = event.currentTarget.checked; setSelected((values) => checked ? [...values, entry.id].slice(0, 100) : values.filter((id) => id !== entry.id)); }} /><span><strong>{entry.name}</strong><code>{entry.id}</code></span>{enabledIds.has(entry.id) ? <Badge variant="light" color="gray">已启用</Badge> : <CapabilityBadges model={entry} />}</label>) : <div className="ai-service-empty">{fullCatalogSearch ? scan?.complete ? "没有符合条件的模型" : exactAirSearch ? "未取得 AIR 查询结果，可重新查询" : "搜索尚未完成，可继续搜索" : candidates.length ? "没有符合条件的模型" : "暂无目录，可重试或手动添加模型"}</div>}
         </div><Group justify="space-between"><Button size="compact-xs" variant="subtle" disabled={Boolean(busy)} onClick={() => setSelected((values) => [...new Set([...values, ...visibleCandidates.filter(selectable).map((entry) => entry.id)])].slice(0, 100))}>选择当前结果（最多 100 个）</Button><Button size="compact-xs" variant="subtle" onClick={() => setSelected([])}>清空选择</Button></Group>{selectedNew.some((id) => !candidates.find((entry) => entry.id === id)?.metadata.outputModalities.length) && <Select label="未提供能力信息的模型按此类型添加" data={capabilityOptions} value={manualKind} allowDeselect={false} onChange={(value) => setManualKind(value || "text")} />}</> : <><Textarea label="模型 ID" description="支持逗号或换行分隔；已启用的 ID 会自动跳过。" value={manualIds} onChange={(event) => setManualIds(event.currentTarget.value)} minRows={4} /><Select label="模型能力" data={capabilityOptions} value={manualKind} allowDeselect={false} onChange={(value) => setManualKind(value || "text")} /><Text size="xs" c="dimmed">能力用于筛选；实际调用是否可用，以接口支持和测试结果为准。</Text></>}
       </div><footer className="ai-modal-footer"><Text size="sm">将启用 {addingIds.length} 个新模型</Text><Group><Button variant="default" onClick={closeAdd} disabled={busy === "enable"}>取消</Button><Button onClick={() => void enableModels()} loading={busy === "enable"} disabled={!addProvider || !addingIds.length || addingIds.length > 100 || catalogBusy}>启用 {addingIds.length} 个模型</Button></Group></footer>
     </ResponsiveModal>

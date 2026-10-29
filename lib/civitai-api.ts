@@ -177,7 +177,7 @@ export async function readCivitaiCatalogPage(baseUrl: string, secret: string, cu
   url.searchParams.set("types", "Checkpoint");
   url.searchParams.set("supportsGeneration", "true");
   url.searchParams.set("primaryFileOnly", "true");
-  if (hint?.trim()) url.searchParams.set("query", hint.trim());
+  if (hint?.trim()) url.searchParams.set(/^[1-9]\d*$/.test(hint.trim()) ? "ids" : "query", hint.trim());
   else url.searchParams.set("sort", "Newest");
   if (cursor) url.searchParams.set("cursor", cursor);
   try {
@@ -226,7 +226,7 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
       seen.add(cursor);
     }
     if (!catalog.size) throw new Error("Civitai 未返回可用的 SD1.5 / SDXL Checkpoint，可手动添加对应版本的 AIR ID");
-    if (more) warnings.push("Civitai 目录较大，当前分批展示部分热门模型；输入名称或 ID 可搜索完整目录，支持 * 和 ? 通配符。");
+    if (more) warnings.push("Civitai 目录较大，当前分批展示部分热门模型；输入名称、ID 或 AIR 后点击搜索。官方搜索较快，全目录匹配支持完整通配符搜索。");
     warnings.push("当前支持 SD1.5、SDXL（含 Pony、Illustrious、NoobAI）的 Checkpoint 文生图；暂不支持单独使用 LoRA 或人物参考图。");
     return { catalog: [...catalog.values()].sort((a, b) => a.name.localeCompare(b.name)), syncedAt: new Date().toISOString(), warnings };
   } catch (error) {

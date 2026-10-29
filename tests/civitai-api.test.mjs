@@ -132,12 +132,19 @@ test("catalog paging continues beyond three pages, including empty compatible pa
   assert.equal(calls.length, 7); assert.equal(count, 6);
 });
 
-test("quick keyword previews use provider search without narrowing full traversal", async t => {
-  const calls = mockFetch(t, () => Response.json({ items: [resource], metadata: {} }));
+test("official keyword searches retain the query on every cursor page and numeric IDs use the IDs filter", async t => {
+  const calls = mockFetch(t, () => Response.json({ items: [resource], metadata: { nextCursor: "next" } }));
   await readCivitaiCatalogPage(connection.baseUrl, connection.secret, null, undefined, "Painter");
+  await readCivitaiCatalogPage(connection.baseUrl, connection.secret, "next-page", undefined, "Painter");
+  await readCivitaiCatalogPage(connection.baseUrl, connection.secret, null, undefined, "101055");
   await readCivitaiCatalogPage(connection.baseUrl, connection.secret);
   assert.equal(calls[0].url.searchParams.get("query"), "Painter");
-  assert.equal(calls[1].url.searchParams.has("query"), false);
+  assert.equal(calls[1].url.searchParams.get("query"), "Painter");
+  assert.equal(calls[1].url.searchParams.get("cursor"), "next-page");
+  assert.equal(calls[2].url.searchParams.get("ids"), "101055");
+  assert.equal(calls[2].url.searchParams.has("query"), false);
+  assert.equal(calls[3].url.searchParams.has("query"), false);
+  assert.ok(calls.every(call => !call.url.searchParams.has("page")));
 });
 
 test("full catalog paging refuses broken pagination instead of declaring a complete search", async t => {
