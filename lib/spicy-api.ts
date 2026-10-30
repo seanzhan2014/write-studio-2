@@ -1,5 +1,7 @@
 import type { CatalogModel, ModelCatalog } from "./ai-model-capabilities";
 
+import { validateImageParameters, type ImageParameters } from "./image-model-parameters";
+
 type SchemaField = {
   type?: string; enum?: unknown[]; const?: unknown; default?: unknown; minLength?: number; maxLength?: number;
   minimum?: number; maximum?: number; minItems?: number; maxItems?: number; items?: SchemaField;
@@ -12,7 +14,7 @@ type SpicyModel = {
   enabled?: boolean; available?: boolean;
   inputSchema?: SchemaField;
 };
-export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string };
+export type SpicyImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string; parameters?: ImageParameters };
 export type SpicyAsset = { id: string; uri: string; name?: string; kind?: string; contentType?: string; previewUrl?: string };
 export type SpicyCharacter = { id: string; kind: string; name: string; note?: string; cover?: SpicyAsset | null; assets?: SpicyAsset[]; count?: number; updatedAt?: string };
 export type SpicyTask = {
@@ -152,7 +154,9 @@ export function spicyImageInput(model: SpicyModel, prompt: string, options: Spic
   if (!fields?.prompt) throw new Error("图像服务没有返回此模型的提示词参数结构");
   if (!prompt.trim() || prompt.length < (fields.prompt.minLength ?? 1) || prompt.length > (fields.prompt.maxLength ?? 12000)) throw new Error(`此模型的提示词长度应为 ${fields.prompt.minLength ?? 1}–${fields.prompt.maxLength ?? 12000} 字符`);
   if (options.size && (options.aspectRatio || options.resolution)) throw new Error("尺寸与比例、分辨率请分别选择一种方式");
-  const input: Record<string, unknown> = { prompt };
+  const parameters = validateImageParameters(options.parameters, { adapterKind: "spicyapi" });
+  for (const key of Object.keys(parameters)) if (!fields[key]) throw new Error(`此图像模型不支持高级参数 ${key}，请刷新模型目录或移除该参数`);
+  const input: Record<string, unknown> = { ...parameters, prompt };
   if (options.negativePrompt?.trim()) {
     const key = ["negative_prompt", "negativePrompt"].find(key => fields[key]?.type === "string");
     if (key) input[key] = options.negativePrompt.trim();

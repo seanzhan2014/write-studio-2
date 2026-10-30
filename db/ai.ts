@@ -1,4 +1,5 @@
 import { catalogEntry, normalizeModelMetadata, supportsText, supportsImages, imageParameterValues, type ModelMetadata, type ModelCatalog, type CatalogModel, type ModelTestResult } from "../lib/ai-model-capabilities";
+import { validateImageParameters } from "../lib/image-model-parameters";
 import { discoverSpicyCatalog, generateSpicyImage, isSpicyApi, spicyChatBaseUrl } from "../lib/spicy-api";
 import { discoverCivitaiCatalog, readCivitaiCatalogPage, findCivitaiModelByAir, generateCivitaiImage, isCivitai } from "../lib/civitai-api";
 import { normalizeReasoningEffort, reasoningEffortError, reasoningRequestBody, type ReasoningEffort, type ReasoningOptions } from "../lib/reasoning-options";
@@ -78,7 +79,9 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
 }
 
 function modelConfigurationMetadata(value: unknown) {
-  const metadata = normalizeModelMetadata(value); delete metadata.tests; return metadata;
+  const metadata = normalizeModelMetadata(value);
+  if (value && typeof value === "object" && "imageParameters" in value) metadata.imageParameters = validateImageParameters(value.imageParameters);
+  delete metadata.tests; return metadata;
 }
 
 function modelFromRow(row: Record<string, unknown>): AiModelRecord {
@@ -398,6 +401,7 @@ export async function createModels(input: {
     createdAt: now,
     updatedAt: now,
   }));
+  for (const model of models) validateImageParameters(model.metadata?.imageParameters, model);
   await getDatabase().batch(models.map((model) => getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort, JSON.stringify(model.metadata ?? {}))));
   return { models, skippedModelIds };
@@ -424,6 +428,7 @@ export async function createModel(input: Partial<AiModelRecord> & { secret?: unk
     createdAt: now, updatedAt: now,
   };
   if (!model.name || !model.modelId) throw new Error("模型名称和模型 ID 不能为空");
+  validateImageParameters(model.metadata?.imageParameters, model);
   await ensureDatabase();
   await getDatabase().prepare("INSERT INTO ai_models(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     .bind(model.id, model.providerId, model.name, model.baseUrl, model.modelId, model.systemPrompt, model.temperature, model.maxOutput, model.maxInputCharacters, model.timeoutMs, model.timeoutOverrideMs, 0, null, now, now, model.reasoningEffort, JSON.stringify(model.metadata ?? {})).run();
@@ -459,8 +464,13 @@ export async function updateModel(id: string, input: Partial<AiModelRecord>) {
     updatedAt: new Date().toISOString(), hasSecret: provider.hasSecret,
   };
   if (!updated.name || !updated.modelId) throw new Error("模型名称和模型 ID 不能为空");
+  validateImageParameters(updated.metadata?.imageParameters, updated);
   if (updated.providerId !== existing.providerId || updated.modelId !== existing.modelId || JSON.stringify(updated.metadata?.outputModalities) !== JSON.stringify(existing.metadata?.outputModalities)) {
     updated.metadata = { ...normalizeModelMetadata(updated.metadata), tests: {} };
+  }
+  if (JSON.stringify(updated.metadata?.imageParameters ?? {}) !== JSON.stringify(existing.metadata?.imageParameters ?? {})) {
+    updated.metadata = { ...updated.metadata!, tests: { ...updated.metadata?.tests } };
+    delete updated.metadata.tests!.image;
   }
   await getDatabase().prepare("UPDATE ai_models SET provider_id=?,name=?,base_url=?,model_id=?,system_prompt=?,temperature=?,max_output=?,max_input_characters=?,timeout_ms=?,timeout_override_ms=?,has_secret=0,secret=NULL,updated_at=?,reasoning_effort=?,metadata_json=? WHERE id=?")
     .bind(updated.providerId, updated.name, updated.baseUrl, updated.modelId, updated.systemPrompt, updated.temperature, updated.maxOutput, updated.maxInputCharacters, updated.timeoutMs, updated.timeoutOverrideMs, updated.updatedAt, updated.reasoningEffort, JSON.stringify(updated.metadata ?? {}), id).run();
@@ -781,10 +791,11 @@ export async function generateIllustrationImage(input: { outlineId: string; prom
 }
 
 export async function requestModelImage(model: AiModelRecord, prompt: string, options: { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string } = {}, signal?: AbortSignal) {
+  const parameters = validateImageParameters(model.metadata?.imageParameters, model);
   const secret = await readProviderSecret(model.providerId);
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
-  if (isCivitai(model)) return parseIllustrationImage(await generateCivitaiImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
-  if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, options, signal));
+  if (isCivitai(model)) return parseIllustrationImage(await generateCivitaiImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, { ...options, parameters }, signal));
+  if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, { ...options, parameters }, signal));
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;
@@ -806,7 +817,7 @@ export async function requestModelImage(model: AiModelRecord, prompt: string, op
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    const fields = { model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) };
+    const fields = { ...parameters, model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) };
     const references = options.referenceImages || [];
     let body: BodyInit = JSON.stringify({ ...fields, ...(references.length ? { input_references: references.map(url => ({ type: "image_url", image_url: { url } })) } : {}) });
     const headers: Record<string, string> = { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" };

@@ -6,6 +6,7 @@ export type ModelMetadata = {
   supportedParameters?: Record<string, unknown> | string[];
   contextLength?: number;
   tests?: Partial<Record<"text" | "image", ModelTestResult>>;
+  imageParameters?: Record<string, string | number | boolean>;
 };
 export type CatalogModel = { id: string; name: string; metadata: ModelMetadata; searchTerms?: string[] };
 export type ModelCatalog = { catalog: CatalogModel[]; syncedAt: string; warnings: string[] };
@@ -22,6 +23,7 @@ export function normalizeModelMetadata(value: unknown): ModelMetadata {
     ...(raw.supportedParameters && typeof raw.supportedParameters === "object" ? { supportedParameters: raw.supportedParameters } : {}),
     ...(Number.isFinite(raw.contextLength) && Number(raw.contextLength) > 0 ? { contextLength: Number(raw.contextLength) } : {}),
     ...(raw.tests && typeof raw.tests === "object" ? { tests: raw.tests } : {}),
+    ...(raw.imageParameters && typeof raw.imageParameters === "object" && !Array.isArray(raw.imageParameters) ? { imageParameters: { ...raw.imageParameters } } : {}),
   };
 }
 

@@ -1,7 +1,8 @@
 import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-capabilities";
+import { defaultImageParameters, validateImageParameters, type ImageParameters } from "./image-model-parameters";
 
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
-type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string };
+type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string; parameters?: ImageParameters };
 type Resource = { id?: number; name?: string; type?: string; mode?: string; supportsGeneration?: boolean; modelVersions?: Version[] };
 type Version = { id?: number; name?: string; baseModel?: string; air?: string; supportsGeneration?: boolean; files?: Array<{ id?: number; name?: string; type?: string; primary?: boolean }> };
 type Workflow = { id?: string; status?: string; steps?: Array<{ reason?: unknown; blockedReason?: unknown; output?: { images?: Array<{ url?: string }>; blobs?: Array<{ url?: string }> } }> };
@@ -246,20 +247,20 @@ export function civitaiImageInput(modelId: string, prompt: string, options: Imag
   if (!prompt.trim() || prompt.length > 10_000) throw new Error("Civitai 图片提示词应为 1–10,000 字符");
   if (options.referenceImages?.length) throw new Error("此 Civitai 接入暂不支持人物参考图，请移除参考图后生成");
   if (options.quality || options.resolution || options.aspectRatio) throw new Error("此 Civitai 模型请使用图片尺寸设置，画质、比例和分辨率应选模型默认");
+  const context = { adapterKind: "civitai", modelId: canonicalId };
+  const parameters = validateImageParameters(options.parameters, context);
   const size = options.size || sizes(match[1])[0];
   const dimensions = /^(\d{2,4})x(\d{2,4})$/.exec(size);
-  const width = Number(dimensions?.[1]), height = Number(dimensions?.[2]);
+  const width = Number(!options.size && parameters.width !== undefined ? parameters.width : dimensions?.[1]), height = Number(!options.size && parameters.height !== undefined ? parameters.height : dimensions?.[2]);
   if (!dimensions || [width, height].some(value => value < 64 || value > 2048 || value % 16)) throw new Error("Civitai 图片宽高须为 64–2048 且为 16 的倍数");
   const shared = { operation: "createImage", prompt: prompt.trim(), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}), width, height, quantity: 1 };
   if (match[1] === "mossimage") {
-    const parsed = parseCivitaiAir(canonicalId)!;
-    const artshootTurbo = parsed.modelId === "3018302" && parsed.versionId === "3426693";
     // Artshoot recommends 12 steps / CFG 1 / heunpp2. Civitai's scheduler enum
     // does not expose linear_quadratic, so use its supported MOSS default.
-    return { ...shared, engine: "comfy", ecosystem: "mossImage", model: "sft", diffusionModel: canonicalId, steps: artshootTurbo ? 12 : 25, cfgScale: artshootTurbo ? 1 : 2.5, sampler: artshootTurbo ? "heunpp2" : "er_sde", scheduler: "simple" };
+    return { ...defaultImageParameters(context), ...parameters, ...shared, engine: "comfy", ecosystem: "mossImage", model: "sft", diffusionModel: canonicalId };
   }
   // The OpenAPI schema calls this checkpointModel (the recipe prose uses model).
-  return { ...shared, engine: "sdcpp", ecosystem: match[1], checkpointModel: canonicalId };
+  return { ...parameters, ...shared, engine: "sdcpp", ecosystem: match[1], checkpointModel: canonicalId };
 }
 
 function pause(ms: number, signal: AbortSignal) {

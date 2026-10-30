@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const parameterCode = ts.transpileModule(readFileSync(new URL("../lib/image-model-parameters.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const parameterUrl = `data:text/javascript;base64,${Buffer.from(parameterCode).toString("base64")}`;
+const code = ts.transpileModule(readFileSync(new URL("../lib/civitai-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replaceAll("./image-model-parameters", parameterUrl);
 const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPage, isCivitaiAirQuery, splitCivitaiAirQueries, lookupCivitaiAirBatch, parseCivitaiAir, findCivitaiModelByAir, civitaiImageInput, generateCivitaiImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
 const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
@@ -83,6 +85,17 @@ test("MOSS generation uses the Comfy SFT workflow, exact file, turbo settings an
   assert.equal(civitaiImageInput(mossId.toUpperCase(), "test").diffusionModel, mossId);
   assert.equal(civitaiImageInput(mossId.replace("3426693", "123"), "test").steps, 25);
   assert.throws(() => civitaiImageInput(mossId, "test", { referenceImages: ["https://example.com/reference.png"] }), /不支持人物参考图/);
+});
+
+test("configured image parameters override defaults while runtime dimensions and model identity remain authoritative", () => {
+  const input = civitaiImageInput(mossId, "A tree", { parameters: { steps: 18, cfgScale: 2, seed: 0, sampler: "euler", scheduler: "karras", width: 1216, height: 832 } });
+  assert.equal(input.steps, 18); assert.equal(input.cfgScale, 2); assert.equal(input.seed, 0);
+  assert.equal(input.sampler, "euler"); assert.equal(input.scheduler, "karras");
+  assert.equal(input.width, 1216); assert.equal(input.height, 832); assert.equal(input.diffusionModel, mossId);
+  assert.equal(civitaiImageInput(mossId, "A tree", { size: "1024x1024", parameters: { width: 1216 } }).width, 1024);
+  assert.throws(() => civitaiImageInput(mossId, "A tree", { parameters: { engine: "other" } }), /不支持/);
+  const sd = civitaiImageInput(id, "A tree", { parameters: { sampleMethod: "heun", schedule: "karras", steps: 28, cfgScale: 6, seed: 42, clipSkip: 2 } });
+  assert.equal(sd.sampleMethod, "heun"); assert.equal(sd.schedule, "karras"); assert.equal(sd.seed, 42);
 });
 
 test("MOSS generation uses the version alias only after verifying the requested primary file", async t => {

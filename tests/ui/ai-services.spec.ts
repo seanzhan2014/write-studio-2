@@ -9,6 +9,56 @@ test.beforeEach(async ({ request, page }) => {
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });
 
+test("image model advanced settings validate comma parameters, persist edits and restore defaults", async ({ page }, info) => {
+  test.setTimeout(60000);
+  let metadata: Record<string, unknown> = { source: "provider", inputModalities: ["text"], outputModalities: ["image"] };
+  let saves = 0;
+  const model = { id: "moss", providerId: "civitai", providerName: "Civitai", adapterKind: "civitai", name: "Ray Moss Artshoot", modelId: "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739", baseUrl: "https://civitai.com/api/v1", hasSecret: true };
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "civitai", name: "Civitai", baseUrl: model.baseUrl, adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [{ ...model, metadata }] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: null }));
+  await page.route("**/api/models/moss", route => { saves++; metadata = route.request().postDataJSON().metadata; return route.fulfill({ json: { ...model, metadata } }); });
+  await page.goto("/settings/models");
+  const row = page.locator('[data-provider-model-id="moss"]');
+  await row.getByRole("button", { name: "编辑", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "编辑模型", exact: true });
+  await dialog.getByText("图像模型高级设置", { exact: true }).click();
+  await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveAttribute("placeholder", "12");
+  await expect(dialog).toContainText("模型默认：1");
+  await dialog.getByLabel("采样步数", { exact: true }).fill("18");
+  await dialog.getByLabel("CFG", { exact: true }).fill("2");
+  await dialog.getByLabel("Seed", { exact: true }).fill("42");
+  await dialog.getByRole("combobox", { name: "采样器", exact: true }).click();
+  await page.getByRole("option", { name: "euler", exact: true }).click();
+  await dialog.getByRole("combobox", { name: "调度器", exact: true }).click();
+  await page.getByRole("option", { name: "karras", exact: true }).click();
+  const extra = dialog.getByRole("textbox", { name: "额外图片参数", exact: true });
+  await extra.fill("width=1216,height=1025");
+  await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("height");
+  expect(saves).toBe(0);
+  await extra.fill("width=1216,height=832,steps=20");
+  await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("重复");
+  expect(saves).toBe(0);
+  await extra.fill("width=1216,height=832");
+  await page.screenshot({ path: info.outputPath("image-model-advanced.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(metadata.imageParameters).toEqual({ steps: 18, cfgScale: 2, seed: 42, sampler: "euler", scheduler: "karras", width: 1216, height: 832 });
+  await page.reload();
+  await row.getByRole("button", { name: "编辑", exact: true }).click();
+  await dialog.getByText("图像模型高级设置", { exact: true }).click();
+  await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveValue("18");
+  await expect(extra).toHaveValue("width=1216, height=832");
+  await dialog.getByRole("button", { name: "恢复图像模型默认参数", exact: true }).click();
+  await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveValue("");
+  await expect(extra).toHaveValue("");
+  await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(metadata.imageParameters).toEqual({});
+});
+
 test("Civitai MOSS file-pinned AIR is searched on click and enabled with image-only capabilities", async ({ page }, info) => {
   test.setTimeout(60000);
   const id = "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739";

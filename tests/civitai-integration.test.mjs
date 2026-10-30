@@ -68,6 +68,12 @@ for (const moss of [false, true]) test(`Civitai ${moss ? "MOSS file-pinned" : "S
   assert.equal(invalid.status, 400);
   model = (await api("/api/models/bulk", { providerId: provider.id, modelIds: [id], metadataByModelId: { [id]: discovered.catalog[0].metadata } })).models[0];
   assert.equal(model.adapterKind, "civitai");
+  const imageParameters = moss ? { steps: 18, cfgScale: 2, seed: 42, sampler: "euler", scheduler: "karras", width: 1344, height: 768 } : { steps: 28, cfgScale: 6, seed: 42, sampleMethod: "heun", schedule: "karras", clipSkip: 1 };
+  model = await api(`/api/models/${model.id}`, { metadata: { ...model.metadata, imageParameters } }, "PATCH");
+  assert.deepEqual((await api("/api/models")).models.find(entry => entry.id === model.id).metadata.imageParameters, imageParameters);
+  const invalidSettings = await fetch(`${baseUrl}/api/models/${model.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ metadata: { ...model.metadata, imageParameters: { model: "another-model" } } }) });
+  assert.equal(invalidSettings.status, 400);
+  assert.deepEqual((await api("/api/models")).models.find(entry => entry.id === model.id).metadata.imageParameters, imageParameters);
   const before = (await api("/api/state")).data.articles;
   job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A lighthouse at dusk", negativePrompt: "watermark, blurry", size: "1216x832" })).record;
   await api(`/api/ai/illustrations/${job.id}/execute`, {});
@@ -83,7 +89,9 @@ for (const moss of [false, true]) test(`Civitai ${moss ? "MOSS file-pinned" : "S
   assert.equal(input.engine, moss ? "comfy" : "sdcpp"); assert.equal(input.ecosystem, moss ? "mossImage" : "sdxl");
   assert.equal(moss ? input.diffusionModel : input.checkpointModel, moss ? id.split("+")[0] : id); assert.equal(input.quantity, 1);
   assert.equal(input.negativePrompt, "watermark, blurry");
-  if (moss) { assert.equal(input.model, "sft"); assert.equal(input.steps, 12); assert.equal(input.cfgScale, 1); assert.equal(input.sampler, "heunpp2"); assert.equal(input.scheduler, "simple"); }
+  assert.equal(input.seed, 42);
+  if (moss) { assert.equal(input.model, "sft"); assert.equal(input.steps, 18); assert.equal(input.cfgScale, 2); assert.equal(input.sampler, "euler"); assert.equal(input.scheduler, "karras"); }
+  else { assert.equal(input.steps, 28); assert.equal(input.cfgScale, 6); assert.equal(input.sampleMethod, "heun"); assert.equal(input.schedule, "karras"); assert.equal(input.clipSkip, 1); }
   assert.equal(input.width, 1216); assert.equal(input.height, 832);
   assert.equal(submissions[0].authorization, "Bearer civitai-integration-secret");
   assert.equal(calls.find(call => call.path === "/output.png").authorization, undefined);

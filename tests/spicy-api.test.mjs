@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-const code = ts.transpileModule(readFileSync(new URL("../lib/spicy-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const parameterCode = ts.transpileModule(readFileSync(new URL("../lib/image-model-parameters.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const parameterUrl = `data:text/javascript;base64,${Buffer.from(parameterCode).toString("base64")}`;
+const code = ts.transpileModule(readFileSync(new URL("../lib/spicy-api.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replaceAll("./image-model-parameters", parameterUrl);
 const { isSpicyApi, spicyApiBaseUrl, spicyChatBaseUrl, discoverSpicyCatalog, spicyImageInput, generateSpicyImage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const model = {
   model: "alibaba/wan-2.7-pro/text-to-image", displayName: "Wan 2.7 Pro", modality: "image", tasks: ["text-to-image"], enabled: true, available: true,
@@ -72,6 +74,14 @@ test("image input follows current schema and forces one output without OpenAI de
   assert.throws(() => spicyImageInput(model, "A lighthouse", { resolution: "4K" }), /resolution/);
   assert.throws(() => spicyImageInput(model, "x".repeat(5001)), /长度/);
   assert.throws(() => spicyImageInput({ ...model, available: false }, "hello"), /不可调用/);
+});
+
+test("Spicy image settings follow the current schema and preserve false and zero values", () => {
+  const configured = { ...model, inputSchema: { ...model.inputSchema, additionalProperties: false, properties: { ...model.inputSchema.properties, seed: { type: "integer" }, enable_prompt_expansion: { type: "boolean" } } } };
+  const input = spicyImageInput(configured, "A tree", { parameters: { seed: 0, enable_prompt_expansion: false } });
+  assert.equal(input.seed, 0); assert.equal(input.enable_prompt_expansion, false);
+  assert.throws(() => spicyImageInput(model, "A tree", { parameters: { seed: 42 } }), /不支持高级参数/);
+  assert.throws(() => spicyImageInput(configured, "A tree", { parameters: { steps: 20 } }), /不支持高级参数/);
 });
 
 test("reference models are discovered with image capabilities and preserve URI order in native input", async t => {
