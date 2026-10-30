@@ -778,13 +778,13 @@ export async function generateIllustrationPrompt(input: { outlineId: string; con
 export async function generateIllustrationImage(input: { outlineId: string; prompt: string; negativePrompt?: string; style?: string; stylePreset?: string; styleSnapshot?: IllustrationStyle; additionalPrompt?: string; model: string; size?: string; quality?: string; aspectRatio?: string; resolution?: string; characterReference?: CharacterReference }, signal?: AbortSignal) {
   if (typeof input.outlineId !== "string" || !input.outlineId) throw new AiInputError("请选择正文");
   if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > MAX_ILLUSTRATION_PROMPT) throw new AiInputError("图片 prompt 不能为空，且不能超过 12,000 字符");
+  if (input.negativePrompt !== undefined && (typeof input.negativePrompt !== "string" || input.negativePrompt.length > MAX_ILLUSTRATION_NEGATIVE_PROMPT)) throw new AiInputError("Negative Prompt 不能超过 4,000 字符");
   const visualDirection = await illustrationDirection(input);
   await assertAiTargetAvailable(input.outlineId);
   const model = await illustrationModel(input.model);
   if (!supportsImages(model)) throw new AiInputError("请选择已标记图像生成能力的模型");
   const reference = input.characterReference;
   const referenceImages = reference ? await validateCharacterReference(reference, model.providerId) : undefined;
-  if (input.negativePrompt !== undefined && (typeof input.negativePrompt !== "string" || input.negativePrompt.length > MAX_ILLUSTRATION_NEGATIVE_PROMPT)) throw new AiInputError("Negative Prompt 不能超过 4,000 字符");
   const characterDirection = reference ? `\n\n人物身份参考：所有附图均为同一人物“${reference.name}”，按输入顺序参考其身份特征。保持脸型、五官和体态一致。当前年龄：${reference.age || "以画面要求为准"}；当前外貌：${reference.appearance || "遵循正文提示词"}。服饰、动作、表情及场景遵循本次画面要求。` : "";
   const prompt = input.prompt.trim() + characterDirection + (visualDirection ? `\n\n画面风格与要求（如与上文的风格描述冲突，以此处为准；保持原有主体、人物、场景与动作）：\n${visualDirection}` : "");
   return requestModelImage(model, prompt, { ...input, referenceImages }, signal);
@@ -796,14 +796,14 @@ export async function requestModelImage(model: AiModelRecord, prompt: string, op
   if (!secret) throw new AiInputError(`服务连接「${model.providerName}」尚未设置可用密钥`);
   if (isCivitai(model)) return parseIllustrationImage(await generateCivitaiImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, { ...options, parameters }, signal));
   if (isSpicyApi(model)) return parseIllustrationImage(await generateSpicyImage({ baseUrl: model.baseUrl, secret, modelId: model.modelId, timeoutMs: model.timeoutMs }, prompt, { ...options, parameters }, signal));
+  // OpenAI-compatible image endpoints do not share a negative-prompt field.
+  if (options.negativePrompt?.trim()) prompt += `\n\nNegative prompt (elements to avoid):\n${options.negativePrompt.trim()}`;
   const openRouter = isOpenRouter(model);
   const supportedSizes = imageParameterValues(model, "size");
   const knownParameters = model.metadata?.supportedParameters;
   const size = options.size || (!options.aspectRatio && !options.resolution ? supportedSizes.find((value) => /^\d+x\d+$/.test(value)) || (openRouter && knownParameters && !Array.isArray(knownParameters) && !("size" in knownParameters) ? undefined : "1024x1024") : undefined);
   if (size && (!/^\d{2,5}x\d{2,5}$/.test(size) || Number(size.split("x")[0]) > 8192 || Number(size.split("x")[1]) > 8192)) throw new AiInputError("图片尺寸无效");
   const sizes = imageParameterValues(model, "size");
-  // OpenAI-compatible image endpoints do not share a negative-prompt field.
-  if (options.negativePrompt?.trim()) prompt += `\n\nNegative prompt (elements to avoid):\n${options.negativePrompt.trim()}`;
   if (options.size && sizes.length && !sizes.includes(options.size)) throw new AiInputError("此模型不支持所选尺寸");
   for (const [field, value] of [["aspect_ratio", options.aspectRatio], ["resolution", options.resolution]] as const) {
     if (value && (!openRouter || !imageParameterValues(model, field).includes(value))) throw new AiInputError("此接口或模型不支持所选图像参数");

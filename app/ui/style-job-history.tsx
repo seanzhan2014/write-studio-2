@@ -1,11 +1,13 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, Badge, Button, Group, Pagination, Select, Stack, Text } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { STYLE_FIELDS, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { configurationOf, configurationFingerprint, MIN_STYLE_CONTENT_SCORE, type StyleConfiguration } from "@/lib/style-learning";
 import type { StyleJob } from "@/db/style-lab";
+import { newestTaskFirst } from "@/lib/task-order";
+import type { TaskTimelineEntry } from "./task-timeline";
 
 export const stylePhases: Record<string, string> = { learn: "逐篇学习", merge: "提取共性与场景差异", validate: "检查配置与情节污染", outline: "提取并固定参考大纲", prepare: "整理试写准备稿", generate: "生成试写稿", review: "按现有规则审校", evaluate: "对照参考评价", adjust: "调整配置", completed: "已完成" };
 export const styleStatuses: Record<string, string> = { queued: "等待执行", running: "进行中", retrying: "自动重试", paused: "已暂停", failed: "需要处理", completed: "已完成", cancelled: "已停止" };
@@ -53,11 +55,12 @@ function StyleJobDetail({ job }: { job: StyleJob }) {
   </Stack>;
 }
 
-export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle }: { articleId?: string; initialJobId?: string; onOpenArticle?: () => void }) {
+export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle, renderList }: { articleId?: string; initialJobId?: string; onOpenArticle?: () => void; renderList?: (entries: TaskTimelineEntry[]) => ReactNode }) {
   const studio = useStudio(); const studioRef = useRef(studio); studioRef.current = studio;
   const [jobs, setJobs] = useState<StyleJob[]>([]), [selectedId, setSelectedId] = useState(initialJobId), [selected, setSelected] = useState<StyleJob | null>(null);
   const [filter, setFilter] = useState<string | null>("all"), [page, setPage] = useState(1), [pages, setPages] = useState(1), [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
+  const timeline = Boolean(renderList);
   useEffect(() => { setSelectedId(initialJobId); setSelected(null); }, [initialJobId, articleId]);
   useEffect(() => {
     let active = true, refreshing = false;
@@ -65,9 +68,10 @@ export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle }:
       if (refreshing) return; refreshing = true;
       try {
         const query = new URLSearchParams({ scope: "history", filter: filter || "all", page: String(page), ...(articleId ? { articleId } : {}) });
+        if (timeline) query.set("paginate", "false");
         const result = await styleLabApi(`/api/style-lab?${query}`);
         if (!active) return;
-        setJobs(result.jobs); setTotal(result.total ?? result.jobs.length); setPages(result.pages ?? 1);
+        setJobs([...result.jobs].sort(newestTaskFirst)); setTotal(result.total ?? result.jobs.length); setPages(result.pages ?? 1);
         if (result.page && result.page !== page) setPage(result.page);
         if (selectedId) { const detail = await styleLabApi(`/api/style-lab/${selectedId}`); if (active) setSelected(detail.job); }
       } catch (error) { if (active) setNotice(error instanceof Error ? error.message : "读取学习历史失败"); }
@@ -76,7 +80,7 @@ export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle }:
     void refresh(); const timer = window.setInterval(() => void refresh(), 4000);
     const wake = () => void refresh(); window.addEventListener("style-lab-progress", wake);
     return () => { active = false; clearInterval(timer); window.removeEventListener("style-lab-progress", wake); };
-  }, [articleId, filter, page, selectedId]);
+  }, [articleId, filter, page, selectedId, timeline]);
   async function action(job: StyleJob, name: string) {
     if (busy) return; setBusy(true); setNotice("");
     try {
@@ -101,11 +105,19 @@ export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle }:
       {terminal && <Button disabled={busy} size="compact-sm" variant="subtle" onClick={() => void action(job, job.payload.archived ? "unarchive" : "archive")}>{job.payload.archived ? "取消归档" : "归档"}</Button>}
     </Group>;
   }
-  return <section className="style-job-history" aria-label="学习历史">
+  const controls = <>
     <Group justify="space-between" align="end"><div><Text fw={600}>学习历史</Text><Text size="xs" c="dimmed">{total} 条记录 · 原始材料、试写与成果持续保存，归档后仍可查看</Text></div><Select aria-label="筛选学习历史" value={filter} onChange={value => { setFilter(value); setPage(1); }} data={[{ value: "all", label: "全部记录" }, { value: "active", label: "进行中与待处理" }, { value: "completed", label: "已完成" }, { value: "pending", label: "待应用" }, { value: "archived", label: "已归档" }]} /></Group>
     {notice && <Alert role="status" color="yellow">{notice}</Alert>}
     {selected && <article className="style-selected-job"><Group justify="space-between"><Text fw={600}>{selected.kind === "learn" ? "文章学习" : "风格微调"} · {styleStatuses[selected.status]}</Text><Button variant="subtle" size="compact-sm" onClick={() => { setSelectedId(""); setSelected(null); }}>关闭详情</Button></Group>{selected.error && <Alert color="red">{selected.error}</Alert>}{selected.payload.notice && <Alert>{selected.payload.notice}</Alert>}{actions(selected)}<StyleJobDetail job={selected} /></article>}
-    <div className="style-job-list">{jobs.map(job => <article key={job.id} className="style-job"><div><Group gap="xs"><strong>{job.kind === "learn" ? "文章学习" : "风格微调"}</strong>{job.status === "completed" && <Badge color={job.payload.applied ? "green" : canApply(job) ? "yellow" : "gray"} variant="light">{job.payload.applied ? "已应用过" : canApply(job) ? "待应用" : "未达标"}</Badge>}</Group><Text size="sm">{styleStatuses[job.status]} · {stylePhases[job.phase] ?? job.phase}{job.kind === "tune" ? ` · ${job.payload.round === 0 ? "基线" : `第 ${job.payload.round} 轮`}` : ""}</Text><Text size="xs" c="dimmed">{!articleId ? `${studio.data.articles.find(a => a.id === job.articleId)?.title || "文章"} · ` : ""}{job.payload.modelName || job.model} · {time(job.createdAt)}</Text>{job.error && <Text c="red" size="sm">{job.error}</Text>}{job.payload.notice && <Text size="sm">{job.payload.notice}</Text>}</div>{actions(job)}</article>)}</div>
+  </>;
+  const entries = jobs.map(job => ({
+    id: `style:${job.id}`, createdAt: job.createdAt,
+    content: <article key={job.id} className="style-job"><div><Group gap="xs"><strong>{job.kind === "learn" ? "文章学习" : "风格微调"}</strong>{job.status === "completed" && <Badge color={job.payload.applied ? "green" : canApply(job) ? "yellow" : "gray"} variant="light">{job.payload.applied ? "已应用过" : canApply(job) ? "待应用" : "未达标"}</Badge>}</Group><Text size="sm">{styleStatuses[job.status]} · {stylePhases[job.phase] ?? job.phase}{job.kind === "tune" ? ` · ${job.payload.round === 0 ? "基线" : `第 ${job.payload.round} 轮`}` : ""}</Text><Text size="xs" c="dimmed">{!articleId ? `${studio.data.articles.find(a => a.id === job.articleId)?.title || "文章"} · ` : ""}{job.payload.modelName || job.model} · {time(job.createdAt)}</Text>{job.error && <Text c="red" size="sm">{job.error}</Text>}{job.payload.notice && <Text size="sm">{job.payload.notice}</Text>}</div>{actions(job)}</article>,
+  }));
+  if (renderList) return <><section className="style-job-history task-history-controls" aria-label="学习历史">{controls}</section>{renderList(entries)}</>;
+  return <section className="style-job-history" aria-label="学习历史">
+    {controls}
+    <div className="style-job-list">{entries.map(entry => entry.content)}</div>
     {!jobs.length && <Text size="sm" c="dimmed">此分类暂无学习记录。</Text>}
     {pages > 1 && <Pagination aria-label="学习历史分页" total={pages} value={page} onChange={setPage} size="sm" />}
   </section>;

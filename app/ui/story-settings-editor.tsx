@@ -142,7 +142,7 @@ export function ArticleSettingsInline() {
 
 type ScopedSettingsLevel = "chapter" | "outline";
 
-export function ScopedSettingsInline({ level, targetId }: { level: ScopedSettingsLevel; targetId: string }) {
+export function ScopedSettingsInline({ level, targetId, includeTaskSettings = true }: { level: ScopedSettingsLevel; targetId: string; includeTaskSettings?: boolean }) {
   const studio = useStudio();
   const article = studio.currentArticle;
   const chapter = level === "chapter"
@@ -165,7 +165,7 @@ export function ScopedSettingsInline({ level, targetId }: { level: ScopedSetting
   const inheritedLabel = level === "chapter"
     ? resolved.inheritedFromChapter?.title ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"
     : "inheritedFromOutline" in resolved && resolved.inheritedFromOutline && typeof resolved.inheritedFromOutline === "object" && "title" in resolved.inheritedFromOutline ? `继承${String(resolved.inheritedFromOutline.title)}` : "继承章节设定";
-  const changeCount = level === "chapter" ? countChapterSettingChanges(settings) : countOutlineSettingChanges(settings);
+  const changeCount = countChapterSettingChanges(includeTaskSettings ? settings : { ...settings, aiTasks: undefined });
   const inheritedStoryCount = STORY_FIELD_KEYS.filter((key) => !settings.story[key]).length;
 
   function commit(next: ChapterSettings, label: string) {
@@ -226,8 +226,8 @@ export function ScopedSettingsInline({ level, targetId }: { level: ScopedSetting
   const inheritedCount = tab === "story" ? inheritedStoryCount : tab === "characters" ? inheritedCharacterCount : inheritedRelationshipCount;
 
   return <div className="inline-story-settings">
-    {level === "chapter" && <ChapterAiSettings chapterId={targetId} />}
-    {level === "outline" && <TaskParameterSettings level="outline" targetId={targetId} />}
+    {includeTaskSettings && level === "chapter" && <ChapterAiSettings chapterId={targetId} />}
+    {includeTaskSettings && level === "outline" && <TaskParameterSettings level="outline" targetId={targetId} />}
     <div className="inline-setting-toolbar">
       <SectionTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setShowInherited(false); }} />
       <div className="inline-setting-summary"><span>{changeCount ? `${levelLabel}修改 ${changeCount} 项` : `${levelLabel}全部继承`} · {inheritedLabel}</span>{inheritedCount > 0 && <button type="button" aria-expanded={showInherited} onClick={() => setShowInherited((value) => !value)}>{showInherited ? "收起继承内容" : `查看继承内容 · ${inheritedCount}`}</button>}</div>

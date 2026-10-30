@@ -46,7 +46,7 @@ export async function listStyleJobs(articleId?: string) {
   const rows = articleId ? await getDatabase().prepare("SELECT id,status FROM style_lab_jobs WHERE article_id=? ORDER BY created_at DESC LIMIT 20").bind(articleId).all<{ id: string; status: string }>() : await getDatabase().prepare("SELECT id,status FROM style_lab_jobs WHERE status IN ('queued','running') ORDER BY created_at LIMIT 20").all<{ id: string; status: string }>();
   return rows.results ?? [];
 }
-export async function listStyleJobHistory(input: { articleId?: string; filter?: string; page?: number }) {
+export async function listStyleJobHistory(input: { articleId?: string; filter?: string; page?: number; paginate?: boolean }) {
   await ensureDatabase();
   const db = getDatabase(); const args: unknown[] = [];
   const where = ["1=1"];
@@ -58,9 +58,9 @@ export async function listStyleJobHistory(input: { articleId?: string; filter?: 
   if (input.filter === "pending") where.push("status='completed' AND COALESCE(json_extract(payload_json,'$.applied'),0)=0 AND (kind<>'tune' OR COALESCE(json_extract(payload_json,'$.bestScore'),-1)>=0)");
   const predicate = where.join(" AND ");
   const total = Number(await db.prepare(`SELECT COUNT(*) AS count FROM style_lab_jobs WHERE ${predicate}`).bind(...args).first<number>("count") ?? 0);
-  const pages = Math.max(1, Math.ceil(total / 20));
+  const pages = input.paginate === false ? 1 : Math.max(1, Math.ceil(total / 20));
   const page = Math.max(1, Math.min(pages, Math.floor(Number(input.page) || 1)));
-  const rows = await db.prepare(`SELECT id,article_id,kind,status,phase,model_id,error,created_at,updated_at,json_remove(payload_json,'$.references','$.outlines','$.analyses','$.applications','$.history','$.modelSnapshot','$.base','$.best','$.candidate','$.rules') AS payload_json FROM style_lab_jobs WHERE ${predicate} ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET ?`).bind(...args, (page - 1) * 20).all<Record<string, unknown>>();
+  const rows = await db.prepare(`SELECT id,article_id,kind,status,phase,model_id,error,created_at,updated_at,json_remove(payload_json,'$.references','$.outlines','$.analyses','$.applications','$.history','$.modelSnapshot','$.base','$.best','$.candidate','$.rules') AS payload_json FROM style_lab_jobs WHERE ${predicate} ORDER BY created_at DESC,id DESC${input.paginate === false ? "" : " LIMIT 20 OFFSET ?"}`).bind(...args, ...(input.paginate === false ? [] : [(page - 1) * 20])).all<Record<string, unknown>>();
   const jobs = (rows.results ?? []).map(fromRow).map(job => ({ ...job, payload: { ...job.payload, references: [], outlines: [], analyses: [], applications: [], history: [] } }));
   const active = Number(await db.prepare("SELECT COUNT(*) AS count FROM style_lab_jobs WHERE status IN ('queued','running','paused')" + (input.articleId ? " AND article_id=?" : "")).bind(...(input.articleId ? [input.articleId] : [])).first<number>("count") ?? 0);
   return { jobs, total, page, pages, active, executionMode: isCloudDatabase() ? "browser" as const : "server" as const };

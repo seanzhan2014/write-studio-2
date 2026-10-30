@@ -28,6 +28,9 @@ test("history pagination, archive, atomic apply/restore and full replacements ke
     assert.equal(result.total, 25); assert.equal(result.jobs.length, 20); assert.equal(result.pages, 2); assert.equal(result.executionMode, "server");
     result = await api("/api/style-lab?articleId=article-main&page=2");
     assert.equal(result.jobs.length, 5); assert.equal(result.jobs.at(-1).id, "history-00");
+    const timeline = await api("/api/style-lab?scope=history&paginate=false");
+    assert.equal(timeline.pages, 1);
+    assert.deepEqual(timeline.jobs.map(job => job.id), Array.from({ length: 25 }, (_, i) => `history-${String(24 - i).padStart(2, "0")}`), "the combined task timeline includes history beyond the first page in submission order");
     native.prepare("UPDATE style_lab_jobs SET kind='tune',status='failed',phase='generate' WHERE id='history-24'").run();
     const summary = await api("/api/style-lab");
     assert.equal(summary.active, 0); assert.equal(summary.total, 25); assert.equal(summary.failed, 1);
@@ -35,6 +38,7 @@ test("history pagination, archive, atomic apply/restore and full replacements ke
     await api("/api/style-lab/history-00", "POST", { action: "archive" });
     assert.equal((await api("/api/style-lab")).total, 24);
     assert.equal((await api("/api/style-lab?articleId=article-main")).total, 24);
+    assert.equal((await api("/api/style-lab?scope=history&paginate=false")).jobs.length, 24);
     assert.equal((await api("/api/style-lab?articleId=article-main&filter=archived")).jobs[0].id, "history-00");
     const before = await api("/api/state"); before.data.articles[0].summary += "完整保存时重建文章";
     await api("/api/state", "PUT", { data: before.data }, { "If-Match": String(before.revision) });

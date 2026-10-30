@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { useStudio } from "@/app/studio-state";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
@@ -11,6 +11,8 @@ import { supportsImages, imageReferenceCapability, imageParameterValues, type Mo
 import { modelSelectionLabel } from "@/lib/model-label";
 import { photoModelOptions, type PhotoModelResolution } from "@/lib/photo-model-resolution";
 import { ResponsiveModal } from "./overlays";
+import { newestTaskFirst } from "@/lib/task-order";
+import type { TaskTimelineEntry } from "./task-timeline";
 
 type Model = { id: string; name: string; providerName: string; hasSecret: boolean; metadata?: ModelMetadata };
 type Provider = { id: string; name: string; hasSecret: boolean; characterLibrary: boolean };
@@ -77,7 +79,7 @@ export function CharacterPhotoEntry({ characterId }: { characterId: string }) {
   return <button type="button" className="photo-entry" onClick={() => openPhotos(characterId)}>{g.coverId && <img src={photoSrc(g.photos.find(p => p.id === g.coverId)!)} alt="人物主图" />}<span><strong>人物照片</strong><small>{g.photos.filter(p => p.status === "approved").length} 张相册照片 · 上传参考、生成与管理</small></span><span aria-hidden>›</span></button>;
 }
 
-export function CharacterPhotoTasks() {
+export function CharacterPhotoTasks({ renderList }: { renderList?: (entries: TaskTimelineEntry[]) => ReactNode } = {}) {
   const [jobs, setJobs] = useState<PhotoJob[]>([]);
   useEffect(() => {
     let stopped = false;
@@ -85,8 +87,13 @@ export function CharacterPhotoTasks() {
     load(); const timer = window.setInterval(load, 4000);
     return () => { stopped = true; window.clearInterval(timer); };
   }, []);
-  if (!jobs.length) return null;
-  return <section className="photo-task-list" aria-label="人物照片任务"><h3>人物照片 <small>{jobs.filter(active).length} 个进行中</small></h3>{jobs.slice(0, 20).map(job => <button key={job.id} type="button" onClick={() => openPhotos(job.characterId)}><span><strong>{job.characterName}</strong><small>{job.snapshot.model.name} · {time(job.createdAt)}</small></span><span>{STATES[job.state]}</span></button>)}</section>;
+  const entries = [...jobs].sort(newestTaskFirst).map(job => ({
+    id: `photo:${job.id}`, createdAt: job.createdAt,
+    content: <button className="photo-task-card" key={job.id} type="button" aria-label={`查看人物照片任务：${job.characterName}`} onClick={() => openPhotos(job.characterId)}><span><strong>{job.characterName}</strong><small>人物照片 · {job.snapshot.model.name} · {time(job.createdAt)}</small></span><span>{STATES[job.state]}</span></button>,
+  }));
+  if (renderList) return renderList(entries);
+  if (!entries.length) return null;
+  return <section className="photo-task-list" aria-label="人物照片任务"><h3>人物照片 <small>{jobs.filter(active).length} 个进行中</small></h3>{entries.map(entry => entry.content)}</section>;
 }
 
 export function CharacterPhotoWorkspace({ characterId }: { characterId: string }) {

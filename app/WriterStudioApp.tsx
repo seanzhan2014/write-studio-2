@@ -31,6 +31,8 @@ import { supportsText, type ModelMetadata } from "@/lib/ai-model-capabilities";
 import { IllustrationGenerator } from "@/app/ui/illustration-generator";
 import { IllustrationTaskResult } from "@/app/ui/illustration-task-result";
 import { taskPhaseLabels } from "@/lib/task-history";
+import { newestTaskFirst } from "@/lib/task-order";
+import { TaskTimeline, type TaskTimelineEntry } from "./ui/task-timeline";
 import { isIllustrationTarget, taskChangesOutline } from "@/lib/task-target";
 
 import { sendChatCompletion } from "@/lib/chat-client";
@@ -3038,6 +3040,11 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
           </div>}
           <AiSettingsInheritance kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} />
           <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} />
+          <section className="generate-article-settings" aria-labelledby="generate-article-settings-heading">
+            <div className="generate-section-heading"><span id="generate-article-settings-heading">文章资料继承</span></div>
+            <p>故事、人物和关系沿用文章、章节与前序大纲的有效设定。可查看来源、修改生效范围，或恢复继承；生成时使用这里的有效资料。</p>
+            <ScopedSettingsInline level="outline" targetId={studio.currentOutline.id} includeTaskSettings={false} />
+          </section>
           <section className="generate-outline-editor">
             <div className="generate-outline-editor-heading">
               <label htmlFor="generate-outline-plan">大纲内容</label>
@@ -5695,7 +5702,7 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
   const [selectedTaskId, setSelectedTaskId] = useState(() => initialTaskId.startsWith("style:") ? "" : initialTaskId);
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 3000); return () => window.clearInterval(timer); }, []);
-  const tasks = [...studio.data.tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const tasks = [...studio.data.tasks].sort(newestTaskFirst);
   const selectedTask = tasks.find((task) => task.id === selectedTaskId);
   const activeCount = tasks.filter((task) => task.state === "running" || task.state === "waiting").length + styleTaskCount;
   const failedCount = tasks.filter((task) => task.state === "failed").length + styleFailureCount;
@@ -5795,6 +5802,29 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
           {!!selectedTask.contextOptions?.reviewMaxRounds && <section className="task-detail-section"><h3>生成后审校</h3><p>已修正 {selectedTask.contextOptions.reviewRound ?? 0} / {selectedTask.contextOptions.reviewMaxRounds} 次</p><details><summary>本次审校规则</summary><div className="task-detail-copy">{selectedTask.contextOptions.reviewRuleSnapshot ? <ReviewRuleSnapshotView snapshot={selectedTask.contextOptions.reviewRuleSnapshot} /> : <>文章通用规则：{selectedTask.contextOptions.reviewRules || "无额外规则"}{"\n\n"}本次指令：{selectedTask.contextOptions.reviewInstruction || "无额外指令"}</>}</div></details></section>}
 </> : null;
 
+  function taskCard(task: AiTask) {
+    const article = studio.data.articles.find((item) => item.id === task.articleId);
+    const chapter = article?.chapters.find((item) => item.id === task.chapterId);
+    const outline = chapter?.outlines.find((item) => item.id === task.outlineId);
+    return <article className="task-card" key={task.id}>
+      <div className="task-state"><span className={`state-dot ${isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state}`} />{isTaskAwaitingAuthor(task) ? "等待作者" : labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
+      <button className="task-title" type="button" aria-label={`查看任务详情：${task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}`} onClick={() => setSelectedTaskId(task.id)}>{task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}</button>
+      <p>{article?.title ?? "未知文章"}{task.target === "全部名称" ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target === "AI Chat" ? "聊天" : task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · ${proseControlsSummary(task.contextOptions)} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
+      <blockquote>{task.prompt || (task.target === "全部名称" ? "使用文章命名设置" : "按大纲生成")}</blockquote>
+      {task.error && <p className="task-error">{task.error}</p>}
+      <TaskHistory task={task} collapsible />
+      <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
+        <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
+        {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
+        {isForeign(task) && !isIllustrationTarget(task.target) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
+        {task.state === "success" && (task.target === "大纲" || task.target === "章节标题") && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
+        {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
+        {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
+      </span></div>
+    </article>;
+  }
+  const taskEntries: TaskTimelineEntry[] = tasks.map(task => ({ id: `task:${task.id}`, createdAt: task.createdAt, content: taskCard(task) }));
+
   return <section className="workspace task-workspace" aria-label="AI 任务工作区">
     <header className="workspace-header"><div className="task-drawer-title">{selectedTask && <IconButton name="back" label="返回任务列表" onClick={() => setSelectedTaskId("")} />}<div><strong>{selectedTask ? (selectedOutline ? outlineDisplayTitle(selectedOutline) : "任务详情") : "AI 任务"}</strong><span>{selectedTask ? taskPhaseLabels[selectedTask.phase ?? "queued"] : activeCount ? String(activeCount) + " 个待处理任务" : failedCount ? `${failedCount} 个任务需要处理` : "没有进行中的任务"}</span></div></div><IconButton name="close" label="关闭 AI 任务" onClick={onClose} /></header>
     {!selectedTask && <nav className="style-task-tabs" aria-label="任务类型"><button type="button" aria-pressed={taskKind === "all"} onClick={() => { setTaskKind("all"); setSelectedTaskId(""); }}>全部任务</button><button type="button" aria-pressed={taskKind === "generate"} onClick={() => { setTaskKind("generate"); setSelectedTaskId(""); }}>生成与对话</button><button type="button" aria-label="学习与微调" aria-pressed={taskKind === "style"} onClick={() => { setTaskKind("style"); setSelectedTaskId(""); }}>学习与微调{styleTaskTotal ? ` · ${styleTaskTotal}` : ""}</button></nav>}
@@ -5824,27 +5854,10 @@ function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: 
           {(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && (selectedTask.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(selectedTask.outlineId, selectedTask.prompt); locate(selectedTask); }}>再次发送</button> : <button type="button" onClick={() => retryTask(selectedTask)}>重新执行</button>)}
           {["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}
         </footer>
-      </section> : <><div className="task-list" data-ui-overlay-scroll>{taskKind === "all" && <StyleJobHistory onOpenArticle={onClose} />}<CharacterPhotoTasks />{tasks.map((task) => {
-        const article = studio.data.articles.find((item) => item.id === task.articleId);
-        const chapter = article?.chapters.find((item) => item.id === task.chapterId);
-        const outline = chapter?.outlines.find((item) => item.id === task.outlineId);
-        return <article className="task-card" key={task.id}>
-          <div className="task-state"><span className={`state-dot ${isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state}`} />{isTaskAwaitingAuthor(task) ? "等待作者" : labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
-          <button className="task-title" type="button" aria-label={`查看任务详情：${task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}`} onClick={() => setSelectedTaskId(task.id)}>{task.target === "全部名称" ? "整篇章节与大纲命名" : outline ? outlineDisplayTitle(outline) : "已删除的大纲"}</button>
-          <p>{article?.title ?? "未知文章"}{task.target === "全部名称" ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target === "AI Chat" ? "聊天" : task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · ${proseControlsSummary(task.contextOptions)} · ${generateTargetWordsLabel(task.contextOptions?.targetWords)}` : ""}</p>
-          <blockquote>{task.prompt || (task.target === "全部名称" ? "使用文章命名设置" : "按大纲生成")}</blockquote>
-          {task.error && <p className="task-error">{task.error}</p>}
-          <TaskHistory task={task} collapsible />
-          <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
-            <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
-            {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
-            {isForeign(task) && !isIllustrationTarget(task.target) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
-            {task.state === "success" && (task.target === "大纲" || task.target === "章节标题") && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
-            {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
-            {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
-          </span></div>
-        </article>;
-      })}{!tasks.length && (taskKind === "generate" || !styleTaskTotal) && <div className="empty-inline">暂无 AI 任务</div>}</div>
+      </section> : <><div className="task-list" data-ui-overlay-scroll>{taskKind === "all"
+        ? <StyleJobHistory onOpenArticle={onClose} renderList={styleEntries => <CharacterPhotoTasks renderList={photoEntries => <TaskTimeline entries={[...taskEntries, ...styleEntries, ...photoEntries]} />} />} />
+        : <CharacterPhotoTasks renderList={photoEntries => <TaskTimeline entries={[...taskEntries, ...photoEntries]} />} />
+      }</div>
       <footer><span>生成并发 {generateRunningCount} / {studio.data.settings.taskConcurrency}{chatRunningCount ? ` · Chat ${chatRunningCount}` : ""}</span><span className="task-footer-actions"><button type="button" disabled={!completedCount} onClick={() => studio.clearCompletedTasks()}>清空已完成{completedCount ? ` (${completedCount})` : ""}</button><button type="button" onClick={() => { onClose(); window.history.pushState({}, "", "/settings/tasks"); window.dispatchEvent(new PopStateEvent("popstate")); }}>任务设置 →</button></span></footer></>}
     </div></>}
     </div>
