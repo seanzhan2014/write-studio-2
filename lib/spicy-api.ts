@@ -155,7 +155,6 @@ export function spicyImageInput(model: SpicyModel, prompt: string, options: Spic
   if (!prompt.trim() || prompt.length < (fields.prompt.minLength ?? 1) || prompt.length > (fields.prompt.maxLength ?? 12000)) throw new Error(`此模型的提示词长度应为 ${fields.prompt.minLength ?? 1}–${fields.prompt.maxLength ?? 12000} 字符`);
   if (options.size && (options.aspectRatio || options.resolution)) throw new Error("尺寸与比例、分辨率请分别选择一种方式");
   const parameters = validateImageParameters(options.parameters, { adapterKind: "spicyapi" });
-  for (const key of Object.keys(parameters)) if (!fields[key]) throw new Error(`此图像模型不支持高级参数 ${key}，请刷新模型目录或移除该参数`);
   const input: Record<string, unknown> = { ...parameters, prompt };
   if (options.negativePrompt?.trim()) {
     const key = ["negative_prompt", "negativePrompt"].find(key => fields[key]?.type === "string");
@@ -179,7 +178,7 @@ export function spicyImageInput(model: SpicyModel, prompt: string, options: Spic
     input[key] = value;
   }
   // Do not inject OpenAI's n or default size into model-specific schemas.
-  if (fields.num_outputs) input.num_outputs = 1;
+  if (fields.num_outputs && input.num_outputs === undefined) input.num_outputs = 1;
   if (!schemaAccepts(schema!, input)) throw new Error("图片参数不符合此模型的实时结构，请检查参考图数量或刷新模型目录");
   return input;
 }

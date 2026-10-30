@@ -14,11 +14,15 @@ test("comma-separated image parameters preserve numeric, boolean and string valu
   assert.deepEqual(parseImageParameterText(" , ， \n", moss), {});
 });
 
-test("parameter parsing reports duplicates, malformed values and unsupported fields before any request", () => {
-  for (const text of ['seed=1,seed=2', 'steps', 'steps=1.5', 'steps=0', 'cfgScale=0', 'width=1025', 'seed=9007199254740992', 'sampler=unknown', 'scheduler=linear_quadratic', 'sampler="unclosed', 'sampler="heun,pp2"', 'seed="42"', 'allowMatureContent=true', 'enableSafetyChecker=false', 'prompt=test', 'engine=comfy', 'diffusionModel=other', 'quantity=4', '__proto__=true']) assert.throws(() => parseImageParameterText(text, moss), undefined, text);
-  assert.throws(() => validateImageParameters({ unknown: true }), /不支持/);
+test("parameter parsing validates structure without a provider parameter allowlist", () => {
+  for (const text of ['seed=1,seed=2', 'steps', 'seed=9007199254740992', 'sampler="unclosed', '__proto__=true', 'constructor=true', 'workflow.__proto__=true', 'data={"__proto__":true}', 'data=[1,2', 'data={"x":1]', 'data=[1,]']) assert.throws(() => parseImageParameterText(text, moss), undefined, text);
+  const custom = { allowMatureContent: true, custom_flag: false, steps: 0, cfgScale: 0, width: 1025, sampler: "future_sampler", scheduler: "linear_quadratic", "workflow.futureField": { values: [0, false, null, "a,b"] }, "query.custom-option": "value", seed: null };
+  assert.deepEqual(parseImageParameterText(formatImageParameterText(custom), moss), custom);
+  assert.deepEqual(validateImageParameters({ unknown: true }), { unknown: true });
   assert.throws(() => validateImageParameters({ steps: Infinity }, moss), /无效/);
-  assert.throws(() => validateImageParameters({ seed: {} }, moss), /无效/);
+  assert.throws(() => validateImageParameters({ custom: undefined }, moss), /无效/);
+  assert.throws(() => validateImageParameters({ custom: new Date() }, moss), /无效/);
+  assert.deepEqual(parseImageParameterText('custom={"a":[1,2],"b":"x,y"},seed=0', moss), { custom: { a: [1, 2], b: "x,y" }, seed: 0 });
 });
 
 test("provider-specific validation and default restoration retain existing MOSS and SD behavior", () => {
@@ -26,6 +30,6 @@ test("provider-specific validation and default restoration retain existing MOSS 
   assert.equal(defaultImageParameters({ ...moss, modelId: moss.modelId.replace("3426693", "999") }).steps, 25);
   const sd = { adapterKind: "civitai", modelId: "urn:air:sdxl:checkpoint:civitai:1@2" };
   assert.deepEqual(parseImageParameterText("sampleMethod=heun,schedule=karras,clipSkip=2,uCache=off", sd), { sampleMethod: "heun", schedule: "karras", clipSkip: 2, uCache: "off" });
-  assert.throws(() => validateImageParameters({ clipSkip: 2 }, moss), /不支持/);
-  assert.throws(() => validateImageParameters({ steps: 12 }, {}), /不支持/);
+  assert.deepEqual(validateImageParameters({ clipSkip: 2 }, moss), { clipSkip: 2 });
+  assert.deepEqual(validateImageParameters({ steps: 12 }, {}), { steps: 12 });
 });

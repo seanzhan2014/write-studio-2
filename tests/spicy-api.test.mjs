@@ -80,8 +80,9 @@ test("Spicy image settings follow the current schema and preserve false and zero
   const configured = { ...model, inputSchema: { ...model.inputSchema, additionalProperties: false, properties: { ...model.inputSchema.properties, seed: { type: "integer" }, enable_prompt_expansion: { type: "boolean" } } } };
   const input = spicyImageInput(configured, "A tree", { parameters: { seed: 0, enable_prompt_expansion: false } });
   assert.equal(input.seed, 0); assert.equal(input.enable_prompt_expansion, false);
-  assert.throws(() => spicyImageInput(model, "A tree", { parameters: { seed: 42 } }), /不支持高级参数/);
-  assert.throws(() => spicyImageInput(configured, "A tree", { parameters: { steps: 20 } }), /不支持高级参数/);
+  assert.throws(() => spicyImageInput(configured, "A tree", { parameters: { steps: 20 } }), /实时结构/);
+  const extensible = { ...configured, inputSchema: { ...configured.inputSchema, additionalProperties: true } };
+  assert.deepEqual(spicyImageInput(extensible, "A tree", { parameters: { custom: { flag: false }, seed: 0 } }).custom, { flag: false });
 });
 
 test("reference models are discovered with image capabilities and preserve URI order in native input", async t => {

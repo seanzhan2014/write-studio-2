@@ -87,15 +87,30 @@ test("MOSS generation uses the Comfy SFT workflow, exact file, turbo settings an
   assert.throws(() => civitaiImageInput(mossId, "test", { referenceImages: ["https://example.com/reference.png"] }), /不支持人物参考图/);
 });
 
-test("configured image parameters override defaults while runtime dimensions and model identity remain authoritative", () => {
+test("configured image parameters override adapter defaults and explicit runtime values take precedence", () => {
   const input = civitaiImageInput(mossId, "A tree", { parameters: { steps: 18, cfgScale: 2, seed: 0, sampler: "euler", scheduler: "karras", width: 1216, height: 832 } });
   assert.equal(input.steps, 18); assert.equal(input.cfgScale, 2); assert.equal(input.seed, 0);
   assert.equal(input.sampler, "euler"); assert.equal(input.scheduler, "karras");
   assert.equal(input.width, 1216); assert.equal(input.height, 832); assert.equal(input.diffusionModel, mossId);
   assert.equal(civitaiImageInput(mossId, "A tree", { size: "1024x1024", parameters: { width: 1216 } }).width, 1024);
-  assert.throws(() => civitaiImageInput(mossId, "A tree", { parameters: { engine: "other" } }), /不支持/);
+  assert.equal(civitaiImageInput(mossId, "A tree", { parameters: { engine: "future_engine", custom: { value: true }, width: 1025 } }).engine, "future_engine");
+  assert.equal(civitaiImageInput(mossId, "A tree", { parameters: { width: 1025 } }).width, 1025);
   const sd = civitaiImageInput(id, "A tree", { parameters: { sampleMethod: "heun", schedule: "karras", steps: 28, cfgScale: 6, seed: 42, clipSkip: 2 } });
   assert.equal(sd.sampleMethod, "heun"); assert.equal(sd.schedule, "karras"); assert.equal(sd.seed, 42);
+});
+
+test("Civitai routes workflow and query parameters without restricting future image fields", async t => {
+  const calls = mockFetch(t, () => Response.json({ id: "wf_custom", status: "succeeded", steps: [{ output: { images: [{ url: "https://images.example/tree.png" }] } }] }));
+  await generateCivitaiImage(connection, "A tree", { parameters: { allowMatureContent: true, currencies: ["yellow"], "workflow.futureFlag": false, "query.futureQuery": 0, "query.hideMatureContent": true, customInput: { values: [0, false] } } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.searchParams.get("futureQuery"), "0");
+  assert.equal(calls[0].url.searchParams.get("hideMatureContent"), "true");
+  assert.equal(calls[0].body.allowMatureContent, true);
+  assert.equal(calls[0].body.futureFlag, false);
+  assert.deepEqual(calls[0].body.currencies, ["yellow"]);
+  assert.deepEqual(calls[0].body.steps[0].input.customInput, { values: [0, false] });
+  assert.equal("allowMatureContent" in calls[0].body.steps[0].input, false);
+  assert.throws(() => civitaiImageInput(id, "A tree", { parameters: { allowMatureContent: false, "workflow.allowMatureContent": true } }), /重复/);
 });
 
 test("MOSS generation uses the version alias only after verifying the requested primary file", async t => {
@@ -299,10 +314,11 @@ test("native image input validates the AIR, prompt, dimensions and unsupported c
 test("native generation submits once and polls for imageGen output without OpenAI endpoints", async t => {
   t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => { const timer = setInterval(() => { clearInterval(timer); callback(...args); }, delay === 2000 ? 1 : delay); return timer; });
   const calls = mockFetch(t, (call, calls) => calls.length === 1 ? Response.json({ id: "wf_test", status: "processing" }, { status: 202 }) : Response.json({ id: "wf_test", status: "succeeded", steps: [{ output: { images: [{ url: "https://images.example/output.png" }] } }] }));
-  const result = await generateCivitaiImage(connection, "A lighthouse");
+  const result = await generateCivitaiImage(connection, "A lighthouse", { parameters: { "query.hideMatureContent": true } });
   assert.deepEqual(result, { data: [{ url: "https://images.example/output.png" }] });
-  assert.equal(calls[0].url.href, "https://orchestration.civitai.com/v2/consumer/workflows?wait=0");
+  assert.equal(calls[0].url.href, "https://orchestration.civitai.com/v2/consumer/workflows?wait=0&hideMatureContent=true");
   assert.equal(calls[1].url.pathname, "/v2/consumer/workflows/wf_test");
+  assert.equal(calls[1].url.searchParams.get("hideMatureContent"), "true");
   assert.equal(calls[0].body.steps[0].input.checkpointModel, id);
   assert.equal(calls[0].body.steps[0].input.quantity, 1);
   assert.equal(calls[0].body.steps[0].$type, "imageGen");

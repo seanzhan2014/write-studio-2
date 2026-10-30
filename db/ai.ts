@@ -817,13 +817,13 @@ export async function requestModelImage(model: AiModelRecord, prompt: string, op
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   try {
-    const fields = { ...parameters, model: model.modelId, prompt, n: 1, ...(size ? { size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) };
+    const fields = { model: model.modelId, n: 1, ...(size ? { size } : {}), ...parameters, prompt, ...(options.size ? { size: options.size } : {}), ...(options.quality ? { quality: options.quality } : {}), ...(options.aspectRatio ? { aspect_ratio: options.aspectRatio } : {}), ...(options.resolution ? { resolution: options.resolution } : {}) };
     const references = options.referenceImages || [];
     let body: BodyInit = JSON.stringify({ ...fields, ...(references.length ? { input_references: references.map(url => ({ type: "image_url", image_url: { url } })) } : {}) });
     const headers: Record<string, string> = { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" };
     if (references.length && !openRouter) {
       const form = new FormData();
-      Object.entries(fields).forEach(([key, value]) => form.set(key, String(value)));
+      Object.entries(fields).forEach(([key, value]) => form.set(key, value !== null && typeof value === "object" ? JSON.stringify(value) : String(value)));
       references.forEach((src, index) => {
         const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(src);
         if (!match) throw new AiInputError("参考照片必须是已保存的本地图片");

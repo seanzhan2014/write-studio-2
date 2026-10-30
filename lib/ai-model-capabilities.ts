@@ -1,3 +1,5 @@
+import type { ImageParameters } from "./image-model-parameters";
+
 export type ModelTestResult = { ok: boolean; checkedAt: string; latencyMs: number; message: string };
 export type ModelMetadata = {
   source: "provider" | "manual" | "legacy";
@@ -6,7 +8,7 @@ export type ModelMetadata = {
   supportedParameters?: Record<string, unknown> | string[];
   contextLength?: number;
   tests?: Partial<Record<"text" | "image", ModelTestResult>>;
-  imageParameters?: Record<string, string | number | boolean>;
+  imageParameters?: ImageParameters;
 };
 export type CatalogModel = { id: string; name: string; metadata: ModelMetadata; searchTerms?: string[] };
 export type ModelCatalog = { catalog: CatalogModel[]; syncedAt: string; warnings: string[] };

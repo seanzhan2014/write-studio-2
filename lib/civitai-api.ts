@@ -240,7 +240,23 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
   }
 }
 
-export function civitaiImageInput(modelId: string, prompt: string, options: ImageOptions = {}) {
+// Routing information, not an allowlist: unrecognized names remain image input.
+// Explicit prefixes also support future workflow/query fields without an update.
+// `steps` without a prefix is the image sampling count; workflow.steps must be explicit.
+const workflowParameterNames = new Set("metadata tags callbacks tips arguments nsfwLevel downloadPriority tier experimental allowMatureContent upgradeMode currencies fund ephemeral externalId".split(" "));
+function civitaiParameters(parameters?: ImageParameters) {
+  const input: ImageParameters = {}, workflow: ImageParameters = {}, query: ImageParameters = {};
+  for (const [name, value] of Object.entries(validateImageParameters(parameters))) {
+    const prefix = /^(workflow|query)\.(.+)$/.exec(name);
+    const target = prefix ? prefix[1] === "workflow" ? workflow : query : workflowParameterNames.has(name) ? workflow : ["wait", "whatif", "hideMatureContent"].includes(name) ? query : input;
+    const key = prefix ? prefix[2] : name;
+    if (name === "workflow." || name === "query." || Object.hasOwn(target, key)) throw new Error(`Civitai 参数「${name}」格式无效或重复`);
+    target[key] = value;
+  }
+  return { input, workflow, query };
+}
+
+export function civitaiImageInput(modelId: string, prompt: string, options: ImageOptions = {}): ImageParameters {
   const canonicalId = modelId.trim().toLowerCase();
   const match = canonicalId.match(AIR);
   if (!match) throw new Error("Civitai 需要完整的 SD1.5 / SDXL / MOSS Image Checkpoint AIR ID，例如 urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739");
@@ -248,19 +264,20 @@ export function civitaiImageInput(modelId: string, prompt: string, options: Imag
   if (options.referenceImages?.length) throw new Error("此 Civitai 接入暂不支持人物参考图，请移除参考图后生成");
   if (options.quality || options.resolution || options.aspectRatio) throw new Error("此 Civitai 模型请使用图片尺寸设置，画质、比例和分辨率应选模型默认");
   const context = { adapterKind: "civitai", modelId: canonicalId };
-  const parameters = validateImageParameters(options.parameters, context);
+  const parameters = civitaiParameters(options.parameters).input;
   const size = options.size || sizes(match[1])[0];
   const dimensions = /^(\d{2,4})x(\d{2,4})$/.exec(size);
-  const width = Number(!options.size && parameters.width !== undefined ? parameters.width : dimensions?.[1]), height = Number(!options.size && parameters.height !== undefined ? parameters.height : dimensions?.[2]);
+  const width = Number(dimensions?.[1]), height = Number(dimensions?.[2]);
   if (!dimensions || [width, height].some(value => value < 64 || value > 2048 || value % 16)) throw new Error("Civitai 图片宽高须为 64–2048 且为 16 的倍数");
-  const shared = { operation: "createImage", prompt: prompt.trim(), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}), width, height, quantity: 1 };
+  const shared = { operation: "createImage", prompt: prompt.trim(), width, height, quantity: 1 };
+  const explicit = { prompt: prompt.trim(), ...(options.size ? { width, height } : {}), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}) };
   if (match[1] === "mossimage") {
     // Artshoot recommends 12 steps / CFG 1 / heunpp2. Civitai's scheduler enum
     // does not expose linear_quadratic, so use its supported MOSS default.
-    return { ...defaultImageParameters(context), ...parameters, ...shared, engine: "comfy", ecosystem: "mossImage", model: "sft", diffusionModel: canonicalId };
+    return { ...defaultImageParameters(context), ...shared, engine: "comfy", ecosystem: "mossImage", model: "sft", diffusionModel: canonicalId, ...parameters, ...explicit };
   }
   // The OpenAPI schema calls this checkpointModel (the recipe prose uses model).
-  return { ...parameters, ...shared, engine: "sdcpp", ecosystem: match[1], checkpointModel: canonicalId };
+  return { ...shared, engine: "sdcpp", ecosystem: match[1], checkpointModel: canonicalId, ...parameters, ...explicit };
 }
 
 function pause(ms: number, signal: AbortSignal) {
@@ -280,12 +297,16 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   const endpoint = `${civitaiBaseUrls(connection.baseUrl).generation}/workflows`;
+  const parameters = civitaiParameters(options.parameters);
+  const submissionUrl = new URL(endpoint);
+  submissionUrl.searchParams.set("wait", "0");
+  for (const [key, value] of Object.entries(parameters.query)) submissionUrl.searchParams.set(key, typeof value === "string" ? value : JSON.stringify(value));
   const externalId = crypto.randomUUID();
   let workflowId = "", submitted = false;
   try {
     controller.signal.throwIfAborted();
     const parsed = parseCivitaiAir(connection.modelId);
-    if (parsed?.ecosystem === "mossimage" && parsed.fileId) {
+    if (parsed?.ecosystem === "mossimage" && parsed.fileId && input.diffusionModel === connection.modelId.trim().toLowerCase()) {
       const version = await api<Version & { modelId?: number }>(`${civitaiBaseUrls(connection.baseUrl).catalog}/model-versions/${parsed.versionId}`, connection.secret, controller.signal);
       const file = version.files?.find(file => String(file.id) === parsed.fileId);
       const resolved = parseCivitaiAir(version.air || "");
@@ -295,7 +316,7 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
       if (file.primary === true) input = { ...input, diffusionModel: version.air!.split("+")[0] };
     }
     submitted = true;
-    let workflow = await api<Workflow>(`${endpoint}?wait=0`, connection.secret, controller.signal, { externalId, currencies: ["blue", "green", "yellow"], steps: [{ $type: "imageGen", input }] });
+    let workflow = await api<Workflow>(submissionUrl.href, connection.secret, controller.signal, { externalId, currencies: ["blue", "green", "yellow"], steps: [{ $type: "imageGen", input }], ...parameters.workflow });
     workflowId = workflow?.id || "";
     if (!workflowId) throw new Error("Civitai 未返回生成任务 ID");
     let attempt = 0;
@@ -312,7 +333,9 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
       }
       if (!["unassigned", "preparing", "scheduled", "processing"].includes(workflow.status || "")) throw new Error("Civitai 返回了未知任务状态");
       await pause([2000, 5000, 10000, 15000][Math.min(attempt++, 3)], controller.signal);
-      workflow = await api<Workflow>(`${endpoint}/${encodeURIComponent(workflowId)}`, connection.secret, controller.signal);
+      const pollUrl = new URL(`${endpoint}/${encodeURIComponent(workflowId)}`);
+      if (Object.hasOwn(parameters.query, "hideMatureContent")) pollUrl.searchParams.set("hideMatureContent", submissionUrl.searchParams.get("hideMatureContent")!);
+      workflow = await api<Workflow>(pollUrl.href, connection.secret, controller.signal);
     }
   } catch (error) {
     const detail = controller.signal.aborted ? controller.signal.reason === "timeout" ? "Civitai 图像生成等待超时，可增加连接超时时间" : "已停止等待 Civitai 图像任务" : error instanceof Error ? error.message : "Civitai 图像生成失败";
