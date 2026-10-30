@@ -338,6 +338,24 @@ test("native generation submits once and polls for imageGen output without OpenA
   assert.equal(calls.filter(call => call.method === "POST").length, 1);
 });
 
+test("unavailable Civitai outputs report the provider reason even when a download URL is present", async t => {
+  const calls = mockFetch(t, () => Response.json({ id: "wf_unavailable", status: "succeeded", steps: [{ output: { images: [{ available: false, blockedReason: "Potentially ToS violating content detected", url: "https://images.example/unavailable.png" }] } }] }));
+  await assert.rejects(generateCivitaiImage(connection, "A tree"), error => {
+    assert.match(error.message, /Civitai 图片不可用：Potentially ToS violating content detected/);
+    assert.match(error.message, /wf_unavailable/);
+    return true;
+  });
+  assert.equal(calls.length, 1, "an unavailable output must not trigger download or a second generation");
+  for (const output of [{ blobs: [{ available: false, url: "https://images.example/unavailable.png" }] }, { images: [{ blockedReason: `blocked ${connection.secret}`, url: "https://images.example/unavailable.png" }] }]) {
+    t.mock.restoreAll();
+    mockFetch(t, () => Response.json({ id: "wf_unavailable", status: "succeeded", steps: [{ output }] }));
+    await assert.rejects(generateCivitaiImage(connection, "A tree"), error => { assert.match(error.message, /Civitai 图片不可用/); assert.ok(!error.message.includes(connection.secret)); return true; });
+  }
+  t.mock.restoreAll();
+  mockFetch(t, () => Response.json({ id: "wf_mixed", status: "succeeded", steps: [{ output: { images: [{ available: false, url: "https://images.example/unavailable.png" }, { available: true, url: "https://images.example/available.png" }] } }] }));
+  assert.equal((await generateCivitaiImage(connection, "A tree")).data[0].url, "https://images.example/available.png");
+});
+
 test("failed, missing, malformed and timed-out workflows never retry submission or leak credentials", async t => {
   for (const [payload, message] of [[{ id: "wf_failed", status: "failed", steps: [{ reason: `invalid ${connection.secret}` }] }, /wf_failed/], [{ status: "succeeded" }, /任务 ID/], [{ id: "wf_no_image", status: "succeeded", steps: [] }, /没有返回可用图片/], [{ id: "wf_invalid", status: "unknown" }, /未知任务状态/]]) {
     t.mock.restoreAll(); const calls = mockFetch(t, () => Response.json(payload));

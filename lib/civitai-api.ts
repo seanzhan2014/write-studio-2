@@ -5,7 +5,8 @@ type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs:
 type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string; parameters?: ImageParameters };
 type Resource = { id?: number; name?: string; type?: string; mode?: string; supportsGeneration?: boolean; modelVersions?: Version[] };
 type Version = { id?: number; name?: string; baseModel?: string; air?: string; supportsGeneration?: boolean; files?: Array<{ id?: number; name?: string; type?: string; primary?: boolean }> };
-type Workflow = { id?: string; status?: string; steps?: Array<{ reason?: unknown; blockedReason?: unknown; output?: { images?: Array<{ url?: string }>; blobs?: Array<{ url?: string }> } }> };
+type WorkflowImage = { url?: string; available?: boolean; blockedReason?: unknown };
+type Workflow = { id?: string; status?: string; steps?: Array<{ reason?: unknown; blockedReason?: unknown; output?: { images?: WorkflowImage[]; blobs?: WorkflowImage[] } }> };
 const AIR = /^urn:air:(sd1|sdxl|mossimage):checkpoint:civitai:[1-9]\d*@[1-9]\d*(?:\+[1-9]\d*)?$/;
 const PAGE_SIZE = 10;
 const MAX_PAGES = 3;
@@ -307,8 +308,16 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
     while (true) {
       if (workflow.status === "succeeded") {
         const outputs = workflow.steps?.flatMap(step => [...(step.output?.images ?? []), ...(step.output?.blobs ?? [])]) ?? [];
-        const image = outputs.find(blob => typeof blob.url === "string" && /^https?:\/\//.test(blob.url));
-        if (!image) throw new Error("Civitai 任务已完成，但没有返回可用图片");
+        const image = outputs.find(blob => blob.available !== false && !blob.blockedReason && typeof blob.url === "string" && /^https?:\/\//.test(blob.url));
+        if (!image) {
+          const unavailable = outputs.find(blob => blob.available === false || blob.blockedReason);
+          const blockedStep = workflow.steps?.find(step => step.blockedReason);
+          if (unavailable || blockedStep) {
+            const reason = redact(unavailable?.blockedReason || blockedStep?.blockedReason || "服务商已将输出图片标记为不可用", connection.secret);
+            throw new Error(`Civitai 图片不可用：${reason}`);
+          }
+          throw new Error("Civitai 任务已完成，但没有返回可用图片");
+        }
         return { data: [{ url: image.url }] };
       }
       if (["failed", "expired", "canceled"].includes(workflow.status || "")) {
