@@ -68,7 +68,7 @@ for (const moss of [false, true]) test(`Civitai ${moss ? "MOSS file-pinned" : "S
   assert.equal(invalid.status, 400);
   model = (await api("/api/models/bulk", { providerId: provider.id, modelIds: [id], metadataByModelId: { [id]: discovered.catalog[0].metadata } })).models[0];
   assert.equal(model.adapterKind, "civitai");
-  const imageParameters = { ...(moss ? { steps: 18, cfgScale: 2, seed: 42, sampler: "euler", scheduler: "karras", width: 1344, height: 768 } : { steps: 28, cfgScale: 6, seed: 42, sampleMethod: "heun", schedule: "karras", clipSkip: 1 }), allowMatureContent: true, customInput: { flag: false }, "workflow.futureFlag": 0 };
+  const imageParameters = { ...Object.fromEntries(Object.entries(moss ? { steps: 18, cfgScale: 2, seed: 42, sampler: "euler", scheduler: "karras", width: 1344, height: 768 } : { steps: 28, cfgScale: 6, seed: 42, sampleMethod: "heun", schedule: "karras", clipSkip: 1 }).map(([key, value]) => [`input.${key}`, value])), "workflow.allowMatureContent": true, "input.customInput": { flag: false }, "workflow.futureFlag": 0 };
   model = await api(`/api/models/${model.id}`, { metadata: { ...model.metadata, imageParameters } }, "PATCH");
   assert.deepEqual((await api("/api/models")).models.find(entry => entry.id === model.id).metadata.imageParameters, imageParameters);
   const invalidSettings = await fetch(`${baseUrl}/api/models/${model.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ metadata: { ...model.metadata, imageParameters: [] } }) });

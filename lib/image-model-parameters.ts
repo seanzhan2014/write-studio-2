@@ -86,6 +86,63 @@ export function formatImageParameterText(parameters: ImageParameters) {
   return Object.entries(parameters).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(", ");
 }
 
+// Legacy unprefixed workflow names still resolve to their original location.
+// New editor saves explicit prefixes so identical names can exist in both scopes.
+const workflowParameterNames = new Set("metadata tags callbacks tips arguments nsfwLevel downloadPriority tier experimental allowMatureContent upgradeMode currencies fund ephemeral externalId".split(" "));
+export function splitCivitaiParameters(parameters?: ImageParameters) {
+  const input: ImageParameters = {}, workflow: ImageParameters = {}, query: ImageParameters = {};
+  for (const [name, value] of Object.entries(validateImageParameters(parameters))) {
+    const prefix = /^(input|workflow|query)\.(.+)$/.exec(name);
+    const target = prefix ? prefix[1] === "workflow" ? workflow : prefix[1] === "query" ? query : input : workflowParameterNames.has(name) ? workflow : ["wait", "whatif", "hideMatureContent"].includes(name) ? query : input;
+    const key = prefix ? prefix[2] : name;
+    if (["input.", "workflow.", "query."].includes(name) || Object.hasOwn(target, key)) throw new Error(`Civitai 参数「${name}」格式无效或重复`);
+    target[key] = value;
+  }
+  return { input, workflow, query };
+}
+
+export type ImageParameterDraft = { values: Record<string, string>; extra: string; workflow: string };
+const basicParameterNames = ["steps", "cfgScale", "seed", "sampler", "sampleMethod", "scheduler", "schedule"];
+export function basicImageParameterKeys(context: ImageParameterContext) {
+  const suggestions = imageParameterSuggestions(context);
+  return basicParameterNames.filter(key => suggestions[key]);
+}
+
+export function imageParameterDraft(parameters: ImageParameters = {}, context: ImageParameterContext): ImageParameterDraft {
+  const profile = imageParameterProfile(context);
+  const scoped = profile === "moss" || profile === "sd" ? splitCivitaiParameters(parameters) : { input: parameters, workflow: {}, query: {} };
+  const editable = basicImageParameterKeys(context).filter(key => typeof scoped.input[key] === "number" || typeof scoped.input[key] === "string");
+  const topLevel = Object.fromEntries([
+    ...Object.entries(scoped.workflow).map(([key, value]) => [/^(?:query|workflow)\./.test(key) ? `workflow.${key}` : key, value]),
+    ...Object.entries(scoped.query).map(([key, value]) => [`query.${key}`, value]),
+  ]);
+  return {
+    values: Object.fromEntries(editable.map(key => [key, String(scoped.input[key])])),
+    extra: formatImageParameterText(Object.fromEntries(Object.entries(scoped.input).filter(([key]) => !editable.includes(key)))),
+    workflow: formatImageParameterText(topLevel),
+  };
+}
+
+export function readImageParameterDraft(draft: ImageParameterDraft, context: ImageParameterContext) {
+  const parameters = parseImageParameterText(draft.extra, context);
+  const suggestions = imageParameterSuggestions(context);
+  for (const [key, value] of Object.entries(draft.values)) {
+    if (!value.trim()) continue;
+    if (Object.hasOwn(parameters, key)) throw new Error(`图片参数「${key}」已在上方设置，请从额外参数中移除重复项`);
+    parameters[key] = suggestions[key]?.type === "number" ? Number(value) : value;
+  }
+  const profile = imageParameterProfile(context);
+  if (profile !== "moss" && profile !== "sd") return validateImageParameters(parameters, context);
+  const result: ImageParameters = Object.fromEntries(Object.entries(parameters).map(([key, value]) => [`input.${key}`, value]));
+  for (const [key, value] of Object.entries(parseImageParameterText(draft.workflow, context))) {
+    const name = /^(?:workflow|query)\./.test(key) ? key : `workflow.${key}`;
+    if (Object.hasOwn(result, name)) throw new Error(`工作流参数「${key}」重复，请只填写一次`);
+    result[name] = value;
+  }
+  splitCivitaiParameters(result);
+  return validateImageParameters(result, context);
+}
+
 export function defaultImageParameters(context: ImageParameterContext): ImageParameters {
   const profile = imageParameterProfile(context);
   if (profile === "moss") {

@@ -11,7 +11,7 @@ test.beforeEach(async ({ request, page }) => {
 
 test("image model advanced settings validate comma parameters, persist edits and restore defaults", async ({ page }, info) => {
   test.setTimeout(60000);
-  let metadata: Record<string, unknown> = { source: "provider", inputModalities: ["text"], outputModalities: ["image"] };
+  let metadata: Record<string, unknown> = { source: "provider", inputModalities: ["text"], outputModalities: ["image"], imageParameters: { allowMatureContent: true, width: 1216 } };
   let saves = 0;
   const model = { id: "moss", providerId: "civitai", providerName: "Civitai", adapterKind: "civitai", name: "Ray Moss Artshoot", modelId: "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739", baseUrl: "https://civitai.com/api/v1", hasSecret: true };
   await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "civitai", name: "Civitai", baseUrl: model.baseUrl, adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 }] } }));
@@ -25,6 +25,9 @@ test("image model advanced settings validate comma parameters, persist edits and
   await dialog.getByText("图像模型高级设置", { exact: true }).click();
   await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveAttribute("placeholder", "12");
   await expect(dialog).toContainText("模型默认：1");
+  const workflow = dialog.getByRole("textbox", { name: "工作流参数（顶层）", exact: true });
+  await expect(workflow).toHaveValue("allowMatureContent=true");
+  await expect(dialog.getByRole("textbox", { name: "额外图片参数", exact: true })).toHaveValue("width=1216");
   await dialog.getByLabel("采样步数", { exact: true }).fill("18");
   await dialog.getByLabel("CFG", { exact: true }).fill("2");
   await dialog.getByLabel("Seed", { exact: true }).fill("42");
@@ -39,20 +42,23 @@ test("image model advanced settings validate comma parameters, persist edits and
   await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
   await expect(dialog.getByRole("alert")).toContainText("重复");
   expect(saves).toBe(0);
-  await extra.fill('width=1216,height=1025,allowMatureContent=true,custom={"values":[0,false]}');
+  await extra.fill('width=1216,height=1025,custom={"values":[0,false]}');
+  await workflow.fill('allowMatureContent=true,currencies=["yellow"],futureFlag=false,query.hideMatureContent=true');
   await page.screenshot({ path: info.outputPath("image-model-advanced.png"), fullPage: true });
   await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
   await expect(dialog).toBeHidden();
-  expect(metadata.imageParameters).toEqual({ steps: 18, cfgScale: 2, seed: 42, sampler: "future_sampler", scheduler: "future_schedule", width: 1216, height: 1025, allowMatureContent: true, custom: { values: [0, false] } });
+  expect(metadata.imageParameters).toEqual({ "input.steps": 18, "input.cfgScale": 2, "input.seed": 42, "input.sampler": "future_sampler", "input.scheduler": "future_schedule", "input.width": 1216, "input.height": 1025, "input.custom": { values: [0, false] }, "workflow.allowMatureContent": true, "workflow.currencies": ["yellow"], "workflow.futureFlag": false, "query.hideMatureContent": true });
   await page.reload();
   await row.getByRole("button", { name: "编辑", exact: true }).click();
   await dialog.getByText("图像模型高级设置", { exact: true }).click();
   await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveValue("18");
-  await expect(extra).toHaveValue('width=1216, height=1025, allowMatureContent=true, custom={"values":[0,false]}');
+  await expect(extra).toHaveValue('width=1216, height=1025, custom={"values":[0,false]}');
+  await expect(workflow).toHaveValue('allowMatureContent=true, currencies=["yellow"], futureFlag=false, query.hideMatureContent=true');
   await expect(dialog.getByLabel("采样器", { exact: true })).toHaveValue("future_sampler");
   await dialog.getByRole("button", { name: "恢复图像模型默认参数", exact: true }).click();
   await expect(dialog.getByLabel("采样步数", { exact: true })).toHaveValue("");
   await expect(extra).toHaveValue("");
+  await expect(workflow).toHaveValue("");
   await dialog.getByRole("button", { name: "保存模型", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(metadata.imageParameters).toEqual({});

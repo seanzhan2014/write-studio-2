@@ -78,7 +78,7 @@ export function AiServices() {
   const [scanBusy, setScanBusy] = useState(false);
   const [scanError, setScanError] = useState("");
   const [editing, setEditing] = useState<Model | null>(null);
-  const [imageDraft, setImageDraft] = useState<ImageParameterDraft>({ values: {}, extra: "" });
+  const [imageDraft, setImageDraft] = useState<ImageParameterDraft>({ values: {}, extra: "", workflow: "" });
   const [editForm, setEditForm] = useState({ providerId: "", name: "", modelId: "", kind: "text", systemPrompt: "", maxInput: DEFAULT_MAX_INPUT_CHARACTERS, reasoningEffort: null as ReasoningEffort | null });
   const [preview, setPreview] = useState<string | null>(null);
   const [managing, setManaging] = useState<AiProviderRecord | null>(null);

@@ -1,5 +1,5 @@
 import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-capabilities";
-import { defaultImageParameters, validateImageParameters, type ImageParameters } from "./image-model-parameters";
+import { defaultImageParameters, splitCivitaiParameters, type ImageParameters } from "./image-model-parameters";
 
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
 type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string; parameters?: ImageParameters };
@@ -240,22 +240,6 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
   }
 }
 
-// Routing information, not an allowlist: unrecognized names remain image input.
-// Explicit prefixes also support future workflow/query fields without an update.
-// `steps` without a prefix is the image sampling count; workflow.steps must be explicit.
-const workflowParameterNames = new Set("metadata tags callbacks tips arguments nsfwLevel downloadPriority tier experimental allowMatureContent upgradeMode currencies fund ephemeral externalId".split(" "));
-function civitaiParameters(parameters?: ImageParameters) {
-  const input: ImageParameters = {}, workflow: ImageParameters = {}, query: ImageParameters = {};
-  for (const [name, value] of Object.entries(validateImageParameters(parameters))) {
-    const prefix = /^(workflow|query)\.(.+)$/.exec(name);
-    const target = prefix ? prefix[1] === "workflow" ? workflow : query : workflowParameterNames.has(name) ? workflow : ["wait", "whatif", "hideMatureContent"].includes(name) ? query : input;
-    const key = prefix ? prefix[2] : name;
-    if (name === "workflow." || name === "query." || Object.hasOwn(target, key)) throw new Error(`Civitai 参数「${name}」格式无效或重复`);
-    target[key] = value;
-  }
-  return { input, workflow, query };
-}
-
 export function civitaiImageInput(modelId: string, prompt: string, options: ImageOptions = {}): ImageParameters {
   const canonicalId = modelId.trim().toLowerCase();
   const match = canonicalId.match(AIR);
@@ -264,7 +248,7 @@ export function civitaiImageInput(modelId: string, prompt: string, options: Imag
   if (options.referenceImages?.length) throw new Error("此 Civitai 接入暂不支持人物参考图，请移除参考图后生成");
   if (options.quality || options.resolution || options.aspectRatio) throw new Error("此 Civitai 模型请使用图片尺寸设置，画质、比例和分辨率应选模型默认");
   const context = { adapterKind: "civitai", modelId: canonicalId };
-  const parameters = civitaiParameters(options.parameters).input;
+  const parameters = splitCivitaiParameters(options.parameters).input;
   const size = options.size || sizes(match[1])[0];
   const dimensions = /^(\d{2,4})x(\d{2,4})$/.exec(size);
   const width = Number(dimensions?.[1]), height = Number(dimensions?.[2]);
@@ -297,7 +281,7 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
   const endpoint = `${civitaiBaseUrls(connection.baseUrl).generation}/workflows`;
-  const parameters = civitaiParameters(options.parameters);
+  const parameters = splitCivitaiParameters(options.parameters);
   const submissionUrl = new URL(endpoint);
   submissionUrl.searchParams.set("wait", "0");
   for (const [key, value] of Object.entries(parameters.query)) submissionUrl.searchParams.set(key, typeof value === "string" ? value : JSON.stringify(value));

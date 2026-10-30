@@ -113,6 +113,17 @@ test("Civitai routes workflow and query parameters without restricting future im
   assert.throws(() => civitaiImageInput(id, "A tree", { parameters: { allowMatureContent: false, "workflow.allowMatureContent": true } }), /重复/);
 });
 
+test("explicit image and workflow scopes submit same-name fields independently", async t => {
+  const calls = mockFetch(t, () => Response.json({ id: "wf_scoped", status: "succeeded", steps: [{ output: { images: [{ url: "https://images.example/tree.png" }] } }] }));
+  await generateCivitaiImage(connection, "A tree", { parameters: { "input.steps": 18, "input.custom": { value: 0 }, "input.futureFlag": false, "workflow.futureFlag": true, "workflow.allowMatureContent": false } });
+  assert.equal(calls[0].body.futureFlag, true);
+  assert.equal(calls[0].body.allowMatureContent, false);
+  assert.equal(calls[0].body.steps[0].input.futureFlag, false);
+  assert.equal(calls[0].body.steps[0].input.steps, 18);
+  assert.deepEqual(calls[0].body.steps[0].input.custom, { value: 0 });
+  assert.equal("input.steps" in calls[0].body.steps[0].input, false);
+});
+
 test("MOSS generation uses the version alias only after verifying the requested primary file", async t => {
   for (const primary of [true, false]) {
     t.mock.restoreAll();

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 const code = ts.transpileModule(readFileSync(new URL("../lib/image-model-parameters.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-const { parseImageParameterText, validateImageParameters, formatImageParameterText, defaultImageParameters } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const { parseImageParameterText, validateImageParameters, formatImageParameterText, defaultImageParameters, imageParameterDraft, readImageParameterDraft, splitCivitaiParameters } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const moss = { adapterKind: "civitai", modelId: "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739" };
 
 test("comma-separated image parameters preserve numeric, boolean and string values", () => {
@@ -32,4 +32,25 @@ test("provider-specific validation and default restoration retain existing MOSS 
   assert.deepEqual(parseImageParameterText("sampleMethod=heun,schedule=karras,clipSkip=2,uCache=off", sd), { sampleMethod: "heun", schedule: "karras", clipSkip: 2, uCache: "off" });
   assert.deepEqual(validateImageParameters({ clipSkip: 2 }, moss), { clipSkip: 2 });
   assert.deepEqual(validateImageParameters({ steps: 12 }, {}), { steps: 12 });
+});
+
+test("legacy Civitai settings reopen in separate workflow and image areas without changing their request scopes", () => {
+  const legacy = { steps: 18, seed: 0, width: 1216, allowMatureContent: true, currencies: ["yellow"], "workflow.futureFlag": false, "query.hideMatureContent": true };
+  const draft = imageParameterDraft(legacy, moss);
+  assert.deepEqual(draft.values, { steps: "18", seed: "0" });
+  assert.equal(draft.extra, "width=1216");
+  assert.deepEqual(parseImageParameterText(draft.workflow, moss), { allowMatureContent: true, currencies: ["yellow"], futureFlag: false, "query.hideMatureContent": true });
+  const saved = readImageParameterDraft(draft, moss);
+  assert.deepEqual(splitCivitaiParameters(saved), splitCivitaiParameters(legacy));
+  assert.deepEqual(imageParameterDraft(saved, moss), draft);
+});
+
+test("explicit editor areas preserve same-name parameters and arbitrary future fields independently", () => {
+  const saved = readImageParameterDraft({ values: { steps: "18", seed: "0" }, extra: 'custom={"values":[false,0]},shared=image', workflow: 'shared=workflow,steps=[],allowMatureContent=false,query.custom=0' }, moss);
+  assert.deepEqual(splitCivitaiParameters(saved), { input: { steps: 18, seed: 0, custom: { values: [false, 0] }, shared: "image" }, workflow: { shared: "workflow", steps: [], allowMatureContent: false }, query: { custom: 0 } });
+  assert.deepEqual(readImageParameterDraft(imageParameterDraft(saved, moss), moss), saved);
+  assert.throws(() => readImageParameterDraft({ values: {}, extra: "", workflow: "futureFlag=true,workflow.futureFlag=false" }, moss), /重复/);
+  const escaped = { "workflow.query.future": false, "input.workflow.future": 0 };
+  assert.deepEqual(readImageParameterDraft(imageParameterDraft(escaped, moss), moss), escaped);
+  assert.deepEqual(readImageParameterDraft(imageParameterDraft({ quality: "high", custom: false }, {}), {}), { quality: "high", custom: false });
 });
