@@ -8,6 +8,9 @@ const { isCivitai, civitaiBaseUrls, discoverCivitaiCatalog, readCivitaiCatalogPa
 const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
 const resource = { id: 101055, name: "Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] };
 const connection = { baseUrl: "https://civitai.com/api/v1", secret: "fake-civitai-key", modelId: id, timeoutMs: 5000 };
+const mossId = "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739";
+const mossVersion = { id: 3426693, modelId: 3018302, name: "sft turbo v1 int8convrot", baseModel: "MOSS Image", air: mossId.split("+")[0], files: [{ id: 3321739, name: "rayMossArtshoot_sftTurboV1.safetensors", type: "Model", primary: true }] };
+const mossResource = { id: 3018302, name: "Ray Moss Artshoot", type: "Checkpoint", supportsGeneration: true, modelVersions: [mossVersion] };
 function mockFetch(t, handler) {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init) => { const call = { url: new URL(url), ...init, body: init?.body ? JSON.parse(init.body) : undefined }; calls.push(call); return handler(call, calls); });
@@ -42,6 +45,60 @@ test("exact AIR lookup fetches the requested version directly even if the model 
   assert.equal(result.catalog.length, 1); assert.equal(result.catalog[0].id, id);
   assert.equal(result.nextCursor, null);
   assert.ok(calls.every(call => call.headers.Authorization === `Bearer ${connection.secret}` && !call.url.search));
+});
+
+test("file-pinned AIR parsing preserves the file ID and rejects malformed or unsafe IDs", () => {
+  assert.deepEqual(parseCivitaiAir(mossId.toUpperCase()), { modelId: "3018302", versionId: "3426693", ecosystem: "mossimage", type: "checkpoint", fileId: "3321739" });
+  assert.equal(parseCivitaiAir("civitai:3018302@3426693+3321739").fileId, "3321739");
+  for (const invalid of [mossId + "+4", mossId.replace("+3321739", "+0"), mossId.replace("+3321739", "+9007199254740992"), "urn:air:mossimage:checkpoint:civitai:3018302+3321739"]) assert.equal(parseCivitaiAir(invalid), null);
+});
+
+test("MOSS AIR lookup validates the version's actual model file and preserves it when enabling", async t => {
+  const calls = mockFetch(t, call => Response.json(call.url.pathname.includes("model-versions") ? mossVersion : mossResource));
+  const page = await findCivitaiModelByAir(connection.baseUrl, connection.secret, mossId);
+  assert.equal(page.catalog[0].id, mossId);
+  assert.equal(page.catalog[0].name, "Ray Moss Artshoot · sft turbo v1 int8convrot");
+  assert.deepEqual(page.catalog[0].metadata.inputModalities, ["text"]);
+  assert.deepEqual(page.catalog[0].metadata.outputModalities, ["image"]);
+  assert.equal(page.catalog[0].metadata.supportedParameters.size.values[0], "1024x1024");
+  assert.ok(page.catalog[0].searchTerms.includes("3321739"));
+  assert.deepEqual(calls.map(call => call.url.pathname), ["/api/v1/model-versions/3426693", "/api/v1/models/3018302"]);
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", mossId.replace("+3321739", "+999")), /文件 ID/);
+  t.mock.restoreAll();
+  mockFetch(t, () => Response.json({ ...mossVersion, files: [{ id: 3321739, type: "VAE" }] }));
+  await assert.rejects(findCivitaiModelByAir(connection.baseUrl, "", mossId), /权重文件/);
+});
+
+test("MOSS models appear in keyword results and default discovery without video models", async t => {
+  mockFetch(t, () => Response.json({ items: [mossResource, { ...mossResource, id: 2, modelVersions: [{ id: 3, baseModel: "Wan Video 2.2 I2V-A14B" }] }], metadata: {} }));
+  const page = await readCivitaiCatalogPage(connection.baseUrl, "", null, undefined, "Ray Moss");
+  assert.equal(page.catalog.length, 1); assert.equal(page.catalog[0].id, mossId.split("+")[0]);
+  assert.equal((await discoverCivitaiCatalog(connection.baseUrl, "")).catalog[0].id, mossId.split("+")[0]);
+});
+
+test("MOSS generation uses the Comfy SFT workflow, exact file, turbo settings and negative prompt", () => {
+  const input = civitaiImageInput(mossId, "A lighthouse at dusk", { size: "1216x832", negativePrompt: "watermark, blurry" });
+  assert.deepEqual(input, { engine: "comfy", ecosystem: "mossImage", model: "sft", operation: "createImage", diffusionModel: mossId, prompt: "A lighthouse at dusk", negativePrompt: "watermark, blurry", width: 1216, height: 832, quantity: 1, steps: 12, cfgScale: 1, sampler: "heunpp2", scheduler: "simple" });
+  assert.equal("checkpointModel" in input, false);
+  assert.equal(civitaiImageInput(mossId.toUpperCase(), "test").diffusionModel, mossId);
+  assert.equal(civitaiImageInput(mossId.replace("3426693", "123"), "test").steps, 25);
+  assert.throws(() => civitaiImageInput(mossId, "test", { referenceImages: ["https://example.com/reference.png"] }), /不支持人物参考图/);
+});
+
+test("MOSS generation uses the version alias only after verifying the requested primary file", async t => {
+  for (const primary of [true, false]) {
+    t.mock.restoreAll();
+    const calls = mockFetch(t, call => Response.json(call.url.pathname.includes("model-versions") ? { ...mossVersion, files: [{ ...mossVersion.files[0], primary }] } : { id: "wf_moss", status: "succeeded", steps: [{ output: { images: [{ url: "https://images.example/moss.png" }] } }] }));
+    const result = await generateCivitaiImage({ ...connection, modelId: mossId }, "A tree");
+    assert.equal(result.data[0].url, "https://images.example/moss.png");
+    assert.equal(calls[0].url.pathname, "/api/v1/model-versions/3426693");
+    assert.equal(calls[1].body.steps[0].input.diffusionModel, primary ? mossId.split("+")[0] : mossId);
+    assert.equal(calls.filter(call => call.method === "POST").length, 1);
+  }
+  t.mock.restoreAll();
+  const calls = mockFetch(t, () => Response.json({ ...mossVersion, files: [] }));
+  await assert.rejects(generateCivitaiImage({ ...connection, modelId: mossId }, "A tree"), /校验失败.*未提交/);
+  assert.equal(calls.filter(call => call.method === "POST").length, 0);
 });
 
 test("AIR batches split mixed separators and deduplicate identifiers case-insensitively", () => {

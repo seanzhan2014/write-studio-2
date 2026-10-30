@@ -3,9 +3,9 @@ import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-ca
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
 type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string };
 type Resource = { id?: number; name?: string; type?: string; mode?: string; supportsGeneration?: boolean; modelVersions?: Version[] };
-type Version = { id?: number; name?: string; baseModel?: string; air?: string; supportsGeneration?: boolean };
+type Version = { id?: number; name?: string; baseModel?: string; air?: string; supportsGeneration?: boolean; files?: Array<{ id?: number; name?: string; type?: string; primary?: boolean }> };
 type Workflow = { id?: string; status?: string; steps?: Array<{ reason?: unknown; blockedReason?: unknown; output?: { images?: Array<{ url?: string }>; blobs?: Array<{ url?: string }> } }> };
-const AIR = /^urn:air:(sd1|sdxl):checkpoint:civitai:[1-9]\d*@[1-9]\d*$/;
+const AIR = /^urn:air:(sd1|sdxl|mossimage):checkpoint:civitai:[1-9]\d*@[1-9]\d*(?:\+[1-9]\d*)?$/;
 const PAGE_SIZE = 10;
 const MAX_PAGES = 3;
 const MAX_RESPONSE_BYTES = 5_000_000;
@@ -53,12 +53,13 @@ export async function lookupCivitaiAirBatch(value: string, lookup: (air: string)
 }
 
 export function parseCivitaiAir(value: string) {
-  const full = /^(?:urn:)?air:([a-z0-9_-]+):([a-z0-9_-]+):civitai:([1-9]\d*)(?:@([1-9]\d*))?$/i.exec(value.trim());
-  const short = /^civitai:([1-9]\d*)@([1-9]\d*)$/i.exec(value.trim());
+  const full = /^(?:urn:)?air:([a-z0-9_-]+):([a-z0-9_-]+):civitai:([1-9]\d*)(?:@([1-9]\d*)(?:\+([1-9]\d*))?)?$/i.exec(value.trim());
+  const short = /^civitai:([1-9]\d*)@([1-9]\d*)(?:\+([1-9]\d*))?$/i.exec(value.trim());
   if (!full && !short) return null;
   const modelId = full?.[3] ?? short![1], versionId = full?.[4] ?? short?.[2] ?? null;
-  if (![modelId, ...(versionId ? [versionId] : [])].every(id => Number.isSafeInteger(Number(id)))) return null;
-  return { modelId, versionId, ecosystem: full?.[1].toLowerCase(), type: full?.[2].toLowerCase() };
+  const fileId = full?.[5] ?? short?.[3];
+  if (![modelId, ...(versionId ? [versionId] : []), ...(fileId ? [fileId] : [])].every(id => Number.isSafeInteger(Number(id)))) return null;
+  return { modelId, versionId, ecosystem: full?.[1].toLowerCase(), type: full?.[2].toLowerCase(), ...(fileId ? { fileId } : {}) };
 }
 
 export function isCivitai(provider: { adapterKind?: string; baseUrl?: string }) {
@@ -105,6 +106,7 @@ async function api<T>(url: string, secret: string, signal: AbortSignal, body?: u
 function ecosystem(baseModel = "") {
   if (/^SD 1\.[45](?:$| )/.test(baseModel)) return "sd1";
   if (/^SDXL(?:$| )/.test(baseModel) || ["Pony", "Illustrious", "NoobAI"].includes(baseModel)) return "sdxl";
+  if (baseModel === "MOSS Image") return "mossimage";
   return null;
 }
 
@@ -137,7 +139,7 @@ function nextCatalogCursor(metadata: { nextCursor?: string | number; nextPage?: 
 export async function findCivitaiModelByAir(baseUrl: string, secret: string, air: string, signal?: AbortSignal): Promise<ModelCatalogPage> {
   const parsed = typeof air === "string" && air.length <= 200 ? parseCivitaiAir(air) : null;
   if (!parsed) throw new Error("AIR 格式无效，例如 urn:air:sdxl:checkpoint:civitai:101055@128078");
-  if (parsed.ecosystem && (!["sd1", "sdxl"].includes(parsed.ecosystem) || parsed.type !== "checkpoint")) throw new Error("此 AIR 不是当前支持的 SD1.5 / SDXL Checkpoint");
+  if (parsed.ecosystem && (!["sd1", "sdxl", "mossimage"].includes(parsed.ecosystem) || parsed.type !== "checkpoint")) throw new Error("此 AIR 不是当前支持的 SD1.5 / SDXL / MOSS Image Checkpoint");
   const timeout = AbortSignal.timeout(30_000);
   const requestSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const endpoint = civitaiBaseUrls(baseUrl).catalog;
@@ -147,14 +149,16 @@ export async function findCivitaiModelByAir(baseUrl: string, secret: string, air
       version = await api(`${endpoint}/model-versions/${parsed.versionId}`, secret, requestSignal);
       if (String(version?.id) !== parsed.versionId || String(version?.modelId) !== parsed.modelId) throw new Error("AIR 中的模型 ID 与版本 ID 不对应，请检查序列号");
     }
+    const file = parsed.fileId ? version?.files?.find(file => String(file.id) === parsed.fileId) : undefined;
+    if (parsed.fileId && (!file || !["Model", "Diffusion Model", "UNet"].includes(file.type || ""))) throw new Error("AIR 中的文件 ID 不属于此版本的模型权重文件，请检查 + 后的文件 ID");
     const resource = await api<Resource>(`${endpoint}/models/${parsed.modelId}`, secret, requestSignal);
     if (String(resource?.id) !== parsed.modelId) throw new Error("Civitai 返回的模型与 AIR 不对应");
     const prefix = parsed.ecosystem ? `urn:air:${parsed.ecosystem}:${parsed.type}:civitai:${parsed.modelId}@` : null;
     const catalog = entries(version ? { ...resource, modelVersions: [version] } : resource).filter(model => {
       const resolved = parseCivitaiAir(model.id);
       return resolved?.modelId === parsed.modelId && (!parsed.versionId || resolved.versionId === parsed.versionId) && (!prefix || model.id.startsWith(prefix));
-    });
-    if (!catalog.length) throw new Error("AIR 对应模型当前不可用，或不是支持的 SD1.5 / SDXL Checkpoint");
+    }).map(model => parsed.fileId ? { ...model, id: `${model.id.replace(/\+[1-9]\d*$/, "")}+${parsed.fileId}`, searchTerms: [...(model.searchTerms ?? []), parsed.fileId, file?.name || ""] } : model);
+    if (!catalog.length) throw new Error("AIR 对应模型当前不可用，或不是支持的 SD1.5 / SDXL / MOSS Image Checkpoint");
     return { catalog, nextCursor: null, scanned: 1, syncedAt: new Date().toISOString(), warnings: [] };
   } catch (error) {
     if (timeout.aborted) throw new Error("根据 AIR 查询模型超时，请重试");
@@ -225,9 +229,9 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
       if (!cursor || seen.has(cursor)) break;
       seen.add(cursor);
     }
-    if (!catalog.size) throw new Error("Civitai 未返回可用的 SD1.5 / SDXL Checkpoint，可手动添加对应版本的 AIR ID");
+    if (!catalog.size) throw new Error("Civitai 未返回可用的 SD1.5 / SDXL / MOSS Image Checkpoint，可手动添加对应版本的 AIR ID");
     if (more) warnings.push("Civitai 目录较大，当前分批展示部分热门模型；输入名称、ID 或 AIR 后点击搜索。官方搜索较快，全目录匹配支持完整通配符搜索。");
-    warnings.push("当前支持 SD1.5、SDXL（含 Pony、Illustrious、NoobAI）的 Checkpoint 文生图；暂不支持单独使用 LoRA 或人物参考图。");
+    warnings.push("当前支持 SD1.5、SDXL（含 Pony、Illustrious、NoobAI）及 MOSS Image 的 Checkpoint 文生图，AIR 支持 +文件ID；暂不支持单独使用 LoRA 或人物参考图。");
     return { catalog: [...catalog.values()].sort((a, b) => a.name.localeCompare(b.name)), syncedAt: new Date().toISOString(), warnings };
   } catch (error) {
     if (signal.aborted) throw new Error("获取 Civitai 模型目录超时，请稍后重试");
@@ -236,8 +240,9 @@ export async function discoverCivitaiCatalog(baseUrl: string, secret: string): P
 }
 
 export function civitaiImageInput(modelId: string, prompt: string, options: ImageOptions = {}) {
-  const match = modelId.match(AIR);
-  if (!match) throw new Error("Civitai 需要完整的 SD1.5 / SDXL Checkpoint AIR ID，例如 urn:air:sdxl:checkpoint:civitai:101055@128078");
+  const canonicalId = modelId.trim().toLowerCase();
+  const match = canonicalId.match(AIR);
+  if (!match) throw new Error("Civitai 需要完整的 SD1.5 / SDXL / MOSS Image Checkpoint AIR ID，例如 urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739");
   if (!prompt.trim() || prompt.length > 10_000) throw new Error("Civitai 图片提示词应为 1–10,000 字符");
   if (options.referenceImages?.length) throw new Error("此 Civitai 接入暂不支持人物参考图，请移除参考图后生成");
   if (options.quality || options.resolution || options.aspectRatio) throw new Error("此 Civitai 模型请使用图片尺寸设置，画质、比例和分辨率应选模型默认");
@@ -245,8 +250,16 @@ export function civitaiImageInput(modelId: string, prompt: string, options: Imag
   const dimensions = /^(\d{2,4})x(\d{2,4})$/.exec(size);
   const width = Number(dimensions?.[1]), height = Number(dimensions?.[2]);
   if (!dimensions || [width, height].some(value => value < 64 || value > 2048 || value % 16)) throw new Error("Civitai 图片宽高须为 64–2048 且为 16 的倍数");
+  const shared = { operation: "createImage", prompt: prompt.trim(), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}), width, height, quantity: 1 };
+  if (match[1] === "mossimage") {
+    const parsed = parseCivitaiAir(canonicalId)!;
+    const artshootTurbo = parsed.modelId === "3018302" && parsed.versionId === "3426693";
+    // Artshoot recommends 12 steps / CFG 1 / heunpp2. Civitai's scheduler enum
+    // does not expose linear_quadratic, so use its supported MOSS default.
+    return { ...shared, engine: "comfy", ecosystem: "mossImage", model: "sft", diffusionModel: canonicalId, steps: artshootTurbo ? 12 : 25, cfgScale: artshootTurbo ? 1 : 2.5, sampler: artshootTurbo ? "heunpp2" : "er_sde", scheduler: "simple" };
+  }
   // The OpenAPI schema calls this checkpointModel (the recipe prose uses model).
-  return { engine: "sdcpp", ecosystem: match[1], operation: "createImage", checkpointModel: modelId, prompt: prompt.trim(), ...(options.negativePrompt?.trim() ? { negativePrompt: options.negativePrompt.trim() } : {}), width, height, quantity: 1 };
+  return { ...shared, engine: "sdcpp", ecosystem: match[1], checkpointModel: canonicalId };
 }
 
 function pause(ms: number, signal: AbortSignal) {
@@ -259,7 +272,7 @@ function pause(ms: number, signal: AbortSignal) {
 }
 
 export async function generateCivitaiImage(connection: Connection, prompt: string, options: ImageOptions = {}, signal?: AbortSignal) {
-  const input = civitaiImageInput(connection.modelId, prompt, options);
+  let input = civitaiImageInput(connection.modelId, prompt, options);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("timeout"), connection.timeoutMs);
   const cancel = () => controller.abort("cancelled");
@@ -270,6 +283,16 @@ export async function generateCivitaiImage(connection: Connection, prompt: strin
   let workflowId = "", submitted = false;
   try {
     controller.signal.throwIfAborted();
+    const parsed = parseCivitaiAir(connection.modelId);
+    if (parsed?.ecosystem === "mossimage" && parsed.fileId) {
+      const version = await api<Version & { modelId?: number }>(`${civitaiBaseUrls(connection.baseUrl).catalog}/model-versions/${parsed.versionId}`, connection.secret, controller.signal);
+      const file = version.files?.find(file => String(file.id) === parsed.fileId);
+      const resolved = parseCivitaiAir(version.air || "");
+      if (String(version.id) !== parsed.versionId || String(version.modelId) !== parsed.modelId || !file || !["Model", "Diffusion Model", "UNet"].includes(file.type || "") || resolved?.modelId !== parsed.modelId || resolved.versionId !== parsed.versionId || resolved.ecosystem !== "mossimage" || resolved.type !== "checkpoint") throw new Error("MOSS AIR 的模型、版本或文件校验失败，未提交生成请求");
+      // The fleet may register only the version AIR. It resolves to the same
+      // file only when the explicitly requested file is still the primary one.
+      if (file.primary === true) input = { ...input, diffusionModel: version.air!.split("+")[0] };
+    }
     submitted = true;
     let workflow = await api<Workflow>(`${endpoint}?wait=0`, connection.secret, controller.signal, { externalId, currencies: ["blue", "green", "yellow"], steps: [{ $type: "imageGen", input }] });
     workflowId = workflow?.id || "";

@@ -5,22 +5,24 @@ import { once } from "node:events";
 import { fullStudioFixture } from "./fixtures.mjs";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
-test("Civitai provider discovers, caches, enables and generates an illustration through native workflows", { skip: !baseUrl, timeout: 45000 }, async t => {
+for (const moss of [false, true]) test(`Civitai ${moss ? "MOSS file-pinned" : "SDXL"} provider discovers, caches, enables and generates an illustration through native workflows`, { skip: !baseUrl, timeout: 45000 }, async t => {
   const calls = [];
-  const id = "urn:air:sdxl:checkpoint:civitai:101055@128078";
+  const modelId = moss ? 3018302 : 101055, versionId = moss ? 3426693 : 128078;
+  const baseModel = moss ? "MOSS Image" : "SDXL 1.0";
+  const id = moss ? "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739" : "urn:air:sdxl:checkpoint:civitai:101055@128078";
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jlp8AAAAASUVORK5CYII=";
   const server = http.createServer(async (request, response) => {
     let raw = ""; for await (const chunk of request) raw += chunk;
     calls.push({ path: request.url, authorization: request.headers.authorization, body: raw ? JSON.parse(raw) : null });
     if (request.url === "/output.png") { response.writeHead(200, { "Content-Type": "image/png" }); return response.end(Buffer.from(png, "base64")); }
     response.setHeader("Content-Type", "application/json");
-    if (request.url === "/api/v1/model-versions/128078") return response.end(JSON.stringify({ id: 128078, modelId: 101055, name: "v1", baseModel: "SDXL 1.0", air: id }));
-    if (request.url === "/api/v1/models/101055") return response.end(JSON.stringify({ id: 101055, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [] }));
+    if (request.url === `/api/v1/model-versions/${versionId}`) return response.end(JSON.stringify({ id: versionId, modelId, name: "v1", baseModel, air: id.split("+")[0], files: [{ id: 3321739, type: "Model", primary: true }] }));
+    if (request.url === `/api/v1/models/${modelId}`) return response.end(JSON.stringify({ id: modelId, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [] }));
     if (request.url.includes("sort=Newest")) {
       const index = Number(new URL(request.url, "http://test").searchParams.get("cursor") || 0);
       return response.end(JSON.stringify({ items: [{ id: index + 1, name: `Catalog Painter ${index}`, type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: index + 10, name: "new", baseModel: "SDXL 1.0" }, { id: index + 100, name: "old", baseModel: "SDXL 1.0" }] }], metadata: index < 4 ? { nextCursor: String(index + 1) } : {} }));
     }
-    if (request.url.startsWith("/api/v1/models?")) return response.end(JSON.stringify({ items: [{ id: 101055, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: 128078, name: "v1", baseModel: "SDXL 1.0", supportsGeneration: true }] }], metadata: {} }));
+    if (request.url.startsWith("/api/v1/models?")) return response.end(JSON.stringify({ items: [{ id: modelId, name: "Test Painter", type: "Checkpoint", supportsGeneration: true, modelVersions: [{ id: versionId, name: "v1", baseModel, air: id, supportsGeneration: true }] }], metadata: {} }));
     if (request.url === "/v2/consumer/workflows?wait=0") { response.statusCode = 202; return response.end(JSON.stringify({ id: "wf_integration", status: "processing" })); }
     if (request.url === "/v2/consumer/workflows/wf_integration") return response.end(JSON.stringify({ id: "wf_integration", status: "succeeded", steps: [{ output: { images: [{ url: `http://127.0.0.1:${server.address().port}/output.png` }] } }] }));
     response.statusCode = 404; response.end(JSON.stringify({ error: "wrong adapter endpoint" }));
@@ -52,7 +54,7 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
   const exactAir = await api(`/api/providers/${provider.id}/catalog-pages`, { air: id });
   assert.equal(exactAir.catalog[0].id, id);
   assert.equal(exactAir.nextCursor, null);
-  assert.deepEqual(calls.slice(beforeAirLookup).map(call => call.path), ["/api/v1/model-versions/128078", "/api/v1/models/101055"]);
+  assert.deepEqual(calls.slice(beforeAirLookup).map(call => call.path), [`/api/v1/model-versions/${versionId}`, `/api/v1/models/${modelId}`]);
   let cursor = null;
   const completeCatalog = [];
   do {
@@ -67,7 +69,7 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
   model = (await api("/api/models/bulk", { providerId: provider.id, modelIds: [id], metadataByModelId: { [id]: discovered.catalog[0].metadata } })).models[0];
   assert.equal(model.adapterKind, "civitai");
   const before = (await api("/api/state")).data.articles;
-  job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A lighthouse at dusk", size: "1216x832" })).record;
+  job = (await api("/api/ai/illustrations", { action: "image", background: true, outlineId: "outline-current", model: model.id, prompt: "A lighthouse at dusk", negativePrompt: "watermark, blurry", size: "1216x832" })).record;
   await api(`/api/ai/illustrations/${job.id}/execute`, {});
   for (let attempt = 0; attempt < 100; attempt++) {
     job = (await api(`/api/ai/illustrations/${job.id}`)).record;
@@ -78,8 +80,10 @@ test("Civitai provider discovers, caches, enables and generates an illustration 
   const submissions = calls.filter(call => call.path === "/v2/consumer/workflows?wait=0");
   assert.equal(submissions.length, 1);
   const input = submissions[0].body.steps[0].input;
-  assert.equal(input.engine, "sdcpp"); assert.equal(input.ecosystem, "sdxl");
-  assert.equal(input.checkpointModel, id); assert.equal(input.quantity, 1);
+  assert.equal(input.engine, moss ? "comfy" : "sdcpp"); assert.equal(input.ecosystem, moss ? "mossImage" : "sdxl");
+  assert.equal(moss ? input.diffusionModel : input.checkpointModel, moss ? id.split("+")[0] : id); assert.equal(input.quantity, 1);
+  assert.equal(input.negativePrompt, "watermark, blurry");
+  if (moss) { assert.equal(input.model, "sft"); assert.equal(input.steps, 12); assert.equal(input.cfgScale, 1); assert.equal(input.sampler, "heunpp2"); assert.equal(input.scheduler, "simple"); }
   assert.equal(input.width, 1216); assert.equal(input.height, 832);
   assert.equal(submissions[0].authorization, "Bearer civitai-integration-secret");
   assert.equal(calls.find(call => call.path === "/output.png").authorization, undefined);

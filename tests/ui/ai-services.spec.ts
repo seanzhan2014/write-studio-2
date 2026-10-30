@@ -9,6 +9,37 @@ test.beforeEach(async ({ request, page }) => {
   await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data: fullStudioFixture() } });
 });
 
+test("Civitai MOSS file-pinned AIR is searched on click and enabled with image-only capabilities", async ({ page }, info) => {
+  test.setTimeout(60000);
+  const id = "urn:air:mossimage:checkpoint:civitai:3018302@3426693+3321739";
+  const metadata = { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { size: { type: "enum", values: ["1024x1024", "1216x832"] } } };
+  let lookups = 0;
+  let enabled: Record<string, unknown> | undefined;
+  await page.route("**/api/providers", route => route.fulfill({ json: { providers: [{ id: "civitai", name: "Civitai", baseUrl: "https://civitai.com/api/v1", adapterKind: "civitai", hasSecret: true, timeoutMs: 120000 }] } }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [] } }));
+  await page.route("**/api/providers/civitai/discover", route => route.fulfill({ json: { catalog: [], warnings: [] } }));
+  await page.route("**/api/providers/civitai/catalog-pages", route => {
+    expect(route.request().postDataJSON()).toEqual({ air: id }); lookups++;
+    return route.fulfill({ json: { catalog: [{ id, name: "Ray Moss Artshoot · sft turbo v1 int8convrot", metadata }], nextCursor: null, scanned: 1, warnings: [] } });
+  });
+  await page.route("**/api/models/bulk", route => { enabled = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { models: [{ id: "moss" }] } }); });
+  await page.goto("/settings/models");
+  await page.locator(".ai-service-intro").getByRole("button", { name: "添加模型", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "添加模型", exact: true });
+  await expect(dialog).toContainText("MOSS Image");
+  await dialog.getByRole("textbox", { name: "搜索目录模型", exact: true }).fill(id);
+  expect(lookups).toBe(0);
+  await dialog.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(dialog.getByRole("status").filter({ hasText: "AIR 查询完成" })).toContainText("1 个匹配版本");
+  await dialog.getByRole("checkbox", { name: `选择模型 ${id}`, exact: true }).check();
+  await page.screenshot({ path: info.outputPath("moss-air-catalog.png"), fullPage: true });
+  await dialog.getByRole("button", { name: "启用 1 个模型", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(lookups).toBe(1);
+  expect(enabled?.modelIds).toEqual([id]);
+  expect(enabled?.metadataByModelId).toEqual({ [id]: metadata });
+});
+
 test("Civitai official search waits for the button and pages only the submitted keyword", async ({ page }, info) => {
   test.setTimeout(60000);
   const requests: Array<{ hint?: string; cursor?: string | null }> = [];
