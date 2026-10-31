@@ -1339,7 +1339,8 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   expect({ currentVersionId: previewOutline.currentVersionId, defaultVersionId: previewOutline.defaultVersionId }).toEqual({ currentVersionId: null, defaultVersionId: null });
   await page.getByRole("button", { name: "设为当前", exact: true }).click();
   await expect(page.locator(".toast")).toContainText("已设为当前正文");
-  await expect(page.getByText("当前", { exact: true })).toBeVisible();
+  await expect(page.locator(".body-current-label")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveCount(0);
   const defaultButton = page.getByRole("button", { name: "设为默认正文", exact: true });
   await expect(defaultButton).toHaveAttribute("aria-pressed", "false");
   await defaultButton.click();

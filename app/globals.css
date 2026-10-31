@@ -1604,25 +1604,6 @@ button:disabled {
   width: 24px;
 }
 
-.editor-heading .body-current-label {
-  align-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
-  border-radius: 999px;
-  color: var(--accent);
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 650;
-  height: 24px;
-  line-height: 1;
-  padding: 0 7px;
-  white-space: nowrap;
-}
-
-.editor-heading .body-current-label {
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
-
 .editor-heading .body-set-current-button {
   border-color: color-mix(in srgb, var(--accent) 28%, transparent);
   color: var(--accent);
@@ -6315,7 +6296,6 @@ kbd {
     pointer-events: none;
   }
   .mobile-writing-editing .editor-heading .body-status-button,
-  .mobile-writing-editing .editor-heading .body-current-label,
   .mobile-writing-editing .editor-heading .body-set-current-button { display: none; }
   .mobile-writing-editing .mobile-edit-save-state {
     color: var(--text-tertiary);
