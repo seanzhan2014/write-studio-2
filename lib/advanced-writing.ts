@@ -31,6 +31,13 @@ export const GENERATE_FIELDS = {
 
 export type StyleAdvanced = Partial<Record<keyof typeof STYLE_FIELDS, string>>;
 export type GenerateAdvanced = Partial<Record<keyof typeof GENERATE_FIELDS, string>>;
+export const GENERATE_FIELD_GROUPS: Array<{ title: string; keys: Array<keyof typeof GENERATE_FIELDS> }> = [
+  { title: "视角与信息", keys: ["perspective", "narrator", "revelation", "exposition"] },
+  { title: "人物表现", keys: ["psychology", "dialogue", "actionResponse"] },
+  { title: "细节与描写", keys: ["detailFocus", "detailOrganization", "detailScope"] },
+  { title: "时间与节奏", keys: ["chronology", "timeScale", "rhythm"] },
+  { title: "张力与边界", keys: ["readerExperience", "boundaries", "explanation"] },
+];
 export const MAX_ADVANCED_TEXT = 3000;
 
 export function normalizeAdvanced<T extends Record<string, readonly string[]>>(value: unknown, fields: T): Partial<Record<keyof T, string>> {

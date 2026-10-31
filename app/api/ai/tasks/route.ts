@@ -15,7 +15,7 @@ import { normalizeClosingSummaryLength, isClosingSummaryLengthInput, hasActivePr
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
-import { taskReviewSnapshot } from "@/lib/task-parameters";
+import { normalizeTaskParameters, taskReviewSnapshot } from "@/lib/task-parameters";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 import { recoverChatTasks } from "@/db/chat-tasks";
@@ -133,7 +133,8 @@ export async function POST(request: Request) {
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
     const sourceArticle = snapshot.data?.articles.find(article => article.id === articleId);
     const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks! : {};
-    const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, scopedParameters, reviewInstruction);
+    const executionParameters = { ...scopedParameters, ...normalizeTaskParameters(body.taskParameters) };
+    const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, executionParameters, reviewInstruction);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
 
     const executionOrigin = currentTaskExecutionOrigin();

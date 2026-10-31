@@ -677,8 +677,8 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
     return height;
   });
   const expandedHeight = (await outlinePlan.boundingBox())!.height;
-  expect(expandedHeight).toBeGreaterThanOrEqual(defaultRowsHeight * 2.95);
-  expect(expandedHeight).toBeLessThanOrEqual(defaultRowsHeight * 3.05);
+  expect(expandedHeight).toBeGreaterThanOrEqual(88);
+  expect(expandedHeight).toBeLessThanOrEqual(defaultRowsHeight);
 
   const initialSubmit = await page.getByRole("button", { name: "开始生成" }).boundingBox();
   const initialViewport = page.viewportSize()!;
@@ -693,7 +693,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(wordBounds!.width).toBeGreaterThanOrEqual(150);
   expect(wordBounds!.height).toBeGreaterThanOrEqual(44);
 
-  const optionBar = page.locator(".generate-option-bar");
+  const optionBar = page.locator(".generate-basics-grid");
   const optionMetrics = await optionBar.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
   expect(optionMetrics.scrollWidth).toBeLessThanOrEqual(optionMetrics.clientWidth);
   for (const selector of [".generate-excellent-fragments-toggle", ".generate-outline-title-toggle"]) {
@@ -828,7 +828,7 @@ test("mobile AI Generate divider resizes the outline by touch and remembers its 
   } finally {
     await session.detach();
   }
-  expect(resizedHeight).toBeLessThanOrEqual(initialHeight - 80);
+  expect(resizedHeight).toBeLessThanOrEqual(Math.max(88, initialHeight - 80));
   await expect.poll(async () => page.evaluate(() => {
     const stored = JSON.parse(localStorage.getItem("writer-studio:generate-textarea-heights:v1") ?? "{}") as Record<string, { outlinePlan?: number }>;
     return stored["outline-current"]?.outlinePlan;

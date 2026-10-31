@@ -13,12 +13,12 @@ import { supportsImages, supportsText, type ModelMetadata } from "@/lib/ai-model
 import { AiSettingActions } from "./ai-setting-actions";
 
 type CatalogModel = { id: string; name: string; modelId: string; providerName: string; metadata?: ModelMetadata };
-export function TaskParameterSettings({ level, targetId, groups, models: suppliedModels }: { level: "article" | "chapter" | "outline"; targetId: string; groups?: string[]; models?: CatalogModel[] }) {
+export function TaskParameterSettings({ level, targetId, groups, models: suppliedModels, value: suppliedValue, onChange, title }: { level: "article" | "chapter" | "outline"; targetId: string; groups?: string[]; models?: CatalogModel[]; value?: AiGenerateOptions; onChange?: (value: AiGenerateOptions) => void; title?: string }) {
   const studio = useStudio();
   const article = studio.currentArticle;
   const resolved = resolveAiSettings(article, targetId, "generate", level === "article" ? "outline" : level, studio.data.settings);
   const defaults = { ...taskParameterDefaults(studio.data.settings, article), ...article.aiGenerateSettings.tasks };
-  const value = level === "article" ? normalizeAiGenerateOptions({ ...article.aiGenerateSettings, tasks: defaults }) : resolved.value;
+  const value = suppliedValue ?? (level === "article" ? normalizeAiGenerateOptions({ ...article.aiGenerateSettings, tasks: defaults }) : resolved.value);
   const [catalog, setCatalog] = useState<CatalogModel[] | null>(null);
   const loadCatalog = () => fetchFromServer("/api/models").then(response => response.json()).then(data => data.models ?? [] as CatalogModel[]);
   useEffect(() => {
@@ -28,7 +28,8 @@ export function TaskParameterSettings({ level, targetId, groups, models: supplie
     return () => { alive = false; };
   }, [suppliedModels]);
   function save(next: AiGenerateOptions) {
-    if (level === "article") studio.updateArticle({ aiGenerateSettings: next });
+    if (onChange) onChange(next);
+    else if (level === "article") studio.updateArticle({ aiGenerateSettings: next });
     else if (level === "outline") studio.updateOutline(targetId, { generateOptions: next });
     else {
       const chapter = article.chapters.find(chapter => chapter.id === targetId)!;
@@ -38,9 +39,10 @@ export function TaskParameterSettings({ level, targetId, groups, models: supplie
   }
   const fields = TASK_PARAMETER_FIELDS.filter(field => (!groups || groups.includes(field.group)) && (level !== "article" || (!field.key.includes("Naming_") && field.key !== "reviewRules")));
   const reasoningOptions = [{ value: "__inherit__", label: "跟随模型" }, { value: "__omit__", label: "不发送推理参数" }, ...["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(value => ({ value, label: value }))];
-  return <details className="task-parameter-settings"><summary>{groups?.length === 1 ? `${groups[0]}设置` : level === "article" ? "讨论、审校、命名与聊天默认设置" : "讨论、审校、命名与聊天设置"}</summary>
-    <Text size="sm" c="dimmed" mt="sm">{level === "article" ? "未单独设置的项目跟随全局设置；章节和大纲可以逐项调整。" : `继承来源：${resolved.previousLabel}。找不到上一大纲点时使用上一章节，再回退到文章默认。`}</Text>
-    {[...new Set(fields.map(field => field.group))].map(group => <details key={group} className="task-parameter-group" onToggle={event => { if (event.currentTarget.open && group === "插图模型" && suppliedModels && !catalog) void loadCatalog().then(setCatalog).catch(() => {}); }}><summary>{group}</summary><Stack gap="md" mt="sm">{fields.filter(field => field.group === group).map(field => {
+  const groupStatus = (group: string) => group === "写作准备与讨论" ? `最多 ${value.tasks?.preparationMaxRounds ?? defaults.preparationMaxRounds} 轮 · ${(value.tasks?.preparationRequireConfirmation ?? defaults.preparationRequireConfirmation) ? "需确认" : "无问题后自动写作"}` : group === "自动审校" ? Number(value.tasks?.reviewMaxRounds ?? defaults.reviewMaxRounds) > 0 ? `最多修正 ${value.tasks?.reviewMaxRounds ?? defaults.reviewMaxRounds} 次` : "关闭" : group === "命名" ? "模型与命名规则" : "";
+  return <details className="task-parameter-settings"><summary>{title ?? (groups?.length === 1 ? `${groups[0]}设置` : level === "article" ? "讨论、审校、命名与聊天默认设置" : "讨论、审校、命名与聊天设置")}</summary>
+    <Text size="sm" c="dimmed" mt="sm">{level === "article" ? "未单独设置的项目跟随全局设置；章节和大纲可以逐项调整。" : `选择“继承上一项”时跟随${resolved.previousLabel}；每项下方显示实际来源。`}</Text>
+    {[...new Set(fields.map(field => field.group))].map(group => <details key={group} className="task-parameter-group" onToggle={event => { if (event.currentTarget.open && group === "插图模型" && suppliedModels && !catalog) void loadCatalog().then(setCatalog).catch(() => {}); }}><summary><span>{group}</span><small>{groupStatus(group)}</small></summary><Stack gap="md" mt="sm">{fields.filter(field => field.group === group).map(field => {
       const current = value.tasks?.[field.key] ?? defaults[field.key];
       const edit = (next: string | number | boolean) => {
         if (level === "article") save(normalizeAiGenerateOptions({ ...article.aiGenerateSettings, tasks: { ...article.aiGenerateSettings.tasks, [field.key]: next } }));

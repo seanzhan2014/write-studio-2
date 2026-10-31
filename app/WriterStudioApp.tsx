@@ -8,7 +8,7 @@ import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "./ui/advanced-writing";
 import { AiSettingsInheritance } from "./ui/ai-settings-inheritance";
 import { TaskParameterSettings } from "./ui/task-parameter-settings";
-import { taskParameterDefaults, taskReasoningEffort, taskNamingProfile, taskReviewSnapshot, type TaskParameters } from "@/lib/task-parameters";
+import { TASK_PARAMETER_FIELDS, taskParameterDefaults, taskReasoningEffort, taskNamingProfile, taskReviewSnapshot, type TaskParameters } from "@/lib/task-parameters";
 import { resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 import { StyleJobHistory } from "./ui/style-job-history";
 import { StyleLabPanel, StyleLabRuntime, useActiveStyleCount, useStyleTaskSummary } from "./ui/style-lab";
@@ -209,6 +209,7 @@ function chapterIsEmpty(chapter: Chapter) {
 }
 
 type ServerTaskInput = {
+  taskParameters?: TaskParameters;
   preparationRounds?: number;
   preparationStrategy?: PreparationStrategy;
   preparationRequireConfirmation?: boolean;
@@ -251,7 +252,7 @@ type ServerTaskInput = {
 
 async function createServerTask(studio: ReturnType<typeof useStudio>, input: ServerTaskInput) {
   const taskId = clientId("task");
-  const taskParameters = resolveAiSettings(studio.currentArticle, input.outlineId, "generate", "outline", studio.data.settings).value.tasks!;
+  const taskParameters = input.taskParameters ?? resolveAiSettings(studio.currentArticle, input.outlineId, "generate", "outline", studio.data.settings).value.tasks!;
   const response = await fetchServerAction("/api/ai/tasks", {
     method: "POST",
     cache: "no-store",
@@ -555,7 +556,7 @@ function ProseControlRow<T extends string>({ id, label, value, options, onChange
         <span>{item.label}</span>
       </label>)}
     </div>
-    <small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small>
+    <details className="prose-control-help"><summary>{label}说明</summary><small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small></details>
   </div>;
 }
 
@@ -2782,6 +2783,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
   const initialGenerateOptions = resolvedGenerateSettings.value;
   if (!hasCurrentContent && initialGenerateOptions.contentMode !== "fresh") initialGenerateOptions.contentMode = "fresh";
   const [generateOptions, setGenerateOptions] = useState<AiGenerateOptions>(initialGenerateOptions);
+  const [settingsScope, setSettingsScope] = useState<"outline" | "task">("outline");
   const generateOptionsRef = useRef(initialGenerateOptions);
   const {
     includePrevious,
@@ -2796,7 +2798,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     reasoningEffort,
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
-  const taskParameters = resolvedGenerateSettings.value.tasks!;
+  const taskParameters = { ...resolvedGenerateSettings.value.tasks!, ...generateOptions.tasks };
   const reviewMaxRounds = normalizeReviewRounds(taskParameters.reviewMaxRounds);
   const reviewInstruction = normalizeReviewRules(taskParameters.reviewInstruction);
   const reviewStrategy = normalizeReviewStrategy(taskParameters.reviewStrategy);
@@ -2854,24 +2856,35 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
     generateOptionsRef.current = next;
     setGenerateOptions(next);
-    studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
-  }, [hasCurrentContent, studio]);
+    if (settingsScope === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
+  }, [hasCurrentContent, studio, settingsScope]);
 
   const applyInheritedGenerateOptions = (next: AiGenerateOptions) => {
     generateOptionsRef.current = next;
     setGenerateOptions(next);
     setTargetWordsInput(next.targetWords > 0 ? String(next.targetWords) : "");
-    studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
+    if (settingsScope === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
   };
 
   useEffect(() => {
+    if (settingsScope === "task") return;
     const next = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value;
     if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
     if (JSON.stringify(next) === JSON.stringify(generateOptionsRef.current)) return;
     if (next.targetWords !== generateOptionsRef.current.targetWords) setTargetWordsInput(next.targetWords > 0 ? String(next.targetWords) : "");
     generateOptionsRef.current = next;
     setGenerateOptions(next);
-  }, [studio.currentArticle, studio.currentOutline.id, studio.data.settings, hasCurrentContent]);
+  }, [studio.currentArticle, studio.currentOutline.id, studio.data.settings, hasCurrentContent, settingsScope]);
+
+  function saveAsArticleDefaults() {
+    const next = normalizeAiGenerateOptions(generateOptions);
+    delete next.inheritance;
+    next.firstAppearanceOverrides = {};
+    const workflowKeys = new Set(TASK_PARAMETER_FIELDS.filter(field => ["写作准备与讨论", "自动审校", "命名"].includes(field.group)).map(field => field.key));
+    next.tasks = { ...studio.currentArticle.aiGenerateSettings.tasks, ...Object.fromEntries(Object.entries(taskParameters).filter(([key]) => workflowKeys.has(key))) };
+    studio.updateArticle({ aiGenerateSettings: next });
+    setNotice("已设为文章默认，未单独设置的章节和大纲将沿用这些选项。");
+  }
 
   useEffect(() => {
     const previous = lastSyncedOutlineRef.current;
@@ -2980,6 +2993,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
       });
       promptContext.article.outlineNaming = taskNamingProfile(taskParameters, "outlineNaming");
       await createServerTask(studio, {
+        taskParameters,
         articleId: studio.currentArticle.id,
         chapterId: studio.currentChapter.id,
         outlineId: studio.currentOutline.id,
@@ -3009,7 +3023,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
         promptContext,
         currentPlan: outlinePlanDraft,
         outlineTitleSnapshot: studio.currentOutline.title,
-        generateOptions: studio.currentOutline.generateOptions === null ? null : generateOptions,
+        generateOptions: settingsScope === "task" ? undefined : studio.currentOutline.generateOptions === null ? null : generateOptions,
       });
       lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outlinePlanDraft };
       setPrompt(normalizedPrompt);
@@ -3020,7 +3034,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, settingsScope, taskParameters, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -3034,16 +3048,8 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     <div className="generate-view">
       <div className="generate-page">
         <section className="generate-command-card">
-          {studio.currentOutline.generateOptions && <div className="generate-settings-source" role="status">
-            <span><Icon name="settings" /><span>正在使用此大纲最近的生成设置</span></span>
-          </div>}
-          <AiSettingsInheritance kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} />
-          <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} />
-          <section className="generate-article-settings" aria-labelledby="generate-article-settings-heading">
-            <div className="generate-section-heading"><span id="generate-article-settings-heading">文章资料继承</span></div>
-            <p>故事、人物和关系沿用文章、章节与前序大纲的有效设定。可查看来源、修改生效范围，或恢复继承；生成时使用这里的有效资料。</p>
-            <ScopedSettingsInline level="outline" targetId={studio.currentOutline.id} includeTaskSettings={false} />
-          </section>
+          <section className="generate-input-section" aria-labelledby="generate-input-heading">
+            <div className="generate-section-heading"><h3 id="generate-input-heading">本次写作</h3><span>当前大纲 · {displayTitle}</span></div>
           <section className="generate-outline-editor">
             <div className="generate-outline-editor-heading">
               <label htmlFor="generate-outline-plan">大纲内容</label>
@@ -3083,6 +3089,23 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
               />
             </div>
           </section>
+          <div className="generate-prompt-label">
+            <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
+            <Textarea ref={instructionHeightRef} maxLength={20000} rows={4} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
+            {(promptDirty || promptSaving || promptSaveFailed) && <div className="generate-instruction-save-row">
+              <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
+              <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
+            </div>}
+          </div>
+          <div className="generate-preset-toolbar"><span>常用指令</span><Button className="manage-generate-presets" variant="subtle" size="compact-sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button></div>
+          {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
+          </section>
+          <section className="generate-settings-scope" aria-label="生成设置范围">
+            <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={[{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
+            <div className="generate-scope-description">{settingsScope === "task" ? "以下参数仅用于本次任务，离开页面后恢复已保存设置。" : "以下参数自动保存到当前大纲，后续生成继续使用。"}{studio.currentOutline.generateOptions ? <span className="generate-settings-source">正在使用此大纲最近的生成设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
+            <Button variant="subtle" size="compact-sm" disabled={!targetWordsValid} onClick={saveAsArticleDefaults}>设为文章默认</Button>
+          </section>
+          <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid">
           <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
             <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span></div>
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
@@ -3114,9 +3137,10 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
             <p>{rewriteRetentionOption.description}</p>
             {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
           </section>}
+            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />
+          </div></section>
           <section className="prose-controls-section" aria-labelledby="prose-controls-heading">
-            <div className="generate-section-heading"><span id="prose-controls-heading">正文表达</span><strong>写作倾向</strong></div>
-            <p>各项不代表精确比例；发生冲突时以大纲、人物事实和本次指令为先。</p>
+            <div className="generate-section-heading"><span id="prose-controls-heading">表达偏好</span><strong>写作倾向</strong></div>
             <div className="prose-controls-grid">
               <ProseControlRow id="dialogue-density" label="对话密度" value={proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, dialogueDensity } })} className="dialogue-density-control" />
               <ProseControlRow id="introspection-density" label="内心活动" value={proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, introspectionDensity } })} />
@@ -3129,37 +3153,38 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
             {generationMode === "rewrite" && rewriteRetention === "high" && hasActiveProseControls(proseControls) && <small>优先保留原文结构，正文表达控制只作有限调整。</small>}
             {!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
           </section>
-          <div className="generate-option-bar">
-            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />
-            <Button className="manage-generate-presets" variant="default" size="sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button>
-          </div>
-          {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
+          <GenerateAdvancedFields value={generateOptions.advanced} inherited={inheritedGenerateOptions.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [`advanced.${key}`]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [`advanced.${key}`]))} />
+          <section className="generate-reference-section" aria-labelledby="generate-reference-heading">
+            <div className="generate-section-heading"><h3 id="generate-reference-heading">参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
           <div className="generate-reference-bar" aria-label="生成参考设置">
             <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</small></span><Icon name="chevron" /></button>
             <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>人物出场{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
           </div>
-          <div className="generate-prompt-label">
-            <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
-            <Textarea ref={instructionHeightRef} maxLength={20000} rows={4} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
-            {(promptDirty || promptSaving || promptSaveFailed) && <div className="generate-instruction-save-row">
-              <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
-              <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
-            </div>}
-          </div>
-          <GenerateAdvancedFields value={generateOptions.advanced} inherited={inheritedGenerateOptions.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [`advanced.${key}`]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [`advanced.${key}`]))} />
-          <section className="generate-advanced-options" aria-labelledby="generate-reference-heading">
-            <div className="generate-section-heading"><span id="generate-reference-heading">参考与推理</span></div>
-            <div className="generate-advanced-options-body">
+            <div className="generate-reference-choices"><Checkbox label="包含前面大纲" checked={includePrevious} onChange={event => rememberGenerateOptions({ includePrevious: event.currentTarget.checked })} /><Checkbox label="包含相关人物" checked={includeCharacters} onChange={event => rememberGenerateOptions({ includeCharacters: event.currentTarget.checked })} />
               <label className="generate-excellent-fragments-toggle">
                 <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => rememberGenerateOptions({ includeExcellentFragments: event.currentTarget.checked })} />
                 <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
               </label>
+            </div>
+          <section className="generate-article-settings" aria-labelledby="generate-article-settings-heading">
+            <div className="generate-section-heading"><span id="generate-article-settings-heading">文章资料继承</span></div>
+            <p>资料修改按各字段的生效范围保存。</p>
+            <ScopedSettingsInline level="outline" targetId={studio.currentOutline.id} includeTaskSettings={false} />
+          </section>
+          </section>
+          <section className="generate-workflow-section" aria-labelledby="generate-workflow-heading">
+            <div className="generate-section-heading"><h3 id="generate-workflow-heading">流程设置</h3><span>准备 → 写作 → 审校</span></div>
+            <div className="generate-workflow-summary"><span>写作前讨论 · 最多 {Number(taskParameters.preparationMaxRounds)} 轮</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div>
               <label className="generate-outline-title-toggle">
                 <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => rememberGenerateOptions({ includeOutlineTitle: event.currentTarget.checked })} />
                 <span><span className="ui-label">同时生成大纲名</span><small>遵循大纲命名设置</small></span>
               </label>
+            <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备与讨论", "自动审校", "命名"]} title="调整讨论、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} />
+          </section>
+          <section className="generate-inheritance-section" aria-label="参数来源与继承"><AiSettingsInheritance taskGroups={["写作准备与讨论", "自动审校", "命名"]} kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} /></section>
+          <section className="generate-execution-section" aria-labelledby="generate-execution-heading">
+            <div className="generate-section-heading"><h3 id="generate-execution-heading">执行与结果</h3></div>
               <div className="generate-reasoning-options"><ReasoningSettings value={reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(value) => rememberGenerateOptions({ reasoningEffort: value })} /></div>
-            </div>
           </section>
           <div className="generate-submit-zone">
             <div className="generate-submit-row">
@@ -5114,7 +5139,7 @@ function ArticleGenerateSettings() {
       {settings.contentMode === "rewrite" && <div className="rewrite-retention-control article-rewrite-retention"><div className="rewrite-retention-heading"><div><span>默认原文保留度</span></div><strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong></div><Slider thumbLabel="默认原文保留度" min={0} max={rewriteRetentionOptions.length - 1} step={1} marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))} value={rewriteRetentionIndex} label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"} onChange={(value) => patchSettings({ rewriteRetention: rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL })} /><p>{rewriteRetentionOption.description}</p></div>}
     </section>
     <section className="article-generate-block prose-controls-section" aria-labelledby="article-prose-controls-title">
-      <div className="generate-section-heading"><span id="article-prose-controls-title">正文表达</span><strong>默认写作倾向</strong></div>
+            <div className="generate-section-heading"><span id="article-prose-controls-title">表达偏好</span><strong>文章默认</strong></div>
       <div className="prose-controls-grid">
         <ProseControlRow id="article-dialogue-density" label="对话密度" value={settings.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...settings.proseControls, dialogueDensity } })} className="dialogue-density-control" />
         <ProseControlRow id="article-introspection-density" label="内心活动" value={settings.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...settings.proseControls, introspectionDensity } })} />
@@ -5131,9 +5156,9 @@ function ArticleGenerateSettings() {
         <Checkbox label="包含前面大纲" checked={settings.includePrevious} onChange={(event) => patchSettings({ includePrevious: event.currentTarget.checked })} />
         <Checkbox label="包含相关人物" checked={settings.includeCharacters} onChange={(event) => patchSettings({ includeCharacters: event.currentTarget.checked })} />
         <Checkbox label="参考优秀片段" checked={settings.includeExcellentFragments} onChange={(event) => patchSettings({ includeExcellentFragments: event.currentTarget.checked })} />
-        <Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={(event) => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} />
       </div>
     </section>
+    <section className="article-generate-block" aria-label="生成附加项"><div className="generate-section-heading"><span>生成附加项</span></div><Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} /></section>
     <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>
     <div className="form-foot"><span>{overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
   </section>;

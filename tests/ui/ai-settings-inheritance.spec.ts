@@ -17,7 +17,7 @@ test("AI parameter inheritance persists and controls real preparation tasks", as
     article.chapters[0].outlines[0].generateOptions = normalizeAiGenerateOptions({ ...article.aiGenerateSettings, targetWords: 7800, tasks: { preparationMaxRounds: 0, preparationStrategy: "explore", preparationRequireConfirmation: true, chatReasoningEffort: "high" } });
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data, conflictResolution: "keep-local" } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
-    const settings = page.locator(".generate-command-card > .task-parameter-settings");
+    const settings = page.locator(".generate-workflow-section > .task-parameter-settings");
     await settings.locator(":scope > summary").click();
     const discussion = settings.locator(".task-parameter-group").filter({ has: page.locator("summary", { hasText: "写作准备与讨论" }) });
     await discussion.locator(":scope > summary").click();
@@ -56,7 +56,7 @@ test("article and chapter defaults expose all workflow parameter groups", async 
   await settings.getByLabel("写作前最多互动轮次", { exact: true }).fill("1");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.tasks?.preparationMaxRounds).toBe(1);
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  const scoped = page.locator(".generate-command-card > .task-parameter-settings");
+  const scoped = page.locator(".generate-workflow-section > .task-parameter-settings");
   await scoped.locator(":scope > summary").click();
   await scoped.getByText("写作准备与讨论", { exact: true }).click();
   await expect(scoped.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("4");

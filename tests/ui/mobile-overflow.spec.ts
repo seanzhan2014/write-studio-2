@@ -81,7 +81,7 @@ for (const width of [320, 390, 430, 844]) {
     for (const surface of surfaces) await expectVerticalSurface(page, surface);
 
     await page.locator(".ai-setting-inheritance-details > summary").click();
-    const parameters = page.locator(".generate-command-card > .task-parameter-settings");
+    const parameters = page.locator(".generate-workflow-section > .task-parameter-settings");
     await parameters.locator(":scope > summary").click();
     for (const summary of await parameters.locator(".task-parameter-group > summary").all()) await summary.click();
     await page.locator(".generate-command-card > .writing-advanced > summary").click();

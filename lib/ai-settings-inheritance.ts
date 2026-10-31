@@ -50,31 +50,34 @@ export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArt
   if (kind === "generate") (defaults as AiGenerateOptions).tasks = { ...taskParameterDefaults(globalSettings, article), ...(defaults as AiGenerateOptions).tasks };
   delete defaults.inheritance;
   let previousChapter = defaults;
+  let previousChapterSource = "文章默认";
   let chapterLabel = "文章默认";
   for (const chapter of article.chapters) {
     if (chapter.archived && chapter.id !== targetId && !chapter.outlines.some(outline => outline.id === targetId)) continue;
     const chapterRaw = chapter.settings?.aiTasks?.[kind];
     const chapterValue = chapterRaw ? resolve(kind, chapterRaw, defaults, previousChapter) : previousChapter;
-    if (level === "chapter" && chapter.id === targetId) return result(chapterValue, previousChapter, chapterLabel);
+    const chapterSource = chapterRaw ? `章节：${chapter.title}` : previousChapterSource;
+    if (level === "chapter" && chapter.id === targetId) return result(chapterValue, previousChapter, chapterLabel, chapterSource);
     let previous = previousChapter;
     let previousLabel = chapterLabel;
     for (const outline of chapter.outlines) {
       if (outline.archived && outline.id !== targetId) continue;
       const raw = kind === "generate" ? outline.generateOptions : outline.illustrationOptions;
       const value = resolve(kind, raw, defaults, previous, chapterValue);
-      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel);
+      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel, raw ? "当前大纲设置" : chapterSource);
       previous = value;
       previousLabel = `上一大纲点：${outline.title || "未命名大纲"}`;
     }
     // Chapter settings are explicit, independent of an outline's temporary task choices.
     previousChapter = chapterValue;
+    previousChapterSource = chapterSource;
     chapterLabel = `上一章节：${chapter.title}`;
   }
   return result(defaults, defaults, "文章默认");
 
-  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string) {
+  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = "文章默认") {
     type Options = K extends "generate" ? AiGenerateOptions : IllustrationOptions;
-    return { value: value as Options, articleDefaults: defaults as Options, previous: previous as Options, previousLabel };
+    return { value: value as Options, articleDefaults: defaults as Options, previous: previous as Options, previousLabel, baselineLabel };
   }
 }
 

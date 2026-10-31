@@ -31,6 +31,20 @@ function writeDraft(key: string, value: PreparationReply) {
 }
 export function openWritingTask(taskId: string) { window.dispatchEvent(new CustomEvent("writer-studio-open-task", { detail: taskId })); }
 
+export function WritingTaskProgress({ task }: { task: AiTask }) {
+  const preparation = task.contextOptions?.writingPreparation;
+  const reviewEnabled = Number(task.contextOptions?.reviewMaxRounds) > 0;
+  const reviewing = ["reviewing", "revising", "verifying"].includes(task.phase ?? "");
+  const current = task.state === "success" ? 4 : reviewing ? 3 : preparation?.stage === "awaiting_author" || preparation?.stage === "awaiting_confirmation" ? 1 : preparation?.stage === "preparing" || task.state === "waiting" ? 0 : 2;
+  const stopped = task.state === "failed" || task.state === "cancelled";
+  const steps = ["准备", preparation?.stage === "awaiting_author" ? "待回答" : "待确认", "写作", "审校", "完成"];
+  return <ol className="writing-task-progress" aria-label="生成进度">{steps.map((label, index) => {
+    const skipped = index === 1 && !preparation?.requireConfirmation && !preparation?.confirmedAt && !preparation?.history.length && current > 1 || index === 3 && !reviewEnabled;
+    const state = skipped ? "skipped" : index < current ? "complete" : index === current ? stopped ? "stopped" : "current" : "pending";
+    return <li key={index} data-state={state} aria-current={state === "current" ? "step" : undefined}><span aria-hidden="true">{state === "complete" ? "✓" : index + 1}</span>{label}{skipped && <small>略过</small>}{state === "stopped" && <small>{task.state === "failed" ? "失败" : "取消"}</small>}</li>;
+  })}</ol>;
+}
+
 export function OutlineTaskIndicator({ outlineId, fallback }: { outlineId: string; fallback?: string }) {
   const studio = useStudio();
   const tasks = studio.data.tasks.filter((task) => task.outlineId === outlineId && task.target === "正文").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -109,6 +123,7 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
   const brief = <div className="writing-brief"><h3>写作准备稿 <small>v{workflow.round + 1} · {workflow.round} / {workflow.maxRounds} 轮</small></h3>{workflow.brief ? <div className="writing-brief-text">{workflow.brief}</div> : <p>AI 正在根据大纲、人物资料和上下文整理初版准备稿。</p>}{editable && !editing && <button className="secondary-button" type="button" onClick={() => { setBriefEdit(workflow.brief); setEditing(true); setTab("brief"); }}>编辑准备稿</button>}{editing && <div className="writing-brief-editor"><label htmlFor={`brief-${task.id}`}>修改写作准备稿</label><textarea id={`brief-${task.id}`} value={briefEdit} maxLength={60000} onChange={(event) => setBriefEdit(event.target.value)} /><div><button className="primary-compact" disabled={busy || !briefEdit.trim()} onClick={() => void perform("edit_brief", { brief: briefEdit, ...(authorTurn ? { draft } : {}) })}>保存准备稿</button><button className="secondary-button" onClick={() => setEditing(false)}>取消编辑</button></div></div>}</div>;
   return <section ref={shell} className={`task-interaction ${full ? "full" : "inline"}`} aria-label="写作准备与作者互动">
     <header className="task-interaction-header"><div><h3>写作准备与讨论</h3><span>{PREPARATION_STRATEGY_LABELS[normalizePreparationStrategy(workflow.strategy)]} · {workflow.round} / {workflow.maxRounds} 轮 · {preparationNeedsConfirmation(workflow) ? "完成后等待确认" : "无待答问题后自动写正文"}</span></div>{!full && <button className="text-button" onClick={() => openWritingTask(task.id)}>打开完整任务 →</button>}</header>
+    <WritingTaskProgress task={task} />
     <div className="task-interaction-tabs" role="tablist" aria-label="写作任务内容"><button role="tab" aria-selected={tab === "discussion"} onClick={() => setTab("discussion")}>讨论</button><button role="tab" aria-selected={tab === "brief"} onClick={() => setTab("brief")}>准备稿</button><button role="tab" aria-selected={tab === "history"} onClick={() => setTab("history")}>运行历史</button></div>
     <div className="task-interaction-layout"><div className="task-interaction-main"><div className="task-interaction-scroll">
       {tab === "brief" ? brief : tab === "history" ? <><TaskHistory task={task} />{details}</> : <div className="writing-discussion">

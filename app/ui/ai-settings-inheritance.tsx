@@ -9,21 +9,23 @@ import { type AiGenerateOptions } from "@/lib/generate-options";
 import { type IllustrationOptions } from "@/lib/illustration-options";
 import { normalizeIllustrationStyles } from "@/lib/illustration-styles";
 import { TaskParameterSettings } from "./task-parameter-settings";
+import { TASK_PARAMETER_FIELDS } from "@/lib/task-parameters";
 import { AiSettingActions } from "./ai-setting-actions";
 import { useEffect, useState } from "react";
 import { fetchFromServer } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 
 type Options = AiGenerateOptions | IllustrationOptions;
-export function AiSettingsInheritance<T extends Options>({ kind, targetId, level = "outline", value, onChange, disabled = false, includeAdvanced = false }: { kind: AiSettingsKind; targetId: string; level?: "outline" | "chapter"; value: T; onChange: (value: T) => void; disabled?: boolean; includeAdvanced?: boolean }) {
+export function AiSettingsInheritance<T extends Options>({ kind, targetId, level = "outline", value, onChange, disabled = false, includeAdvanced = false, taskGroups }: { kind: AiSettingsKind; targetId: string; level?: "outline" | "chapter"; value: T; onChange: (value: T) => void; disabled?: boolean; includeAdvanced?: boolean; taskGroups?: string[] }) {
   const { currentArticle, data } = useStudio();
   const resolved = resolveAiSettings(currentArticle, targetId, kind, level, data.settings);
-  const keys = aiSettingKeys(kind).filter(key => key !== "reviewMaxRounds" && key !== "reviewInstruction");
+  const keys = aiSettingKeys(kind).filter(key => key !== "reviewMaxRounds" && key !== "reviewInstruction" && (!taskGroups || !key.startsWith("tasks.") || TASK_PARAMETER_FIELDS.some(field => `tasks.${field.key}` === key && taskGroups.includes(field.group))));
   function apply(mode: "article" | "previous", selected: string[]) {
     onChange(inheritAiSettings(value, mode, (mode === "article" ? resolved.articleDefaults : resolved.previous) as T, selected));
   }
   return <div className="ai-settings-inheritance">
-    <Group justify="space-between" gap="xs"><Text size="sm" c="dimmed">{resolved.previousLabel}</Text><AiSettingActions label={kind === "generate" ? "全部生成设置" : "全部插图设置"} disabled={disabled} onArticle={() => apply("article", keys)} onPrevious={() => apply("previous", keys)} /></Group>
+    <Group justify="space-between" gap="xs"><Text size="sm" c="dimmed">参数来源 · {resolved.baselineLabel}</Text><AiSettingActions label={kind === "generate" ? "全部生成设置" : "全部插图设置"} disabled={disabled} onArticle={() => apply("article", keys)} onPrevious={() => apply("previous", keys)} /></Group>
+    <Text size="xs" c="dimmed">“继承上一项”跟随{resolved.previousLabel}；明确选择后随来源更新。</Text>
     <details className="ai-setting-inheritance-details"><summary>逐项设置继承</summary><Stack gap="xs" mt="sm">
       {keys.filter(key => !key.startsWith("tasks.") && (includeAdvanced || !key.startsWith("advanced."))).map(key => {
         const label = key.startsWith("advanced.") ? GENERATE_FIELDS[key.slice(9) as keyof typeof GENERATE_FIELDS][0] : AI_SETTING_LABELS[key];
