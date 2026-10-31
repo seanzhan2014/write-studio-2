@@ -2550,14 +2550,6 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
     onNotice(saved ? "已设为默认正文" : "设置默认正文未完成，请查看保存状态");
   }
 
-  async function setDisplayedAsCurrent() {
-    if (!previewVersion || displayedIsCurrent) return;
-    studio.setCurrentVersion(studio.currentOutline.id, displayedIsDirectContent ? undefined : previewVersion.id);
-    onClearPreview();
-    const saved = await studio.saveNow();
-    onNotice(saved ? "已设为当前正文" : "设置当前正文未完成，请查看保存状态");
-  }
-
   async function deleteDisplayedContent() {
     if (!window.confirm(displayedIsCurrent ? "删除当前正文？删除后将按版本列表顺序切换到下一版。" : "删除这个正文版本？")) return;
     if (editing) finishWithoutChanges();
@@ -2652,7 +2644,6 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
               <button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={`正文标题，双击${displayedIsDefault ? "取消" : "设为"}默认正文`} title={`${displayedContentName} · 双击${displayedIsDefault ? "取消" : "设为"}默认正文`} onClick={(event) => { if (event.detail === 0) void toggleDisplayedContentDefault(); }} onDoubleClick={() => void toggleDisplayedContentDefault()} onPointerUp={(event) => { if (isTouchDoubleTap(event, lastTitleTouchRef)) void toggleDisplayedContentDefault(); }}><span>{displayedContentName}</span></button>
               <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><span aria-hidden="true">P</span></button>
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
-              {!displayedIsCurrent && <button className="body-status-button body-set-current-button" type="button" aria-label="设为当前" title="设为当前" onClick={() => void setDisplayedAsCurrent()}><span aria-hidden="true">C</span></button>}
               <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent} onClick={() => void deleteDisplayedContent()}><Icon name="trash" /></button>
               {editing && <span className={`mobile-edit-save-state ${draftContent === baselineRef.current ? "saved" : "unsaved"}`}>{savingEdit ? "正在保存…" : draftContent === baselineRef.current ? "未修改" : "未保存"}</span>}
             </div>

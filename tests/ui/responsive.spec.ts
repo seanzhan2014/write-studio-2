@@ -1329,15 +1329,16 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   await expect(page.getByText("只读", { exact: true })).toHaveCount(0);
   await expect(page.locator(".content-word-count")).toHaveText("7 字");
   await expect(page.locator(".start-edit-button,.appreciate-body-button,.set-default-body-button")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveText("C");
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveCount(0);
   const bodyTitle = page.getByRole("button", { name: "正文标题，双击设为默认正文" });
   await expect(bodyTitle).toContainText("手动快照");
   const previewState = await request.get("/api/state");
   const previewPayload = await previewState.json() as { data: ReturnType<typeof fullStudioFixture> };
   const previewOutline = previewPayload.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
   expect({ currentVersionId: previewOutline.currentVersionId, defaultVersionId: previewOutline.defaultVersionId }).toEqual({ currentVersionId: null, defaultVersionId: null });
-  await page.getByRole("button", { name: "设为当前", exact: true }).click();
+  await page.getByRole("button", { name: "版本", exact: true }).click();
+  await candidate.getByRole("button", { name: "设为当前", exact: true }).click();
+  await page.getByRole("button", { name: "关闭正文版本" }).click();
   await expect(page.locator(".toast")).toContainText("已设为当前正文");
   await expect(page.locator(".body-current-label")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveCount(0);
@@ -1423,7 +1424,7 @@ test("body toolbar deletes previewed defaults, current versions and direct conte
   await openVersions();
   await page.locator(".version-list article").filter({ hasText: "手动快照" }).locator(".version-preview-main").click();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
-  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveText("C");
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveCount(0);
   const remove = page.getByRole("button", { name: "删除正文", exact: true });
   await expect(remove).toBeVisible();
   page.once("dialog", (dialog) => dialog.dismiss());
@@ -3406,7 +3407,7 @@ test("mobile writing view previews a selected version and explicitly saves or di
   await headingName.evaluate((element) => { element.textContent = "这是一个用于验证手机端按钮不会被压缩变形的非常长的正文名称"; });
   const headingLayout = await page.locator(".body-title-cluster").evaluate((element) => {
     const title = element.querySelector(".body-title-toggle > span") as HTMLElement;
-    const buttons = Array.from(element.querySelectorAll(".body-status-button, .body-set-current-button")) as HTMLElement[];
+    const buttons = Array.from(element.querySelectorAll(".body-status-button")) as HTMLElement[];
     const tools = element.parentElement?.querySelector(".editor-tools") as HTMLElement;
     return {
       titleTruncated: title.scrollWidth > title.clientWidth,

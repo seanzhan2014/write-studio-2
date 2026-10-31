@@ -1604,11 +1604,6 @@ button:disabled {
   width: 24px;
 }
 
-.editor-heading .body-set-current-button {
-  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
-  color: var(--accent);
-}
-
 .editor-heading .body-delete-button:hover {
   color: var(--danger, #c74646);
 }
@@ -6295,8 +6290,7 @@ kbd {
     padding: 0;
     pointer-events: none;
   }
-  .mobile-writing-editing .editor-heading .body-status-button,
-  .mobile-writing-editing .editor-heading .body-set-current-button { display: none; }
+  .mobile-writing-editing .editor-heading .body-status-button { display: none; }
   .mobile-writing-editing .mobile-edit-save-state {
     color: var(--text-tertiary);
     display: inline;
