@@ -1604,8 +1604,7 @@ button:disabled {
   width: 24px;
 }
 
-.editor-heading .body-current-label,
-.editor-heading .body-set-current-button {
+.editor-heading .body-current-label {
   align-items: center;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-radius: 999px;
@@ -1622,6 +1621,15 @@ button:disabled {
 
 .editor-heading .body-current-label {
   background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.editor-heading .body-set-current-button {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent);
+}
+
+.editor-heading .body-delete-button:hover {
+  color: var(--danger, #c74646);
 }
 
 .editor-heading .body-status-button span {

@@ -276,7 +276,7 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(outline.versions.length, 0);
   });
 
-  await t.test("deleting current restores persisted selection history before falling back to the newest version", async () => {
+  await t.test("deleting current default advances in list order regardless of selection history", async () => {
     let revision = await resetFixture((fixture) => {
       const outline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
       const base = outline.versions[0];
@@ -285,23 +285,45 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
         { ...base, id: "old", content: "较早正文", createdAt: "2026-10-21T00:00:00Z" },
         { ...base, id: "middle", content: "中间正文", createdAt: "2026-10-22T00:00:00Z" },
       ];
+      outline.defaultVersionId = "newest";
     });
-    for (const versionId of ["old", "middle", "old"]) {
+    for (const versionId of ["middle", "old", "newest"]) {
       const selected = await api(`/api/versions/${versionId}/apply`, { method: "POST", headers: { "If-Match": String(revision) }, body: {} });
       assert.equal(selected.response.status, 200, selected.text);
       revision = selected.data.revision;
     }
-    for (const [deleted, expected, text] of [["old", "middle", "中间正文"], ["middle", "newest", "最新正文"], ["newest", null, "林澈看向顾屿，确认潮汐表上的时间。"]]) {
+    for (const [deleted, expected, text] of [["newest", "middle", "中间正文"], ["middle", "old", "较早正文"], ["old", null, "林澈看向顾屿，确认潮汐表上的时间。"]]) {
       const result = await api(`/api/versions/${deleted}`, { method: "DELETE", headers: { "If-Match": String(revision) } });
       assert.equal(result.response.status, 200, result.text);
       revision = result.data.revision;
       const content = await api("/api/outlines/outline-current/content");
       assert.equal(content.data.data.currentVersionId, expected);
+      assert.equal(content.data.data.defaultVersionId, null);
       assert.equal(content.data.data.text, text);
       const state = await api("/api/state");
       const outline = state.data.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
       assert.equal(outline.versions.some((version) => version.id === deleted), false);
     }
+  });
+
+  await t.test("deletes a noncurrent default and direct content without deleting the outline", async () => {
+    let revision = await resetFixture((fixture) => {
+      const outline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current");
+      outline.defaultVersionId = "version-manual";
+    });
+    const removed = await api("/api/versions/version-manual", { method: "DELETE", headers: { "If-Match": String(revision) } });
+    assert.equal(removed.response.status, 200, removed.text);
+    revision = removed.data.revision;
+    const content = await api("/api/outlines/outline-current/content");
+    assert.equal(content.data.data.currentVersionId, null);
+    assert.equal(content.data.data.defaultVersionId, null);
+    assert.equal(content.data.data.text, "林澈看向顾屿，确认潮汐表上的时间。");
+    const direct = await api("/api/outlines/outline-current/content", { method: "DELETE", headers: { "If-Match": String(revision) } });
+    assert.equal(direct.response.status, 200, direct.text);
+    const empty = await api("/api/outlines/outline-current/content");
+    assert.equal(empty.response.status, 200, empty.text);
+    assert.equal(empty.data.data.text, "");
+    assert.equal(empty.data.data.workingText, "");
   });
 
   await t.test("edits chat history without mixing sessions and can clear one outline only", async () => {

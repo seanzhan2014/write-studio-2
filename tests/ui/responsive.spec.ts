@@ -1330,6 +1330,7 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   await expect(page.locator(".content-word-count")).toHaveText("7 字");
   await expect(page.locator(".start-edit-button,.appreciate-body-button,.set-default-body-button")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "设为当前", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveText("C");
   const bodyTitle = page.getByRole("button", { name: "正文标题，双击设为默认正文" });
   await expect(bodyTitle).toContainText("手动快照");
   const previewState = await request.get("/api/state");
@@ -1355,7 +1356,7 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   expect({ currentVersionId: outline.currentVersionId, defaultVersionId: outline.defaultVersionId, versionCount: outline.versions.length }).toEqual({ currentVersionId: "version-manual", defaultVersionId: "version-manual", versionCount: 1 });
 });
 
-test("current body version deletion restores selection history across reloads and falls back to newest", async ({ page, request }, testInfo) => {
+test("current default body deletion advances in list order across reloads", async ({ page, request }, testInfo) => {
   test.setTimeout(60_000);
   const fixture = fullStudioFixture() as unknown as StudioData;
   const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
@@ -1365,6 +1366,7 @@ test("current body version deletion restores selection history across reloads an
     { ...base, id: "old", name: "较早版本", content: "较早正文", createdAt: "2026-10-21T00:00:00Z" },
     { ...base, id: "middle", name: "中间版本", content: "中间正文", createdAt: "2026-10-22T00:00:00Z" },
   ];
+  target.defaultVersionId = "newest";
   const current = await (await request.get("/api/state")).json();
   const saved = await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fixture, conflictResolution: "keep-local" } });
   expect(saved.ok()).toBeTruthy();
@@ -1376,26 +1378,74 @@ test("current body version deletion restores selection history across reloads an
   }).toBe(id);
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await openVersions();
-  for (const name of ["较早版本", "中间版本", "较早版本"]) {
+  for (const name of ["中间版本", "较早版本", "最新版本"]) {
     await version(name).getByRole("button", { name: "设为当前", exact: true }).click();
     await expect(version(name).getByRole("button", { name: "已当前", exact: true })).toBeDisabled();
   }
-  await waitForCurrent("old");
+  await waitForCurrent("newest");
   await page.reload();
   await openVersions();
   page.on("dialog", (dialog) => dialog.accept());
-  for (const [name, expected, body] of [["较早版本", "middle", "中间正文"], ["中间版本", "newest", "最新正文"], ["最新版本", null, target.content]] as const) {
+  for (const [name, expected, body] of [["最新版本", "middle", "中间正文"], ["中间版本", "old", "较早正文"], ["较早版本", null, target.content]] as const) {
     const remove = version(name).getByRole("button", { name: "删除", exact: true });
     await expect(remove).toBeEnabled();
     await remove.click();
     await expect(version(name)).toHaveCount(0);
     await waitForCurrent(expected);
+    await expect.poll(async () => {
+      const state = await (await request.get("/api/state")).json();
+      return state.data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").defaultVersionId;
+    }).toBe(null);
     await page.getByRole("button", { name: "关闭正文版本" }).click();
     await expect(page.getByLabel("正文内容", { exact: true })).toContainText(body);
     await page.reload();
     await openVersions();
   }
   await expect(page.locator(".version-list article")).toHaveCount(1);
+  await page.locator(".version-list article").getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("button", { name: "关闭正文版本" }).click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("（正文为空）");
+  await page.reload();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("（正文为空）");
+});
+
+test("body toolbar deletes previewed defaults, current versions and direct content", async ({ page, request }, testInfo) => {
+  const fixture = fullStudioFixture() as unknown as StudioData;
+  const target = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-current")!;
+  target.defaultVersionId = "version-manual";
+  target.currentVersionId = "keep-current";
+  target.versions.unshift({ ...target.versions[0], id: "keep-current", name: "保留当前版本", content: "保留的当前正文" });
+  const current = await (await request.get("/api/state")).json();
+  expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fixture, conflictResolution: "keep-local" } })).ok()).toBeTruthy();
+  const openVersions = () => page.getByRole("button", { name: testInfo.project.name === "mobile-chromium" ? "选择正文版本" : "版本", exact: true }).click();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await openVersions();
+  await page.locator(".version-list article").filter({ hasText: "手动快照" }).locator(".version-preview-main").click();
+  await page.getByRole("button", { name: "关闭正文版本" }).click();
+  await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveText("C");
+  const remove = page.getByRole("button", { name: "删除正文", exact: true });
+  await expect(remove).toBeVisible();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await remove.click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("不可变版本正文");
+  page.on("dialog", (dialog) => dialog.accept());
+  await remove.click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("保留的当前正文");
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/state")).json();
+    const outline = state.data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current");
+    return { current: outline.currentVersionId, default: outline.defaultVersionId, versions: outline.versions.length };
+  }).toEqual({ current: "keep-current", default: null, versions: 1 });
+  await page.reload();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("保留的当前正文");
+  await remove.click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText(target.content);
+  await page.reload();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText(target.content);
+  await remove.click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("（正文为空）");
+  await page.reload();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("（正文为空）");
 });
 
 test("desktop direct current body creates one version when set as default", async ({ page, request }, testInfo) => {

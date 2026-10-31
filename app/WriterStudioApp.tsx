@@ -2558,6 +2558,15 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
     onNotice(saved ? "已设为当前正文" : "设置当前正文未完成，请查看保存状态");
   }
 
+  async function deleteDisplayedContent() {
+    if (!window.confirm(displayedIsCurrent ? "删除当前正文？删除后将按版本列表顺序切换到下一版。" : "删除这个正文版本？")) return;
+    if (editing) finishWithoutChanges();
+    studio.deleteVersion(studio.currentOutline.id, displayedIsDirectContent ? null : displayedVersion?.id ?? null);
+    onClearPreview();
+    const saved = await studio.saveNow();
+    onNotice(saved ? "正文已删除" : "删除未完成，请查看保存状态");
+  }
+
   async function toggleDisplayedBodyExcellent() {
     if (!displayedContent.trim() || settingExcellentRef.current) return;
     settingExcellentRef.current = true;
@@ -2645,7 +2654,8 @@ function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPr
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
               {displayedIsCurrent
                 ? <span className="body-current-label">当前</span>
-                : <button className="body-set-current-button" type="button" onClick={() => void setDisplayedAsCurrent()}>设为当前</button>}
+                : <button className="body-status-button body-set-current-button" type="button" aria-label="设为当前" title="设为当前" onClick={() => void setDisplayedAsCurrent()}><span aria-hidden="true">C</span></button>}
+              <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent} onClick={() => void deleteDisplayedContent()}><Icon name="trash" /></button>
               {editing && <span className={`mobile-edit-save-state ${draftContent === baselineRef.current ? "saved" : "unsaved"}`}>{savingEdit ? "正在保存…" : draftContent === baselineRef.current ? "未修改" : "未保存"}</span>}
             </div>
             <div className="editor-tools">{editing ? <>
@@ -5640,6 +5650,13 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
     const saved = await studio.saveNow();
     onNotice(saved ? `已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
   }
+  async function deleteVersion(versionId: string | null, isCurrent: boolean) {
+    if (!window.confirm(isCurrent ? "删除当前正文？删除后将按版本列表顺序切换到下一版。" : "删除这个正文版本？")) return;
+    studio.deleteVersion(studio.currentOutline.id, versionId);
+    if (isCurrent || selectedVersionId === (versionId ?? directContentId(studio.currentOutline.id))) onClearPreview();
+    const saved = await studio.saveNow();
+    onNotice(saved ? "正文已删除" : "删除未完成，请查看保存状态");
+  }
   return <ScrollableDrawer
     scrollMode="content"
     opened
@@ -5666,6 +5683,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
         {showStandaloneCurrent && <article className={`${directPreviewSelected || !selectedVersionId ? "active" : ""} ${!currentVersion ? "current" : ""}`}>
           <button className="version-preview-main" type="button" onClick={onClearPreview}><div><span className="ui-title" title={standaloneContentName}>{standaloneContentName}</span>{(studio.currentOutline.manualExcellent || standaloneExcellentFragments.length > 0) && <i className="excellent-fragment-dot" title={studio.currentOutline.manualExcellent ? "优秀正文" : "含优秀片段，已自动设为优秀"} />}{!currentVersion && <em>当前 · 已直接保存</em>}</div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(standaloneContent)} 字</p><span>正文</span></button>
           {(directPreviewSelected || !selectedVersionId) && <div className="version-content-preview" aria-label="直接保存正文内容">{standaloneContent ? <ExcellentText text={standaloneContent} fragments={standaloneExcellentFragments} /> : "（正文为空）"}</div>}
+          <div className="version-actions"><button className="danger-text" type="button" onClick={() => void deleteVersion(null, !currentVersion)}>删除</button></div>
         </article>}
         {versions.map((version) => {
           const isDefault = studio.currentOutline.defaultVersionId === version.id;
@@ -5684,7 +5702,7 @@ function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPreview, 
               <button type="button" disabled={isDefault} onClick={() => { studio.setDefaultVersion(studio.currentOutline.id, version.id); onNotice("已设为默认正文"); }}>{isDefault ? "已默认" : "设为默认"}</button>
               <button type="button" onClick={() => void saveVersionAs(version)}>另存</button>
               <button type="button" onClick={() => { const name = window.prompt("重命名版本", version.name); if (name?.trim()) studio.renameVersion(studio.currentOutline.id, version.id, name.trim()); }}>重命名</button>
-              <button className="danger-text" type="button" disabled={isDefault} title={isDefault ? "请先取消默认正文" : undefined} onClick={() => { if (window.confirm(isCurrent ? "删除当前版本？删除后将恢复上次设为当前的版本；没有历史记录时使用最新版本。" : "删除这个版本？")) { studio.deleteVersion(studio.currentOutline.id, version.id); if (isCurrent || selectedVersionId === version.id) onClearPreview(); } }}>删除</button>
+              <button className="danger-text" type="button" onClick={() => void deleteVersion(version.id, isCurrent)}>删除</button>
             </div>
           </article>;
         })}
