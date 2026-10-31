@@ -13,7 +13,7 @@ import { taskChangesOutline } from "@/lib/task-target";
 
 import type { ReasoningEffort } from "@/lib/reasoning-options";
 
-import { drainChatCompletions } from "@/lib/chat-client";
+import { clearChatCompletions, drainChatCompletions } from "@/lib/chat-client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AI_GENERATE_OPTIONS, DEFAULT_GENERATE_TARGET_WORDS, normalizeAiGenerateOptions, normalizeContentGenerationMode, normalizeGeneratePresets, normalizeGenerateTargetWords, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
@@ -35,14 +35,11 @@ import { moveOutlineBetweenChapters, moveOutlineToChapterEnd } from "./outline-o
 import { duplicateArticleForCopy, duplicateArticlesForImport, duplicateOutlineForImport, type ArticleCopyOptions } from "@/lib/data-transfer";
 import {
   EMPTY_ARTICLE_STORY_SETTINGS,
-  EMPTY_CHARACTER_PROFILE,
   EMPTY_CHAPTER_SETTINGS,
   migrateArticleStoryDetails,
   migrateCharacterDetails,
   normalizeArticleStorySettings,
-  normalizeCharacterProfile,
   normalizeChapterSettings,
-  resolveChapterSettings,
   resolveOutlineSettings,
   type ArticleStorySettings,
   type CharacterProfile,
@@ -2204,7 +2201,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
     async clearBusinessData() {
       try {
         const response = await fetchServerAction("/api/database/business-data", { method: "DELETE" });
-        const payload = await response.json() as { revision?: number; databaseVersion?: number; error?: string };
+        const payload = await response.json() as { revision?: number; databaseVersion?: number; error?: string; cleanupPending?: boolean; message?: string };
         if (!response.ok || payload.revision === undefined) throw new Error(payload.error || "清除失败");
         saveEpochRef.current += 1;
         revisionRef.current = payload.revision;
@@ -2219,6 +2216,18 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
           const key = window.sessionStorage.key(index);
           if (key?.startsWith(draftPrefix)) window.sessionStorage.removeItem(key);
+        }
+        await Promise.all((await readOfflineContentDrafts()).map(draft => deleteOfflineContentDraft(draft.outlineId)));
+        window.localStorage.removeItem(legacyStorageKey);
+        clearChatCompletions();
+        for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+          const key = window.localStorage.key(index);
+          if (key?.startsWith("writer-studio:photo-draft:")) window.localStorage.removeItem(key);
+        }
+        if (payload.cleanupPending) {
+          setSaveError(payload.message || "业务数据已清除，图片清理需要重试");
+          setSaveStatus("failed");
+          return false;
         }
         return true;
       } catch (error) {

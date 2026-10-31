@@ -1,4 +1,4 @@
-import { readStudioState, readStudioStateIdentity, writeStudioState } from "@/db/runtime";
+import { readStudioState, readStudioStateIdentity, writeStudioState, StudioInputError } from "@/db/runtime";
 import type { StudioData } from "@/app/studio-state";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
@@ -46,8 +46,9 @@ export async function GET(request: Request) {
 
 export async function PUT(request: Request) {
   try {
-    const expectedRevision = Number(request.headers.get("if-match"));
-    if (!Number.isFinite(expectedRevision)) return json({ error: "if_match_required" }, 428);
+    const revisionHeader = request.headers.get("if-match");
+    const expectedRevision = Number(revisionHeader);
+    if (!revisionHeader?.trim() || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) return json({ error: "if_match_required" }, 428);
     const body = await request.json() as { data?: StudioData };
     if (!body.data || body.data.version !== 1 || !Array.isArray(body.data.articles)) return json({ error: "invalid_state" }, 400);
     const current = await readStudioState();
@@ -59,6 +60,6 @@ export async function PUT(request: Request) {
     if (result.conflict) return json({ error: "revision_conflict", ...result.current }, 409);
     return json({ revision: result.revision, databaseVersion: result.databaseVersion });
   } catch (error) {
-    return json({ error: "save_failed", message: error instanceof Error ? error.message : "保存失败" }, 500);
+    return json({ error: error instanceof StudioInputError ? "invalid_state" : "save_failed", message: error instanceof Error ? error.message : "保存失败" }, error instanceof StudioInputError ? 422 : 500);
   }
 }

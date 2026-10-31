@@ -12,7 +12,8 @@
     "dev:test": "node scripts/dev-test-server.mjs",
     "build": "vinext build",
     "start": "node scripts/prod-server.mjs",
-    "test": "npm run build && node scripts/run-tests.mjs && npm run test:ui",
+    "test": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run build && node scripts/run-tests.mjs && npm run test:ui",
+    "typecheck": "tsc --noEmit",
     "test:ui": "node scripts/run-ui-tests.mjs",
     "test:sync": "node scripts/run-tests.mjs studio-snapshot.test.mjs studio-conflict.test.mjs studio-roundtrip.test.mjs && node scripts/run-ui-tests.mjs tests/ui/studio-lifecycle.spec.ts --project=desktop-chromium --project=mobile-chromium --output=.test-data/sync-ui-results",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
@@ -27,14 +28,14 @@
     "@mantine/hooks": "^9.5.0",
     "drizzle-orm": "0.45.2",
     "fast-deep-equal": "^3.1.3",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "textarea-caret": "^3.1.0",
-    "vinext": "0.0.50"
+    "vinext": "1.4.0"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "1.66.0",
     "@playwright/test": "^1.62.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
@@ -42,14 +43,19 @@
     "@types/react-dom": "19.2.3",
     "@types/textarea-caret": "^3.0.4",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@vitejs/plugin-rsc": "0.5.38",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
+    "eslint-config-next": "16.4.3",
+    "react-server-dom-webpack": "19.3.1",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vite": "8.0.13"
+    "vite": "8.3.5"
+  },
+  "overrides": {
+    "esbuild": "^0.28.2",
+    "fflate": "^0.8.3",
+    "minimatch": "^11.0.3"
   },
   "type": "module"
 }

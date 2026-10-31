@@ -7,11 +7,14 @@ import type { IllustrationRecord } from "@/lib/illustration-history";
 import { CharacterReferenceSummary } from "./character-visual";
 
 export function IllustrationTaskResult({ id, prompt, image }: { id: string; prompt: string; image: boolean }) {
+  return <IllustrationTaskContent key={`${id}:${image}`} id={id} prompt={prompt} image={image} />;
+}
+
+function IllustrationTaskContent({ id, prompt, image }: { id: string; prompt: string; image: boolean }) {
   const [record, setRecord] = useState<IllustrationRecord | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     const controller = new AbortController();
-    setRecord(null); setError("");
     void fetchFromServer(`/api/ai/illustrations/${encodeURIComponent(id)}`, { cache: "no-store", signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error("图片已从历史中删除，或需要在任务所属运行端查看。");
       const payload = await response.json() as { record: IllustrationRecord };

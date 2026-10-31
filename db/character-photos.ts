@@ -2,11 +2,11 @@ import { resolvePhotoModel } from "./photo-model-resolution";
 import { photoModelOptions } from "@/lib/photo-model-resolution";
 import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./runtime";
 import { isCloudDatabase } from "./sqlite";
-import { findModel, findProvider, readProviderSecret, requestModelImage, type AiModelRecord } from "./ai";
+import { findModel, readProviderSecret, requestModelImage, type AiModelRecord } from "./ai";
 import { readIllustrationAsset, saveIllustrationAsset, deleteIllustrationAsset } from "./illustration-assets";
 import { spicyConnection } from "./character-visuals";
 import { getSpicyCharacter, getSpicyLibraryScope, isSpicyApi, spicyApiBaseUrl, prepareSpicyPhoto, submitSpicyPhoto, querySpicyPhoto, uploadSpicyPhoto, saveSpicyPhoto } from "@/lib/spicy-api";
-import { characterPhotos, normalizePhotoDraft, photoStyle, type CharacterPhoto, type CharacterPhotoGallery, type PhotoDraft, type PhotoJob, type PhotoSnapshot } from "@/lib/character-photos";
+import { characterPhotos, normalizePhotoDraft, photoStyle, type CharacterPhoto, type CharacterPhotoGallery, type PhotoJob, type PhotoSnapshot } from "@/lib/character-photos";
 import { illustrationVisualDirection, normalizeIllustrationStyles, resolveIllustrationStyle } from "@/lib/illustration-styles";
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
 import { imageReferenceCapability } from "@/lib/ai-model-capabilities";
@@ -166,6 +166,8 @@ export async function executePhotoJob(id: string) {
   let remoteId = row.remote_task_id;
   let request = row.request_json ? JSON.parse(row.request_json) : null;
   let submitted = Boolean(request);
+  let savedAssetKey: string | undefined;
+  let photoSaved = false;
   const set = (status: string, error = "", delay = 0) => db.prepare("UPDATE character_photo_jobs SET state=?,error=?,runner_id=NULL,lease_until=NULL,next_poll_at=?,updated_at=? WHERE id=? AND runner_id=?").bind(status, error.slice(0, 1500), delay ? new Date(Date.now() + delay).toISOString() : null, now(), id, runner).run();
   try {
     personIn(state.data, row.character_id);
@@ -202,6 +204,7 @@ export async function executePhotoJob(id: string) {
       src = image.src;
     }
     const saved = await saveIllustrationAsset(src);
+    savedAssetKey = saved.key;
     const photoId = `photo-${id}`;
     const hash = await digest(await photoBytes({ assetKey: saved.key }));
     const { references, basePhoto, ...generation } = snapshot;
@@ -209,8 +212,10 @@ export async function executePhotoJob(id: string) {
       if (g.photos.some(p => p.id === photoId)) return;
       g.photos.push({ id: photoId, assetKey: saved.key, mime: saved.mime, hash, name: `${snapshot.person.name} · ${snapshot.draft.pose || "照片"} ${g.photos.filter(p => p.source === "generated").length + 1}`, createdAt: now(), source: "generated", status: "candidate", experimentId: snapshot.draft.experimentId, ...(basePhoto ? { parentId: basePhoto.id } : {}), generation: { ...generation, referenceIds: references.map(p => p.id), ...(basePhoto ? { basePhotoId: basePhoto.id } : {}) } });
     });
+    photoSaved = true;
     await db.prepare("UPDATE character_photo_jobs SET state='success',photo_id=?,error='',runner_id=NULL,lease_until=NULL,updated_at=? WHERE id=? AND runner_id=?").bind(photoId, now(), id, runner).run();
   } catch (e) {
+    if (savedAssetKey && !photoSaved) await deleteIllustrationAsset(savedAssetKey).catch(() => undefined);
     const error = e instanceof Error ? e.message : "图像生成失败";
     // Never start a fresh charged request as recovery. Known native jobs can
     // be queried again; uncertain submission keeps its exact request/key.

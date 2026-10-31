@@ -5,6 +5,7 @@ type Bucket = {
   put(key: string, value: Uint8Array, options?: { httpMetadata: { contentType: string } }): Promise<unknown>;
   get(key: string): Promise<{ body: ReadableStream; } | null>;
   delete(key: string): Promise<unknown>;
+  list(options: { prefix: string; cursor?: string }): Promise<{ objects: Array<{ key: string }>; truncated: boolean; cursor?: string }>;
 };
 const bucketSymbol = Symbol.for("writer-studio.illustration-bucket");
 function bucket() {
@@ -82,4 +83,32 @@ export async function readIllustrationAsset(key: string) {
 export async function deleteIllustrationAsset(key: string) {
   if (isCloudDatabase()) await bucket().delete(key);
   else await (await import("node:fs/promises")).rm(filePath(key), { force: true });
+}
+
+/** Only enumerate this application's managed image namespace. */
+export async function listIllustrationAssetKeys() {
+  if (isCloudDatabase()) {
+    const keys: string[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await bucket().list({ prefix: "illustrations/", ...(cursor ? { cursor } : {}) });
+      keys.push(...page.objects.map(object => object.key).filter(key => /^illustrations\/[a-f0-9-]+$/.test(key)));
+      if (!page.truncated) return keys;
+      if (!page.cursor || cursors.has(page.cursor)) throw new Error("图片存储分页无效，未清除业务数据");
+      cursors.add(page.cursor);
+      cursor = page.cursor;
+    } while (cursor);
+    return keys;
+  }
+  const fs = await import("node:fs/promises");
+  const directory = path.resolve(path.dirname(databasePath()), "illustrations");
+  try {
+    return (await fs.readdir(directory, { withFileTypes: true }))
+      .filter(entry => entry.isFile() && /^[a-f0-9-]+$/.test(entry.name))
+      .map(entry => `illustrations/${entry.name}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
 }

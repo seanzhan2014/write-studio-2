@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
 
 export async function preparationModelServer() {
+  /** @type {{calls: Array<{kind: string, body: {messages: Array<{role: string, content: string}>, response_format?: unknown}}>, invalid: number, gate: Promise<void> | null, ask: boolean, unsupportedFormat: boolean}} */
   const control = { calls: [], invalid: 0, gate: null, ask: true, unsupportedFormat: false };
   const server = http.createServer(async (request, response) => {
     let raw = "";

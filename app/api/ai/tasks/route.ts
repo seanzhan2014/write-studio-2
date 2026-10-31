@@ -4,7 +4,7 @@ import { taskTargetLabel, taskChangesOutline } from "@/lib/task-target";
 import { registerIllustrationTasks } from "@/db/illustration-tasks";
 import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationStrategy, type WritingPreparation } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
-import { createReviewRuleSnapshot, normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
+import { normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
 import type { AiTask } from "@/app/studio-state";
 import { MAX_REVIEW_ROUNDS, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
@@ -183,10 +183,10 @@ export async function POST(request: Request) {
       });
       reviewSourceContent = resolvedOutlineContent(sourceOutline);
       reviewSourceVersionId = sourceOutline.currentVersionId;
-      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
+      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, includeExcellentFragments: body.includeExcellentFragments === true, excellentFragmentIds: uniqueStrings(body.excellentFragmentIds), contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
     }
     if (target === "content" && snapshot.data) {
-      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
+      promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, includeExcellentFragments: body.includeExcellentFragments === true, excellentFragmentIds: uniqueStrings(body.excellentFragmentIds), contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
       const resolved = await resolveWritingSettings(promptContext, configuredModel?.id ?? "", normalizeAdvanced(body.advanced, GENERATE_FIELDS), proseControls);
       body.advanced = resolved.advanced; proseControls = resolved.proseControls ?? proseControls;
     }

@@ -29,7 +29,7 @@ test("Chat reload restores server progress and receives exactly one durable repl
     const provider = await (await request.post("/api/providers", { data: { name: "Reload test", baseUrl: `http://127.0.0.1:${address.port}/v1`, secret: "fake-key", timeoutMs: 60_000 } })).json();
     const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "Reload test", modelId: "reload-test" } })).json();
     await page.goto("/articles/article-main/outlines/outline-current/chat");
-    await page.getByLabel("聊天模型", { exact: true }).selectOption(model.id);
+    await page.locator("select[aria-label=聊天模型]").selectOption(model.id);
     await page.getByLabel("聊天消息").fill("刷新时继续保存回复");
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.receivedCharacters).toBeGreaterThan(0);

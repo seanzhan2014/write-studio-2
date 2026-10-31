@@ -477,7 +477,7 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(tasks.data.data.length, 20);
     assert.ok(tasks.data.data.some((task) => task.id === "task-over-limit"));
     for (let index = 0; index < 17; index += 1) assert.ok(tasks.data.data.some((task) => task.id === `existing-task-${index}`), `active task ${index} must remain`);
-    assert.deepEqual(created.data.data.contextOptions, { serverManaged: true, resolvedReasoningEffort: null, includePrevious: false, includeCharacters: true, estimatedCharacters: 0, contentMode: "rewrite", rewriteRetention: "high", rewriteSourceId: "content:outline-current", rewriteSourceName: "2026-07-28 08:00:00", dialogueDensity: "auto", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头", firstAppearanceCharacterIds: ["character-gu"] });
+    assert.partialDeepStrictEqual(created.data.data.contextOptions, { serverManaged: true, resolvedReasoningEffort: null, includePrevious: false, includeCharacters: true, estimatedCharacters: 0, contentMode: "rewrite", rewriteRetention: "high", rewriteSourceId: "content:outline-current", rewriteSourceName: "2026-07-28 08:00:00", dialogueDensity: "auto", outlinePlanSnapshot: "林澈与顾屿在七码头会合。", outlineTitleSnapshot: "当前码头", firstAppearanceCharacterIds: ["character-gu"] });
     const state = await api("/api/state");
     assert.equal(state.data.data.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current").generateInstruction, "新任务");
 

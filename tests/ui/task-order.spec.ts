@@ -6,7 +6,7 @@ test("all tasks and task categories keep submission order across generation, lea
   const original = await (await request.get("/api/state")).json();
   const data = fullStudioFixture();
   const timestamp = (hour: number) => `2026-10-22T${String(hour).padStart(2, "0")}:00:00.000Z`;
-  const task = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文", model: "", executionOrigin: "local" };
+  const task = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文" as const, model: "", executionOrigin: "local" as const };
   data.tasks = [
     { ...task, id: "old", prompt: "最早生成", state: "failed", phase: "failed", createdAt: timestamp(6) },
     { ...task, id: "new", prompt: "最新生成", state: "cancelled", phase: "cancelled", createdAt: timestamp(12) },

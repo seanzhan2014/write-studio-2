@@ -24,8 +24,7 @@ test("failed settings saves keep a stable local warning, show the cause and reco
     return route.continue();
   });
   await page.goto("/articles/article-main/info/ai-tasks");
-  await page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true }).click();
-  await page.getByRole("option", { name: "English", exact: true }).click();
+  await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("离线保存的画面要求");
   const banner = page.locator(".persistence-banner.local");
   await expect(banner).toContainText("图片设置数据库暂时无法写入");
   await banner.evaluate(element => {
@@ -40,7 +39,7 @@ test("failed settings saves keep a stable local warning, show the cause and reco
   fail = false;
   await banner.getByRole("button", { name: "立即同步", exact: true }).click();
   await expect(banner).toHaveCount(0);
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].illustrationSettings.promptLanguage).toBe("en");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].illustrationSettings.additionalPrompt).toBe("离线保存的画面要求");
 });
 
 test("mobile reopens the cached library offline and syncs its local edit after reconnecting", async ({ page, context, request }, testInfo) => {

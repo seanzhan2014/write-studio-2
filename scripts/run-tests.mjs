@@ -5,10 +5,13 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const workspace = process.cwd();
-const testDatabase = path.join(".test-data", `node-${process.pid}.sqlite`);
+const testDirectory = path.join(".test-data", `node-${process.pid}`);
+const testDatabase = path.join(testDirectory, "studio.sqlite");
 
 async function removeTestDatabase() {
-  await Promise.all([testDatabase, `${testDatabase}-shm`, `${testDatabase}-wal`].map((file) => rm(path.join(workspace, file), { force: true })));
+  const directory = path.resolve(workspace, testDirectory);
+  if (path.dirname(directory) !== path.resolve(workspace, ".test-data")) throw new Error("Unsafe test directory");
+  await rm(directory, { recursive: true, force: true });
 }
 
 async function freePort() {
@@ -51,14 +54,15 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
 await removeTestDatabase();
 const child = spawn(process.execPath, [
-  path.join(workspace, "node_modules", "vinext", "dist", "cli.js"),
-  "dev", "--hostname", "127.0.0.1", "--port", String(port),
+  path.join(workspace, "node_modules", "vite", "bin", "vite.js"),
+  "--host", "127.0.0.1", "--port", String(port),
 ], {
   cwd: workspace,
   env: {
     ...process.env,
     WRITER_STUDIO_DB_PATH: testDatabase,
     WRITER_STUDIO_TEST_MODE: "1",
+    VINEXT_NO_DEV_LOCK: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -83,6 +87,7 @@ try {
   });
   [exitCode] = await once(runner, "exit");
 } finally {
+  if (Number(exitCode ?? 1) !== 0 && output.length) process.stderr.write(`\nAPI test server output:\n${output.join("")}\n`);
   await stopTree(child);
   await removeTestDatabase();
 }

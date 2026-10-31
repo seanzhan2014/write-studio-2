@@ -6,9 +6,9 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   test.setTimeout(60000);
   const original = await (await request.get("/api/state")).json();
   const fixture = fullStudioFixture();
-  fixture.articles[0].illustrationSettings = { stylePreset: "ink", promptLanguage: "zh", resolution: "" };
+  fixture.articles[0].illustrationSettings = { stylePreset: "ink", promptLanguage: "en", resolution: "", additionalPrompt: "" };
   await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data: fixture } });
-  const jobs: any[] = []; let submissions = 0;
+  const jobs: Array<Record<string, unknown>> = []; let submissions = 0;
   const model = { id: "portrait-model", name: "参考图模型", modelId: "example/edit", providerId: "image-service", providerName: "图像服务", adapterKind: "openai-compatible", hasSecret: true, metadata: { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"], supportedParameters: { image_urls: { referenceImage: true, maxImages: 3 } } } };
   const generationModel = { ...model, name: "人物图像模型", modelId: "example/text-to-image", metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"] } };
   await page.route("**/api/models", route => route.fulfill({ json: { models: [generationModel] } }));
@@ -28,7 +28,7 @@ test("person photos support mobile iteration, adoption, comparison and persisten
     submissions++;
     const current = await (await request.get("/api/state")).json();
     const person = current.data.articles[0].characters[0];
-    const snapshot = { draft: body.draft, prompt: body.draft.prompt, stylePreset: "anime", styleSource: "本次指定", person: { name: person.name, age: "20", appearance: "短发" }, references: person.photos.photos.filter((p: any) => body.draft.referenceIds.includes(p.id)), model: { ...model, baseUrl: "https://images.example/v1", timeoutMs: 1000 } };
+    const snapshot = { draft: body.draft, prompt: body.draft.prompt, stylePreset: "anime", styleSource: "本次指定", person: { name: person.name, age: "20", appearance: "短发" }, references: person.photos.photos.filter((p: { id: string }) => body.draft.referenceIds.includes(p.id)), model: { ...model, baseUrl: "https://images.example/v1", timeoutMs: 1000 } };
     const id = `candidate-${submissions}`;
     person.photos.photos.push({ ...person.photos.photos[0], id, name: `候选 ${submissions}`, status: "candidate", source: "generated", createdAt: new Date().toISOString(), experimentId: body.draft.experimentId, generation: { ...snapshot, referenceIds: body.draft.referenceIds } });
     const saved = await request.patch(`/api/characters/${person.id}`, { headers: { "If-Match": String(current.revision) }, data: { photos: person.photos } });
@@ -79,7 +79,7 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   await dialog.getByRole("button", { name: /^候选/ }).click();
   await dialog.locator(".photo-card-preview").first().click();
   await dialog.getByRole("button", { name: "设为主图并加入相册", exact: true }).click();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].characters[0].photos.photos.filter((p: any) => p.status === "approved").length).toBe(2);
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].characters[0].photos.photos.filter((p: { status: string }) => p.status === "approved").length).toBe(2);
   await dialog.getByRole("button", { name: "以此图修改", exact: true }).click();
   await expect(dialog.getByAltText("修改底图", { exact: true })).toBeVisible();
   await dialog.getByLabel("角色照片画面要求", { exact: true }).fill("换成夜景，脸不要改变");
@@ -102,7 +102,7 @@ test("person photos support mobile iteration, adoption, comparison and persisten
     await expect(dialog).toHaveAttribute("data-photo-keyboard", "true");
     const footer = await dialog.locator(".photo-bottom-actions").boundingBox();
     expect(footer!.y + footer!.height).toBeLessThanOrEqual(401);
-    await page.evaluate(() => { delete (window.visualViewport as any).height; window.visualViewport!.dispatchEvent(new Event("resize")); });
+    await page.evaluate(() => { Reflect.deleteProperty(window.visualViewport!, "height"); window.visualViewport!.dispatchEvent(new Event("resize")); });
     for (const size of [{ width: 320, height: 568 }, { width: 390, height: 400 }, { width: 844, height: 390 }]) {
       await page.setViewportSize(size);
       await expect(dialog.locator(".photo-bottom-actions")).toBeVisible();

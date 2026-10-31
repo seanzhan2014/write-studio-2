@@ -299,7 +299,7 @@ function optionalString(value: Record<string, unknown>, key: string, maxLength: 
 }
 
 function optionalNullableId(value: Record<string, unknown>, key: string) {
-  return !Object.prototype.hasOwnProperty.call(value, key) || value[key] === null || (typeof value[key] === "string" && value[key].length <= 240);
+  return !Object.prototype.hasOwnProperty.call(value, key) || value[key] === null || (typeof value[key] === "string" && value[key].length > 0 && value[key].length <= 240);
 }
 
 function validOutlinePatch(value: unknown): value is StudioOutlinePatch {

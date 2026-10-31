@@ -98,7 +98,8 @@ test("new article and outline can edit, chat repeatedly and generate without rel
   const article = (await readState(request)).data.articles[0];
   await navigate(page, `/articles/${article.id}/outlines/edit-all`);
   const first = page.locator(`[data-continuous-outline-id="${article.chapters[0].outlines[0].id}"]`);
-  await first.getByRole("button", { name: /下方新建大纲/ }).click();
+  await first.getByRole("button", { name: /更多操作$/ }).click();
+  await page.getByRole("menuitem", { name: "在下方新建", exact: true }).click();
   const created = page.locator("[data-continuous-outline-id]").nth(1);
   const outlineId = (await created.getAttribute("data-continuous-outline-id"))!;
   await created.locator(".continuous-outline-title-input").fill("刚创建的大纲");

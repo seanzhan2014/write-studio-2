@@ -1,3 +1,4 @@
+/** @returns {import("../app/studio-state").StudioData} */
 export function fullStudioFixture() {
   const now = "2026-07-28T08:00:00.000Z";
   const chatMessages = Array.from({ length: 22 }, (_, index) => ({

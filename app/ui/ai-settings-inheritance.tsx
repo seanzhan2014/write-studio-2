@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Group, Stack, Text, Textarea, NumberInput, Select, Checkbox } from "@mantine/core";
+import { Group, Stack, Text, Textarea, NumberInput, Select, Checkbox } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { AI_SETTING_LABELS, aiSettingKeys, inheritAiSettings, overrideAiSettings, readAiSetting, resolveAiSettings, type AiSettingsKind } from "@/lib/ai-settings-inheritance";

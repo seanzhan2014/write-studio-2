@@ -1,5 +1,5 @@
 import type { CatalogModel, ModelCatalog, ModelCatalogPage } from "./ai-model-capabilities";
-import { defaultImageParameters, splitCivitaiParameters, type ImageParameters } from "./image-model-parameters";
+import { defaultImageParameters, splitCivitaiParameters, type ImageParameters } from "./image-model-parameters.ts";
 
 type Connection = { baseUrl: string; secret: string; modelId: string; timeoutMs: number };
 type ImageOptions = { size?: string; quality?: string; aspectRatio?: string; resolution?: string; referenceImages?: string[]; negativePrompt?: string; parameters?: ImageParameters };

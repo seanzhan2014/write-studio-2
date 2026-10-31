@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { useStudio } from "@/app/studio-state";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
@@ -34,7 +34,8 @@ function openPhotos(id: string) { window.dispatchEvent(new CustomEvent("writer-s
 // does not strand cloud jobs. Local services also have their own server runner.
 export function CharacterPhotoRuntime() {
   const studio = useStudio();
-  const studioRef = useRef(studio); studioRef.current = studio;
+  const studioRef = useRef(studio);
+  useLayoutEffect(() => { studioRef.current = studio; }, [studio]);
   const [personId, setPersonId] = useState("");
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   useEffect(() => {
@@ -100,7 +101,8 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
   const studio = useStudio();
   const styles = normalizeIllustrationStyles(studio.data.settings.illustrationStyles);
   const styleLabel = (value: string) => resolveIllustrationStyle(value, styles).label;
-  const studioRef = useRef(studio); studioRef.current = studio;
+  const studioRef = useRef(studio);
+  useLayoutEffect(() => { studioRef.current = studio; }, [studio]);
   const article = studio.data.articles.find(a => a.characters.some(p => p.id === characterId));
   const person = article?.characters.find(p => p.id === characterId);
   const [gallery, setGallery] = useState(() => characterPhotos(person?.photos, person?.visual));
@@ -153,11 +155,13 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
   }, [compact]);
 
   const initialized = useRef(false);
-  const draftRef = useRef(draft); draftRef.current = draft;
+  const draftRef = useRef(draft);
+  useLayoutEffect(() => { draftRef.current = draft; }, [draft]);
   const serial = useRef<Promise<unknown>>(Promise.resolve());
   const lastRevision = useRef(-1);
   const lastRemoteRefresh = useRef(0);
-  const galleryRef = useRef(gallery); galleryRef.current = gallery;
+  const galleryRef = useRef(gallery);
+  useLayoutEffect(() => { galleryRef.current = gallery; }, [gallery]);
   const draftKey = `writer-studio:photo-draft:${characterId}`;
   const queuedPost = useCallback((body: Record<string, unknown>) => {
     const task = serial.current.catch(() => undefined).then(() => post({ ...body, characterId }));
@@ -182,16 +186,16 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
   }, [characterId, draftKey]);
   useEffect(() => {
     let stopped = false;
-    void load().catch(e => { if (!stopped) setError(e.message); });
+    const initialLoad = window.setTimeout(() => { void load().catch(e => { if (!stopped) setError(e.message); }); }, 0);
     void fetchFromServer("/api/models", { cache: "no-store" }).then(r => r.json()).then(data => { if (!stopped) setModels((data.models || []).filter(supportsImages)); }).catch(e => { if (!stopped) setError(e.message); });
     const timer = window.setInterval(() => { if (!stopped && document.visibilityState === "visible" && !busyRef.current) void load().catch(() => undefined); }, 4000);
-    return () => { stopped = true; window.clearInterval(timer); };
+    return () => { stopped = true; window.clearTimeout(initialLoad); window.clearInterval(timer); };
   }, [load]);
   useEffect(() => {
     if (!ready) return;
     try { localStorage.setItem(draftKey, JSON.stringify(draft)); } catch { /* Server autosave still works. */ }
-    setDraftStatus("正在保存草稿…");
     const timer = window.setTimeout(() => {
+      setDraftStatus("正在保存草稿…");
       void queuedPost({ action: "draft", draft }).then(() => setDraftStatus("草稿已保存")).catch(() => setDraftStatus("草稿保留在此设备，联网后重试"));
     }, 650);
     return () => window.clearTimeout(timer);
@@ -231,7 +235,6 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
     if (!draft.modelId || !chosenModel) return;
     const controller = new AbortController();
     const key = `${draft.modelId}:${hasReferences}`;
-    setModelCheck({ key: "" });
     void fetchFromServer(`${endpoint}?modelId=${encodeURIComponent(draft.modelId)}&references=${hasReferences ? "1" : "0"}`, { cache: "no-store", signal: controller.signal }).then(async response => {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "无法确认模型的图片编辑能力");
@@ -240,7 +243,7 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
       if (payload.automaticEdit) setDraft(current => current.modelId === payload.selectedId && Boolean(current.referenceIds.length || current.basePhotoId) === hasReferences ? photoModelOptions(current, payload.model, true) : current);
     }).catch(e => { if (!controller.signal.aborted) setModelCheck({ key, error: e instanceof Error ? e.message : "无法检测图像模型" }); });
     return () => controller.abort();
-  }, [draft.modelId, chosenModel?.id, hasReferences, modelCheckAttempt]);
+  }, [draft.modelId, chosenModel, hasReferences, modelCheckAttempt]);
   const currentStyle = photoStyle(draft, gallery, normalizeIllustrationOptions(article?.illustrationSettings).stylePreset);
   const referenceIssue = checkingModel ? "" : checkedModel?.error || (referenceCount && !referenceCapability ? "此模型没有可用的参考图或 edit 版本，请选择其他图像模型。" : referenceCapability?.maxImages && referenceCount > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，包括修改底图。` : referenceCapability?.required && !referenceCount ? "此模型需要参考照片。" : "");
   const selected = gallery.photos.find(p => p.id === selectedId);

@@ -19,7 +19,7 @@ test("character records keep compact description and profile storage", async () 
   const characterSchema = schema.match(/export const characters[\s\S]*?export const relationships/)?.[0] ?? "";
   for (const field of ["name", "aliasesJson", "description", "profileJson", "archived"]) assert.match(characterSchema, new RegExp(`\\b${field}\\b`));
   for (const removed of ["role", "appearance", "personality", "abilities", "background", "color"]) assert.doesNotMatch(characterSchema, new RegExp(`\\b${removed}\\b`));
-  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision\)\s*VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,visual_json,photos_json,archived,created_at,updated_at,revision\)\s*VALUES\(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/);
   assert.match(state, /description: string/);
   assert.match(app, /character-description-input/);
 });
@@ -47,7 +47,7 @@ test("writing workspace menu supports named save-as versions", async () => {
 
 test("snapshot inserts name every migration-sensitive column explicitly", async () => {
   const runtime = await read("db/runtime.ts");
-  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,archived,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO characters\(id,article_id,name,aliases_json,description,profile_json,visual_json,photos_json,archived,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO relationships\(id,article_id,character_low_id,character_high_id,description,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO chat_sessions\(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO chat_messages\(id,session_id,role,content,status,order_index,created_at\)/);
@@ -58,7 +58,7 @@ test("snapshot inserts name every migration-sensitive column explicitly", async 
 test("schema-extensible inserts name their columns explicitly", async () => {
   const runtime = await read("db/runtime.ts");
   const ai = await read("db/ai.ts");
-  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,illustration_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
   assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json\)/);
@@ -81,7 +81,7 @@ test("database initialization persists a schema marker and batches cold-start DD
   const migration = await read("drizzle/0014_runtime_schema_fast_path.sql");
   assert.match(runtime, /RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version"/);
   assert.match(runtime, /if \(await hasCurrentRuntimeSchema\(db\)\) return/);
-  assert.match(runtime, /db\.batch\(schemaStatements\.map\(\(statement\) => db\.prepare\(statement\)\)\)/);
+  assert.match(runtime, /db\.batch\(\[\.\.\.schemaStatements, \.\.\.styleLabSchema\]\.map\(\(statement\) => db\.prepare\(statement\)\)\)/);
   assert.match(runtime, /INSERT OR REPLACE INTO app_settings\(key, value_json, updated_at\) VALUES\(\?, \?, \?\)/);
   assert.match(migration, /runtime_schema_version/);
   assert.match(migration, /ON CONFLICT\(`key`\) DO UPDATE/);
@@ -330,7 +330,7 @@ test("full content editing exposes one-call chapter AI Review with named current
   const reviewFunction = ai.match(/export async function reviewChapter[\s\S]*?\r?\n}\r?\n\r?\nfunction localOutlineTitle/)?.[0] ?? "";
   assert.equal((reviewFunction.match(/await upstream\(/g) ?? []).length, 1);
   assert.match(route, /aiReviewContentName\(outline\)/);
-  assert.match(route, /outline\.currentVersionId = versionId/);
+  assert.match(route, /selectOutlineVersion\(outline, versionId, createdAt\)/);
   assert.match(route, /source: "AI Review"/);
 });
 
@@ -475,11 +475,11 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
   assert.doesNotMatch(executor, /found\.outline\.defaultVersionId = version\.id/);
-  assert.match(executor, /found\.outline\.currentVersionId = version\.id/);
+  assert.match(executor, /selectOutlineVersion\(found\.outline, version\.id, completedAt\)/);
   assert.doesNotMatch(executor, /found\.outline\.content = version\.content/);
   assert.match(executor, /AI Generate 前/);
   assert.match(executor, /hasEarlierBodyTask/);
-  assert.match(app, /selectedTask\.target !== "正文"/);
+  assert.match(app, /selectedTask\.state === "success" && selectedTask\.target === "正文"/);
   assert.match(app, /打开生成版本/);
   assert.match(app, /size=\{compact \? "calc\(100dvh - 10px\)" : 920\}/);
   assert.match(runtime, /version\.model/);
@@ -563,7 +563,7 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(app, /persist: true/);
   assert.match(app, /studio\.setDefaultNameVersion/);
   assert.match(app, /target: "all-names"/);
-  assert.match(app, /已创建后台任务，将用一次模型请求生成/);
+  assert.match(app, /已创建后台任务，将按各级设置生成/);
   assert.doesNotMatch(app.match(/async function generateAll\(\)[\s\S]*?async function selectDefault/)?.[0] ?? "", /for \(const|requestNames\(/);
   const outlineActions = app.match(/function OutlineActionSheet[\s\S]*?function DesktopOutlineMenu/)?.[0] ?? "";
   const desktopOutlineActions = app.match(/function DesktopOutlineMenu[\s\S]*?function ChapterActionSheet/)?.[0] ?? "";
@@ -580,7 +580,7 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(migration, /default_name_version_id/);
   assert.match(app, /chapterNaming: article\.chapterNaming/);
   assert.match(app, /outlineNaming: article\.outlineNaming/);
-  assert.match(app, /namingContext: namingArticleContext\(article\)/);
+  assert.match(app, /namingContext: namingArticleContext\(article, studio\.data\.settings\)/);
   assert.match(app, /studio\.acceptServerMutation/);
   assert.match(ai, /export async function generateNames/);
   assert.match(ai, /export async function generateArticleNames/);
@@ -600,14 +600,14 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(executor, /initialTask\.target === "全部名称"/);
   assert.match(executor, /generateArticleNames\(/);
   assert.match(executor, /appendNameVersion\(/);
-  assert.match(runtime, /row\.target === "all-names" \? "全部名称"/);
-  assert.match(runtime, /task\.target === "全部名称" \? "all-names"/);
+  assert.match(runtime, /taskTargetLabel\(row\.target\)/);
+  assert.match(runtime, /taskTargetCode\(task\.target\)/);
 });
 
 test("AI task panel orders every status by submission time", async () => {
   const app = await read("app/WriterStudioApp.tsx");
   const panel = app.match(/function TaskPanel[\s\S]*?function NewArticleDialog/)?.[0] ?? "";
-  assert.match(panel, /sort\(\(a, b\) => new Date\(b\.createdAt\)\.getTime\(\) - new Date\(a\.createdAt\)\.getTime\(\)\)/);
+  assert.match(panel, /sort\(newestTaskFirst\)/);
   assert.doesNotMatch(panel, /rank\[a\.state\]|rank\[b\.state\]/);
 });
 
@@ -663,7 +663,7 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
     read("app/api/[...segments]/route.ts"),
     read("app/globals.css"),
   ]);
-  assert.match(state, /target: "正文" \| "大纲" \| "章节标题" \| "全部名称" \| "AI Chat"/);
+  assert.match(state, /target: import\("@\/lib\/task-target"\)\.TaskTargetLabel/);
   assert.match(state, /clearCompletedTasks: \(\) => void/);
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
   assert.match(app, /action: "submit"[\s\S]*promptContext/);
@@ -682,8 +682,8 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
   assert.doesNotMatch(app, /onClick=\{\(\) => locate\(task\)\}>打开<\/button>/);
   assert.match(styles, /\.task-detail-body[\s\S]*overflow-y: auto/);
   assert.match(styles, /\.task-detail-actions[\s\S]*safe-area-inset-bottom/);
-  assert.match(runtime, /row\.target === "chat" \? "AI Chat"/);
-  assert.match(runtime, /task\.target === "AI Chat" \? "chat"/);
+  assert.match(runtime, /taskTargetLabel\(row\.target\)/);
+  assert.match(runtime, /taskTargetCode\(task\.target\)/);
   assert.match(api, /s\[2\] === "completed"[\s\S]*task\.state !== "success"/);
 });
 
@@ -727,7 +727,7 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.doesNotMatch(app, />只读</);
   assert.doesNotMatch(app, /readOnly=\{Boolean\(previewVersion\)\}/);
   assert.match(state, /commitContentEdit/);
-  assert.match(state, /currentVersionId: versionId/);
+  assert.match(state, /selectOutlineVersion\(item, versionId \?\? null\)/);
   assert.match(state, /versions: \[version, \.\.\.item\.versions\]/);
   assert.match(state, /preserveContentDraft/);
   assert.match(state, /source: "未保存内容"/);
@@ -774,7 +774,7 @@ test("AI Chat is a session workspace with writing-safe actions and touch-sized c
   assert.doesNotMatch(chatSessionSchema, /outlineId:[^\n]+\.unique\(\)/);
   assert.match(app, /chat-session-switcher/);
   assert.match(app, /保存为候选版本/);
-  assert.match(app, /交给 AI Generate/);
+  assert.match(app, /交给 生成/);
   assert.match(app, /添加文本参考/);
   assert.match(app, /sessionId: session\.id/);
   assert.match(app, /const activeChatStreams = new Map/);

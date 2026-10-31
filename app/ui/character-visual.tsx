@@ -8,13 +8,11 @@ import { isSpicyApi, type SpicyCharacter } from "@/lib/spicy-api";
 import { ResponsiveModal } from "./overlays";
 
 export function CharacterAvatar({ visual, photos, name }: { visual?: CharacterVisual; photos?: CharacterPhotoGallery; name: string }) {
-  const [failed, setFailed] = useState(false);
+  const [failedSrc, setFailedSrc] = useState("");
   const gallery = characterPhotos(photos, visual);
   const cover = gallery.photos.find(p => p.id === gallery.coverId) || (!photos ? characterCover(visual) : undefined);
   const src = cover ? characterImageSrc(cover) : "";
-  useEffect(() => setFailed(false), [src]);
-  // eslint-disable-next-line @next/next/no-img-element
-  return src && !failed ? <img src={src} alt={`${name}的角色主图`} className="character-cover-image" loading="lazy" onError={() => setFailed(true)} /> : <>{name[0]}</>;
+  return src && failedSrc !== src ? <img src={src} alt={`${name}的角色主图`} className="character-cover-image" loading="lazy" onError={() => setFailedSrc(src)} /> : <>{name[0]}</>;
 }
 
 export function CharacterVisualField({ value, onChange }: { value?: CharacterVisual; onChange: (value: CharacterVisual | undefined) => void }) {
@@ -54,6 +52,7 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
   }, []);
   useEffect(() => {
     const controller = new AbortController(); version.current++;
+    const frame = requestAnimationFrame(() => {
     setCharacters([]); setCursor(""); setCharacter(null); setImageIds([]); setError("");
     if (!providerId) { setLoading(false); return; }
     setLoading(true);
@@ -61,10 +60,13 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
       const data = await response.json(); if (!response.ok) throw new Error(data.error || "无法读取角色库");
       if (!controller.signal.aborted) { setCharacters(data.items); setCursor(data.nextCursor || ""); }
     }).catch(cause => { if (!controller.signal.aborted) setError(cause.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
+    });
+    return () => { cancelAnimationFrame(frame); controller.abort(); };
   }, [providerId]);
   useEffect(() => {
-    const controller = new AbortController(); setCharacter(null); setImageIds([]);
+    const controller = new AbortController();
+    const frame = requestAnimationFrame(() => {
+    setCharacter(null); setImageIds([]);
     if (!selectedId || !providerId) return;
     setError("");
     void fetchFromServer(`/api/ai/image-characters?providerId=${encodeURIComponent(providerId)}&characterId=${encodeURIComponent(selectedId)}`, { signal: controller.signal, cache: "no-store" }).then(async response => {
@@ -78,7 +80,8 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
       const ids = chosen.length ? chosen : first ? [first] : [];
       setImageIds(ids); setCoverId(ids.includes(current?.coverAssetId || "") ? current!.coverAssetId : ids[0] || "");
     }).catch(cause => { if (!controller.signal.aborted) setError(cause.message); });
-    return () => controller.abort();
+    });
+    return () => { cancelAnimationFrame(frame); controller.abort(); };
   }, [providerId, selectedId, current]);
   async function loadMore() {
     const expected = version.current; setLoading(true); setError("");
@@ -108,7 +111,7 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
     {providerId && !loading && !characters.length && !error && <Text size="sm" c="dimmed">角色库为空。请先在图像服务网站创建角色，再重新打开此窗口。</Text>}
     {character?.note && <Text size="sm">{character.note}</Text>}
     {character && <div className="character-reference-grid">{character.assets?.map((asset, index) => <div className={`character-reference-option ${imageIds.includes(asset.id) ? "selected" : ""}`} key={asset.id}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
+
       {asset.previewUrl && <img src={asset.previewUrl} alt={`${character.name}参考图 ${index + 1}`} loading="lazy" referrerPolicy="no-referrer" />}
       <Checkbox label={`参考图 ${index + 1}`} checked={imageIds.includes(asset.id)} disabled={saving || (!imageIds.includes(asset.id) && imageIds.length >= 8)} onChange={event => { const ids = event.currentTarget.checked ? [...imageIds, asset.id] : imageIds.filter(id => id !== asset.id); setImageIds(ids); if (!ids.includes(coverId)) setCoverId(ids[0] || ""); }} />
       {imageIds.includes(asset.id) && <Button size="compact-xs" variant="subtle" disabled={saving} onClick={() => setCoverId(asset.id)}>{coverId === asset.id ? "✓ 当前主图" : "设为主图"}</Button>}
@@ -122,5 +125,5 @@ function ImageCharacterPicker({ current, onSelect }: { current?: CharacterVisual
 export function CharacterReferenceSummary({ reference }: { reference?: import("@/lib/character-visual").CharacterReference }) {
   if (!reference) return null;
   const images = reference.photos || reference.visual?.images || [];
-  return <div className="character-reference-summary"><Text size="sm" fw={500}>人物快照：{reference.name} · {reference.visual?.characterName || "人物照片"} · {images.length} 张参考图</Text><div className="character-reference-thumbnails">{images.map((image, index) => <a key={image.id} href={characterImageSrc(image)} target="_blank" rel="noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img src={characterImageSrc(image)} alt={`${reference.name}的生成参考图 ${index + 1}`} loading="lazy" /></a>)}</div>{reference.appearance && <Text size="xs" c="dimmed">当时外貌：{reference.appearance}</Text>}</div>;
+  return <div className="character-reference-summary"><Text size="sm" fw={500}>人物快照：{reference.name} · {reference.visual?.characterName || "人物照片"} · {images.length} 张参考图</Text><div className="character-reference-thumbnails">{images.map((image, index) => <a key={image.id} href={characterImageSrc(image)} target="_blank" rel="noreferrer"><img src={characterImageSrc(image)} alt={`${reference.name}的生成参考图 ${index + 1}`} loading="lazy" /></a>)}</div>{reference.appearance && <Text size="xs" c="dimmed">当时外貌：{reference.appearance}</Text>}</div>;
 }

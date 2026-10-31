@@ -5,12 +5,16 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const workspace = process.cwd();
-const vinextCli = path.join(workspace, "node_modules", "vinext", "dist", "cli.js");
+const viteCli = path.join(workspace, "node_modules", "vite", "bin", "vite.js");
 const playwrightCli = path.join(workspace, "node_modules", "@playwright", "test", "cli.js");
-const testDatabase = path.join(".test-data", `playwright-${process.pid}.sqlite`);
+const testDirectory = path.join(".test-data", `playwright-${process.pid}`);
+const testDatabase = path.join(testDirectory, "studio.sqlite");
+const production = process.env.WRITER_STUDIO_UI_SERVER === "production";
 
 async function removeTestDatabase() {
-  await Promise.all([testDatabase, `${testDatabase}-shm`, `${testDatabase}-wal`].map((file) => rm(path.join(workspace, file), { force: true })));
+  const directory = path.resolve(workspace, testDirectory);
+  if (path.dirname(directory) !== path.resolve(workspace, ".test-data")) throw new Error("Unsafe test directory");
+  await rm(directory, { recursive: true, force: true });
 }
 
 async function freePort() {
@@ -47,12 +51,15 @@ const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
 await removeTestDatabase();
-const server = spawn(process.execPath, [vinextCli, "dev", "--hostname", "127.0.0.1", "--port", String(port)], {
+const server = spawn(process.execPath, production ? ["scripts/prod-server.mjs"] : [viteCli, "--host", "127.0.0.1", "--port", String(port)], {
   cwd: workspace,
   env: {
     ...process.env,
     WRITER_STUDIO_DB_PATH: testDatabase,
     WRITER_STUDIO_TEST_MODE: "1",
+    VINEXT_NO_DEV_LOCK: "1",
+    WRITER_STUDIO_HOST: "127.0.0.1",
+    WRITER_STUDIO_PORT: String(port),
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

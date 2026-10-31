@@ -1,6 +1,6 @@
 import type { CatalogModel, ModelCatalog } from "./ai-model-capabilities";
 
-import { validateImageParameters, type ImageParameters } from "./image-model-parameters";
+import { validateImageParameters, type ImageParameters } from "./image-model-parameters.ts";
 
 type SchemaField = {
   type?: string; enum?: unknown[]; const?: unknown; default?: unknown; minLength?: number; maxLength?: number;

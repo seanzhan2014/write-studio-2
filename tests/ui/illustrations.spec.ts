@@ -34,11 +34,17 @@ async function mockIllustrations(page: Page, promptText = "码头上两人相望
   };
   await page.route("**/api/state", async route => {
     if (route.request().method() !== "GET") return route.continue();
-    const headers = route.request().headers(); delete headers["if-none-match"];
-    const response = await route.fetch({ headers });
-    const payload = await response.json(); revision = payload.revision;
-    payload.data.tasks = [...records.filter(record => record.model).map(asTask), ...payload.data.tasks];
-    return route.fulfill({ response, json: payload });
+    try {
+      const headers = route.request().headers(); delete headers["if-none-match"];
+      const response = await route.fetch({ headers });
+      const payload = await response.json(); revision = payload.revision;
+      payload.data.tasks = [...records.filter(record => record.model).map(asTask), ...payload.data.tasks];
+      return await route.fulfill({ response, json: payload });
+    } catch (error) {
+      // A task poll may still be in flight when Playwright closes this page.
+      if (page.isClosed() || /Response has been disposed|Target page, context or browser has been closed/.test(String(error))) return;
+      throw error;
+    }
   });
   await page.route("**/api/ai/tasks**", async route => {
     const parts = new URL(route.request().url()).pathname.split("/");
@@ -347,6 +353,43 @@ test("English prompt and negative prompt can be edited, saved and restored toget
   await expect(negative).toHaveValue("");
   await page.screenshot({ path: `.test-data/illustration-negative-prompt-${test.info().project.name}.png` });
 });
+
+for (const selected of [true, false]) {
+test(`illustration source follows saved body changes after ${selected ? "opening a selected excerpt" : "generating from the whole body"}`, async ({ page }) => {
+  const { bodies } = await mockIllustrations(page);
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const reader = page.getByRole("region", { name: "正文内容", exact: true });
+  if (selected) {
+    await reader.evaluate(element => {
+    const range = document.createRange(); range.setStart(element.firstChild!, 0); range.setEnd(element.firstChild!, 6);
+    const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+    element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 100, clientY: 150 }));
+    });
+    await page.getByRole("menuitem", { name: "生成插图", exact: true }).click();
+  } else {
+    await page.getByRole("tab", { name: "插图", exact: true }).click();
+    const workspace = page.getByRole("region", { name: "插图工作区" });
+    await workspace.getByRole("combobox", { name: "提示词模型", exact: true }).click();
+    await page.getByRole("option", { name: /文本测试模型/ }).click();
+    await workspace.getByRole("button", { name: "选景并生成图片 prompt" }).click();
+  }
+  const workspace = page.getByRole("region", { name: "插图工作区" });
+  await expect(workspace.getByRole("textbox", { name: "正文片段", exact: true })).toHaveValue(excerpt);
+  await workspace.getByRole("button", { name: "返回正文", exact: true }).click();
+  await reader.dblclick();
+  const latest = "夜晚，林澈独自走过雨中的旧桥，远处灯塔闪烁。";
+  await page.getByLabel("正文编辑器").fill(latest);
+  await page.getByRole("button", { name: "退出编辑", exact: true }).click();
+  await page.getByRole("dialog", { name: "保存正文修改？" }).getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(reader).toContainText(latest);
+  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await expect(workspace.getByRole("textbox", { name: "正文片段", exact: true })).toHaveValue("");
+  await workspace.getByRole("combobox", { name: "提示词模型", exact: true }).click();
+  await page.getByRole("option", { name: /文本测试模型/ }).click();
+  await workspace.getByRole("button", { name: /生成图片 prompt$/ }).click();
+  await expect.poll(() => bodies.filter(body => body.action === "prompt").at(-1)).toMatchObject({ content: latest, excerpt: "" });
+});
+}
 
 for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }, { width: 667, height: 375 }, { width: 390, height: 480 }]) {
   test(`illustration selection and result remain reachable at ${viewport.width}x${viewport.height}`, async ({ page }) => {

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Alert, Badge, Button, Group, Pagination, Select, Stack, Text } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
@@ -56,12 +56,13 @@ function StyleJobDetail({ job }: { job: StyleJob }) {
 }
 
 export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle, renderList }: { articleId?: string; initialJobId?: string; onOpenArticle?: () => void; renderList?: (entries: TaskTimelineEntry[]) => ReactNode }) {
-  const studio = useStudio(); const studioRef = useRef(studio); studioRef.current = studio;
+  const studio = useStudio(); const studioRef = useRef(studio);
+  useLayoutEffect(() => { studioRef.current = studio; }, [studio]);
   const [jobs, setJobs] = useState<StyleJob[]>([]), [selectedId, setSelectedId] = useState(initialJobId), [selected, setSelected] = useState<StyleJob | null>(null);
   const [filter, setFilter] = useState<string | null>("all"), [page, setPage] = useState(1), [pages, setPages] = useState(1), [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const timeline = Boolean(renderList);
-  useEffect(() => { setSelectedId(initialJobId); setSelected(null); }, [initialJobId, articleId]);
+  useEffect(() => { const frame = requestAnimationFrame(() => { setSelectedId(initialJobId); setSelected(null); }); return () => cancelAnimationFrame(frame); }, [initialJobId, articleId]);
   useEffect(() => {
     let active = true, refreshing = false;
     async function refresh() {

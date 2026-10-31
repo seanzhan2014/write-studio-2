@@ -28,10 +28,22 @@ import { normalizeReviewPresets } from "@/lib/review-options";
 import { decryptAiSecret } from "@/lib/ai-secret";
 import { diffStudioData, isStudioChangesEmpty, type StudioChanges } from "@/lib/studio-changes";
 import { normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { deleteIllustrationAsset, listIllustrationAssetKeys } from "./illustration-assets";
 import { migrateArticleStoryDetails, migrateCharacterDetails, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings } from "@/lib/story-settings";
 import { databaseEngine, getDatabase, isCloudDatabase, type SqliteDatabase, type SqliteResult, type SqliteStatement } from "./sqlite";
 
 export { getDatabase } from "./sqlite";
+
+export class StudioInputError extends Error {}
+
+function validateOutlineVersionReferences(outlineId: string, versions: Array<{ id: string }>, currentVersionId: unknown, defaultVersionId: unknown) {
+  const ids = new Set(versions.map(version => version.id));
+  for (const value of [currentVersionId, defaultVersionId]) {
+    if (value != null && (typeof value !== "string" || !ids.has(value))) {
+      throw new StudioInputError(`正文版本不存在或不属于大纲 ${outlineId}`);
+    }
+  }
+}
 
 const schemaStatements = [
   ...characterPhotoSchema,
@@ -859,6 +871,12 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
   if (current !== expectedRevision) return { conflict: true as const, current: currentState };
   const currentDatabaseVersion = currentState.databaseVersion;
 
+  for (const article of data.articles) for (const chapter of article.chapters) for (const outline of chapter.outlines) {
+    validateOutlineVersionReferences(outline.id, outline.versions,
+      Object.hasOwn(outline, "currentVersionId") ? outline.currentVersionId : outline.contentOverride === false ? outline.sourceVersionId : null,
+      Object.hasOwn(outline, "defaultVersionId") ? outline.defaultVersionId : outline.sourceVersionId);
+  }
+
   if (!options?.styleLab && currentState.data && isStudioChangesEmpty(diffStudioData(currentState.data, data))) {
     if (!options?.syncOperationId) return { conflict: false as const, revision: current, databaseVersion: currentDatabaseVersion, unchanged: true as const };
     const now = new Date().toISOString();
@@ -969,6 +987,23 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
   const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? currentRevision);
   if (currentRevision !== expectedRevision || (options?.expectedDatabaseVersion !== undefined && currentDatabaseVersion !== options.expectedDatabaseVersion)) {
     return { conflict: true as const, revision: currentRevision, databaseVersion: currentDatabaseVersion };
+  }
+
+  for (const { outline } of changes.outlines.upsert) {
+    validateOutlineVersionReferences(outline.id, outline.versions,
+      Object.hasOwn(outline, "currentVersionId") ? outline.currentVersionId : outline.contentOverride === false ? outline.sourceVersionId : null,
+      Object.hasOwn(outline, "defaultVersionId") ? outline.defaultVersionId : outline.sourceVersionId);
+  }
+  for (const patch of changes.outlines.patch ?? []) {
+    if (patch.versions === undefined && !owns(patch.content, "currentVersionId") && !owns(patch.content, "defaultVersionId")) continue;
+    const upsert = changes.outlines.upsert.find(item => item.outline.id === patch.id)?.outline;
+    const stored = upsert ? { current_version_id: upsert.currentVersionId, default_version_id: upsert.defaultVersionId }
+      : await db.prepare("SELECT current_version_id,default_version_id FROM contents WHERE outline_id=?").bind(patch.id).first<{ current_version_id: string | null; default_version_id: string | null }>();
+    if (!stored) throw new StudioInputError("正文不存在，不能设置版本");
+    const versions = patch.versions ?? upsert?.versions ?? (await db.prepare("SELECT id FROM versions WHERE outline_id=?").bind(patch.id).all<{ id: string }>()).results ?? [];
+    validateOutlineVersionReferences(patch.id, versions,
+      owns(patch.content, "currentVersionId") ? patch.content?.currentVersionId : stored.current_version_id,
+      owns(patch.content, "defaultVersionId") ? patch.content?.defaultVersionId : stored.default_version_id);
   }
 
   if (isStudioChangesEmpty(changes) && !options?.additionalStatements?.length) {
@@ -1249,13 +1284,34 @@ export async function clearBusinessData() {
   const db = getDatabase();
   const current = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
   const currentDatabaseVersion = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='database_version'").first<string>("value_json") ?? current);
+  const pending = (await db.prepare("SELECT value_json FROM app_settings WHERE key LIKE 'business_asset_cleanup:%'").all<{ value_json: string }>()).results ?? [];
+  const assetKeys = [...new Set([...(await listIllustrationAssetKeys()), ...pending.map(row => row.value_json)])].filter(key => /^illustrations\/[a-f0-9-]+$/.test(key));
   const now = new Date().toISOString();
   await db.batch([
+    db.prepare("UPDATE app_settings SET value_json=CASE WHEN CAST((SELECT value_json FROM app_settings WHERE key='state_revision') AS INTEGER)=? AND CAST((SELECT value_json FROM app_settings WHERE key='database_version') AS INTEGER)=? THEN ? ELSE NULL END,updated_at=? WHERE key='state_write_guard'").bind(current, currentDatabaseVersion, crypto.randomUUID(), now),
+    ...assetKeys.map(key => db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)").bind(`business_asset_cleanup:${key}`, key, now)),
+    db.prepare("DELETE FROM character_photo_jobs"),
     db.prepare("DELETE FROM articles"),
     db.prepare("DELETE FROM search_documents"),
+    db.prepare("DELETE FROM sync_change_log"),
+    db.prepare("DELETE FROM chat_request_claims"),
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'last_outline:%'"),
+    db.prepare(clearIllustrationHistoryBackupSql),
+    db.prepare(clearStyleLabBackupSql),
     db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('state_revision',?,?)").bind(String(current + 1), now),
     db.prepare("INSERT OR REPLACE INTO app_settings(key,value_json,updated_at) VALUES('database_version',?,?)").bind(String(currentDatabaseVersion + 1), now),
   ]);
-  return { revision: current + 1, databaseVersion: currentDatabaseVersion + 1 };
+  let cleanupPending = false;
+  for (const key of assetKeys) {
+    try {
+      await deleteIllustrationAsset(key);
+      await db.prepare("DELETE FROM app_settings WHERE key=?").bind(`business_asset_cleanup:${key}`).run();
+    } catch {
+      // Keep the cleared database authoritative, and retain a durable retry
+      // receipt so a storage failure never restores the old browser snapshot.
+      cleanupPending = true;
+    }
+  }
+  return { revision: current + 1, databaseVersion: currentDatabaseVersion + 1, cleanupPending,
+    ...(cleanupPending ? { message: "业务数据已清除，部分图片清理失败；请再次执行清除以重试。" } : {}) };
 }

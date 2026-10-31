@@ -86,7 +86,7 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await expect(page.locator(".content-reader")).toContainText("作者确认后的正文");
     await expect(page.getByLabel("AI 任务已完成").filter({ visible: true }).first().locator(".state-dot")).toHaveCSS("background-color", "rgb(88, 137, 202)");
     expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare", "write"]);
-    expect(fake.control.calls.at(-1).body.messages.at(-1).content).toContain("结尾不要解释档案被修改的原因");
+    expect(fake.control.calls.at(-1)!.body.messages.at(-1)!.content).toContain("结尾不要解释档案被修改的原因");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   } finally { await fake.close(); }
 });
@@ -128,7 +128,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
       class TestViewport extends EventTarget { width = 390; height = 844; offsetTop = 0; offsetLeft = 0; scale = 1; }
       const visual = new TestViewport();
       Object.defineProperty(window, "visualViewport", { configurable: true, value: visual });
-      (window as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport = (height) => { visual.height = height; visual.dispatchEvent(new Event("resize")); };
+      (window as unknown as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport = (height) => { visual.height = height; visual.dispatchEvent(new Event("resize")); };
     });
     const current = await (await request.get("/api/state")).json();
     const data = fullStudioFixture() as unknown as StudioData;
@@ -152,11 +152,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
     await full.getByLabel("作者回复", { exact: true }).fill("手机输入也保留草稿。");
     await fitsViewport(page, full.getByLabel("作者回复", { exact: true }));
     if (viewport.height === 844) {
-      await page.evaluate(() => (window as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport(430));
+      await page.evaluate(() => (window as unknown as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport(430));
       await expect.poll(async () => (await full.getByLabel("作者回复", { exact: true }).boundingBox())!.y + (await full.getByLabel("作者回复", { exact: true }).boundingBox())!.height).toBeLessThan(400);
       await expect.poll(() => scroll.evaluate((element) => element.clientHeight)).toBeGreaterThan(80);
       await page.screenshot({ path: info.outputPath("mobile-keyboard.png") });
-      await page.evaluate(() => (window as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport(844));
+      await page.evaluate(() => (window as unknown as Window & { resizeTaskViewport: (height: number) => void }).resizeTaskViewport(844));
     }
     await page.screenshot({ path: info.outputPath("mobile-preparation.png") });
     await page.getByRole("button", { name: "关闭 AI 任务", exact: true }).click();

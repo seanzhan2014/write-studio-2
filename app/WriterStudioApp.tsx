@@ -15,7 +15,7 @@ import { StyleLabPanel, StyleLabRuntime, useActiveStyleCount, useStyleTaskSummar
 import { AiPromptSettings } from "./ui/ai-prompt-settings";
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
-import { normalizeReasoningEffort, resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
+import { resolveReasoningEffort, type ReasoningEffort } from "@/lib/reasoning-options";
 
 import { MAX_REVIEW_ROUNDS, MAX_REVIEW_RULE_CHARACTERS, normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy, REVIEW_STRATEGY_LABELS } from "@/lib/generate-review.mjs";
 import { ArticleReviewRulesPage, ReviewRuleSnapshotView } from "@/app/ui/review-rules";
@@ -39,15 +39,11 @@ import { sendChatCompletion } from "@/lib/chat-client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from "react";
 import {
   Alert,
-  Badge,
   Button,
-  Card,
   Checkbox,
   Group,
   Menu,
-  MultiSelect,
   NumberInput,
-  PasswordInput,
   Select,
   SimpleGrid,
   Slider,
@@ -81,7 +77,6 @@ import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
 import { DEFAULT_AI_GENERATE_OPTIONS, CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, closingSummaryLengthLabel, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, descriptionDetailLabel, dialogueDensityLabel, hasActiveProseControls, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeAiGenerateOptions, normalizeProseControls, type AiGenerateOptions, type DialogueDensityLevel, type ProseControls, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
-import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 import { normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
@@ -392,11 +387,6 @@ type ConfiguredModel = { metadata?: ModelMetadata; reasoningEffort?: ReasoningEf
 function configuredModelForReference(models: ConfiguredModel[], reference: string) {
   const normalized = reference.trim();
   return models.find((model) => model.id === normalized || model.name === normalized || modelSelectionLabel(model) === normalized);
-}
-
-function modelMatchesReference(model: ConfiguredModel, reference: string) {
-  const normalized = reference.trim();
-  return model.id === normalized || model.name === normalized || modelSelectionLabel(model) === normalized;
 }
 
 function ExcellentText({ text, fragments }: { text: string; fragments?: ExcellentFragment[] }) {
@@ -2169,13 +2159,19 @@ function OutlineWorkspace({
   const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generateSeed, setGenerateSeed] = useState("");
-  const [illustrationSource, setIllustrationSource] = useState<{ content: string; excerpt: string } | null>(null);
+  const [illustrationSource, setIllustrationSource] = useState<{ content: string; excerpt: string; currentContent: string; currentVersionId: string | null | undefined } | null>(null);
   const [illustrationOpened, setIllustrationOpened] = useState(mode === "illustrations");
-  useEffect(() => { if (mode === "illustrations") setIllustrationOpened(true); }, [mode]);
+  useEffect(() => {
+    if (mode !== "illustrations") return;
+    const frame = requestAnimationFrame(() => setIllustrationOpened(true));
+    return () => cancelAnimationFrame(frame);
+  }, [mode]);
   function openIllustration(content: string, excerpt: string) {
-    setIllustrationSource({ content, excerpt });
+    setIllustrationSource({ content, excerpt, currentContent: resolvedOutlineContent(studio.currentOutline), currentVersionId: studio.currentOutline.currentVersionId });
     onMode("illustrations");
   }
+  const activeIllustrationSource = illustrationSource?.currentContent === resolvedOutlineContent(studio.currentOutline)
+    && illustrationSource.currentVersionId === studio.currentOutline.currentVersionId ? illustrationSource : null;
   const displayTitle = outlineDisplayTitle(outline);
   const chatResultReady = mode !== "chat" && studio.currentOutline.chat.sessions.some(chatSessionHasUnread);
   useDismissOnOutside(moreOpen, () => setMoreOpen(false), ".workspace-more-trigger, .workspace-more-menu");
@@ -2218,7 +2214,7 @@ function OutlineWorkspace({
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
       {mode === "generate" && <GenerateView key={studio.currentOutline.id} models={models} outline={outline} initialPrompt={generateSeed} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} />}
       {(mode === "illustrations" || illustrationOpened) && <div className="illustration-mode-panel" hidden={mode !== "illustrations"}>
-        <IllustrationGenerator outlineId={studio.currentOutline.id} content={illustrationSource?.content ?? outline.content} selectedExcerpt={illustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationPromptModel)} defaultImageModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationImageModel)} onClose={() => onMode("write")} />
+        <IllustrationGenerator outlineId={studio.currentOutline.id} content={activeIllustrationSource?.content ?? outline.content} selectedExcerpt={activeIllustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationPromptModel)} defaultImageModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationImageModel)} onClose={() => onMode("write")} />
       </div>}
       {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定{countOutlineSettingChanges(studio.currentOutline.settings) ? ` · ${countOutlineSettingChanges(studio.currentOutline.settings)}` : ""}</button><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
       {settingsOpen && <OutlineSettingsDrawer outlineId={studio.currentOutline.id} onClose={() => setSettingsOpen(false)} />}
@@ -2798,7 +2794,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     reasoningEffort,
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
-  const taskParameters = { ...resolvedGenerateSettings.value.tasks!, ...generateOptions.tasks };
+  const taskParameters = useMemo(() => ({ ...resolvedGenerateSettings.value.tasks!, ...generateOptions.tasks }), [resolvedGenerateSettings.value.tasks, generateOptions.tasks]);
   const reviewMaxRounds = normalizeReviewRounds(taskParameters.reviewMaxRounds);
   const reviewInstruction = normalizeReviewRules(taskParameters.reviewInstruction);
   const reviewStrategy = normalizeReviewStrategy(taskParameters.reviewStrategy);
@@ -2857,7 +2853,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     generateOptionsRef.current = next;
     setGenerateOptions(next);
     if (settingsScope === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: next });
-  }, [hasCurrentContent, studio, settingsScope]);
+  }, [hasCurrentContent, studio, settingsScope, setGenerateOptions]);
 
   const applyInheritedGenerateOptions = (next: AiGenerateOptions) => {
     generateOptionsRef.current = next;
@@ -3034,7 +3030,7 @@ function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOp
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, settingsScope, taskParameters, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, inheritedGenerateOptions.advanced, settingsScope, taskParameters, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {

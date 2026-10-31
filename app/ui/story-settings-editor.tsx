@@ -3,7 +3,7 @@
 import { Button, Checkbox, Group, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMemo, useState } from "react";
-import { useStudio, type Article, type Character, type Chapter } from "@/app/studio-state";
+import { useStudio, type Article, type Character } from "@/app/studio-state";
 import {
   CHARACTER_PROFILE_KEYS,
   EMPTY_CHARACTER_PROFILE,
@@ -275,13 +275,6 @@ export function ArticleSettingsDrawer({ opened, onClose }: { opened: boolean; on
   return <ScrollableDrawer opened={opened} onClose={onClose} position={compact ? "bottom" : "right"} size={compact ? "100%" : 600} title="文章设定" closeButtonProps={{ "aria-label": "关闭文章设定" }} classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}>
     <ArticleSettingsBody article={studio.currentArticle} />
   </ScrollableDrawer>;
-}
-
-function inheritedCharacterValue(article: Article, chapter: Chapter, characterId: string, key: CharacterProfileKey) {
-  const temporary = cloneSettings(chapter.settings);
-  delete temporary.characters[characterId];
-  const virtual = { ...article, chapters: article.chapters.map((item) => item.id === chapter.id ? { ...item, settings: temporary } : item) };
-  return resolveChapterSettings(virtual, chapter.id).characters.find((item) => item.id === characterId)?.profile[key] ?? "";
 }
 
 export function ChapterSettingsDrawer({ chapterId, opened = true, onClose }: { chapterId: string; opened?: boolean; onClose: () => void }) {

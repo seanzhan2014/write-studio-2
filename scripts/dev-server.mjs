@@ -10,7 +10,7 @@ const host = process.env.WRITER_STUDIO_HOST ?? "0.0.0.0";
 const port = process.env.WRITER_STUDIO_PORT ?? "3002";
 const runtimeMode = process.env.WRITER_STUDIO_RUNTIME_MODE === "production" ? "production" : "development";
 const logDirectory = path.resolve(workspace, process.env.WRITER_STUDIO_LOG_DIR ?? "logs");
-const vinextCli = path.join(workspace, "node_modules", "vinext", "dist", "cli.js");
+const viteCli = path.join(workspace, "node_modules", "vite", "bin", "vite.js");
 const prodServerScript = path.join(workspace, "scripts", "prod-server.mjs");
 const logPrefix = runtimeMode === "production" ? "prod" : "dev";
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -145,7 +145,7 @@ serviceLogger.write(
   "lifecycle",
   `START pid=${process.pid} mode=${runtimeMode} host=${host} port=${port} retentionDays=30 removedLogs=${removedLogCount}`,
 );
-serviceLogger.write("lifecycle", runtimeMode === "production" ? `Launching production server=${prodServerScript}` : `Launching Vinext cli=${vinextCli}`);
+serviceLogger.write("lifecycle", runtimeMode === "production" ? `Launching production server=${prodServerScript}` : `Launching Vite cli=${viteCli}`);
 
 const cleanupTimer = setInterval(() => {
   removeExpiredLogs()
@@ -157,7 +157,7 @@ const cleanupTimer = setInterval(() => {
 
 const childArgs = runtimeMode === "production"
   ? [prodServerScript]
-  : [vinextCli, "dev", "--hostname", host, "--port", port];
+  : [viteCli, "--host", host, "--port", port];
 child = spawn(process.execPath, childArgs, {
   cwd: workspace,
   env: process.env,

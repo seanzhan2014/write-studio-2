@@ -4,6 +4,10 @@ type PendingChat = { id: string; url: string; body: Record<string, unknown>; que
 const key = "writer-studio.pending-chat-completions.v1";
 let draining = false;
 
+export function clearChatCompletions() {
+  try { localStorage.removeItem(key); } catch { /* Storage can be unavailable in private browser contexts. */ }
+}
+
 function pending(): PendingChat[] {
   try {
     const entries = JSON.parse(localStorage.getItem(key) ?? "[]");

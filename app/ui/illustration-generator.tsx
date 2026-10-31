@@ -22,6 +22,10 @@ import { TaskParameterSettings } from "./task-parameter-settings";
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerId?: string; providerName: string; hasSecret: boolean };
 type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
 
+function createRequestId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose }: Props) {
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
@@ -46,8 +50,9 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const quality = illustrationOptions.quality ?? "";
   const setQuality = (quality: string) => rememberOptions({ quality });
   const aspectRatio = illustrationOptions.aspectRatio ?? "";
-  const setAspectRatio = (aspectRatio: string) => rememberOptions({ aspectRatio });
-  const [excerpt, setExcerpt] = useState(selectedExcerpt);
+  const [excerptDraft, setExcerptDraft] = useState({ source: selectedExcerpt, content, value: selectedExcerpt });
+  const excerpt = excerptDraft.source === selectedExcerpt && excerptDraft.content === content ? excerptDraft.value : selectedExcerpt;
+  const setExcerpt = useCallback((value: string) => setExcerptDraft({ source: selectedExcerpt, content, value }), [selectedExcerpt, content]);
   const style = illustrationOptions.scenePrompt ?? "";
   const setStyle = (scenePrompt: string) => rememberOptions({ scenePrompt });
   const [prompt, setPrompt] = useState("");
@@ -59,7 +64,6 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [tab, setTab] = useState<string | null>(initialTab === "prompts" ? "prompts" : "images");
   const formRef = useRef<HTMLElement>(null);
   const historyRef = useRef<HTMLElement>(null);
-  useEffect(() => { setExcerpt(selectedExcerpt); }, [selectedExcerpt]);
   const [records, setRecords] = useState<IllustrationRecord[]>([]);
   const [historyError, setHistoryError] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -96,7 +100,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       if (completed && !illustrationIsActive(completed)) {
         latestJob.current = null; setBusy(null);
         if (completed.status === "success") {
-          if (completed.kind === "prompt") { setPrompt(completed.prompt); setNegativePrompt(completed.negativePrompt ?? ""); setExcerpt(completed.excerpt); setSelectedPrompt(completed.id); }
+          if (completed.kind === "prompt") { setPrompt(completed.prompt); setNegativePrompt(completed.negativePrompt ?? ""); setExcerpt(content.includes(completed.excerpt) ? completed.excerpt : ""); setSelectedPrompt(completed.id); }
           else if (completed.src) setImage({ src: completed.src, revisedPrompt: completed.revisedPrompt });
           setNotice(completed.kind === "prompt" ? "Prompt 已生成并自动保存到历史。" : "插图已自动保存，可在插图历史中查看或下载。");
         } else if (completed.status === "error") setError(completed.error || "插图生成失败，可在 AI 任务中重新执行");
@@ -104,15 +108,16 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       }
     } catch (cause) { if (requestId === historyRequest.current) setHistoryError(cause instanceof Error ? cause.message : "无法读取插图历史"); }
     finally { if (requestId === historyRequest.current) setHistoryLoading(false); }
-  }, [outlineId]);
+  }, [outlineId, setExcerpt, content]);
 
   useEffect(() => {
+    const requests = historyRequest;
     loadedCount.current = 100;
     const refresh = () => { void loadHistory(); };
     refresh();
     const timer = setInterval(refresh, 4000);
     window.addEventListener("illustrations-updated", refresh);
-    return () => { clearInterval(timer); historyRequest.current++; window.removeEventListener("illustrations-updated", refresh); };
+    return () => { clearInterval(timer); requests.current++; window.removeEventListener("illustrations-updated", refresh); };
   }, [loadHistory]);
 
   useEffect(() => {
@@ -177,7 +182,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       // Refreshing the task list requires a clean save baseline. Persist a
       // just-changed preset before creating work for the shared task runner.
       if (!await studio.saveNow()) throw new Error("请先完成设置保存，再生成插图");
-      const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      const requestId = createRequestId();
       const response = await fetchServerAction("/api/ai/illustrations", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": requestId },
         body: JSON.stringify(action === "prompt"
@@ -196,7 +201,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     }
   }
 
-  function usePrompt(record: IllustrationRecord) {
+  function loadPrompt(record: IllustrationRecord) {
     setPrompt(record.prompt);
     setNegativePrompt(record.negativePrompt ?? "");
     rememberOptions({ scenePrompt: record.style, stylePreset: record.stylePreset ?? "auto", ...(record.promptLanguage ? { promptLanguage: record.promptLanguage } : {}), ...(record.additionalPrompt !== undefined ? { additionalPrompt: record.additionalPrompt } : {}) });
@@ -270,7 +275,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {!content.trim() && <Alert color="yellow">当前大纲暂无正文。你仍可直接输入图片 Prompt 生成插图，或复用历史 Prompt。</Alert>}
       {modelError && <Alert color="red">{modelError}</Alert>}
       {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
-      <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) usePrompt(record); }} />
+      <Select label="选择历史 prompt" description="归档的 prompt 可在历史中恢复后使用。也可直接在下方输入并保存新 prompt。" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) loadPrompt(record); }} />
       <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => { setTextModel(value ?? ""); rememberModel("illustrationPromptModel", value ?? ""); }} disabled={Boolean(busy)} searchable allowDeselect={false} />
       <Select label="画面人物（可选）" description="使用人物照片中的默认参考，保持人物一致；可在人物资料中调整。" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.photos ? characterPhotos(person.photos).referenceIds.length : person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (!referenceCapability || !person.photos && imageRecord?.providerId !== person.visual?.providerId)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && (person.photos || model.providerId === person.visual?.providerId) && imageReferenceCapability(model))?.id || ""); }} />
       {selectedCharacter && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", ...(selectedPhotos ? { photos: selectedPhotos } : { visual: selectedCharacter.visual }) }} />}
@@ -302,7 +307,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim() || Boolean(referenceIssue)} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
       {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button></Group>}
       {image && <figure className="illustration-result">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
+
         <img src={image.src} alt="根据正文片段生成的插图" onError={() => setError("无法读取已保存的插图，请刷新历史后重试")} />
         {image.revisedPrompt && <figcaption>模型采用的提示词：{image.revisedPrompt}</figcaption>}
         <Button component="a" href={`${image.src}?download=1`} download variant="default">下载图片</Button>
@@ -323,14 +328,14 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
           <Text size="xs" c="dimmed">{new Date(record.createdAt).toLocaleString()} · {record.modelName || "手动添加"}</Text>
           {record.stylePreset && record.stylePreset !== "auto" && <Badge variant="light">{(styles.find(item => item.value === record.stylePreset)?.label ?? "已删除的风格")}</Badge>}
           <CharacterReferenceSummary reference={record.characterReference} />
-          {record.src && <a href={record.src} target="_blank" rel="noopener noreferrer">{/* eslint-disable-next-line @next/next/no-img-element */}<img className="illustration-history-image" src={record.src} alt="历史插图" loading="lazy" /></a>}
+          {record.src && <a href={record.src} target="_blank" rel="noopener noreferrer"><img className="illustration-history-image" src={record.src} alt="历史插图" loading="lazy" /></a>}
           {record.prompt && <Text size="sm" className="illustration-history-prompt">{record.prompt}</Text>}
           {record.negativePrompt && <div><Text size="xs" fw={600}>Negative Prompt</Text><Text size="sm" className="illustration-history-prompt">{record.negativePrompt}</Text></div>}
           {record.excerpt && <Text size="xs" c="dimmed" lineClamp={3}>正文片段：{record.excerpt}</Text>}
           {record.revisedPrompt && <Text size="xs" c="dimmed">模型采用的提示词：{record.revisedPrompt}</Text>}
           {record.error && <Alert color="red">{record.error}</Alert>}
           <Group gap="xs">
-            {record.status === "success" && record.prompt && !record.archived && <Button size="xs" variant="light" disabled={Boolean(busy)} onClick={() => usePrompt(record)}>使用此 prompt</Button>}
+            {record.status === "success" && record.prompt && !record.archived && <Button size="xs" variant="light" disabled={Boolean(busy)} onClick={() => loadPrompt(record)}>使用此 prompt</Button>}
             {record.src && <Button size="xs" component="a" variant="default" href={`${record.src}?download=1`} download>下载图片</Button>}
             {record.kind === "prompt" && record.status === "success" && <Button size="xs" variant="default" disabled={Boolean(mutation)} onClick={() => void manage(record.id, record.archived ? "restore" : "archive")}>{record.archived ? "恢复" : "归档"}</Button>}
             {!illustrationIsActive(record) && <>

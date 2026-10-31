@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { supportsText } from "@/lib/ai-model-capabilities";
@@ -19,7 +19,8 @@ export function useActiveStyleCount() {
   return useStyleTaskSummary().active;
 }
 export function StyleLabRuntime() {
-  const studio = useStudio(); const studioRef = useRef(studio); studioRef.current = studio;
+  const studio = useStudio(); const studioRef = useRef(studio);
+  useLayoutEffect(() => { studioRef.current = studio; }, [studio]);
   useEffect(() => {
     let active = true; const observed = new Set<string>();
     async function tick() {
@@ -59,6 +60,10 @@ export function StyleLabRuntime() {
   return null;
 }
 export function StyleLabPanel() {
+  const studio = useStudio();
+  return <ArticleStyleLabPanel key={studio.currentArticle.id} />;
+}
+function ArticleStyleLabPanel() {
   const studio = useStudio(); const article = studio.currentArticle;
   const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
   const [references, setReferences] = useState<ReferenceDocument[]>(library.references);
@@ -71,9 +76,9 @@ export function StyleLabPanel() {
   const [autoApply, setAutoApply] = useState(true);
   const [executionMode, setExecutionMode] = useState<"server" | "browser" | null>(null);
   const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
-  const state = useRef({ article, studio }); state.current = { article, studio };
+  const state = useRef({ article, studio });
+  useLayoutEffect(() => { state.current = { article, studio }; }, [article, studio]);
   const fileRef = useRef<HTMLInputElement>(null); const importRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { setReferences(normalizeStyleLibrary(article.storySettings?.styleLibrary).references); setDirty(false); setSelectedJobId(""); setActive(false); }, [article.id]);
   useEffect(() => { void api("/api/models").then(result => setModels((result.models ?? []).filter(supportsText))).catch(error => setNotice(String(error.message))); }, []);
   useEffect(() => {
     let active = true;

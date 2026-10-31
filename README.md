@@ -184,12 +184,20 @@ npm run db:migrate:d1 -- --source /path/to/legacy.sqlite --target /path/to/write
 
 ## 开发验证
 
+默认 `npm run build` 生成 Node 自托管版本。Sites 发布时设置 `WRITER_STUDIO_BUILD_TARGET=sites`，再通过 Sites 构建工具运行构建；两个目标分别加载对应的运行时，避免 Node 加载 Cloudflare 专用模块。切换目标后需重新构建。
+
 ```powershell
+npm run typecheck
+npm run lint -- --max-warnings=0
 npm run build
 npm test
 npm run test:sync
 npm run db:generate
 ```
+
+`npm test` 包含类型检查、无警告 lint、生产构建、后端测试和浏览器回归。测试服务各自使用 `.test-data` 内的独立数据库目录与 Vite 缓存，测试清理不会触及业务数据库。
+
+“清除全部业务数据”会移除文章、正文、版本、人物、聊天、AI 与照片任务、同步历史和受管理的关联图片，并清除本设备的离线正文草稿、照片草稿及待确认聊天记录。模型、密钥、系统设置、磁盘导出文件和恢复备份保留。图片存储暂时无法删除时会保留清理凭据，提示再次执行清除重试。
 
 `npm run test:sync` 单独运行保存与冲突的通用回归：字段缺失／空值语义、快照规范化、真实 SQLite 往返、创建后直接聊天和生成、延迟／丢失响应、并发修改，以及两种冲突选择后的连续保存。浏览器流程覆盖桌面和手机 Chromium；仅桌面提供的新建章节按钮只在桌面测试。全部用例也会由 `npm test` 自动发现，使用独立测试数据库，不复用本机业务数据。具体覆盖映射见 [保存与同步测试](docs/sync-testing.md)。
 

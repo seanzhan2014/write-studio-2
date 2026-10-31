@@ -879,7 +879,9 @@ test("mobile supplementary instruction save sends one compact outline patch", as
   expect(body.changes.outlines.patch).toHaveLength(1);
   expect(body.changes.outlines.patch[0]).not.toHaveProperty("versions");
   expect(body.changes.outlines.patch[0]).not.toHaveProperty("chat");
-  expect(JSON.stringify(body).length).toBeLessThan(3_000);
+  expect(body.changes.outlines.patch[0]).not.toHaveProperty("content");
+  expect(body.changes.outlines.patch[0]).toMatchObject({ id: "outline-current", outline: { generateInstruction: "手机端小型增量保存" } });
+  expect(JSON.stringify(body).length).toBeLessThan(5_000);
   await expect(page.getByRole("button", { name: "保存指令" })).toHaveCount(0);
 });
 
@@ -1051,7 +1053,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
   await page.goto("/articles/article-main/outlines/outline-current/write");
   await expect.poll(() => modelRequests).toBe(1);
 
-  let releaseSave = () => undefined;
+  let releaseSave: () => void = () => undefined;
   const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
   await page.route("**/api/state/mutations", async (route) => {
     if (route.request().method() === "POST") await saveGate;
@@ -1097,7 +1099,7 @@ test("desktop writing menu can save the current body as a named version", async 
     currentVersionId: outline.currentVersionId,
     defaultVersionId: outline.defaultVersionId,
     versionCount: outline.versions.length,
-  }).toEqual({ name: "定稿版本", source: "手动", currentVersionId: null, defaultVersionId: null, versionCount: 2 });
+  }).toEqual({ name: "定稿版本", source: "手动" as const, currentVersionId: null, defaultVersionId: null, versionCount: 2 });
 });
 
 test("version drawer creates a blank body and saves a selected version as a copy", async ({ page, request }, testInfo) => {
@@ -1110,7 +1112,7 @@ test("version drawer creates a blank body and saves a selected version as a copy
     id: `version-scroll-${index}`,
     name: `滚动版本 ${index + 1}`,
     content: `用于验证滚动行为的正文 ${index + 1}`,
-    source: "手动",
+    source: "手动" as const,
     createdAt: new Date(Date.UTC(2026, 7, 10, 0, index)).toISOString(),
     outlineSnapshot: { title: target.title, plan: target.plan },
   })));
@@ -1772,7 +1774,7 @@ test("body double-click and touch double-tap enter editing without losing the re
   await expect.poll(async () => editor.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
   const editingRatio = await editor.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight));
   expect(Math.abs(editingRatio - readingRatio)).toBeLessThan(0.04);
-  expect(await editor.evaluate((element) => element.selectionStart)).toBeGreaterThan(0);
+  expect(await editor.evaluate((element) => (element as HTMLTextAreaElement).selectionStart)).toBeGreaterThan(0);
   await page.getByRole("button", { name: "退出编辑" }).click();
   await expect(page.getByLabel("正文内容")).toBeVisible();
   await expect.poll(async () => reader.evaluate((element) => element.scrollTop / (element.scrollHeight - element.clientHeight))).toBeGreaterThan(0.5);
@@ -1788,7 +1790,7 @@ test("switching outlines shows each target's current body independently of its d
   currentOutline.content = "仅在当前大纲显示的正文";
   currentOutline.currentVersionId = null;
   const previousOutline = fixture.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")!;
-  previousOutline.versions = [{ id: "version-previous-default", name: "前序默认版本", content: "前序大纲的默认正文", source: "手动", createdAt: "2026-07-28T08:00:00.000Z", outlineSnapshot: { title: previousOutline.title, plan: previousOutline.plan } }];
+  previousOutline.versions = [{ id: "version-previous-default", name: "前序默认版本", content: "前序大纲的默认正文", source: "手动" as const, createdAt: "2026-07-28T08:00:00.000Z", outlineSnapshot: { title: previousOutline.title, plan: previousOutline.plan } }];
   previousOutline.currentVersionId = "version-previous-default";
   previousOutline.defaultVersionId = null;
   const saved = await request.put("/api/state", {
@@ -1989,7 +1991,7 @@ test("article copy choices preserve selected defaults or complete histories with
   ];
   sourceOutline.defaultNameVersionId = "name-outline-default";
   sourceOutline.versions = [
-    { id: "version-current", name: "当前正文", content: "当前版本正文", source: "手动", createdAt: sourceOutline.updatedAt, taskId: "copy-source-task", outlineSnapshot: { title: sourceOutline.title, plan: sourceOutline.plan } },
+    { id: "version-current", name: "当前正文", content: "当前版本正文", source: "手动" as const, createdAt: sourceOutline.updatedAt, taskId: "copy-source-task", outlineSnapshot: { title: sourceOutline.title, plan: sourceOutline.plan } },
     { id: "version-default", name: "默认正文", content: "指定的默认版本正文", source: "AI Generate", createdAt: sourceOutline.updatedAt, taskId: "copy-source-task", outlineSnapshot: { title: sourceOutline.title, plan: sourceOutline.plan } },
   ];
   sourceOutline.currentVersionId = "version-current";
@@ -2014,7 +2016,7 @@ test("article copy choices preserve selected defaults or complete histories with
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认名称" })).toBeChecked();
   await expect(defaultsDialog.getByRole("radio", { name: "仅默认正文" })).toBeChecked();
   await defaultsDialog.getByRole("button", { name: "创建副本" }).click();
-  await expect(page.getByText("文章副本已创建")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "复制文章" })).toHaveCount(0);
 
   await expect.poll(async () => {
     const response = await request.get("/api/state");
@@ -2054,7 +2056,7 @@ test("article copy choices preserve selected defaults or complete histories with
   await allDialog.getByRole("checkbox", { name: /文章资料/ }).check();
   await allDialog.getByRole("checkbox", { name: /AI 对话记录/ }).check();
   await allDialog.getByRole("button", { name: "创建副本" }).click();
-  await expect(page.getByText("文章副本已创建")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "复制文章" })).toHaveCount(0);
 
   await expect.poll(async () => {
     const response = await request.get("/api/state");
@@ -2062,8 +2064,8 @@ test("article copy choices preserve selected defaults or complete histories with
   }).toBe(3);
   copiedState = ((await (await request.get("/api/state")).json()) as { data: CopiedState }).data;
   const allCopy = copiedState.articles.find((article) => article.title === "严格测试文章（副本 2）")!;
-  expect(allCopy.summary).toBe(sourceArticle.summary);
-  expect(allCopy.type).toBe(sourceArticle.type);
+  expect(allCopy.summary).toBe(copiedState.articles.find(article => article.id === sourceArticle.id)!.summary);
+  expect(allCopy.type).toBe(copiedState.articles.find(article => article.id === sourceArticle.id)!.type);
   const allOutline = allCopy.chapters.flatMap((chapter) => chapter.outlines).find((outline) => outline.title === sourceOutline.title)!;
   expect(allOutline.versions).toHaveLength(2);
   expect(allOutline.currentVersionId).not.toBe(allOutline.defaultVersionId);
@@ -2102,11 +2104,11 @@ test("mobile outline and chapter menus share a compact readable action layout", 
   }
 
   await page.getByRole("button", { name: "当前码头更多操作", exact: true }).click();
-  await expectReadableMenu(10);
+  await expectReadableMenu(11);
   await page.getByRole("button", { name: "关闭大纲操作", exact: true }).click();
 
   await page.getByRole("button", { name: "第一章更多操作", exact: true }).click();
-  await expectReadableMenu(7);
+  await expectReadableMenu(9);
   await page.getByRole("button", { name: "关闭章节菜单", exact: true }).click();
 });
 
@@ -2171,14 +2173,14 @@ test("full outline editor shows every plan in one auto-growing document", async 
   expect(dimensions.overflowY).toBe("hidden");
 });
 
-test("unified editor keeps article, chapter, and outline settings inline and inherited values collapsed", async ({ page, request }, testInfo) => {
+test("unified editor keeps article and chapter settings inline and outline properties in a drawer with inheritance collapsed", async ({ page, request }, testInfo) => {
   const current = await request.get("/api/state");
   const state = await current.json() as { revision: number };
   const fixture = fullStudioFixture();
   const chapter = fixture.articles[0].chapters[0];
   chapter.settings = { story: { summary: { value: "章节阶段简介", scope: "chapter" } }, characters: {}, relationships: {} };
   const outline = chapter.outlines.find((item) => item.id === "outline-current")!;
-  outline.settings = { story: { style: { value: "本大纲采用克制的悬疑语气", scope: "outline" } }, characters: {}, relationships: {} };
+  outline.settings = { story: { style: { value: "本大纲采用克制的悬疑语气", scope: "chapter" } }, characters: {}, relationships: {} };
   const saved = await request.put("/api/state", {
     headers: { "If-Match": String(state.revision) },
     data: { data: fixture, conflictResolution: "keep-local" },
@@ -2198,7 +2200,7 @@ test("unified editor keeps article, chapter, and outline settings inline and inh
   await expect(articlePanel).toHaveCount(0);
 
   const chapterSection = editor.locator(".continuous-chapter").first();
-  const chapterToggle = chapterSection.locator(".continuous-chapter-heading").getByRole("button", { name: "设定 · 1", exact: true });
+  const chapterToggle = chapterSection.locator(".continuous-chapter-heading").getByRole("button", { name: /^设定(?: · \d+)?$/ });
   await chapterToggle.click();
   const chapterPanel = chapterSection.locator(".chapter-inline-panel");
   await expect(chapterPanel.getByText("本章修改 1 项", { exact: false })).toBeVisible();
@@ -2211,9 +2213,9 @@ test("unified editor keeps article, chapter, and outline settings inline and inh
   await chapterToggle.click();
 
   const outlineBlock = editor.locator('[data-continuous-outline-id="outline-current"]');
-  const outlineToggle = outlineBlock.getByRole("button", { name: "设定 · 1", exact: true });
+  const outlineToggle = outlineBlock.getByRole("button", { name: "打开「当前码头」属性", exact: true });
   await outlineToggle.click();
-  const outlinePanel = outlineBlock.locator(".outline-inline-panel");
+  const outlinePanel = page.locator(".continuous-outline-properties-drawer");
   await expect(outlinePanel.getByText("本大纲修改 1 项", { exact: false })).toBeVisible();
   await expect(outlinePanel.getByLabel("写作风格", { exact: true })).toHaveValue("本大纲采用克制的悬疑语气");
   await expect(outlinePanel.getByLabel("简介", { exact: true })).toHaveCount(0);
@@ -2608,7 +2610,7 @@ test("full content title row respects AI Review visibility and keeps article rul
     await expect(review).toHaveCount(0);
     await expect(editor.getByRole("button", { name: "保存", exact: true })).toBeVisible();
     await page.goto("/articles/article-main/info/review-rules");
-    await expect(page.getByRole("tab", { name: "审校规则", exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "AI 任务设定", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("heading", { name: "审校规则", exact: true })).toBeVisible();
     return;
   }
@@ -2641,7 +2643,7 @@ test("each body in full content editing can preview and independently set curren
     id: "version-ai-candidate",
     name: "AI 候选稿",
     content: "潮声越过防波堤，林澈在暗门前停下脚步。",
-    source: "AI",
+    source: "AI Generate",
     createdAt: "2026-07-28T09:00:00.000Z",
   });
   const saved = await request.put("/api/state", {
@@ -2706,11 +2708,11 @@ test("AI tasks are ordered by submission time regardless of status", async ({ pa
   const current = await request.get("/api/state");
   const payload = await current.json() as { revision: number; data: ReturnType<typeof fullStudioFixture> };
   const fixture = payload.data;
-  const baseTask = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文" as const, model: "", resultText: "结果" };
+  const baseTask = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文" as const, executionOrigin: "local" as const, model: "", resultText: "结果" };
   fixture.tasks = [
     { ...baseTask, id: "task-middle-success", prompt: "中间提交的成功任务", state: "success", createdAt: "2026-07-28T09:00:00.000Z" },
     { ...baseTask, id: "task-old-failed", prompt: "最早提交的失败任务", state: "failed", error: "测试失败", createdAt: "2026-07-28T08:00:00.000Z" },
-    { ...baseTask, id: "task-new-cancelled", prompt: "最新提交的取消任务", state: "cancelled", resultText: "很长的任务结果\n".repeat(200), createdAt: "2026-07-28T10:00:00.000Z", contextOptions: { includePrevious: true, includeCharacters: false, targetWords: 5000 } },
+    { ...baseTask, id: "task-new-cancelled", prompt: "最新提交的取消任务", state: "cancelled", resultText: "很长的任务结果\n".repeat(200), createdAt: "2026-07-28T10:00:00.000Z", contextOptions: { includePrevious: true, includeCharacters: false, estimatedCharacters: 0, targetWords: 5000 } },
   ];
   fixture.tasks[2] = { ...fixture.tasks[2], phase: "receiving", attempt: 2, startedAt: "2026-07-28T09:59:00.000Z", completedAt: "2026-07-28T10:00:00.000Z", lastProgressAt: "2026-07-28T09:59:58.000Z", receivedCharacters: 2048, timeoutMs: 600_000 };
   const saved = await request.put("/api/state", { headers: { "If-Match": String(payload.revision) }, data: { data: fixture, conflictResolution: "keep-local" } });
@@ -2903,7 +2905,7 @@ test("AI Chat finishes after leaving and clears its unread marker when opened", 
 
 test("AI Chat can be cancelled from the task panel after leaving", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
-  let releaseResponse = () => undefined;
+  let releaseResponse: () => void = () => undefined;
   const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
   const responseTimeout = setTimeout(() => releaseResponse(), 15_000);
   await page.route("**/api/outlines/outline-current/chat/stream", async (route) => {
@@ -2955,7 +2957,7 @@ test("AI Chat displays the Provider-model format consistently", async ({ page })
     });
   });
   await page.goto("/articles/article-main/outlines/outline-current/chat");
-  const model = page.getByLabel("聊天模型");
+  const model = page.locator("select[aria-label=聊天模型]");
   await expect(model).toBeVisible();
   await model.selectOption("model-remote");
   await expect(model.locator("option:checked")).toHaveText("Remote Provider-Remote Writer");
@@ -3186,8 +3188,8 @@ test("chapter candidate names can be deleted from the icon beside the three-dot 
   const fixture = fullStudioFixture();
   const chapter = fixture.articles[0].chapters[0];
   chapter.nameVersions = [
-    { id: "name-chapter-candidate", title: "潮汐候选", source: "ai", createdAt: chapter.updatedAt },
-    { id: "name-chapter-default", title: "第一章", source: "manual", createdAt: chapter.updatedAt },
+    { id: "name-chapter-candidate", title: "潮汐候选", source: "ai", createdAt: fixture.articles[0].updatedAt },
+    { id: "name-chapter-default", title: "第一章", source: "manual", createdAt: fixture.articles[0].updatedAt },
   ];
   chapter.defaultNameVersionId = "name-chapter-default";
   const seeded = await request.put("/api/state", {

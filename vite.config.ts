@@ -1,7 +1,7 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
-import { sites } from "./build/sites-vite-plugin";
+import hostingConfig from "./.openai/hosting.json" with { type: "json" };
+import { sites } from "./build/sites-vite-plugin.ts";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID = "00000000-0000-4000-8000-000000000000";
 const { d1, r2 } = hostingConfig;
@@ -10,10 +10,11 @@ const { d1, r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 export default defineConfig(async ({ command }) => {
+  const sitesBuild = process.env.WRITER_STUDIO_BUILD_TARGET === "sites";
   process.env.WRANGLER_WRITE_LOGS ??= "false";
   process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
   process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
-  const cloudflarePlugin = command === "build"
+  const cloudflarePlugin = command === "build" && sitesBuild
     ? (await import("@cloudflare/vite-plugin")).cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         config: {
@@ -26,6 +27,9 @@ export default defineConfig(async ({ command }) => {
     : null;
 
   return {
+    ...(process.env.WRITER_STUDIO_TEST_MODE === "1" && process.env.WRITER_STUDIO_DB_PATH
+      ? { cacheDir: `${process.env.WRITER_STUDIO_DB_PATH}.vite-cache` }
+      : {}),
     environments: {
       client: {
         build: {
@@ -57,7 +61,7 @@ export default defineConfig(async ({ command }) => {
     },
     plugins: [
       vinext(),
-      sites(),
+      sitesBuild ? sites() : null,
       cloudflarePlugin,
     ],
   };
