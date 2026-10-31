@@ -1,7 +1,7 @@
 import { photoOverview, uploadCharacterPhoto, updatePhotoGallery, createPhotoJobs, executePhotoJob, dispatchPhotoJobs, changePhotoJob, refreshCharacterLibrary, saveFormalPhotosToLibrary } from "@/db/character-photos";
 import { normalizePhotoDraft } from "@/lib/character-photos";
 import { isIllustrationStylePreset } from "@/lib/illustration-styles";
-import { listProviders } from "@/db/ai";
+import { listProviders } from "@/db/ai-models";
 import { isSpicyApi } from "@/lib/spicy-api";
 import { isCloudDatabase } from "@/db/sqlite";
 import { readStudioState } from "@/db/runtime";

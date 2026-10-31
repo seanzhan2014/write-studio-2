@@ -1,6 +1,6 @@
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
-import type { AiTask, Message } from "@/app/studio-state";
-import { findModel } from "@/db/ai";
+import type { AiTask, Message } from "@/lib/studio-types";
+import { findModel } from "@/db/ai-models";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { modelSelectionLabel } from "@/lib/model-label";
 import type { SelectedAiContext } from "@/lib/ai-context";

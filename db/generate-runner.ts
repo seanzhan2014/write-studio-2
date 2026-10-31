@@ -1,4 +1,5 @@
-import { ensureDatabase, getDatabase } from "@/db/runtime";
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
+import { ensureDatabase, getDatabase } from "@/db/studio-state";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { isCloudDatabase } from "@/db/sqlite";
 import { registerIllustrationTasks } from "./illustration-tasks";
@@ -8,7 +9,7 @@ import { isIllustrationTarget } from "@/lib/task-target";
 import { dispatchPhotoJobs, executePhotoJob } from "./character-photos";
 import { dispatchStyleJobs } from "./style-lab";
 import { executeIllustration } from "./illustrations";
-import { POST as executeGenerateTask } from "@/app/api/ai/tasks/[taskId]/execute/route";
+import { executeTask } from "./generate-task";
 
 const runnerKey = Symbol.for("writer-studio.generate-review-runner");
 type RunnerState = { busy: boolean; timer?: ReturnType<typeof setInterval> };
@@ -36,7 +37,7 @@ export function startGenerateReviewRunner() {
       const running = rows.filter((row) => row.status === "running" && row.lease_until && String(row.lease_until) > now);
       const settingsJson = await db.prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json");
       const settings = settingsJson ? JSON.parse(settingsJson).settings ?? {} : {};
-      const capacity = Math.max(0, Math.min(5, Number(settings.taskConcurrency) || 2) - running.length);
+      const capacity = Math.max(0, normalizeTaskConcurrency(settings.taskConcurrency) - running.length);
       const photoRunning = Number(await db.prepare("SELECT COUNT(*) AS count FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>?)").bind(now).first<number>("count") || 0);
       const occupied = new Set(running.filter((row) => row.target === "content").map((row) => row.outline_id));
       const chosen = [];
@@ -57,7 +58,7 @@ export function startGenerateReviewRunner() {
           if (illustration) {
             void executeIllustration(id).catch((error) => console.error("Automatic illustration task failed", error));
           } else {
-            void executeGenerateTask(new Request("http://writer-studio.local/api/ai/tasks/execute", { method: "POST" }), { params: Promise.resolve({ taskId: id }) }).catch((error) => console.error("Automatic review task failed", error));
+            void executeTask(id).catch((error) => console.error("Automatic review task failed", error));
           }
         }
       }

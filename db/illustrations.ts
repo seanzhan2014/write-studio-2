@@ -1,5 +1,8 @@
-import { AiInputError, findModel, generateIllustrationImage, generateIllustrationPrompt } from "./ai";
-import { ensureDatabase, getDatabase, readStudioState } from "./runtime";
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
+import { AiInputError } from "@/db/ai-errors";
+import { findModel } from "@/db/ai-models";
+import { generateIllustrationImage, generateIllustrationPrompt } from "@/db/ai-images";
+import { ensureDatabase, getDatabase, readStudioState } from "./studio-state";
 import { deleteIllustrationAsset, saveIllustrationAsset } from "./illustration-assets";
 import { MAX_ILLUSTRATION_CONTENT, MAX_ILLUSTRATION_EXCERPT, MAX_ILLUSTRATION_PROMPT, MAX_ILLUSTRATION_NEGATIVE_PROMPT } from "@/lib/image-generation";
 import { supportsImages, supportsText } from "@/lib/ai-model-capabilities";
@@ -208,7 +211,7 @@ export async function executeIllustration(id: string) {
   const runner = crypto.randomUUID();
   const lease = () => new Date(Date.now() + 90_000).toISOString();
   const now = new Date().toISOString();
-  const capacity = Math.max(1, Math.min(5, Number(JSON.parse(String(row.input_json)).taskConcurrency ?? JSON.parse(await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json") || "{}").settings?.taskConcurrency) || 2));
+  const capacity = normalizeTaskConcurrency(JSON.parse(String(row.input_json)).taskConcurrency ?? JSON.parse(await getDatabase().prepare("SELECT value_json FROM app_settings WHERE key='studio_ui'").first<string>("value_json") || "{}").settings?.taskConcurrency);
   const result = await getDatabase().batch([
     getDatabase().prepare(`UPDATE illustration_history SET status='running',runner_id=?,lease_until=? WHERE id=? AND status='queued'
       AND EXISTS(SELECT 1 FROM ai_tasks WHERE id=? AND status='queued' AND execution_origin=?)

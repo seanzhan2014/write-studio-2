@@ -1,8 +1,9 @@
 import { taskReasoningEffort } from "@/lib/reasoning-options";
 import { createReviewRuleSnapshot, normalizeReviewRuleSnapshot, reviewRulesText } from "@/lib/review-rules.mjs";
-import type { AiTask } from "@/app/studio-state";
-import { AiInputError, AiUpstreamCompletionError, reviewGeneratedText, reviseGeneratedText } from "@/db/ai";
-import { getDatabase } from "@/db/runtime";
+import type { AiTask } from "@/lib/studio-types";
+import { AiInputError, AiUpstreamCompletionError } from "@/db/ai-errors";
+import { reviewGeneratedText, reviseGeneratedText } from "@/db/ai-review";
+import { getDatabase } from "@/db/studio-state";
 import { runGenerateReview, type GenerateReviewCheckpoint, type GenerateReviewDraft } from "@/lib/generate-review.mjs";
 
 export async function generateWithReview(task: AiTask, runnerId: string, model: string, checkpointJson: unknown, generate: () => Promise<GenerateReviewDraft>, signal: AbortSignal) {

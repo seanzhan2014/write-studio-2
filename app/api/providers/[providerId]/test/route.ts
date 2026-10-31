@@ -1,4 +1,4 @@
-import { testProvider } from "@/db/ai";
+import { testProvider } from "@/db/ai-models";
 
 export async function POST(_request: Request, context: { params: Promise<{ providerId: string }> }) {
   try {

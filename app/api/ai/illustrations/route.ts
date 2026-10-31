@@ -1,4 +1,5 @@
-import { AiInputError, AiPromptTooLongError, generateIllustrationPrompt, generateIllustrationImage } from "@/db/ai";
+import { AiInputError, AiPromptTooLongError } from "@/db/ai-errors";
+import { generateIllustrationPrompt, generateIllustrationImage } from "@/db/ai-images";
 import { createIllustration, listIllustrations, saveManualPrompt, saveCompletedIllustration, prepareIllustrationReference, type IllustrationInput } from "@/db/illustrations";
 
 export const dynamic = "force-dynamic";

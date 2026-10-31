@@ -1,4 +1,4 @@
-import { clearProviderSecret, setProviderSecret } from "@/db/ai";
+import { clearProviderSecret, setProviderSecret } from "@/db/ai-models";
 
 export async function PUT(request: Request, context: { params: Promise<{ providerId: string }> }) {
   try {

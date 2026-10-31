@@ -5,9 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import ts from "typescript";
 import { characterPhotoSchema } from "../db/character-photo-schema.ts";
 import { styleLabSchema } from "../db/style-lab-schema.ts";
+import { ensureTableColumns } from "../db/schema-columns.ts";
 
 function runtimeHarness(cloud = false) {
-  const source = readFileSync(new URL("../db/runtime.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../db/schema-runtime.ts", import.meta.url), "utf8") + "\n" + readFileSync(new URL("../db/sql-helpers.ts", import.meta.url), "utf8");
   const parsed = ts.createSourceFile("runtime.ts", source, ts.ScriptTarget.Latest, true);
   const functions = ["hasCurrentRuntimeSchema", "ensureDatabase", "ensureAiGenerateSettingsColumns", "ensureStorySettingColumns", "ensureVersionSelectionColumn", "rows"];
   const variables = ["schemaStatements", "RUNTIME_SCHEMA_VERSION", "RUNTIME_SCHEMA_VERSION_KEY", "initialized"];
@@ -27,7 +28,7 @@ function runtimeHarness(cloud = false) {
   }
   const db = { prepare: sql => statement(sql), batch: async statements => Promise.all(statements.map(statement => statement.run())) };
   const noop = async () => {};
-  const context = { characterPhotoSchema, styleLabSchema, getDatabase: () => db, isCloudDatabase: () => cloud, illustrationSchema: [], taskHistoryTriggers: [], startGenerateReviewRunner: noop };
+  const context = { characterPhotoSchema, styleLabSchema, ensureTableColumns, getDatabase: () => db, isCloudDatabase: () => cloud, illustrationSchema: [], taskHistoryTriggers: [], onDatabaseReady: noop };
   for (const name of [...source.matchAll(/await (ensure\w+|migrateReviewRules|createSearchIndex)\(db\)/g)].map(match => match[1])) {
     if (!functions.includes(name)) context[name] = noop;
   }

@@ -1,26 +1,11 @@
 "use client";
+import { createScopedSettingActions } from "@/lib/story-setting-actions";
 
 import { Button, Checkbox, Group, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMemo, useState } from "react";
 import { useStudio, type Article, type Character } from "@/app/studio-state";
-import {
-  CHARACTER_PROFILE_KEYS,
-  EMPTY_CHARACTER_PROFILE,
-  STORY_FIELD_KEYS,
-  countChapterSettingChanges,
-  countOutlineSettingChanges,
-  normalizeArticleStorySettings,
-  normalizeCharacterProfile,
-  normalizeChapterSettings,
-  resolveChapterSettings,
-  resolveOutlineSettings,
-  type CharacterProfileKey,
-  type ChapterSettings,
-  type OverrideScope,
-  type SettingSource,
-  type StoryFieldKey,
-} from "@/lib/story-settings";
+import { CHARACTER_PROFILE_KEYS, EMPTY_CHARACTER_PROFILE, STORY_FIELD_KEYS, countChapterSettingChanges, countOutlineSettingChanges, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings, resolveChapterSettings, resolveOutlineSettings, type CharacterProfileKey, type ChapterSettings, type OverrideScope, type SettingSource, type StoryFieldKey } from "@/lib/story-settings";
 import { CharacterPhotoEntry } from "./character-photos";
 import { AdvancedWritingFields } from "./advanced-writing";
 import { ChapterAiSettings } from "./ai-settings-inheritance";
@@ -173,49 +158,7 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
     if (level === "chapter") studio.updateChapter(targetId, { settings: normalizeChapterSettings(next) });
     else studio.updateOutline(targetId, { settings: normalizeChapterSettings(next) });
   }
-  function patchStory(key: StoryFieldKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings);
-    next.story[key] = { value, scope: nextScope ?? next.story[key]?.scope ?? "ongoing" };
-    commit(next, STORY_LABELS[key].label);
-  }
-  function restoreStory(key: StoryFieldKey) {
-    const next = cloneSettings(settings);
-    delete next.story[key];
-    commit(next, STORY_LABELS[key].label);
-  }
-  function patchCharacter(characterId: string, key: CharacterProfileKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings);
-    const item = next.characters[characterId] ?? { start: {}, end: {} };
-    item.start[key] = { value, scope: nextScope ?? item.start[key]?.scope ?? "ongoing" };
-    next.characters[characterId] = item;
-    commit(next, CHARACTER_LABELS[key].label);
-  }
-  function restoreCharacter(characterId: string, key: CharacterProfileKey) {
-    const next = cloneSettings(settings);
-    const item = next.characters[characterId];
-    if (!item) return;
-    delete item.start[key];
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
-    commit(next, CHARACTER_LABELS[key].label);
-  }
-  function patchEnding(characterId: string, key: CharacterProfileKey, value: string | undefined) {
-    const next = cloneSettings(settings);
-    const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === undefined || !value.trim()) delete item.end[key];
-    else item.end[key] = value;
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
-    else next.characters[characterId] = item;
-    commit(next, `${CHARACTER_LABELS[key].label}${level === "chapter" ? "章末" : "大纲末"}变化`);
-  }
-  function patchAppearance(characterId: string, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings);
-    const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === "inherit") delete item.appears;
-    else item.appears = { value: value === "yes", scope: nextScope ?? item.appears?.scope ?? "chapter" };
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
-    else next.characters[characterId] = item;
-    commit(next, "出场状态");
-  }
+  const { patchStory, restoreStory, patchCharacter, restoreCharacter, patchEnding, patchAppearance } = createScopedSettingActions(settings, commit, level, { story: STORY_LABELS, character: CHARACTER_LABELS });
 
   const visibleCharacters = resolved.characters.filter((person) => !person.archived
     && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())
@@ -269,14 +212,6 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
   </div>;
 }
 
-export function ArticleSettingsDrawer({ opened, onClose }: { opened: boolean; onClose: () => void }) {
-  const studio = useStudio();
-  const compact = useMediaQuery("(max-width: 767px)") ?? false;
-  return <ScrollableDrawer opened={opened} onClose={onClose} position={compact ? "bottom" : "right"} size={compact ? "100%" : 600} title="文章设定" closeButtonProps={{ "aria-label": "关闭文章设定" }} classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}>
-    <ArticleSettingsBody article={studio.currentArticle} />
-  </ScrollableDrawer>;
-}
-
 export function ChapterSettingsDrawer({ chapterId, opened = true, onClose }: { chapterId: string; opened?: boolean; onClose: () => void }) {
   const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
@@ -296,29 +231,7 @@ export function ChapterSettingsDrawer({ chapterId, opened = true, onClose }: { c
     setLastChange({ settings: cloneSettings(settings), label });
     studio.updateChapter(chapterId, { settings: normalizeChapterSettings(next) });
   }
-  function patchStory(key: StoryFieldKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings);
-    next.story[key] = { value, scope: nextScope ?? next.story[key]?.scope ?? "ongoing" };
-    commit(next, STORY_LABELS[key].label);
-  }
-  function restoreStory(key: StoryFieldKey) { const next = cloneSettings(settings); delete next.story[key]; commit(next, STORY_LABELS[key].label); }
-  function patchCharacter(characterId: string, key: CharacterProfileKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    item.start[key] = { value, scope: nextScope ?? item.start[key]?.scope ?? "ongoing" }; next.characters[characterId] = item;
-    commit(next, CHARACTER_LABELS[key].label);
-  }
-  function restoreCharacter(characterId: string, key: CharacterProfileKey) {
-    const next = cloneSettings(settings); const item = next.characters[characterId]; if (!item) return; delete item.start[key]; if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId]; commit(next, CHARACTER_LABELS[key].label);
-  }
-  function patchEnding(characterId: string, key: CharacterProfileKey, value: string | undefined) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === undefined || !value.trim()) delete item.end[key]; else item.end[key] = value; if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId]; else next.characters[characterId] = item; commit(next, `${CHARACTER_LABELS[key].label}章末变化`);
-  }
-  function patchAppearance(characterId: string, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === "inherit") delete item.appears; else item.appears = { value: value === "yes", scope: nextScope ?? item.appears?.scope ?? "chapter" };
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId]; else next.characters[characterId] = item; commit(next, "出场状态");
-  }
+  const { patchStory, restoreStory, patchCharacter, restoreCharacter, patchEnding, patchAppearance } = createScopedSettingActions(settings, commit, "chapter", { story: STORY_LABELS, character: CHARACTER_LABELS });
 
   const visibleCharacters = resolved.characters.filter((person) => !person.archived && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (!onlyChanges || Boolean(settings.characters[person.id])));
   return <ScrollableDrawer opened={opened} onClose={onClose} position={compact ? "bottom" : "right"} size={compact ? "100%" : 620} title={<div className="chapter-settings-title"><span>{chapter.title}</span><small>{resolved.inheritedFromChapter ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"} · 本章修改 {changeCount} 项</small></div>} closeButtonProps={{ "aria-label": "关闭章节设定" }} classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}>
@@ -355,34 +268,7 @@ export function OutlineSettingsDrawer({ outlineId, opened = true, onClose }: { o
     setLastChange({ settings: cloneSettings(settings), label });
     studio.updateOutline(outlineId, { settings: normalizeChapterSettings(next) });
   }
-  function patchStory(key: StoryFieldKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings);
-    next.story[key] = { value, scope: nextScope ?? next.story[key]?.scope ?? "ongoing" };
-    commit(next, STORY_LABELS[key].label);
-  }
-  function restoreStory(key: StoryFieldKey) { const next = cloneSettings(settings); delete next.story[key]; commit(next, STORY_LABELS[key].label); }
-  function patchCharacter(characterId: string, key: CharacterProfileKey, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    item.start[key] = { value, scope: nextScope ?? item.start[key]?.scope ?? "ongoing" }; next.characters[characterId] = item;
-    commit(next, CHARACTER_LABELS[key].label);
-  }
-  function restoreCharacter(characterId: string, key: CharacterProfileKey) {
-    const next = cloneSettings(settings); const item = next.characters[characterId]; if (!item) return; delete item.start[key];
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId];
-    commit(next, CHARACTER_LABELS[key].label);
-  }
-  function patchEnding(characterId: string, key: CharacterProfileKey, value: string | undefined) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === undefined || !value.trim()) delete item.end[key]; else item.end[key] = value;
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId]; else next.characters[characterId] = item;
-    commit(next, `${CHARACTER_LABELS[key].label}大纲末变化`);
-  }
-  function patchAppearance(characterId: string, value: string, nextScope?: OverrideScope) {
-    const next = cloneSettings(settings); const item = next.characters[characterId] ?? { start: {}, end: {} };
-    if (value === "inherit") delete item.appears; else item.appears = { value: value === "yes", scope: nextScope ?? item.appears?.scope ?? "chapter" };
-    if (!Object.keys(item.start).length && !Object.keys(item.end).length && !item.appears) delete next.characters[characterId]; else next.characters[characterId] = item;
-    commit(next, "出场状态");
-  }
+  const { patchStory, restoreStory, patchCharacter, restoreCharacter, patchEnding, patchAppearance } = createScopedSettingActions(settings, commit, "outline", { story: STORY_LABELS, character: CHARACTER_LABELS });
 
   const visibleCharacters = resolved.characters.filter((person) => !person.archived
     && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())

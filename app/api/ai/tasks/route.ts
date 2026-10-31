@@ -1,25 +1,30 @@
+import { taskFromRow } from "@/lib/task-record";
+import { parseGenerateFields } from "@/lib/generate-request";
+import { readJsonObject, RequestInputError } from "@/lib/request-input";
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { GENERATE_FIELDS, normalizeAdvanced, advancedText } from "@/lib/advanced-writing";
 import { parseTaskHistory } from "@/lib/task-history";
-import { taskTargetLabel, taskChangesOutline } from "@/lib/task-target";
+import { taskChangesOutline } from "@/lib/task-target";
 import { registerIllustrationTasks } from "@/db/illustration-tasks";
 import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationStrategy, type WritingPreparation } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
 import { normalizeReviewRuleItems, normalizeReviewRuleSnapshot, hasReviewRules, reviewRulesText } from "@/lib/review-rules.mjs";
-import type { AiTask } from "@/app/studio-state";
+import type { AiTask } from "@/lib/studio-types";
 import { MAX_REVIEW_ROUNDS, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { selectAiContext } from "@/lib/ai-context";
-import { resolveWritingSettings, findModel } from "@/db/ai";
+import { resolveWritingSettings } from "@/db/ai";
+import { findModel } from "@/db/ai-models";
 import { ensureDatabase, getDatabase, readStudioState } from "@/db/runtime";
-import { normalizeClosingSummaryLength, isClosingSummaryLengthInput, hasActiveProseControls, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { hasActiveProseControls, normalizeAiGenerateOptions } from "@/lib/generate-options";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 import { normalizeTaskParameters, taskReviewSnapshot } from "@/lib/task-parameters";
 import { detectFirstAppearanceCharacters, type SelectedAiContext } from "@/lib/ai-context";
-import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
+import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { recoverChatTasks } from "@/db/chat-tasks";
-import type { NamingArticleContext } from "@/db/ai";
+import type { NamingArticleContext } from "@/db/ai-naming";
 
 type TaskTarget = "content" | "outline" | "chapter-title" | "all-names";
 type TaskBody = Record<string, unknown> & ReasoningOptions & {
@@ -41,26 +46,6 @@ function uniqueStrings(value: unknown, maximum = 200) {
   return Array.isArray(value) ? [...new Set(value.map(String).filter(Boolean))].slice(0, maximum) : undefined;
 }
 
-function taskFromRow(row: Record<string, unknown>): AiTask {
-  let contextOptions: AiTask["contextOptions"];
-  try { contextOptions = JSON.parse(String(row.context_options_json ?? "{}")) as AiTask["contextOptions"]; } catch { contextOptions = undefined; }
-  return {
-    id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id),
-    target: taskTargetLabel(row.target),
-    prompt: String(row.instruction ?? ""), model: String(row.model_id ?? ""),
-    executionOrigin: normalizeTaskExecutionOrigin(row.execution_origin),
-    state: row.status === "queued" ? "waiting" : row.status === "error" ? "failed" : String(row.status) as AiTask["state"],
-    attempt: Number(row.attempt ?? 0), phase: row.phase ? String(row.phase) as AiTask["phase"] : undefined,
-    createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined, completedAt: row.completed_at ? String(row.completed_at) : undefined,
-    lastProgressAt: row.last_progress_at ? String(row.last_progress_at) : undefined, receivedCharacters: row.received_characters == null ? undefined : Number(row.received_characters),
-    timeoutMs: row.timeout_ms == null ? undefined : Number(row.timeout_ms), inputTokens: row.input_tokens == null ? undefined : Number(row.input_tokens), outputTokens: row.output_tokens == null ? undefined : Number(row.output_tokens),
-    runnerId: row.runner_id ? String(row.runner_id) : undefined, leaseUntil: row.lease_until ? String(row.lease_until) : undefined,
-    resultText: row.result_text ? String(row.result_text) : undefined, resultVersionId: row.result_version_id ? String(row.result_version_id) : undefined,
-    history: parseTaskHistory(row.history_json),
-    error: row.error_message ? String(row.error_message) : undefined, contextOptions,
-  };
-}
-
 export async function GET() {
   try {
     await ensureDatabase();
@@ -74,7 +59,7 @@ export async function GET() {
     const tasks = (result.results ?? []).map(taskFromRow);
     return json({ data: tasks, tasks, runningOutlineIds: tasks.filter((task) => task.state === "running" && taskChangesOutline(task.target)).map((task) => task.outlineId), revision: Number(revision ?? 0) });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "任务读取失败" }, 500);
+    return json({ error: error instanceof Error ? error.message : "任务读取失败" }, error instanceof RequestInputError ? 400 : 500);
   }
 }
 
@@ -82,7 +67,7 @@ export async function POST(request: Request) {
   try {
     const key = request.headers.get("idempotency-key")?.trim() ?? "";
     if (!key || key.length > 200) return json({ error: "Idempotency-Key 无效" }, 400);
-    const body = await request.json() as TaskBody;
+    const body = await readJsonObject(request) as TaskBody;
     const effortError = reasoningEffortError(body.reasoningEffort);
     if (effortError) return json({ error: effortError }, 400);
     const reviewEffortError = reasoningEffortError(body.reviewReasoningEffort);
@@ -98,24 +83,15 @@ export async function POST(request: Request) {
     if (body.preparationStrategy !== undefined && (preparationRounds === undefined || (body.preparationStrategy !== "minimal" && body.preparationStrategy !== "explore"))) return json({ error: "写作讨论策略无效" }, 400);
     if (body.preparationRequireConfirmation !== undefined && (preparationRounds === undefined || typeof body.preparationRequireConfirmation !== "boolean")) return json({ error: "准备稿确认设置必须为布尔值" }, 400);
     if (target !== "content" && target !== "all-names" && !instruction) return json({ error: "生成指令不能为空" }, 400);
-    if (target === "content" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) return json({ error: "正文生成模式无效" }, 400);
-    const contentMode = normalizeContentGenerationMode(body.contentMode);
+    const { contentMode, rewriteRetention, closingSummaryLength, targetWords: rawTargetWords, proseControls: requestedProseControls } = parseGenerateFields(body, target);
     const reviewMaxRounds = Number(body.reviewMaxRounds ?? 0);
     if (!Number.isInteger(reviewMaxRounds) || reviewMaxRounds < 0 || reviewMaxRounds > MAX_REVIEW_ROUNDS || (target !== "content" && reviewMaxRounds !== 0)) return json({ error: `审校循环次数必须是 0–${MAX_REVIEW_ROUNDS} 的整数，仅支持正文生成` }, 400);
     let reviewInstruction = normalizeReviewRules(body.reviewInstruction);
     if (body.reviewStrategy !== undefined && body.reviewStrategy !== "minimal" && body.reviewStrategy !== "explore") return json({ error: "审校类型无效" }, 400);
     if (body.reviewModelMode !== undefined && body.reviewModelMode !== "inherit" && body.reviewModelMode !== "fixed") return json({ error: "审校模型设置无效" }, 400);
     if (body.reviewModel !== undefined && typeof body.reviewModel !== "string") return json({ error: "审校模型无效" }, 400);
-    if (target === "content" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) return json({ error: "原文保留度无效" }, 400);
-    const rewriteRetention = target === "content" && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
-    if (target === "content" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) return json({ error: "对话密度无效" }, 400);
-    if (target === "content" && body.proseControls !== undefined && !isProseControls(body.proseControls)) return json({ error: "正文控制参数无效" }, 400);
-    let proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
-    if (target === "content" && body.closingSummaryLength !== undefined && !isClosingSummaryLengthInput(body.closingSummaryLength)) return json({ error: "收尾长度无效" }, 400);
-    const closingSummaryLength = normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary);
+    let proseControls = requestedProseControls;
     const dialogueDensity = proseControls.dialogueDensity;
-    const rawTargetWords = body.targetWords == null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0 ? undefined : Number(body.targetWords);
-    if (target === "content" && rawTargetWords !== undefined && (!Number.isInteger(rawTargetWords) || rawTargetWords < MIN_GENERATE_TARGET_WORDS || rawTargetWords > MAX_GENERATE_TARGET_WORDS)) return json({ error: `目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数` }, 400);
 
     await ensureDatabase();
     const db = getDatabase();
@@ -206,7 +182,7 @@ export async function POST(request: Request) {
       // Browser snapshots may still contain an older queued/running copy and
       // must never be allowed to replace the lease or terminal result.
       serverManaged: true,
-      taskConcurrency: Math.max(1, Math.min(5, Number(scopedParameters.taskConcurrency) || 2)),
+      taskConcurrency: normalizeTaskConcurrency(scopedParameters.taskConcurrency),
       reasoningEffort: body.reasoningEffort,
       resolvedReasoningEffort: resolveReasoningEffort(configuredModel, body.reasoningEffort),
       includePrevious: body.includePrevious !== false,
@@ -274,6 +250,6 @@ export async function POST(request: Request) {
     const revision = Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0);
     return json({ data: task, revision });
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "AI 任务创建失败" }, 500);
+    return json({ error: error instanceof Error ? error.message : "AI 任务创建失败" }, error instanceof RequestInputError ? 400 : 500);
   }
 }

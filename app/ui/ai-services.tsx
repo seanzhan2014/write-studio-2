@@ -1,28 +1,23 @@
 "use client";
+import { useConnectionForm, useModelEditor, useModelManagement, useModelCatalog, emptyConnection, type Model, type CatalogSearch } from "./ai-service-forms";
 
 import { Alert, Badge, Button, Checkbox, Group, NumberInput, PasswordInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStudio, type StudioSettings } from "@/app/studio-state";
-import type { AiModelRecord, AiProviderRecord } from "@/db/ai";
+import type { AiProviderRecord } from "@/db/ai-models";
 import { catalogEntry, manualModelMetadata, supportsImages, supportsText, type CatalogModel, type ModelCatalog, type ModelCatalogPage, type ModelMetadata } from "@/lib/ai-model-capabilities";
 import { matchesCatalogModel } from "@/lib/model-catalog-search";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { isSpicyApi } from "@/lib/spicy-api";
-import { isCivitai, isCivitaiAirQuery, splitCivitaiAirQueries, lookupCivitaiAirBatch, type CivitaiAirBatch } from "@/lib/civitai-api";
+import { isCivitai, isCivitaiAirQuery, splitCivitaiAirQueries, lookupCivitaiAirBatch } from "@/lib/civitai-api";
 import { DEFAULT_MAX_INPUT_CHARACTERS, MAX_MAX_INPUT_CHARACTERS, MIN_MAX_INPUT_CHARACTERS } from "@/lib/model-options";
 import { ReasoningSettings } from "./reasoning-settings";
-import { ImageModelParameterEditor, imageParameterDraft, readImageParameterDraft, type ImageParameterDraft } from "./image-model-parameters";
+import { ImageModelParameterEditor, imageParameterDraft, readImageParameterDraft } from "./image-model-parameters";
 import { ResponsiveModal } from "./overlays";
-import type { ReasoningEffort } from "@/lib/reasoning-options";
 
-type Model = AiModelRecord;
-type CatalogSearch = { providerId: string; query: string; mode: "provider" | "full"; attempt: number };
-type CatalogScan = { catalog: Map<string, CatalogModel>; cursor: string | null; scanned: number; complete: boolean; seen: Set<string> };
-type CatalogScanSnapshot = { key: string; catalog: CatalogModel[]; scanned: number; complete: boolean; airBatch?: CivitaiAirBatch };
 const capabilityOptions = [{ value: "text", label: "文字生成" }, { value: "image", label: "图像生成" }, { value: "both", label: "文字与图像生成" }];
-const emptyConnection = { name: "", baseUrl: "https://api.openai.com/v1", secret: "", adapterKind: "openai-compatible", timeoutMinutes: 2 };
 const formatTime = (value?: string) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未同步";
 const matchesReference = (model: Model, reference?: string) => Boolean(reference && [model.id, model.name, modelSelectionLabel(model)].includes(reference));
 const modelKind = (model: Model) => supportsImages(model) ? supportsText(model) ? "both" : "image" : "text";
@@ -53,39 +48,10 @@ export function AiServices() {
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
-  const [connectionOpen, setConnectionOpen] = useState(false);
-  const [connectionId, setConnectionId] = useState<string | null>(null);
-  const [connection, setConnection] = useState(emptyConnection);
-  const [formError, setFormError] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addProvider, setAddProvider] = useState("");
-  const [addMode, setAddMode] = useState("catalog");
-  const [catalogQuery, setCatalogQuery] = useState("");
-  const [catalogSearch, setCatalogSearch] = useState<CatalogSearch | null>(null);
-  const [catalogSearchMode, setCatalogSearchMode] = useState<"provider" | "full">("provider");
-  const [catalogFilter, setCatalogFilter] = useState("new");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [manualIds, setManualIds] = useState("");
-  const [manualKind, setManualKind] = useState("text");
-  const [catalogBusy, setCatalogBusy] = useState(false);
-  const [catalogNotice, setCatalogNotice] = useState("");
-  const requestRef = useRef(0);
-  const scanCache = useRef(new Map<string, CatalogScan>());
-  const searchPageCache = useRef(new Map<string, CatalogScan>());
-  const scanController = useRef<AbortController | null>(null);
-  const [scanSnapshot, setScanSnapshot] = useState<CatalogScanSnapshot | null>(null);
-  const [scanBusy, setScanBusy] = useState(false);
-  const [scanError, setScanError] = useState("");
-  const [editing, setEditing] = useState<Model | null>(null);
-  const [imageDraft, setImageDraft] = useState<ImageParameterDraft>({ values: {}, extra: "", workflow: "" });
-  const [editForm, setEditForm] = useState({ providerId: "", name: "", modelId: "", kind: "text", systemPrompt: "", maxInput: DEFAULT_MAX_INPUT_CHARACTERS, reasoningEffort: null as ReasoningEffort | null });
-  const [preview, setPreview] = useState<string | null>(null);
-  const [managing, setManaging] = useState<AiProviderRecord | null>(null);
-  const [manageQuery, setManageQuery] = useState("");
-  const [managedSelection, setManagedSelection] = useState<string[]>([]);
-  const [removal, setRemoval] = useState<{ models: Model[]; provider?: AiProviderRecord; clearAll?: boolean } | null>(null);
-  const [removalError, setRemovalError] = useState("");
+  const { connectionsOpen, setConnectionsOpen, connectionOpen, setConnectionOpen, connectionId, setConnectionId, connection, setConnection, formError, setFormError } = useConnectionForm();
+  const { adding, setAdding, addProvider, setAddProvider, addMode, setAddMode, catalogQuery, setCatalogQuery, catalogSearch, setCatalogSearch, catalogSearchMode, setCatalogSearchMode, catalogFilter, setCatalogFilter, selected, setSelected, manualIds, setManualIds, manualKind, setManualKind, catalogBusy, setCatalogBusy, catalogNotice, setCatalogNotice, requestRef, scanCache, searchPageCache, scanController, scanSnapshot, setScanSnapshot, scanBusy, setScanBusy, scanError, setScanError, cachedCatalogs, setCachedCatalogs } = useModelCatalog();
+  const { editing, setEditing, imageDraft, setImageDraft, editForm, setEditForm, preview, setPreview } = useModelEditor();
+  const { managing, setManaging, manageQuery, setManageQuery, managedSelection, setManagedSelection, removal, setRemoval, removalError, setRemovalError } = useModelManagement();
 
   const load = useCallback(async () => {
     const [p, m] = await Promise.all([jsonRequest<{ providers: AiProviderRecord[] }>("/api/providers"), jsonRequest<{ models: Model[] }>("/api/models")]);
@@ -119,7 +85,6 @@ export function AiServices() {
   const scan = scanSnapshot?.key === searchKey ? scanSnapshot : null;
   const searchEdited = catalogQuery.trim() !== activeCatalogQuery || fullCatalogSearch && catalogSearchMode !== catalogSearch?.mode;
   const enabledIds = new Set(models.filter((model) => model.providerId === addProvider).map((model) => model.modelId));
-  const [cachedCatalogs, setCachedCatalogs] = useState<Record<string, CatalogModel[]>>({});
   const candidates = fullCatalogSearch ? scan?.catalog ?? [] : [...new Map([...(currentCatalog?.catalog ?? []), ...(cachedCatalogs[addProvider] ?? []).filter(entry => selected.includes(entry.id))].map(entry => [entry.id, entry])).values()];
   const matchedCandidates = exactAirSearch || providerSearch && !/[?*]/.test(activeCatalogQuery) ? candidates : candidates.filter(entry => matchesCatalogModel(entry, activeCatalogQuery));
   const visibleCandidates = matchedCandidates.filter(entry => catalogFilter === "all" || catalogFilter === "new" && !enabledIds.has(entry.id) || catalogFilter === "selected" && selected.includes(entry.id) || catalogFilter === "text" && entry.metadata.outputModalities.includes("text") || catalogFilter === "image" && supportsImages(entry));
@@ -164,7 +129,7 @@ export function AiServices() {
     } catch (cause) {
       if (!signal.aborted) setScanError(`${cause instanceof Error ? cause.message : "目录搜索失败"}${isCivitaiAirQuery(query) ? "。可重新查询 AIR。" : "。已保留读取的结果，搜索尚未完成，可继续搜索。"}`);
     } finally { if (!signal.aborted) setScanBusy(false); }
-  }, [catalogs]);
+  }, [catalogs, scanCache, searchPageCache, setCachedCatalogs, setScanBusy, setScanError, setScanSnapshot]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -177,7 +142,7 @@ export function AiServices() {
       void scanFullCatalog(addProvider, activeCatalogQuery, catalogSearch.mode, searchKey, controller.signal);
     }, 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [adding, addMode, addProvider, catalogSearch, fullCatalogSearch, activeCatalogQuery, searchKey, scanFullCatalog]);
+  }, [adding, addMode, addProvider, catalogSearch, fullCatalogSearch, activeCatalogQuery, searchKey, scanFullCatalog, scanController, setScanBusy, setScanError]);
   function submitCatalogSearch() {
     scanController.current?.abort(); setScanSnapshot(null); setScanError("");
     const query = catalogQuery.trim();

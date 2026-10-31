@@ -1,6 +1,7 @@
 import { characterPhotos, normalizeCharacterPhotos } from "@/lib/character-photos";
-import { AiInputError, findProvider, readProviderSecret } from "./ai";
-import { readStudioState } from "./runtime";
+import { AiInputError } from "@/db/ai-errors";
+import { findProvider, readProviderSecret } from "@/db/ai-models";
+import { readStudioState } from "./studio-state";
 import { deleteIllustrationAsset, readIllustrationAsset, saveIllustrationAsset } from "./illustration-assets";
 import { getSpicyCharacter, getSpicyLibraryScope, isSpicyApi, spicyApiBaseUrl } from "@/lib/spicy-api";
 import { normalizeCharacterVisual, type CharacterReference, type CharacterVisual, type CharacterVisualImage } from "@/lib/character-visual";

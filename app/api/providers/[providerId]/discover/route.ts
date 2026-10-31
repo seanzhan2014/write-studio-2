@@ -1,4 +1,4 @@
-import { discoverProviderCatalog, readProviderCatalog } from "@/db/ai";
+import { discoverProviderCatalog, readProviderCatalog } from "@/db/ai-models";
 
 export async function GET(_request: Request, context: { params: Promise<{ providerId: string }> }) {
   try { return Response.json(await readProviderCatalog((await context.params).providerId), { headers: { "Cache-Control": "no-store" } }); }

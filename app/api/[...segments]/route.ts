@@ -1,19 +1,19 @@
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { normalizeCharacterPhotos } from "@/lib/character-photos";
-import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
+import { type ReasoningOptions } from "@/lib/reasoning-options";
 import { normalizeReviewRuleItems } from "@/lib/review-rules.mjs";
 import { normalizePreparationRounds, normalizePreparationStrategy } from "@/lib/writing-preparation";
 import { normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
-import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/app/studio-state";
-import { findModel, type NamingArticleContext } from "@/db/ai";
+import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, Version } from "@/lib/studio-types";
+
 import { applyStudioChanges, clearBusinessData, readStudioState, searchDocuments } from "@/db/runtime";
-import { detectFirstAppearanceCharacters } from "@/lib/ai-context";
+
 import { normalizeIllustrationOptions } from "@/lib/illustration-options";
-import { normalizeClosingSummaryLength, isClosingSummaryLengthInput, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, isDialogueDensity, isProseControls, normalizeAiGenerateOptions, normalizeProseControls, isContentGenerationMode, isRewriteRetentionLevel, normalizeContentGenerationMode, normalizeRewriteRetentionLevel } from "@/lib/generate-options";
+import { normalizeAiGenerateOptions } from "@/lib/generate-options";
 import { deleteOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot, selectOutlineVersion } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
-import { modelSelectionLabel } from "@/lib/model-label";
-import type { SelectedAiContext } from "@/lib/ai-context";
+
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { normalizeCharacterVisual } from "@/lib/character-visual";
 import { EMPTY_ARTICLE_STORY_SETTINGS, EMPTY_CHARACTER_PROFILE, EMPTY_CHAPTER_SETTINGS, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings } from "@/lib/story-settings";
@@ -91,17 +91,6 @@ function requireNonEmpty(value: unknown, label: string, maximum: number) {
   return text;
 }
 
-function trimTasks(tasks: StudioData["tasks"]) {
-  while (tasks.length > 20) {
-    let index = -1;
-    for (let candidate = tasks.length - 1; candidate >= 0; candidate -= 1) {
-      if (["success", "failed", "cancelled"].includes(tasks[candidate].state)) { index = candidate; break; }
-    }
-    if (index < 0) throw new Error("已有 20 个等待或运行中的任务，请先取消一个任务");
-    tasks.splice(index, 1);
-  }
-}
-
 export async function GET(request: Request, context: RouteContext) {
   const { segments: s } = await context.params;
   const state = await readStudioState();
@@ -135,17 +124,6 @@ export async function POST(request: Request, context: RouteContext) {
     const latest = await readStudioState();
     return reply({ data: latest.data?.tasks.find((task) => task.id === s[2]) ?? payload.task, revision: payload.revision });
   }
-  if (s[0] === "ai" && s[1] === "tasks" && s.length === 2) {
-    const effortError = reasoningEffortError(body.reasoningEffort);
-    if (effortError) return reply({ error: effortError }, 400);
-    const key = request.headers.get("idempotency-key");
-    if (!key) return reply({ error: "idempotency_key_required" }, 400);
-    const state = await readStudioState();
-    const existing = state.data?.tasks.find((task) => task.id === key);
-    if (existing) return reply({ data: existing, revision: state.revision });
-  }
-  const requestedTaskModel = s[0] === "ai" && s[1] === "tasks" && s.length === 2 ? String(body.model ?? "").trim() : "";
-  const configuredTaskModel = requestedTaskModel ? await findModel(requestedTaskModel) : null;
   if (s[0] === "articles" && s.length === 1) return commit(request, (data) => {
     const createdAt = now(), articleId = id("article"), chapterId = id("chapter"), outlineId = id("outline");
     const outline: Outline = { id: outlineId, title: "", titleGenerationPending: true, plan: "", generateInstruction: "", generateOptions: null, content: "", currentVersionId: null, defaultVersionId: null, contentOutlineSnapshot: { title: "", plan: "" }, archived: false, state: "saved", updatedAt: createdAt, versions: [], chat: emptyChat(outlineId, createdAt) };
@@ -161,104 +139,6 @@ export async function POST(request: Request, context: RouteContext) {
   if (s[0] === "versions" && s[2] === "default") return commit(request, (data) => { for (const article of data.articles) for (const chapter of article.chapters) for (const outline of chapter.outlines) { const version = outline.versions.find((item) => item.id === s[1]); if (version) { if (assignChanged(outline, "defaultVersionId", version.id)) outline.updatedAt = now(); return outline; } } throw new Error("版本不存在"); });
   if (s[0] === "articles" && s[2] === "characters") return commit(request, (data) => { const article = findArticle(data, s[1]); if (!article) throw new Error("文章不存在"); const name = requireNonEmpty(body.name, "人物名", 120); if (article.characters.some((item) => item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error("同名人物已存在"); const character: Character = { id: id("character"), name, aliases: Array.isArray(body.aliases) ? [...new Set(body.aliases.map(String).map((item) => item.trim()).filter(Boolean))].slice(0, 50) : [], description: String(body.description ?? "").slice(0, 20000), profile: normalizeCharacterProfile(body.profile ?? EMPTY_CHARACTER_PROFILE), ...(normalizeCharacterPhotos(body.photos) ? { photos: normalizeCharacterPhotos(body.photos) } : {}), ...(normalizeCharacterVisual(body.visual) ? { visual: normalizeCharacterVisual(body.visual) } : {}), archived: false }; article.characters.push(character); return character; });
   if (s[0] === "articles" && s[2] === "relationships") return commit(request, (data) => { const article = findArticle(data, s[1]); if (!article) throw new Error("文章不存在"); const [a, b] = [String(body.characterAId ?? ""), String(body.characterBId ?? "")].sort(); const ids = new Set(article.characters.map((item) => item.id)); if (!a || !b || a === b || !ids.has(a) || !ids.has(b) || article.relationships.some((item) => [item.characterAId, item.characterBId].sort().join(":") === `${a}:${b}`)) throw new Error("人物关系无效或已存在"); const relationship: Relationship = { id: id("relationship"), characterAId: a, characterBId: b, description: String(body.description ?? "").slice(0, 5000) }; article.relationships.push(relationship); return relationship; });
-  if (s[0] === "ai" && s[1] === "tasks" && s.length === 2) return commit(request, (data) => {
-    const key = request.headers.get("idempotency-key");
-    if (!key || key.length > 200) throw new Error("Idempotency-Key 无效");
-    const existing = data.tasks.find((task) => task.id === key);
-    if (existing) return existing;
-    const articleId = String(body.articleId ?? ""), chapterId = String(body.chapterId ?? ""), outlineId = String(body.outlineId ?? "");
-    const found = findOutline(data, outlineId);
-    if (!found || found.article.id !== articleId || found.chapter.id !== chapterId) throw new Error("任务目标不存在或归属不一致");
-    const target = body.target === "outline" ? "大纲" : body.target === "chapter-title" ? "章节标题" : body.target === "all-names" ? "全部名称" : body.target === "content" ? "正文" : body.target === "chat" ? "AI Chat" : null;
-    if (!target) throw new Error("任务目标无效");
-    const instruction = String(body.instruction ?? "").trim().slice(0, 20000);
-    if (target !== "正文" && target !== "全部名称" && !instruction) throw new Error("生成指令不能为空");
-    if (target === "正文" && body.contentMode !== undefined && !isContentGenerationMode(body.contentMode)) throw new Error("正文生成模式无效");
-    const contentMode = normalizeContentGenerationMode(body.contentMode);
-    if (target === "正文" && body.rewriteRetention !== undefined && !isRewriteRetentionLevel(body.rewriteRetention)) throw new Error("原文保留度无效");
-    const rewriteRetention = contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined;
-    if (target === "正文" && body.dialogueDensity !== undefined && !isDialogueDensity(body.dialogueDensity)) throw new Error("对话密度无效");
-    if (target === "正文" && body.proseControls !== undefined && !isProseControls(body.proseControls)) throw new Error("正文控制参数无效");
-    const proseControls = normalizeProseControls(body.proseControls, body.dialogueDensity);
-    if (target === "正文" && body.closingSummaryLength !== undefined && !isClosingSummaryLengthInput(body.closingSummaryLength)) throw new Error("收尾长度无效");
-    const closingSummaryLength = normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary);
-    const targetWordsUnset = body.targetWords === undefined || body.targetWords === null || String(body.targetWords).trim() === "" || Number(body.targetWords) === 0;
-    const targetWords = targetWordsUnset ? undefined : Number(body.targetWords);
-    if (target === "正文" && targetWords !== undefined && (!Number.isInteger(targetWords) || targetWords < MIN_GENERATE_TARGET_WORDS || targetWords > MAX_GENERATE_TARGET_WORDS)) throw new Error(`目标字数必须为 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数`);
-    const estimate = Number(body.estimatedCharacters ?? 0);
-    const modelId = configuredTaskModel?.modelId ?? (String(body.modelId ?? "").trim().slice(0, 300) || undefined);
-    const activeCharacterIds = new Set(found.article.characters.filter((character) => !character.archived).map((character) => character.id));
-    const requestedFirstAppearanceIds = Array.isArray(body.firstAppearanceCharacterIds)
-      ? [...new Set(body.firstAppearanceCharacterIds.map(String).filter((characterId) => activeCharacterIds.has(characterId)))].slice(0, 200)
-      : undefined;
-    const firstAppearanceCharacterIds = target === "正文"
-      ? body.includeCharacters === false
-        ? []
-        : requestedFirstAppearanceIds ?? detectFirstAppearanceCharacters(data, outlineId, { instruction, currentPlan: found.outline.plan }).filter((item) => item.firstAppearance).map((item) => item.characterId)
-      : undefined;
-    const excellentFragmentIds = target === "正文" && body.includeExcellentFragments === true && Array.isArray(body.excellentFragmentIds)
-      ? [...new Set(body.excellentFragmentIds.map(String))].slice(0, 200)
-      : undefined;
-    const promptContext = body.promptContext && typeof body.promptContext === "object"
-      ? structuredClone(body.promptContext) as SelectedAiContext
-      : undefined;
-    const expectedContextKind = target === "正文" ? "content" : target === "大纲" ? "outline" : target === "章节标题" ? "chapter-title" : target === "AI Chat" ? "chat" : undefined;
-    if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedContextKind || JSON.stringify(promptContext).length > 200_000)) {
-      throw new Error("AI 上下文与任务目标不匹配或过大");
-    }
-    const namingContext = target === "全部名称" && body.namingContext && typeof body.namingContext === "object"
-      ? structuredClone(body.namingContext) as NamingArticleContext
-      : undefined;
-    if (namingContext && (String(namingContext.id ?? "") !== articleId || JSON.stringify(namingContext).length > 200_000)) throw new Error("命名上下文与文章不匹配或过大");
-    const createdAt = now();
-    const submittedPlan = target === "正文" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
-    if (submittedPlan !== undefined && submittedPlan !== found.outline.plan) {
-      found.outline.plan = submittedPlan;
-      found.outline.titleGenerationPending = true;
-      found.outline.updatedAt = createdAt;
-      found.article.updatedAt = found.outline.updatedAt;
-    }
-    const task: AiTask = {
-      id: key, articleId, chapterId, outlineId, target, prompt: instruction, model: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : requestedTaskModel, executionOrigin: "local", state: "waiting" as const, createdAt,
-      contextOptions: {
-        reasoningEffort: body.reasoningEffort,
-        resolvedReasoningEffort: resolveReasoningEffort(configuredTaskModel, body.reasoningEffort),
-        includePrevious: body.includePrevious !== false,
-        includeCharacters: body.includeCharacters !== false,
-        ...(target === "正文" && body.includeExcellentFragments === true ? { includeExcellentFragments: true, excellentFragmentIds } : {}),
-        estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
-        ...(target === "正文" && targetWords !== undefined ? { targetWords } : {}),
-        contentMode: target === "正文" ? contentMode : undefined,
-        ...(target === "正文" && body.proseControls !== undefined ? { proseControls } : {}),
-        dialogueDensity: target === "正文" ? proseControls.dialogueDensity : undefined,
-        ...(target === "正文" && rewriteRetention ? { rewriteRetention } : {}),
-        ...(target === "正文" && body.includeOutlineTitle === true ? { includeOutlineTitle: true } : {}),
-        ...(target === "正文" ? { closingSummaryLength, includeClosingSummary: closingSummaryLength !== "none" } : {}),
-        outlinePlanSnapshot: promptContext?.currentOutline.plan ?? found.outline.plan,
-        outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? found.outline.title).slice(0, 80),
-        ...(target === "全部名称" ? {
-          chapterNamingSnapshot: normalizeNamingProfile(body.chapterNaming ?? found.article.chapterNaming, DEFAULT_CHAPTER_NAMING_PROFILE),
-          outlineNamingSnapshot: normalizeNamingProfile(body.outlineNaming ?? found.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE),
-          nameChapterCount: found.article.chapters.filter((chapter) => !chapter.archived && chapter.outlines.some((outline) => !outline.archived && outline.plan.trim())).length,
-          nameOutlineCount: found.article.chapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !chapter.archived && !outline.archived && outline.plan.trim()).length, 0),
-        } : {}),
-        configuredModelId: configuredTaskModel?.id,
-        modelId,
-        modelName: configuredTaskModel ? modelSelectionLabel(configuredTaskModel) : undefined,
-        firstAppearanceCharacterIds,
-        sessionId: target === "AI Chat" ? String(body.sessionId ?? "") || undefined : undefined,
-        promptContext,
-        namingContext,
-      },
-    };
-    if (target === "正文") {
-      found.outline.generateInstruction = instruction;
-      found.outline.updatedAt = task.createdAt;
-    }
-    data.tasks.unshift(task);
-    trimTasks(data.tasks);
-    return task;
-  }, true);
   return notFound();
 }
 
@@ -286,7 +166,7 @@ export async function PUT(request: Request, context: RouteContext) {
   const { segments: s } = await context.params; const body = await request.json().catch(() => null) as Json | null;
   if (!body) return reply({ error: "invalid_json" }, 400);
   if (s[0] === "database" && s[1] === "location") return reply({ fixed: true, location: "local-sqlite", message: "SQLite 数据位置由服务端 WRITER_STUDIO_DB_PATH 管理，运行时不可切换。" });
-  if (s[0] === "settings") return commit(request, (data) => { const patch: Partial<StudioData["settings"]> = {}; if (["light", "dark", "system"].includes(String(body.theme))) patch.theme = body.theme as StudioData["settings"]["theme"]; if (["sans", "serif"].includes(String(body.editorFont))) patch.editorFont = body.editorFont as StudioData["settings"]["editorFont"]; if (body.fontSize !== undefined) patch.fontSize = Math.max(14, Math.min(24, Number(body.fontSize) || 17)); if (body.lineHeight !== undefined) patch.lineHeight = Math.max(1.4, Math.min(2.2, Number(body.lineHeight) || 1.8)); if (body.contentWidth !== undefined) patch.contentWidth = Math.max(640, Math.min(1200, Number(body.contentWidth) || 920)); if (body.outlineExpanded !== undefined) patch.outlineExpanded = Boolean(body.outlineExpanded); if (body.showArchived !== undefined) patch.showArchived = Boolean(body.showArchived); if (body.openLastArticle !== undefined) patch.openLastArticle = Boolean(body.openLastArticle); if (body.taskConcurrency !== undefined) patch.taskConcurrency = Math.max(1, Math.min(4, Math.round(Number(body.taskConcurrency) || 1))); if (body.chatModel !== undefined) patch.chatModel = String(body.chatModel); if (body.generateModel !== undefined) patch.generateModel = String(body.generateModel); if (body.namingModelMode !== undefined) patch.namingModelMode = body.namingModelMode === "fixed" ? "fixed" : "inherit"; if (body.namingModel !== undefined) patch.namingModel = String(body.namingModel); if (body.reviewModel !== undefined) patch.reviewModel = String(body.reviewModel); if (body.generateReviewMaxRounds !== undefined) patch.generateReviewMaxRounds = normalizeReviewRounds(body.generateReviewMaxRounds); if (body.generateReviewStrategy !== undefined) patch.generateReviewStrategy = normalizeReviewStrategy(body.generateReviewStrategy); if (body.generateReviewInstruction !== undefined) patch.generateReviewInstruction = normalizeReviewRules(body.generateReviewInstruction); if (body.reviewModelMode !== undefined) patch.reviewModelMode = body.reviewModelMode === "fixed" ? "fixed" : "inherit"; if (body.preparationMaxRounds !== undefined) patch.preparationMaxRounds = normalizePreparationRounds(body.preparationMaxRounds); if (body.preparationStrategy !== undefined) patch.preparationStrategy = normalizePreparationStrategy(body.preparationStrategy); if (typeof body.preparationRequireConfirmation === "boolean") patch.preparationRequireConfirmation = body.preparationRequireConfirmation; data.settings = { ...data.settings, ...patch }; return data.settings; });
+  if (s[0] === "settings") return commit(request, (data) => { const patch: Partial<StudioData["settings"]> = {}; if (["light", "dark", "system"].includes(String(body.theme))) patch.theme = body.theme as StudioData["settings"]["theme"]; if (["sans", "serif"].includes(String(body.editorFont))) patch.editorFont = body.editorFont as StudioData["settings"]["editorFont"]; if (body.fontSize !== undefined) patch.fontSize = Math.max(14, Math.min(24, Number(body.fontSize) || 17)); if (body.lineHeight !== undefined) patch.lineHeight = Math.max(1.4, Math.min(2.2, Number(body.lineHeight) || 1.8)); if (body.contentWidth !== undefined) patch.contentWidth = Math.max(640, Math.min(1200, Number(body.contentWidth) || 920)); if (body.outlineExpanded !== undefined) patch.outlineExpanded = Boolean(body.outlineExpanded); if (body.showArchived !== undefined) patch.showArchived = Boolean(body.showArchived); if (body.openLastArticle !== undefined) patch.openLastArticle = Boolean(body.openLastArticle); if (body.taskConcurrency !== undefined) patch.taskConcurrency = normalizeTaskConcurrency(body.taskConcurrency); if (body.chatModel !== undefined) patch.chatModel = String(body.chatModel); if (body.generateModel !== undefined) patch.generateModel = String(body.generateModel); if (body.namingModelMode !== undefined) patch.namingModelMode = body.namingModelMode === "fixed" ? "fixed" : "inherit"; if (body.namingModel !== undefined) patch.namingModel = String(body.namingModel); if (body.reviewModel !== undefined) patch.reviewModel = String(body.reviewModel); if (body.generateReviewMaxRounds !== undefined) patch.generateReviewMaxRounds = normalizeReviewRounds(body.generateReviewMaxRounds); if (body.generateReviewStrategy !== undefined) patch.generateReviewStrategy = normalizeReviewStrategy(body.generateReviewStrategy); if (body.generateReviewInstruction !== undefined) patch.generateReviewInstruction = normalizeReviewRules(body.generateReviewInstruction); if (body.reviewModelMode !== undefined) patch.reviewModelMode = body.reviewModelMode === "fixed" ? "fixed" : "inherit"; if (body.preparationMaxRounds !== undefined) patch.preparationMaxRounds = normalizePreparationRounds(body.preparationMaxRounds); if (body.preparationStrategy !== undefined) patch.preparationStrategy = normalizePreparationStrategy(body.preparationStrategy); if (typeof body.preparationRequireConfirmation === "boolean") patch.preparationRequireConfirmation = body.preparationRequireConfirmation; data.settings = { ...data.settings, ...patch }; return data.settings; });
   if (s[0] === "outlines" && s[2] === "content") return commit(request, (data) => { const found = findOutline(data, s[1]); if (!found) throw new Error("大纲不存在"); let changed = false; changed = assignChanged(found.outline, "contentOutlineSnapshot", resolvedOutlineSnapshot(found.outline)) || changed; changed = assignChanged(found.outline, "content", String(body.text ?? "")) || changed; changed = assignChanged(found.outline, "currentVersionId", null) || changed; if (changed) found.outline.updatedAt = now(); return found.outline; });
   return notFound();
 }

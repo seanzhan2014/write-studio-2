@@ -1,4 +1,4 @@
-import { AiInputError } from "@/db/ai";
+import { AiInputError } from "@/db/ai-errors";
 import { getStyleJob, styleJobAction } from "@/db/style-lab";
 type Context = { params: Promise<{ jobId: string }> };
 export async function GET(_request: Request, context: Context) {

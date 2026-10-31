@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFeatureSource } from "./source-files.mjs";
 import test from "node:test";
 
-const source = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+const source = readFeatureSource;
 
 test("Writer Studio shell exposes the core product surfaces", async () => {
   const [layout, app] = await Promise.all([source("app/layout.tsx"), source("app/WriterStudioApp.tsx")]);

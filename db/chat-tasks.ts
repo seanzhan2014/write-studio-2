@@ -1,8 +1,9 @@
-import { parseTaskHistory } from "@/lib/task-history";
+import { taskFromRow } from "@/lib/task-record";
+
 import { taskReasoningEffort } from "@/lib/reasoning-options";
-import type { AiTask, Message } from "@/app/studio-state";
-import { streamChat } from "@/db/ai";
-import { ensureDatabase, getDatabase } from "@/db/runtime";
+import type { AiTask, Message } from "@/lib/studio-types";
+import { streamChat } from "@/db/ai-chat";
+import { ensureDatabase, getDatabase } from "@/db/studio-state";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
 
 type Row = Record<string, unknown>;
@@ -25,17 +26,7 @@ export async function chatSnapshot(row: Row) {
   const sessionId = chatOptions(row).sessionId ?? "";
   const messageRow = await db.prepare("SELECT * FROM chat_messages WHERE id=? AND session_id=?").bind(replyId(String(row.id)), sessionId).first<Row>();
   const message: Message | undefined = messageRow ? { id: String(messageRow.id), role: "assistant", text: String(messageRow.content), createdAt: String(messageRow.created_at), stopped: messageRow.status === "stopped" || undefined } : undefined;
-  const task: AiTask = {
-    id: String(row.id), articleId: String(row.article_id), chapterId: String(row.chapter_id), outlineId: String(row.outline_id), target: "AI Chat",
-    prompt: String(row.instruction), model: String(row.model_id ?? ""), executionOrigin: row.execution_origin === "cloud" ? "cloud" : "local",
-    state: row.status === "error" ? "failed" : row.status === "queued" ? "waiting" : row.status as AiTask["state"],
-    phase: row.phase as AiTask["phase"], createdAt: String(row.created_at), startedAt: row.started_at ? String(row.started_at) : undefined,
-    completedAt: row.completed_at ? String(row.completed_at) : undefined, lastProgressAt: row.last_progress_at ? String(row.last_progress_at) : undefined,
-    timeoutMs: Number(row.timeout_ms), receivedCharacters: Number(row.received_characters ?? 0), resultText: row.result_text ? String(row.result_text) : undefined,
-    history: parseTaskHistory(row.history_json),
-    error: row.error_message ? String(row.error_message) : undefined, runnerId: row.runner_id ? String(row.runner_id) : undefined,
-    leaseUntil: row.lease_until ? String(row.lease_until) : undefined, contextOptions: chatOptions(row),
-  };
+  const task: AiTask = { ...taskFromRow(row), contextOptions: chatOptions(row) };
   return { task, message, sessionUpdatedAt: row.completed_at ? String(row.completed_at) : undefined, revision: Number(await db.prepare("SELECT value_json FROM app_settings WHERE key='state_revision'").first<string>("value_json") ?? 0) };
 }
 

@@ -1,4 +1,4 @@
-import { discoverModelIds } from "@/db/ai";
+import { discoverModelIds } from "@/db/ai-models";
 
 export async function POST(request: Request) {
   try {

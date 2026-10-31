@@ -205,10 +205,13 @@ npm run db:generate
 
 主要代码：
 
-- `app/WriterStudioApp.tsx`：界面和交互组合；
-- `app/studio-state.tsx`：客户端领域状态、自动保存和冲突恢复；
+- `app/WriterStudioApp.tsx`：应用外壳；`app/ui/studio/` 按写作、生成、聊天、导航和设置组织界面；
+- `app/studio-state.tsx`：客户端自动保存和冲突恢复；`app/studio-actions.ts` 管理业务操作；
+- `lib/studio-types.ts`、`lib/studio-settings.ts`、`lib/studio-normalization.ts`：前后端共享领域类型、设置规则与快照规范化；
 - `db/schema.ts`：Drizzle 数据表定义；
 - `db/sqlite.ts`：Windows/Linux SQLite 连接、事务和路径管理；
-- `db/runtime.ts`：数据库初始化、原子快照、全文索引和完整性检查；
-- `db/ai.ts`：模型配置、上下文构造、流式 Chat 和 Generate；
+- `db/runtime.ts`：应用访问入口与后台任务启动；`db/studio-state.ts` 管理原子快照、增量写入、搜索和完整性检查；
+- `db/schema-runtime.ts`：运行时结构升级；历史数据迁移继续显式保留；
+- `db/ai.ts`：正文生成与兼容导出；模型配置、传输、提示词、命名、审校、图片和聊天在对应的 `db/ai-*.ts` 模块中；
+- `db/generate-task.ts`：路由和后台调度共用的任务执行服务；
 - `app/api/`：REST、模型、数据库和 AI 接口。

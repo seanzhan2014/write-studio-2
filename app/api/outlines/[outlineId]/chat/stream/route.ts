@@ -1,5 +1,6 @@
 import { reasoningEffortError, type ReasoningOptions } from "@/lib/reasoning-options";
-import { AiInputError, streamChat } from "@/db/ai";
+import { AiInputError } from "@/db/ai-errors";
+import { streamChat } from "@/db/ai-chat";
 import { claimChatRequest } from "@/db/runtime";
 import type { SelectedAiContext } from "@/lib/ai-context";
 import { chatOptions, managedChatStream, readChatTask, recoverChatTasks } from "@/db/chat-tasks";

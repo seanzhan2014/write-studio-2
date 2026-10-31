@@ -1,6 +1,6 @@
 import type { ModelMetadata } from "./ai-model-capabilities";
 import type { ReasoningEffort } from "@/lib/reasoning-options";
-import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/app/studio-state";
+import type { AiTask, Article, Outline, StudioData, StudioSettings } from "@/lib/studio-types";
 import type { NameVersion } from "@/lib/name-versions";
 import type { StyleLabSnapshot } from "@/db/style-lab-history";
 

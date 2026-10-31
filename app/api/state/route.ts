@@ -1,5 +1,5 @@
 import { readStudioState, readStudioStateIdentity, writeStudioState, StudioInputError } from "@/db/runtime";
-import type { StudioData } from "@/app/studio-state";
+import type { StudioData } from "@/lib/studio-types";
 import { diffStudioData, isStudioChangesEmpty } from "@/lib/studio-changes";
 import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { studioStateEtag, type StudioStateIdentity } from "@/lib/state-version";

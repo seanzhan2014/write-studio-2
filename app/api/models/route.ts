@@ -1,4 +1,4 @@
-import { createModel, listModels } from "@/db/ai";
+import { createModel, listModels } from "@/db/ai-models";
 
 export const dynamic = "force-dynamic";
 export async function GET() { return Response.json({ models: await listModels() }, { headers: { "Cache-Control": "no-store" } }); }

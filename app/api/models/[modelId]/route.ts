@@ -1,4 +1,4 @@
-import { deleteModel, updateModel } from "@/db/ai";
+import { deleteModel, updateModel } from "@/db/ai-models";
 
 export async function PATCH(request: Request, context: { params: Promise<{ modelId: string }> }) {
   try { const { modelId } = await context.params; return Response.json(await updateModel(modelId, await request.json())); }

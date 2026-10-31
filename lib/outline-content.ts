@@ -11,14 +11,6 @@ export type VersionedOutlineContent = {
   versions: Array<{ id: string; name?: string; content: string; createdAt?: string; lastSelectedAt?: string; outlineSnapshot?: { title: string; plan: string } }>;
 };
 
-export function defaultOutlineVersion<T extends VersionedOutlineContent>(outline: T) {
-  const versionId = Object.prototype.hasOwnProperty.call(outline, "defaultVersionId")
-    ? outline.defaultVersionId
-    : outline.sourceVersionId;
-  if (!versionId) return undefined;
-  return outline.versions.find((version) => version.id === versionId);
-}
-
 export function currentOutlineVersion<T extends VersionedOutlineContent>(outline: T): T["versions"][number] | undefined {
   if (Object.prototype.hasOwnProperty.call(outline, "currentVersionId")) {
     if (!outline.currentVersionId) return undefined;

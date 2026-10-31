@@ -1,4 +1,4 @@
-import type { AiTask } from "@/app/studio-state";
+import type { AiTask } from "@/lib/studio-types";
 import { isIllustrationTarget } from "@/lib/task-target";
 import { updateIllustration } from "@/db/illustrations";
 import { parseTaskHistory } from "@/lib/task-history";

@@ -434,7 +434,3 @@ export function countChapterSettingChanges(value: unknown) {
 }
 
 export const countOutlineSettingChanges = countChapterSettingChanges;
-
-export function storySettingsText(value: ResolvedChapterSettings) {
-  return STORY_FIELD_KEYS.map((key) => value.story[key]).filter((item) => item.trim()).join("\n");
-}

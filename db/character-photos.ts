@@ -1,8 +1,10 @@
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { resolvePhotoModel } from "./photo-model-resolution";
 import { photoModelOptions } from "@/lib/photo-model-resolution";
-import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./runtime";
+import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./studio-state";
 import { isCloudDatabase } from "./sqlite";
-import { findModel, readProviderSecret, requestModelImage, type AiModelRecord } from "./ai";
+import { findModel, readProviderSecret, type AiModelRecord } from "@/db/ai-models";
+import { requestModelImage } from "@/db/ai-images";
 import { readIllustrationAsset, saveIllustrationAsset, deleteIllustrationAsset } from "./illustration-assets";
 import { spicyConnection } from "./character-visuals";
 import { getSpicyCharacter, getSpicyLibraryScope, isSpicyApi, spicyApiBaseUrl, prepareSpicyPhoto, submitSpicyPhoto, querySpicyPhoto, uploadSpicyPhoto, saveSpicyPhoto } from "@/lib/spicy-api";
@@ -158,7 +160,7 @@ export async function executePhotoJob(id: string) {
   const runner = crypto.randomUUID();
   const timestamp = now();
   const state = await readStudioState();
-  const capacity = Math.max(1, Math.min(5, Number(state.data?.settings.taskConcurrency) || 2));
+  const capacity = normalizeTaskConcurrency(state.data?.settings.taskConcurrency);
   const lease = new Date(Date.now() + Math.max(snapshot.model.timeoutMs + 120000, 180000)).toISOString();
   const claimed = await db.prepare(`UPDATE character_photo_jobs SET state='running',runner_id=?,lease_until=?,updated_at=? WHERE id=? AND (state IN ('queued','waiting') OR (state='running' AND lease_until<?)) AND (next_poll_at IS NULL OR next_poll_at<=?)
     AND ((SELECT COUNT(*) FROM character_photo_jobs WHERE id<>? AND (state='waiting' OR (state='running' AND lease_until>?))) + (SELECT COUNT(*) FROM ai_tasks WHERE execution_origin=? AND target<>'chat' AND status='running' AND lease_until>?))<?`).bind(runner, lease, timestamp, id, timestamp, timestamp, id, timestamp, currentTaskExecutionOrigin(), timestamp, capacity).run();

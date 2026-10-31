@@ -1,6 +1,7 @@
 import { reasoningEffortError, type ReasoningOptions } from "@/lib/reasoning-options";
-import type { StudioData, Version } from "@/app/studio-state";
-import { AiInputError, reviewChapter, type AiReviewInput } from "@/db/ai";
+import type { StudioData, Version } from "@/lib/studio-types";
+import { AiInputError } from "@/db/ai-errors";
+import { reviewChapter, type AiReviewInput } from "@/db/ai-review";
 import { applyStudioChanges, readStudioState } from "@/db/runtime";
 import { aiReviewContentName, resolvedOutlineContentName } from "@/lib/content-name.mjs";
 import { reviewSourceDigest, type ReviewOutlineSource } from "@/lib/ai-review.mjs";

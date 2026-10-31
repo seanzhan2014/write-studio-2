@@ -1,4 +1,4 @@
-import { createProvider, listProviders } from "@/db/ai";
+import { createProvider, listProviders } from "@/db/ai-models";
 
 export const dynamic = "force-dynamic";
 

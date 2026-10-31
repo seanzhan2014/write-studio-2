@@ -1,4 +1,4 @@
-import { discoverProviderCatalog, findModel, findProvider, readProviderCatalog, type AiModelRecord } from "./ai";
+import { discoverProviderCatalog, findModel, findProvider, readProviderCatalog, type AiModelRecord } from "@/db/ai-models";
 import { isSpicyApi } from "@/lib/spicy-api";
 import { imageReferenceCapability, supportsImages, type ModelCatalog } from "@/lib/ai-model-capabilities";
 import { selectPhotoModel, type PhotoModelResolution } from "@/lib/photo-model-resolution";

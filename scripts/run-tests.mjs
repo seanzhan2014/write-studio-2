@@ -1,6 +1,7 @@
+import { removeTestDirectory, freePort, waitForServer, stopServer } from "./test-server.mjs";
 import { once } from "node:events";
-import { readdir, rm } from "node:fs/promises";
-import net from "node:net";
+import { readdir } from "node:fs/promises";
+
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -8,51 +9,10 @@ const workspace = process.cwd();
 const testDirectory = path.join(".test-data", `node-${process.pid}`);
 const testDatabase = path.join(testDirectory, "studio.sqlite");
 
-async function removeTestDatabase() {
-  const directory = path.resolve(workspace, testDirectory);
-  if (path.dirname(directory) !== path.resolve(workspace, ".test-data")) throw new Error("Unsafe test directory");
-  await rm(directory, { recursive: true, force: true });
-}
-
-async function freePort() {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  server.close();
-  await once(server, "close");
-  return port;
-}
-
-async function waitForServer(baseUrl, child, output) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`隔离测试服务提前退出：\n${output.join("")}`);
-    try {
-      const response = await fetch(`${baseUrl}/api/database/status`);
-      if (response.ok) return;
-    } catch { /* The server is still starting. */ }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error(`隔离测试服务启动超时：\n${output.join("")}`);
-}
-
-async function stopTree(child) {
-  if (child.exitCode !== null) return;
-  if (process.platform === "win32") {
-    child.kill();
-    await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 3000))]);
-  } else {
-    child.kill("SIGTERM");
-    await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 3000))]);
-  }
-}
-
 const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const output = [];
-await removeTestDatabase();
+await removeTestDirectory(workspace, testDirectory);
 const child = spawn(process.execPath, [
   path.join(workspace, "node_modules", "vite", "bin", "vite.js"),
   "--host", "127.0.0.1", "--port", String(port),
@@ -71,7 +31,7 @@ child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
 let exitCode = 1;
 try {
-  await waitForServer(baseUrl, child, output);
+  await waitForServer(baseUrl, child, output, 30_000);
   const requestedFiles = process.argv.slice(2);
   const availableFiles = (await readdir(path.join(workspace, "tests"))).filter((file) => file.endsWith(".test.mjs"));
   for (const file of requestedFiles) {
@@ -88,7 +48,7 @@ try {
   [exitCode] = await once(runner, "exit");
 } finally {
   if (Number(exitCode ?? 1) !== 0 && output.length) process.stderr.write(`\nAPI test server output:\n${output.join("")}\n`);
-  await stopTree(child);
-  await removeTestDatabase();
+  await stopServer(child);
+  await removeTestDirectory(workspace, testDirectory);
 }
 process.exitCode = Number(exitCode ?? 1);

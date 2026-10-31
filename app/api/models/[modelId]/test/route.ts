@@ -1,4 +1,4 @@
-import { testModel } from "@/db/ai";
+import { testModel } from "@/db/ai-images";
 
 export async function POST(request: Request, context: { params: Promise<{ modelId: string }> }) {
   try {

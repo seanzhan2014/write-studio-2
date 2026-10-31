@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFeatureSource, readFeatureFunction } from "./source-files.mjs";
 import test from "node:test";
 
-const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
+const read = readFeatureSource;
 
 test("database schema contains every specification entity", async () => {
   const schema = await read("db/schema.ts");
@@ -312,7 +312,7 @@ test("each body in full content editing can preview and independently set curren
 });
 
 test("full content editing exposes one-call chapter AI Review with named current bodies", async () => {
-  const [app, state, schema, runtime, ai, route] = await Promise.all([
+  const [app, state, schema, runtime, _ai, route] = await Promise.all([
     read("app/WriterStudioApp.tsx"),
     read("app/studio-state.tsx"),
     read("db/schema.ts"),
@@ -327,7 +327,7 @@ test("full content editing exposes one-call chapter AI Review with named current
   assert.match(state, /source: "手动" \| "AI Generate" \| "AI Chat" \| "AI Review"/);
   assert.match(schema, /contentName: text\("content_name"\)/);
   assert.match(runtime, /version\.source === "AI Review" \? "ai-review"/);
-  const reviewFunction = ai.match(/export async function reviewChapter[\s\S]*?\r?\n}\r?\n\r?\nfunction localOutlineTitle/)?.[0] ?? "";
+  const reviewFunction = await readFeatureFunction("db/ai.ts", "reviewChapter");
   assert.equal((reviewFunction.match(/await upstream\(/g) ?? []).length, 1);
   assert.match(route, /aiReviewContentName\(outline\)/);
   assert.match(route, /selectOutlineVersion\(outline, versionId, createdAt\)/);
@@ -663,7 +663,7 @@ test("AI Chat participates in task tracking and completed tasks can be cleared",
     read("app/api/[...segments]/route.ts"),
     read("app/globals.css"),
   ]);
-  assert.match(state, /target: import\("@\/lib\/task-target"\)\.TaskTargetLabel/);
+  assert.match(state, /target: import\("(?:@\/lib\/task-target|\.\/task-target(?:\.ts)?)"\)\.TaskTargetLabel/);
   assert.match(state, /clearCompletedTasks: \(\) => void/);
   assert.match(state, /tasks\.filter\(\(task\) => task\.state !== "success"\)/);
   assert.match(app, /action: "submit"[\s\S]*promptContext/);

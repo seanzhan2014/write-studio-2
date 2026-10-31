@@ -1,4 +1,4 @@
-import { createModels, deleteModels } from "@/db/ai";
+import { createModels, deleteModels } from "@/db/ai-models";
 
 export async function POST(request: Request) {
   try {

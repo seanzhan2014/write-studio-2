@@ -1,5 +1,6 @@
 import { reasoningEffortError } from "@/lib/reasoning-options";
-import { AiInputError, AiPromptTooLongError, generateNames } from "@/db/ai";
+import { AiInputError, AiPromptTooLongError } from "@/db/ai-errors";
+import { generateNames } from "@/db/ai-naming";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
 import { appendNameVersion, normalizeNameVersionState, type NameVersion } from "@/lib/name-versions";
 

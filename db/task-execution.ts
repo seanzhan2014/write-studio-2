@@ -1,10 +1,8 @@
-import type { TaskExecutionOrigin } from "@/app/studio-state";
+import type { TaskExecutionOrigin } from "@/lib/studio-types";
 import { isCloudDatabase } from "@/db/sqlite";
 
 export function currentTaskExecutionOrigin(): TaskExecutionOrigin {
   return isCloudDatabase() ? "cloud" : "local";
 }
 
-export function normalizeTaskExecutionOrigin(value: unknown): TaskExecutionOrigin {
-  return value === "cloud" ? "cloud" : "local";
-}
+export { normalizeTaskExecutionOrigin } from "@/lib/task-execution";

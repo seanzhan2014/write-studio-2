@@ -1,4 +1,4 @@
-import { deleteProvider, updateProvider } from "@/db/ai";
+import { deleteProvider, updateProvider } from "@/db/ai-models";
 
 export async function PATCH(request: Request, context: { params: Promise<{ providerId: string }> }) {
   try {

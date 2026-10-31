@@ -1,4 +1,4 @@
-import { readProviderCatalogPage } from "@/db/ai";
+import { readProviderCatalogPage } from "@/db/ai-models";
 
 export async function POST(request: Request, context: { params: Promise<{ providerId: string }> }) {
   try {

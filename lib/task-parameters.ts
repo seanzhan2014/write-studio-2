@@ -1,3 +1,4 @@
+import { DEFAULT_TASK_CONCURRENCY, MAX_TASK_CONCURRENCY } from "./task-concurrency.ts";
 import { isReasoningEffort, type ReasoningEffort } from "./reasoning-options.ts";
 import { DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile, NAMING_STYLE_OPTIONS, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, CIPAI_OPTIONS, type NamingProfile } from "./naming-options.ts";
 import { createReviewRuleSnapshot, normalizeReviewRuleSnapshot, type ReviewRuleSnapshot } from "./review-rules.mjs";
@@ -26,7 +27,7 @@ export const TASK_PARAMETER_FIELDS: TaskParameterField[] = [
   { key: "chatIncludeCharacters", label: "聊天包含相关人物", group: "聊天", default: true },
   { key: "illustrationPromptModel", label: "插图提示词模型", group: "插图模型", default: "", model: true },
   { key: "illustrationImageModel", label: "插图图片模型", group: "插图模型", default: "", model: true },
-  { key: "taskConcurrency", label: "任务并发上限", group: "任务队列", default: 2, max: 5 },
+  { key: "taskConcurrency", label: "任务并发上限", group: "任务队列", default: DEFAULT_TASK_CONCURRENCY, max: MAX_TASK_CONCURRENCY },
 ];
 const namingLabels: Record<keyof NamingProfile, string> = { style: "语言风格", expression: "表达内容", format: "名称格式", minCharacters: "最少字数", maxCharacters: "最多字数", lineCount: "句数", cipai: "词牌", customStyle: "自定义语言风格", customExpression: "自定义表达要求" };
 for (const prefix of ["chapterNaming", "outlineNaming"]) for (const [key, value] of Object.entries(DEFAULT_CHAPTER_NAMING_PROFILE)) TASK_PARAMETER_FIELDS.push({

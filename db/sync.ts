@@ -1,9 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { StudioData } from "@/app/studio-state";
-import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai";
+import type { StudioData } from "@/lib/studio-types";
+import { exportModelsForSync, exportProvidersForSync, replaceModelsFromSync, type AiModelSyncRecord, type AiProviderSyncRecord } from "@/db/ai-models";
 import { canAutomaticallyUpload, classifyRemoteWriteConflict, evaluateSyncPolicy, remoteAcknowledgesPendingOperation, shouldDisableAutomaticUpload } from "@/lib/sync-policy.mjs";
-import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/runtime";
+import { applyStudioChanges, ensureDatabase, readStudioRevision, readStudioState, writeStudioState } from "@/db/studio-state";
 import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 import { readStyleLabSnapshot, validateStyleLabSnapshot, type StyleLabSnapshot } from "./style-lab-history";
 import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";

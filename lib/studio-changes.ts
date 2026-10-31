@@ -1,7 +1,7 @@
-import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, StudioSettings } from "@/app/studio-state";
-import { articleReviewRules } from "@/lib/review-rules.mjs";
+import type { AiTask, Article, Chapter, Character, Outline, Relationship, StudioData, StudioSettings } from "./studio-types.ts";
+import { articleReviewRules } from "./review-rules.mjs";
 import equal from "fast-deep-equal";
-import { outlineDisplayTitle } from "@/lib/outline-title";
+import { outlineDisplayTitle } from "./outline-title.ts";
 
 export type StudioArticleChange = Omit<Article, "chapters" | "characters" | "relationships">;
 export type StudioChapterChange = { articleId: string; position: number; chapter: Omit<Chapter, "outlines"> };

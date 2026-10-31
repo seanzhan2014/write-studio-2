@@ -1,4 +1,4 @@
-import { clearModelSecret, setModelSecret } from "@/db/ai";
+import { clearModelSecret, setModelSecret } from "@/db/ai-models";
 
 export async function PUT(request: Request, context: { params: Promise<{ modelId: string }> }) {
   try { const { modelId } = await context.params; const body = await request.json() as { secret?: string }; await setModelSecret(modelId, body.secret ?? ""); return Response.json({ ok: true }); }

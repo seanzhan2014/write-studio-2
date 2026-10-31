@@ -1,4 +1,4 @@
-import type { StudioData, TaskExecutionOrigin } from "@/app/studio-state";
+import type { StudioData, TaskExecutionOrigin } from "@/lib/studio-types";
 import type { StudioStateIdentity } from "@/lib/state-version";
 
 const databaseName = "writer-studio-offline-v1";

@@ -1,10 +1,15 @@
+import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { supportsText } from "@/lib/ai-model-capabilities";
-import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./runtime";
+import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./studio-state";
 import { diffStudioData } from "@/lib/studio-changes";
 import { isCloudDatabase } from "./sqlite";
 import { styleLabChangedStatement } from "./style-lab-history";
 import { currentTaskExecutionOrigin } from "./task-execution";
-import { AiInputError, AiUpstreamCompletionError, isRetryableAiError, findModel, generateText, generateWritingPreparation, reviewGeneratedText, reviseGeneratedText, styleLabCompletion, type AiModelRecord } from "./ai";
+import { AiInputError, AiUpstreamCompletionError } from "@/db/ai-errors";
+import { isRetryableAiError } from "@/db/ai-transport";
+import { findModel, type AiModelRecord } from "@/db/ai-models";
+import { generateText, generateWritingPreparation, styleLabCompletion } from "@/db/ai";
+import { reviewGeneratedText, reviseGeneratedText } from "@/db/ai-review";
 import { createWritingPreparation, PreparationResponseError } from "@/lib/writing-preparation";
 import { normalizeArticleStorySettings } from "@/lib/story-settings";
 import { DEFAULT_OUTLINE_NAMING_PROFILE } from "@/lib/naming-options";
@@ -193,7 +198,7 @@ export async function executeStyleStep(id: string) {
   if (job.payload.executionOrigin && job.payload.executionOrigin !== currentTaskExecutionOrigin()) return job;
   const db = getDatabase(); const owner = crypto.randomUUID();
   const settings = (await readStudioState()).data?.settings;
-  const capacity = Math.max(1, Math.min(5, Number(settings?.taskConcurrency) || 2));
+  const capacity = normalizeTaskConcurrency(settings?.taskConcurrency);
   const until = new Date(Date.now() + 30_000).toISOString(); const now = stamp();
   const claim = await db.prepare("UPDATE style_lab_jobs SET status='running',owner=?,lease_until=?,updated_at=? WHERE id=? AND (status='queued' OR (status='running' AND (lease_until IS NULL OR lease_until<?))) AND ((SELECT COUNT(*) FROM style_lab_jobs WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM ai_tasks WHERE status='running' AND lease_until>?) + (SELECT COUNT(*) FROM character_photo_jobs WHERE state='waiting' OR (state='running' AND lease_until>?)))<?").bind(owner, until, now, id, now, now, now, now, capacity).run();
   if (!Number(claim.meta?.changes)) return job;

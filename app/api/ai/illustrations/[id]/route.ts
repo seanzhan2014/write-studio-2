@@ -1,4 +1,4 @@
-import { AiInputError } from "@/db/ai";
+import { AiInputError } from "@/db/ai-errors";
 import { getIllustration, removeIllustration, updateIllustration } from "@/db/illustrations";
 
 export const dynamic = "force-dynamic";

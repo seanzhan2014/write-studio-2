@@ -1,4 +1,4 @@
-import { AiInputError } from "@/db/ai";
+import { AiInputError } from "@/db/ai-errors";
 import { createStyleJob, listStyleJobs, listStyleJobHistory } from "@/db/style-lab";
 import { isCloudDatabase } from "@/db/sqlite";
 import { getDatabase } from "@/db/runtime";

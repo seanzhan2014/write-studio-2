@@ -108,7 +108,7 @@ test("REST validation, cascades, ordering and rollback", async (t) => {
     assert.equal(bounded.response.status, 200, bounded.text);
     assert.deepEqual(
       { fontSize: bounded.data.data.fontSize, lineHeight: bounded.data.data.lineHeight, contentWidth: bounded.data.data.contentWidth, taskConcurrency: bounded.data.data.taskConcurrency },
-      { fontSize: 24, lineHeight: 1.4, contentWidth: 1200, taskConcurrency: 4 },
+      { fontSize: 24, lineHeight: 1.4, contentWidth: 1200, taskConcurrency: 5 },
     );
     assert.equal("unknown" in bounded.data.data, false);
   });
