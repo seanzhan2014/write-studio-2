@@ -27,6 +27,13 @@ const eslintConfig = defineConfig([
     "outputs/**",
     "dist/**",
     ".test-data/**",
+    "test-results/**",
+    "playwright-report/**",
+    ".wrangler/**",
+    ".npm-cache/**",
+    ".vinext/**",
+    "data/**",
+    "logs/**",
     ".writer-studio-restart-*/**",
   ]),
 ]);

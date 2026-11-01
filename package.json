@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test:ui": "node scripts/run-ui-tests.mjs",
     "test:sync": "node scripts/run-tests.mjs studio-snapshot.test.mjs studio-conflict.test.mjs studio-roundtrip.test.mjs && node scripts/run-ui-tests.mjs tests/ui/studio-lifecycle.spec.ts --project=desktop-chromium --project=mobile-chromium --output=.test-data/sync-ui-results",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --format ./scripts/eslint-formatter.mjs",
+    "clean:workspace": "node scripts/clean-workspace.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:d1": "node scripts/migrate-d1-to-sqlite.mjs"
   },
