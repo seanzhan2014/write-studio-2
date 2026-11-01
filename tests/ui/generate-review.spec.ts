@@ -119,15 +119,14 @@ test("Generate review settings, server loop and durable report work together", a
     await expect(page.getByLabel("规则：人物年龄", { exact: true })).toContainText("人物必须十八岁");
     await page.goto("/settings/tasks");
     await page.getByRole("tab", { name: "自动审校", exact: true }).click();
-    await expect(page.getByLabel("最多修正次数", { exact: true })).toHaveValue("0");
-    await expect(page.getByRole("combobox", { name: "审校模型", exact: true })).toHaveValue("请选择模型");
+    await expect(page.getByRole("checkbox", { name: "启用自动审校", exact: true })).not.toBeChecked();
+    await page.getByRole("checkbox", { name: "启用自动审校", exact: true }).check();
+    await expect(page.getByRole("combobox", { name: "审校模型", exact: true })).toHaveValue("跟随生成模型");
     await expect(page.getByRole("combobox", { name: "审校类型", exact: true })).toHaveValue("最少条件型");
     await page.getByLabel("最多修正次数", { exact: true }).fill("2");
     await page.getByLabel("审校补充指令", { exact: true }).fill("保持雨后场景");
     await page.getByRole("combobox", { name: "审校类型", exact: true }).click();
     await page.getByRole("option", { name: "最大探索型", exact: true }).click();
-    await page.getByRole("combobox", { name: "审校模型方式", exact: true }).click();
-    await page.getByRole("option", { name: "指定模型", exact: true }).click();
     await page.getByRole("combobox", { name: "审校模型", exact: true }).click();
     await page.locator(`[role="option"][value="${reviewer.id}"]`).click();
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.reviewModel).toBe(reviewer.id);

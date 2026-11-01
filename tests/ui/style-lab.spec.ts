@@ -33,7 +33,7 @@ test("advanced settings stay optional and reference learning saves inputs before
   await page.goto("/settings/tasks");
   await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
   const lab=page.getByRole("region",{name:"风格学习与微调"});
-  await lab.locator("summary").filter({hasText:/^参考文章/}).click();
+  await expect(lab.getByRole("region", {name:"参考文章", exact:true})).toBeVisible();
   await lab.getByRole("button",{name:"粘贴参考文章",exact:true}).click();
   await lab.getByRole("textbox",{name:"参考文章 1 名称",exact:true}).fill("我的参考文章");
   await lab.getByRole("textbox",{name:"参考文章 1 正文",exact:true}).fill("甲停下脚步。\n他想了想，把没说完的话咽了回去。");

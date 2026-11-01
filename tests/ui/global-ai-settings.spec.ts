@@ -23,6 +23,7 @@ test("global task categories replace the article tab and image prompt entry on d
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   }
   await tabs.getByRole("tab", { name: "图片", exact: true }).click();
+  await page.getByRole("tab", { name: "风格库", exact: true }).click();
   await expect(page.getByRole("region", { name: "图片风格管理" })).toBeVisible();
   await page.screenshot({ path: info.outputPath("ai-task-images.png"), fullPage: true });
   await page.goto("/articles/article-main/info/basic");
@@ -56,4 +57,31 @@ test("global changes propagate across reloads while an article field override re
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.inheritance.targetWords).toBe("global");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.getByLabel("正文目标字数", { exact: true })).toHaveValue("4,000 字");
+});
+
+test("outline settings preserve conditional values and model inheritance when switching choices", async ({ page, request }) => {
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "大纲", exact: true }).click();
+  const format = page.getByRole("combobox", { name: "章节名称格式", exact: true });
+  await expect(page.getByLabel("章节最少字数", { exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "章节词牌", exact: true })).toHaveCount(0);
+  await format.click();
+  await page.getByRole("option", { name: "词牌风格", exact: true }).click();
+  await expect(page.getByLabel("章节最少字数", { exact: true })).toHaveCount(0);
+  await page.getByRole("combobox", { name: "章节词牌", exact: true }).click();
+  await page.getByRole("option", { name: "蝶恋花", exact: true }).click();
+  await page.getByRole("combobox", { name: "章节语言风格", exact: true }).click();
+  await page.getByRole("option", { name: "自定义", exact: true }).click();
+  await page.getByLabel("章节自定义语言风格", { exact: true }).fill("短句，保持含蓄");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.chapterNaming_customStyle).toBe("短句，保持含蓄");
+  await format.click();
+  await page.getByRole("option", { name: "字数范围", exact: true }).click();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.chapterNaming_format).toBe("range");
+  await page.reload();
+  await page.getByRole("tab", { name: "大纲", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "命名模型", exact: true })).toHaveValue("跟随生成模型");
+  await expect(page.getByLabel("章节自定义语言风格", { exact: true })).toHaveValue("短句，保持含蓄");
+  await format.click();
+  await page.getByRole("option", { name: "词牌风格", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "章节词牌", exact: true })).toHaveValue("蝶恋花");
 });

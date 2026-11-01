@@ -16,7 +16,7 @@ import { AppearancePanel } from "@/app/ui/appearance-settings";
 import { AiServices } from "@/app/ui/ai-services";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Group, Menu, Select, SimpleGrid, Stack, Text, Textarea } from "@mantine/core";
+import { Alert, Button, Checkbox, createTheme, Group, MantineThemeProvider, Menu, Select, SimpleGrid, Stack, Text, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
@@ -247,24 +247,28 @@ export function AppearanceSettings() {
 
 export function ModelSettings() { return <AiServices />; }
 
+const aiTaskFormTheme = createTheme({ components: { InputWrapper: { defaultProps: { inputWrapperOrder: ["label", "input", "description", "error"] } } } });
+
 export function TaskSettings() {
   const studio = useStudio();
   const categories = ["正文生成", "写作准备与讨论", "自动审校", "大纲", "聊天", "图片", "学习与微调", "全局"];
   const [category, setCategory] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "图片" : "正文生成");
-  return <div className="ai-task-settings-page">
-    <Text size="sm" c="dimmed">这里管理全局 AI 默认设置。文章默认跟随全局；文章、章节和大纲的专属修改在“章节与大纲”的设定中管理。</Text>
+  const [imageTab, setImageTab] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "风格库" : "生成设置");
+  const autoSaving = !["学习与微调"].includes(category) && !(category === "图片" && imageTab === "风格库");
+  return <MantineThemeProvider theme={aiTaskFormTheme}><div className="ai-task-settings-page">
+    <div className="ai-task-intro"><Text size="sm" c="dimmed">文章默认继承全局 AI 设置。文章、章节和大纲的专属修改在“章节与大纲”中管理。</Text>{autoSaving && <Text size="xs" c={studio.saveStatus === "failed" ? "red" : "dimmed"} role="status">{studio.saveStatus === "saved" ? "设置已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存设置…"}</Text>}</div>
     <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
     <div id="ai-category-panel" role="tabpanel" aria-labelledby={`ai-category-${categories.indexOf(category)}`} className="ai-task-category-panel">
       {category === "正文生成" && <ArticleGenerateSettings global />}
       {category === "写作准备与讨论" && <TaskParameterSettings level="global" targetId="global" groups={["写作准备与讨论"]} title="写作准备与讨论" />}
-      {category === "自动审校" && <Stack gap="lg"><TaskParameterSettings level="global" targetId="global" groups={["自动审校"]} title="自动审校" /><ArticleReviewRulesPage global /></Stack>}
+      {category === "自动审校" && <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["自动审校"]} title="自动审校" /><ArticleReviewRulesPage global /></div>}
       {category === "大纲" && <TaskParameterSettings level="global" targetId="global" groups={["命名"]} title="章节与大纲名称" />}
       {category === "聊天" && <TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" />}
-      {category === "图片" && <Stack gap="lg"><TaskParameterSettings level="global" targetId="global" groups={["插图模型"]} title="图片模型" /><ArticleIllustrationSettings global /><AiPromptSettings /></Stack>}
-      {category === "学习与微调" && <Stack gap="md"><Select label="应用到文章" description="参考资料、学习成果和应用记录属于所选文章。" data={studio.data.articles.map(article => ({ value: article.id, label: article.title }))} value={studio.currentArticle.id || null} allowDeselect={false} searchable onChange={value => { if (value) studio.setCurrentArticle(value); }} />{studio.currentArticle.id ? <StyleLabPanel /> : <Text c="dimmed">创建文章后即可学习与微调。</Text>}</Stack>}
-      {category === "全局" && <><TaskParameterSettings level="global" targetId="global" groups={["任务队列"]} title="全局任务设置" /><SettingSection title="任务管理"><SettingRow title="自动重试"><span className="readonly-value">2 次</span></SettingRow><SettingRow title="清除已结束任务"><button className="secondary-button" type="button" onClick={() => studio.data.tasks.filter(task => ["success", "failed", "cancelled"].includes(task.state)).forEach(task => studio.removeTask(task.id))}>清除终态任务</button></SettingRow></SettingSection></>}
+      {category === "图片" && <><div className="ai-task-subtabs" role="tablist" aria-label="图片设置分类">{["生成设置", "风格库"].map(tab => <button type="button" role="tab" key={tab} id={`ai-image-${tab === "生成设置" ? "generation" : "styles"}`} aria-selected={imageTab === tab} aria-controls="ai-image-panel" onClick={() => setImageTab(tab)}>{tab}</button>)}</div><div id="ai-image-panel" role="tabpanel" aria-labelledby={`ai-image-${imageTab === "生成设置" ? "generation" : "styles"}`}>{imageTab === "生成设置" ? <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["插图模型"]} title="图片模型" /><ArticleIllustrationSettings global /></div> : <AiPromptSettings />}</div></>}
+      {category === "学习与微调" && <div className="ai-task-sections"><section className="ai-task-section"><h2>应用到文章</h2><Select aria-label="应用到文章" description="参考资料、学习成果和应用记录属于所选文章。" data={studio.data.articles.map(article => ({ value: article.id, label: article.title }))} value={studio.currentArticle.id || null} allowDeselect={false} searchable onChange={value => { if (value) studio.setCurrentArticle(value); }} /></section>{studio.currentArticle.id ? <StyleLabPanel /> : <Text c="dimmed">创建文章后即可学习与微调。</Text>}</div>}
+      {category === "全局" && <TaskParameterSettings level="global" targetId="global" groups={["任务队列"]} title="全局任务设置" />}
     </div>
-  </div>;
+  </div></MantineThemeProvider>;
 }
 
 export function DatabaseSettings() {

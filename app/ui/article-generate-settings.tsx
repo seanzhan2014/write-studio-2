@@ -29,10 +29,11 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
     studio.updateSettings({ aiGenerateSettings: next, ...(patch.model !== undefined ? { generateModel: patch.model } : {}), ...(patch.targetWords !== undefined ? { generateTargetWords: patch.targetWords } : {}), ...(Object.hasOwn(patch, "reasoningEffort") ? { generateReasoningEffort: patch.reasoningEffort } : {}) });
   };
 
-  return <section className="form-card article-ai-task-section article-generate-settings" aria-labelledby="article-generate-title">
-    <header className="article-ai-task-section-heading"><h2 id="article-generate-title">正文生成</h2><p>{global ? "文章默认跟随以下设置，文章、章节和大纲可以逐项修改。" : "新大纲和尚未单独调整过的大纲会使用这些选项。"}</p></header>
+  return <section className={`${global ? "ai-task-generation" : "form-card"} article-ai-task-section article-generate-settings`} aria-labelledby="article-generate-title">
+    <header className="article-ai-task-section-heading"><h2 id="article-generate-title">{global ? "模型与篇幅" : "正文生成"}</h2>{!global && <p>新大纲和尚未单独调整过的大纲会使用这些选项。</p>}</header>
     <div className="article-generate-basics">
       <Select label="默认模型" aria-label="文章生成默认模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => patchSettings({ model: value ?? "" })} />
+      {global && <ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} />}
       <NumberInput label="默认目标字数" aria-label="文章生成默认目标字数" min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" value={settings.targetWords || ""} onChange={(value) => patchSettings({ targetWords: value === "" ? 0 : Number(value) })} />
     </div>
     <section className="article-generate-block" aria-labelledby="article-generate-mode-title">
@@ -44,26 +45,27 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
     <section className="article-generate-block prose-controls-section" aria-labelledby="article-prose-controls-title">
             <div className="generate-section-heading"><span id="article-prose-controls-title">表达偏好</span><strong>{global ? "全局默认" : "文章默认"}</strong></div>
       <div className="prose-controls-grid">
-        <ProseControlRow id="article-dialogue-density" label="对话密度" value={settings.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...settings.proseControls, dialogueDensity } })} className="dialogue-density-control" />
-        <ProseControlRow id="article-introspection-density" label="内心活动" value={settings.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...settings.proseControls, introspectionDensity } })} />
-        <ProseControlRow id="article-description-detail" label="描写细度" value={settings.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...settings.proseControls, descriptionDetail } })} />
-        <ProseControlRow id="article-narrative-pace" label="叙事节奏" value={settings.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...settings.proseControls, narrativePace } })} />
-        <ProseControlRow id="article-paragraph-length" label="段落长度" value={settings.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...settings.proseControls, paragraphLength } })} />
-        <ProseControlRow id="article-closing-summary" label="收尾总结" value={settings.closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => patchSettings({ closingSummaryLength })} className="closing-summary-control" />
+        <ProseControlRow compactHelp={global} id="article-dialogue-density" label="对话密度" value={settings.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...settings.proseControls, dialogueDensity } })} className="dialogue-density-control" />
+        <ProseControlRow compactHelp={global} id="article-introspection-density" label="内心活动" value={settings.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...settings.proseControls, introspectionDensity } })} />
+        <ProseControlRow compactHelp={global} id="article-description-detail" label="描写细度" value={settings.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...settings.proseControls, descriptionDetail } })} />
+        <ProseControlRow compactHelp={global} id="article-narrative-pace" label="叙事节奏" value={settings.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...settings.proseControls, narrativePace } })} />
+        <ProseControlRow compactHelp={global} id="article-paragraph-length" label="段落长度" value={settings.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...settings.proseControls, paragraphLength } })} />
+        <ProseControlRow compactHelp={global} id="article-closing-summary" label="收尾总结" value={settings.closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => patchSettings({ closingSummaryLength })} className="closing-summary-control" />
       </div>
     </section>
-    <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} />
+    {!global && <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} />}
     <section className="article-generate-block article-generate-references" aria-labelledby="article-generate-reference-title">
       <div className="generate-section-heading"><span id="article-generate-reference-title">参考内容</span></div>
       <div className="article-generate-toggle-grid">
         <Checkbox label="包含前面大纲" checked={settings.includePrevious} onChange={(event) => patchSettings({ includePrevious: event.currentTarget.checked })} />
         <Checkbox label="包含相关人物" checked={settings.includeCharacters} onChange={(event) => patchSettings({ includeCharacters: event.currentTarget.checked })} />
         <Checkbox label="参考优秀片段" checked={settings.includeExcellentFragments} onChange={(event) => patchSettings({ includeExcellentFragments: event.currentTarget.checked })} />
+        {global && <Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} />}
       </div>
     </section>
-    <section className="article-generate-block" aria-label="生成附加项"><div className="generate-section-heading"><span>生成附加项</span></div><Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} /></section>
-    <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>
-    <div className="form-foot"><span>{global ? "全局默认 · 仅影响跟随此设置的新任务" : overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
+    {!global && <section className="article-generate-block" aria-label="生成附加项"><div className="generate-section-heading"><span>生成附加项</span></div><Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} /></section>}
+    {global ? <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} /> : <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>}
+    {!global && <div className="form-foot"><span>{overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>}
   </section>;
 }
 

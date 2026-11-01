@@ -18,12 +18,12 @@ export function AiPromptSettings() {
     studio.updateSettings({ illustrationStyles: isNew ? [...styles, value] : styles.map(item => item.value === value.value ? value : item) });
     setSelected(value.value); setCreating(false); setNotice(isNew ? `已添加「${value.label}」。` : `已更新「${value.label}」。`);
   }
-  return <section className="ai-prompts-settings" aria-label="图片风格管理">
+  return <section className="ai-prompts-settings ai-task-section" aria-label="图片风格管理">
     <Group justify="space-between" align="flex-start" wrap="wrap">
-      <div><h2>图片风格</h2><Text c="dimmed" size="sm">管理文章插图和人物照片使用的风格提示词。</Text></div>
+      <div><h2>图片风格</h2><Text c="dimmed" size="sm">选择风格后编辑，点击“保存修改”生效。</Text></div>
       <Button onClick={() => setCreating(true)} disabled={editable.length >= 199}>添加风格</Button>
     </Group>
-    <Text size="sm" role="status">{notice} {studio.saveStatus === "saved" ? "已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在自动保存…"}</Text>
+    {notice && <Text size="sm" role="status">{studio.saveStatus === "saved" ? notice : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存风格…"}</Text>}
     <div className="ai-prompts-layout">
       <nav className="ai-prompt-list" aria-label="图片风格列表">
         {editable.map(item => <button type="button" key={item.value} aria-pressed={style?.value === item.value} onClick={() => setSelected(item.value)}><span>{item.label}</span><small>{item.description || "自定义图片风格"}</small></button>)}
@@ -56,7 +56,7 @@ function StyleEditor({ style, onSave, onCopy, onDelete, onCancel, canCopy = true
         <Textarea label="风格 Prompt" aria-label="风格 Prompt" description="此提示词会用于插图提示词生成、图片生成及人物照片生成。" required minRows={8} autosize maxRows={18} maxLength={8000} value={draft.instruction} onChange={event => setDraft({ ...draft, instruction: event.currentTarget.value })} />
         {error && <Alert color="red" role="alert">{error}</Alert>}
         <Group gap="sm" wrap="wrap">
-          <Button type="submit">{onDelete ? "保存修改" : "添加风格"}</Button>
+          <Button type="submit" disabled={Boolean(onDelete) && !dirty}>{onDelete ? "保存修改" : "添加风格"}</Button>
           {onCopy && <Button variant="default" disabled={!canCopy} onClick={() => { const value = validated(); if (value) onCopy(value); }}>复制为新风格</Button>}
           {dirty && onDelete && <Button variant="subtle" onClick={() => { setDraft(style); setError(""); }}>取消修改</Button>}
           {onCancel && <Button variant="default" onClick={onCancel}>取消</Button>}

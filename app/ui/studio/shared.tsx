@@ -361,13 +361,14 @@ export function proseControlsSummary(options?: AiTask["contextOptions"]) {
   return `对话 ${dialogueDensityLabel(controls.dialogueDensity)} · 心理 ${introspectionDensityLabel(controls.introspectionDensity)} · 描写 ${descriptionDetailLabel(controls.descriptionDetail)} · 节奏 ${narrativePaceLabel(controls.narrativePace)} · 段落 ${paragraphLengthLabel(controls.paragraphLength)}`;
 }
 
-export function ProseControlRow<T extends string>({ id, label, value, options, onChange, className = "" }: {
+export function ProseControlRow<T extends string>({ id, label, value, options, onChange, className = "", compactHelp = false }: {
   id: string;
   label: string;
   value: T;
   options: ReadonlyArray<{ value: T; label: string; description: string }>;
   onChange: (value: T) => void;
   className?: string;
+  compactHelp?: boolean;
 }) {
   const descriptionId = `${id}-description`;
   return <div className={`prose-control-row ${className}`}>
@@ -378,7 +379,7 @@ export function ProseControlRow<T extends string>({ id, label, value, options, o
         <span>{item.label}</span>
       </label>)}
     </div>
-    <details className="prose-control-help"><summary>{label}说明</summary><small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small></details>
+    {compactHelp ? <small id={descriptionId} className="prose-control-description">{options.find((item) => item.value === value)?.description}</small> : <details className="prose-control-help"><summary>{label}说明</summary><small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small></details>}
   </div>;
 }
 

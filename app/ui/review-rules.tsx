@@ -21,10 +21,10 @@ export function ArticleReviewRulesPage({ global = false }: { global?: boolean } 
   const value = articleAiSettings(studio.currentArticle, "generate", studio.data.settings);
   const inherited = value.tasks?.reviewRules === "__global_rules__";
   const article = global || inherited ? { ...studio.currentArticle, id: "global", reviewRules: "", reviewRuleItems: studio.data.settings.reviewRuleItems } : studio.currentArticle;
-  return <><Text size="sm" c="dimmed">{global ? "未单独修改的文章使用这些全局规则。" : inherited ? "当前跟随全局审校规则；修改后成为文章专属规则。" : "当前使用文章专属审校规则。"}</Text>{!global && <Button size="compact-xs" variant="subtle" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(value, "global", globalAiSettings("generate", studio.data.settings), ["tasks.reviewRules"]) })}>恢复全局审校规则</Button>}<ArticleReviewRulesEditor key={article.id} article={article} onUpdate={(reviewRuleItems) => global ? studio.updateSettings({ reviewRuleItems }) : studio.updateArticle({ reviewRuleItems, aiGenerateSettings: overrideAiSettings(value, { tasks: { ...value.tasks, reviewRules: "__article_rules__" } }) })} presets={studio.data.settings.reviewPresets} /></>;
+  return <>{!global && <><Text size="sm" c="dimmed">{inherited ? "当前跟随全局审校规则；修改后成为文章专属规则。" : "当前使用文章专属审校规则。"}</Text><Button size="compact-xs" variant="subtle" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(value, "global", globalAiSettings("generate", studio.data.settings), ["tasks.reviewRules"]) })}>恢复全局审校规则</Button></>}<ArticleReviewRulesEditor key={article.id} article={article} compact={global} onUpdate={(reviewRuleItems) => global ? studio.updateSettings({ reviewRuleItems }) : studio.updateArticle({ reviewRuleItems, aiGenerateSettings: overrideAiSettings(value, { tasks: { ...value.tasks, reviewRules: "__article_rules__" } }) })} presets={studio.data.settings.reviewPresets} /></>;
 }
 
-function ArticleReviewRulesEditor({ article, onUpdate, presets }: { article: Article; onUpdate: (rules: ReviewRule[]) => void; presets: string[] }) {
+function ArticleReviewRulesEditor({ article, onUpdate, presets, compact = false }: { article: Article; onUpdate: (rules: ReviewRule[]) => void; presets: string[]; compact?: boolean }) {
   const rules = articleReviewRules(article);
   const [archived, setArchived] = useState(false);
   const [editing, setEditing] = useState<ReviewRule | "new" | null>(null);
@@ -64,9 +64,9 @@ function ArticleReviewRulesEditor({ article, onUpdate, presets }: { article: Art
     if (commit([...rules, ...imported])) { setImporting(false); setArchived(false); }
   }
 
-  return <section className="article-review-rules" aria-label="审校规则管理">
+  return <section className={`article-review-rules${compact ? " ai-task-section ai-task-rule-list" : ""}`} aria-label="审校规则管理">
     <Group justify="space-between" align="flex-start">
-      <div><h2>审校规则</h2><Text size="sm" c="dimmed">用于 生成 的生成后审校。</Text></div>
+      <div><h2>审校规则</h2><Text size="sm" c="dimmed">正文生成后的检查标准，点击编辑查看完整内容。</Text></div>
       <Group gap="xs">{presets.length > 0 && <Button variant="default" onClick={() => { setSelected([]); setError(""); setImporting(true); }}>导入原全局预设</Button>}<Button disabled={rules.length >= MAX_REVIEW_RULES} onClick={() => openEditor("new")}>新增规则</Button></Group>
     </Group>
     <Group gap="xs" className="review-rule-filters"><Button variant={archived ? "subtle" : "light"} aria-pressed={!archived} onClick={() => setArchived(false)}>生效中（{activeCount}）</Button><Button variant={archived ? "light" : "subtle"} aria-pressed={archived} onClick={() => setArchived(true)}>已归档（{rules.length - activeCount}）</Button></Group>
