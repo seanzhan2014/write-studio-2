@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test, type Page } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import type { IllustrationRecord } from "../../lib/illustration-history";
@@ -118,7 +119,7 @@ test("illustration tab has its own route, preserves drafts between modes and lin
   const workspace = page.getByRole("region", { name: "插图工作区" });
   await workspace.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("切换页签后保留的画面构图");
   await modes.getByRole("tab", { name: "聊天", exact: true }).click();
-  await modes.getByRole("tab", { name: "生成", exact: true }).click();
+  await modes.getByRole("tab", { name: "正文生成", exact: true }).click();
   await modes.getByRole("tab", { name: "插图", exact: true }).click();
   await expect(workspace.getByRole("textbox", { name: "图片 prompt", exact: true })).toHaveValue("切换页签后保留的画面构图");
   await workspace.getByRole("button", { name: "查看历史", exact: true }).click();
@@ -205,15 +206,15 @@ test("article image presets inherit, persist outline overrides and restore artic
   };
   const storedArticle = async () => (await (await request.get("/api/state")).json()).data.articles[0];
   const storedOptions = async () => (await storedArticle()).chapters.flatMap((chapter: { outlines: { id: string; illustrationOptions: unknown }[] }) => chapter.outlines).find((outline: { id: string }) => outline.id === "outline-current").illustrationOptions;
-  await page.goto("/articles/article-main/info/ai-tasks");
-  await expect(page.getByRole("heading", { name: "图片风格", exact: true })).toBeVisible();
+  await openArticleAiSettings(page);
+  await expect(page.getByRole("heading", { name: "图片生成设置", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toHaveValue("English");
   await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toBeDisabled();
   await choose("文章图片默认风格", "国风水墨");
   await choose("文章图片默认分辨率", "2K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill(articlePrompt);
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: articlePrompt });
-  await page.getByRole("heading", { name: "图片风格", exact: true }).scrollIntoViewIfNeeded();
+  await expect.poll(async () => (await storedArticle()).illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: articlePrompt });
+  await page.getByRole("heading", { name: "图片生成设置", exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `.test-data/article-image-settings-${testInfo.project.name}.png` });
 
   const openGenerator = async (outlineId = "outline-current") => {
@@ -237,20 +238,21 @@ test("article image presets inherit, persist outline overrides and restore artic
   expect(await storedOptions()).toBeNull();
   await choose("插图风格", "日系动漫");
   await dialog.getByRole("textbox", { name: "附加 Prompt", exact: true }).fill(outlinePrompt);
-  await expect.poll(storedOptions).toEqual({ promptLanguage: "en", stylePreset: "anime", resolution: "2k", additionalPrompt: outlinePrompt });
+  await expect.poll(storedOptions).toMatchObject({ promptLanguage: "en", stylePreset: "anime", resolution: "2k", additionalPrompt: outlinePrompt });
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
 
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   await choose("文章图片默认风格", "水彩插画");
   await choose("文章图片默认分辨率", "4K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("保留水彩纸张纹理。");
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toEqual({ promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
+  await expect.poll(async () => (await storedArticle()).illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
   dialog = await openGenerator();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue(outlinePrompt);
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("日系动漫");
   await choose("文生图模型", "测试-图片测试模型");
-  await expect(dialog.getByRole("combobox", { name: "图像分辨率", exact: true })).toHaveValue("2K");
+  await expect(dialog.getByRole("combobox", { name: "图像分辨率", exact: true })).toHaveValue("模型默认");
+  await expect.poll(async () => (await storedOptions())?.inheritance?.resolution).toBe("parent");
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩插画：两人在码头相望。");
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
@@ -260,12 +262,14 @@ test("article image presets inherit, persist outline overrides and restore artic
   dialog = await openGenerator();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("");
   await choose("文生图模型", "测试-图片测试模型");
+  expect(bodies.at(-1)).not.toHaveProperty("resolution");
   await dialog.getByRole("group", { name: "全部插图设置继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue("保留水彩纸张纹理。");
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByText(/当前模型不支持预设分辨率 4k/)).toBeVisible();
   await expect.poll(async () => (await storedOptions())?.inheritance?.additionalPrompt).toBe("article");
+  await expect.poll(async () => (await storedOptions())?.inheritance?.resolution).toBe("parent");
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩插画：两人在码头相望。");
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveAiSettings, inheritAiSettings, overrideAiSettings, aiSettingKeys } from "../lib/ai-settings-inheritance.ts";
+import { articleAiSettings, createInheritedAiSettings, globalAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings, aiSettingKeys } from "../lib/ai-settings-inheritance.ts";
+import { normalizeStudioSettings } from "../lib/studio-settings.ts";
+import { serializeArticleSettings } from "../db/studio-serialization.ts";
 import { normalizeAiGenerateOptions } from "../lib/generate-options.ts";
 import { normalizeIllustrationOptions } from "../lib/illustration-options.ts";
 import { normalizeChapterSettings } from "../lib/story-settings.ts";
@@ -103,4 +105,103 @@ test("scoped review rules support article rules, explicit replacement, and inten
   assert.ok(taskReviewSnapshot(article, { reviewRules: "__article_rules__" }, "").rules.length > 0);
   assert.deepEqual(taskReviewSnapshot(article, { reviewRules: "" }, "" ).rules, []);
   assert.equal(taskReviewSnapshot(article, { reviewRules: "仅检查对白" }, "本次检查").rules[0].content, "仅检查对白");
+});
+
+test("new articles follow live global values and changing one outline field preserves other inheritance", () => {
+  const article = fixture();
+  article.aiGenerateSettings = createInheritedAiSettings("generate");
+  article.illustrationSettings = createInheritedAiSettings("illustration");
+  article.chapters = [{ id: "c", title: "章", archived: false, outlines: [{ id: "o", title: "点", archived: false, generateOptions: null }] }];
+  const settings = { generateModel: "global-model", generateTargetWords: 3000, preparationMaxRounds: 2, outlineNaming_style: "poetic", aiGenerateSettings: { proseControls: { dialogueDensity: "high" }, advanced: { additional: "全局要求" } }, illustrationSettings: { additionalPrompt: "全局图片" } };
+  let resolved = resolveAiSettings(article, "o", "generate", "outline", settings);
+  assert.equal(resolved.value.model, "global-model");
+  assert.equal(resolved.value.tasks.outlineNaming_style, "poetic");
+  assert.equal(resolved.value.proseControls.dialogueDensity, "high");
+  article.chapters[0].outlines[0].generateOptions = normalizeAiGenerateOptions(overrideAiSettings(resolved.value, { targetWords: 2000 }));
+  settings.generateTargetWords = 4000;
+  settings.generateModel = "changed-model";
+  settings.preparationMaxRounds = 4;
+  resolved = resolveAiSettings(article, "o", "generate", "outline", settings);
+  assert.equal(resolved.articleDefaults.targetWords, 4000);
+  assert.equal(resolved.value.targetWords, 2000);
+  assert.equal(resolved.value.model, "changed-model");
+  assert.equal(resolved.value.tasks.preparationMaxRounds, 4);
+  article.chapters[0].outlines[0].generateOptions = inheritAiSettings(resolved.value, "article", resolved.articleDefaults, ["targetWords"]);
+  settings.generateTargetWords = 5000;
+  assert.equal(resolveAiSettings(article, "o", "generate", "outline", settings).value.targetWords, 5000);
+  assert.equal(resolveAiSettings(article, "o", "illustration", "outline", settings).value.additionalPrompt, "全局图片");
+});
+
+test("article overrides and explicit empty values survive serialization without freezing other global fields", () => {
+  const article = fixture();
+  article.aiGenerateSettings = createInheritedAiSettings("generate");
+  article.illustrationSettings = createInheritedAiSettings("illustration");
+  const settings = normalizeStudioSettings({ generateTargetWords: 4000, generateModel: "global", illustrationSettings: { additionalPrompt: "global" } });
+  article.aiGenerateSettings = overrideAiSettings(articleAiSettings(article, "generate", settings), { targetWords: 0, includeCharacters: false });
+  article.illustrationSettings = overrideAiSettings(articleAiSettings(article, "illustration", settings), { additionalPrompt: "" });
+  const serialized = serializeArticleSettings(article);
+  article.aiGenerateSettings = JSON.parse(serialized[3]);
+  article.illustrationSettings = JSON.parse(serialized[4]);
+  settings.generateModel = "new-model";
+  assert.equal(articleAiSettings(article, "generate", settings).targetWords, 0);
+  assert.equal(articleAiSettings(article, "generate", settings).includeCharacters, false);
+  assert.equal(articleAiSettings(article, "generate", settings).model, "new-model");
+  assert.equal(articleAiSettings(article, "illustration", settings).additionalPrompt, "");
+  assert.equal(article.aiGenerateSettings.inheritance.model, "global");
+});
+
+test("global review rules are live until task creation and snapshots remain immutable", () => {
+  const article = { ...fixture(), id: "article", aiGenerateSettings: createInheritedAiSettings("generate") };
+  const settings = normalizeStudioSettings({});
+  const tasks = articleAiSettings(article, "generate", settings).tasks;
+  const before = taskReviewSnapshot(article, tasks, "", settings);
+  settings.reviewRuleItems[0].content = "修改后的全局规则";
+  const after = taskReviewSnapshot(article, tasks, "", settings);
+  assert.notEqual(before.rules[0].content, after.rules[0].content);
+  assert.equal(after.rules[0].content, "修改后的全局规则");
+  settings.reviewRuleItems = [];
+  assert.deepEqual(taskReviewSnapshot(article, tasks, "", settings).rules, []);
+  assert.equal(globalAiSettings("generate", settings).tasks.reviewRules, "__global_rules__");
+});
+
+test("legacy explicit chapter records retain article fallback for unspecified advanced preferences", () => {
+  const article = fixture();
+  article.chapters[0].settings.aiTasks.generate.advanced.additional = "前章高级要求";
+  article.chapters[2].settings = normalizeChapterSettings({ aiTasks: { generate: { targetWords: 6500 } } });
+  assert.equal(resolveAiSettings(article, "c2", "generate", "chapter").value.advanced.additional, "文章");
+  delete article.chapters[2].settings.aiTasks.generate;
+  const inherited = resolveAiSettings(article, "c2", "generate", "chapter").value;
+  article.chapters[2].settings.aiTasks.generate = overrideAiSettings(inherited, { targetWords: 6500 });
+  article.chapters[0].settings.aiTasks.generate.advanced.additional = "更新后的前章要求";
+  assert.equal(resolveAiSettings(article, "c2", "generate", "chapter").value.advanced.additional, "更新后的前章要求");
+});
+
+test("editing a legacy article's review rules keeps all absent workflow fields attached to globals", () => {
+  const article = { ...fixture(), aiGenerateSettings: normalizeAiGenerateOptions({ model: "article-model" }) };
+  const global = { generateReviewMaxRounds: 0, reviewModelMode: "inherit", reviewModel: "" };
+  const value = articleAiSettings(article, "generate", global);
+  article.aiGenerateSettings = overrideAiSettings(value, { tasks: { ...value.tasks, reviewRules: "__article_rules__" } });
+  global.generateReviewMaxRounds = 2;
+  global.reviewModelMode = "fixed";
+  global.reviewModel = "review-model";
+  const next = articleAiSettings(article, "generate", global);
+  assert.equal(next.tasks.reviewMaxRounds, 2);
+  assert.equal(next.tasks.reviewModelMode, "fixed");
+  assert.equal(next.tasks.reviewModel, "review-model");
+  assert.equal(next.tasks.reviewRules, "__article_rules__");
+  assert.equal(next.model, "article-model");
+});
+
+test("editing a legacy scoped record preserves absent task and advanced-field inheritance", () => {
+  const article = fixture();
+  const global = { generateReviewMaxRounds: 1 };
+  let value = resolveAiSettings(article, "a", "generate", "outline", global).value;
+  article.chapters[0].outlines[0].generateOptions = overrideAiSettings(value, { model: "outline-model" });
+  article.chapters[0].settings.aiTasks.generate.advanced.narrator = "章节叙述要求";
+  article.aiGenerateSettings.tasks = { ...article.aiGenerateSettings.tasks, reviewModel: "new-review" };
+  value = resolveAiSettings(article, "a", "generate", "outline", global).value;
+  assert.equal(value.model, "outline-model");
+  assert.equal(value.tasks.preparationMaxRounds, 5);
+  assert.equal(value.tasks.reviewModel, "new-review");
+  assert.equal(value.advanced.narrator, "章节叙述要求");
 });

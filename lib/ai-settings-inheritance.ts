@@ -1,7 +1,7 @@
 import { GENERATE_SETTING_KEYS, normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
 import { ILLUSTRATION_SETTING_KEYS, normalizeIllustrationOptions, type IllustrationOptions } from "./illustration-options.ts";
 import type { ChapterSettings } from "./story-settings.ts";
-import { taskParameterDefaults } from "./task-parameters.ts";
+import { TASK_PARAMETER_FIELDS, taskParameterDefaults } from "./task-parameters.ts";
 import type { NamingProfile } from "./naming-options.ts";
 
 export type AiSettingsKind = "generate" | "illustration";
@@ -38,33 +38,84 @@ function writeAiSetting(value: TaskOptions, key: string, setting: unknown) {
 function normalize(kind: AiSettingsKind, value: unknown, fallback?: TaskOptions): TaskOptions {
   return kind === "generate" ? normalizeAiGenerateOptions(value, fallback as AiGenerateOptions | undefined) : normalizeIllustrationOptions(value, fallback as IllustrationOptions | undefined);
 }
-function resolve(kind: AiSettingsKind, raw: TaskOptions | null | undefined, article: TaskOptions, previous: TaskOptions, baseline = article) {
+function resolve(kind: AiSettingsKind, raw: TaskOptions | null | undefined, article: TaskOptions, previous: TaskOptions, baseline = article, global = article, missingFieldMode?: "parent" | "article") {
+  if (!raw) return inheritAiSettings(normalize(kind, baseline), "parent", baseline, aiSettingKeys(kind));
   const value = normalize(kind, raw ?? baseline, baseline);
-  for (const [key, mode] of Object.entries(raw ? normalize(kind, raw).inheritance ?? {} : {})) writeAiSetting(value, key, readAiSetting(mode === "article" ? article : previous, key));
+  const inheritance = { ...normalize(kind, raw).inheritance };
+  if (kind === "generate" && missingFieldMode) {
+    const stored = raw as AiGenerateOptions;
+    for (const key of aiSettingKeys(kind)) {
+      if ((!key.startsWith("tasks.") && !key.startsWith("advanced.")) || readAiSetting(stored, key) !== undefined) continue;
+      inheritance[key] ??= missingFieldMode;
+    }
+  }
+  if (Object.keys(inheritance).length) value.inheritance = inheritance;
+  for (const [key, mode] of Object.entries(inheritance)) writeAiSetting(value, key, readAiSetting(mode === "global" ? global : mode === "parent" ? baseline : mode === "article" ? article : previous, key));
   return normalize(kind, value);
+}
+
+/** Complete runtime values; the stored article keeps its per-field inheritance markers. */
+export function globalAiSettings<K extends AiSettingsKind>(kind: K, settings: object = {}) {
+  const source = settings as Record<string, unknown>;
+  const value = kind === "generate" ? normalizeAiGenerateOptions(source.aiGenerateSettings, normalizeAiGenerateOptions({ model: source.generateModel, reasoningEffort: source.generateReasoningEffort, targetWords: source.generateTargetWords, reviewMaxRounds: source.generateReviewMaxRounds })) : normalizeIllustrationOptions(source.illustrationSettings);
+  if (kind === "generate") {
+    const generate = value as AiGenerateOptions;
+    generate.model = String(source.generateModel ?? generate.model);
+    generate.reasoningEffort = source.generateReasoningEffort as AiGenerateOptions["reasoningEffort"];
+    generate.targetWords = normalizeAiGenerateOptions({ targetWords: source.generateTargetWords }).targetWords;
+    generate.tasks = { ...taskParameterDefaults(settings), reviewRules: "__global_rules__" };
+  }
+  delete value.inheritance;
+  return value as K extends "generate" ? AiGenerateOptions : IllustrationOptions;
+}
+
+export function createInheritedAiSettings<K extends AiSettingsKind>(kind: K) {
+  const value = globalAiSettings(kind);
+  return inheritAiSettings(value, "global", value, aiSettingKeys(kind));
+}
+
+export function articleAiSettings<K extends AiSettingsKind>(article: SettingsArticle, kind: K, settings: object = {}) {
+  const global = globalAiSettings(kind, settings);
+  const raw = kind === "generate" ? article.aiGenerateSettings : article.illustrationSettings;
+  const baseline = normalize(kind, raw);
+  if (kind === "generate") {
+    const generate = baseline as AiGenerateOptions;
+    const storedTasks = (raw as AiGenerateOptions | undefined)?.tasks;
+    generate.tasks = { ...taskParameterDefaults(settings, article), ...generate.tasks };
+    generate.inheritance = { ...generate.inheritance };
+    // Older articles already followed global workflow defaults when a field
+    // was absent. Keep that live relationship when another field is edited.
+    for (const field of TASK_PARAMETER_FIELDS) {
+      if (field.key === "reviewRules" || field.key.includes("Naming_") || Object.hasOwn(storedTasks ?? {}, field.key)) continue;
+      generate.inheritance[`tasks.${field.key}`] ??= "global";
+    }
+  }
+  return resolve(kind, baseline, global, global, global, global) as K extends "generate" ? AiGenerateOptions : IllustrationOptions;
 }
 
 /** Previous outlines are scoped to the current chapter; its first outline falls back to the previous active chapter. */
 export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArticle, targetId: string, kind: K, level: "outline" | "chapter" = "outline", globalSettings: object = {}) {
-  const defaults = normalize(kind, kind === "generate" ? article.aiGenerateSettings : article.illustrationSettings);
-  if (kind === "generate") (defaults as AiGenerateOptions).tasks = { ...taskParameterDefaults(globalSettings, article), ...(defaults as AiGenerateOptions).tasks };
-  delete defaults.inheritance;
-  let previousChapter = defaults;
+  const defaults = articleAiSettings(article, kind, globalSettings);
+  const global = globalAiSettings(kind, globalSettings);
+  let previousChapter: TaskOptions = defaults;
   let previousChapterSource = "文章默认";
   let chapterLabel = "文章默认";
   for (const chapter of article.chapters) {
     if (chapter.archived && chapter.id !== targetId && !chapter.outlines.some(outline => outline.id === targetId)) continue;
     const chapterRaw = chapter.settings?.aiTasks?.[kind];
-    const chapterValue = chapterRaw ? resolve(kind, chapterRaw, defaults, previousChapter) : previousChapter;
+    // Legacy chapter records used the article as fallback. New parent markers
+    // explicitly keep untouched fields attached to the preceding chapter.
+    const chapterBaseline = chapterRaw && !Object.values(chapterRaw.inheritance ?? {}).includes("parent") ? defaults : previousChapter;
+    const chapterValue = resolve(kind, chapterRaw, defaults, previousChapter, chapterBaseline, global, chapterBaseline === defaults ? "article" : "parent");
     const chapterSource = chapterRaw ? `章节：${chapter.title}` : previousChapterSource;
-    if (level === "chapter" && chapter.id === targetId) return result(chapterValue, previousChapter, chapterLabel, chapterSource);
+    if (level === "chapter" && chapter.id === targetId) return result(chapterValue, previousChapter, chapterLabel, chapterSource, previousChapterSource);
     let previous = previousChapter;
     let previousLabel = chapterLabel;
     for (const outline of chapter.outlines) {
       if (outline.archived && outline.id !== targetId) continue;
       const raw = kind === "generate" ? outline.generateOptions : outline.illustrationOptions;
-      const value = resolve(kind, raw, defaults, previous, chapterValue);
-      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel, raw ? "当前大纲设置" : chapterSource);
+      const value = resolve(kind, raw, defaults, previous, chapterValue, global, "parent");
+      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel, raw ? "当前大纲设置" : chapterSource, chapterSource);
       previous = value;
       previousLabel = `上一大纲点：${outline.title || "未命名大纲"}`;
     }
@@ -75,13 +126,13 @@ export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArt
   }
   return result(defaults, defaults, "文章默认");
 
-  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = "文章默认") {
+  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = "文章默认", parentLabel = baselineLabel) {
     type Options = K extends "generate" ? AiGenerateOptions : IllustrationOptions;
-    return { value: value as Options, articleDefaults: defaults as Options, previous: previous as Options, previousLabel, baselineLabel };
+    return { value: value as Options, articleDefaults: defaults as Options, previous: previous as Options, previousLabel, baselineLabel, parentLabel };
   }
 }
 
-export function inheritAiSettings<T extends TaskOptions>(current: T, mode: "article" | "previous", source: T, keys: string[]): T {
+export function inheritAiSettings<T extends TaskOptions>(current: T, mode: "article" | "previous" | "global" | "parent", source: T, keys: string[]): T {
   const next = structuredClone(current);
   next.inheritance = { ...next.inheritance };
   for (const key of keys) { writeAiSetting(next, key, readAiSetting(source, key)); next.inheritance[key] = mode; }
@@ -97,4 +148,16 @@ export function overrideAiSettings<T extends TaskOptions>(current: T, patch: Par
     } else delete inheritance[key];
   }
   return { ...current, ...patch, inheritance: Object.keys(inheritance).length ? inheritance : undefined } as T;
+}
+
+/** REST patches inherit untouched fields just like edits in the settings forms. */
+export function patchAiSettings(kind: "generate", current: AiGenerateOptions, input: unknown): AiGenerateOptions;
+export function patchAiSettings(kind: "illustration", current: IllustrationOptions, input: unknown): IllustrationOptions;
+export function patchAiSettings(kind: AiSettingsKind, current: TaskOptions, input: unknown): TaskOptions {
+  const patch = input && typeof input === "object" && !Array.isArray(input) ? { ...input } as Record<string, unknown> : {};
+  if (Object.hasOwn(patch, "inheritance")) return normalize(kind, patch, current);
+  for (const key of ["advanced", "proseControls", "tasks"]) {
+    if (patch[key] && typeof patch[key] === "object" && !Array.isArray(patch[key])) patch[key] = { ...(current as unknown as Record<string, object>)[key], ...patch[key] as object };
+  }
+  return normalize(kind, overrideAiSettings(current, patch as Partial<TaskOptions>));
 }

@@ -50,7 +50,14 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
   const chatbotName = chatbotDisplayName(models, chatModelReference);
   const session = activeChatSession(outline);
   const message = session?.draft ?? "";
-  const chatContextSetting = (key: "chatIncludePrevious" | "chatIncludeCharacters", fallback: boolean) => outline.generateOptions?.tasks?.[key] !== undefined || studio.currentArticle.aiGenerateSettings.tasks?.[key] !== undefined || chatOptions.inheritance?.["tasks." + key] ? chatParameters[key] === true : fallback;
+  const chatContextSetting = (key: "chatIncludePrevious" | "chatIncludeCharacters", fallback: boolean) => {
+    const field = `tasks.${key}`;
+    const hasChoice = (value: typeof outline.generateOptions | undefined) => value?.tasks?.[key] !== undefined && value.inheritance?.[field] !== "parent";
+    const chapterIndex = studio.currentArticle.chapters.findIndex(chapter => chapter.outlines.some(item => item.id === outline.id));
+    const scopedChoice = studio.currentArticle.chapters.slice(0, chapterIndex + 1).some(chapter => !chapter.archived && hasChoice(chapter.settings?.aiTasks?.generate));
+    const mode = chatOptions.inheritance?.[field];
+    return hasChoice(outline.generateOptions) || hasChoice(studio.currentArticle.aiGenerateSettings) || scopedChoice || (mode && mode !== "parent") ? chatParameters[key] === true : fallback;
+  };
   const chatIncludePrevious = chatContextSetting("chatIncludePrevious", session?.includePrevious ?? true);
   const chatIncludeCharacters = chatContextSetting("chatIncludeCharacters", session?.includeCharacters ?? true);
   const editChatParameter = (patch: TaskParameters) => updateScopedTaskParameters(studio, "outline", outline.id, patch);

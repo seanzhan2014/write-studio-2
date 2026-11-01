@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -14,7 +15,7 @@ test.beforeEach(async ({ request }) => {
 
 test("article rules can edit defaults, add, archive, restore and delete without repopulating", async ({ page, request }) => {
   await page.goto("/articles/article-main/info/basic");
-  await page.getByRole("tab", { name: "AI 任务设定", exact: true }).click();
+  await openArticleAiSettings(page);
   const defaultRule = page.getByLabel("规则：不必要的中英文混用", { exact: true });
   await expect(defaultRule).toContainText("有意设计的英文对白");
   await defaultRule.getByRole("button", { name: "编辑", exact: true }).click();
@@ -41,6 +42,8 @@ test("article rules can edit defaults, add, archive, restore and delete without 
   await page.getByRole("button", { name: "确认删除", exact: true }).click();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].reviewRuleItems.some((rule: { title: string }) => rule.title === "英文对白保留")).toBe(false);
   await page.reload();
+  await page.locator(".article-heading-actions").getByRole("button", { name: "设定", exact: true }).click();
+  await page.locator(".article-ai-settings > summary").click();
   await expect(page.getByLabel("规则：人称一致", { exact: true })).toBeVisible();
   await expect(defaultRule).toHaveCount(0);
   await expect(edited).toHaveCount(0);
@@ -49,7 +52,7 @@ test("article rules can edit defaults, add, archive, restore and delete without 
 
 test("legacy presets are optional imports and archived rules disappear from run previews", async ({ page, request }) => {
   await page.setViewportSize({ width: 320, height: 568 });
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   await expect(page.getByRole("button", { name: "生效中（6）", exact: true })).toBeVisible();
   await expect(page.getByLabel("规则：场景表现与信息揭示", { exact: true })).toContainText("不机械隐藏梦境");
   await page.getByRole("button", { name: "导入原全局预设", exact: true }).click();

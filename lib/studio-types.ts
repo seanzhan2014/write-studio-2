@@ -238,6 +238,9 @@ export type AiTask = {
 };
 
 export type StudioSettings = AppearanceSettings & {
+  aiGenerateSettings?: AiGenerateOptions;
+  illustrationSettings?: IllustrationOptions;
+  reviewRuleItems?: ReviewRule[];
   outlineExpanded: boolean;
   showArchived: boolean;
   openLastArticle: boolean;

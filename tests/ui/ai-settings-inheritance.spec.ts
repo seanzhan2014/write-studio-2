@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { preparationModelServer } from "../writing-preparation-model.mjs";
@@ -48,10 +49,10 @@ test("article and chapter defaults expose all workflow parameter groups", async 
   const data = fullStudioFixture() as unknown as StudioData;
   data.articles[0].chapters[0].settings = { story: {}, characters: {}, relationships: {}, aiTasks: { generate: normalizeAiGenerateOptions({ tasks: { preparationMaxRounds: 4, reviewMaxRounds: 2, chatReasoningEffort: "low", outlineNaming_style: "poetic" } }) } };
   expect((await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data, conflictResolution: "keep-local" } })).ok()).toBeTruthy();
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   const settings = page.locator(".article-ai-task-settings > .task-parameter-settings");
   await settings.locator(":scope > summary").click();
-  for (const group of ["写作准备与讨论", "自动审校", "命名", "聊天", "插图模型"]) await expect(settings.getByText(group, { exact: true })).toBeVisible();
+  for (const group of ["写作准备与讨论", "自动审校", "大纲", "聊天", "插图模型"]) await expect(settings.getByText(group, { exact: true })).toBeVisible();
   await settings.getByText("写作准备与讨论", { exact: true }).click();
   await settings.getByLabel("写作前最多互动轮次", { exact: true }).fill("1");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.tasks?.preparationMaxRounds).toBe(1);

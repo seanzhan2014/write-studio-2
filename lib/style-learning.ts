@@ -1,3 +1,4 @@
+import { articleAiSettings, overrideAiSettings } from "./ai-settings-inheritance.ts";
 import { STYLE_FIELDS, GENERATE_FIELDS, normalizeAdvanced, advancedText, type StyleAdvanced } from "./advanced-writing.ts";
 import { normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
 
@@ -40,13 +41,25 @@ export function normalizeStyleLibrary(value: unknown): StyleLibrary {
   return { references, scenes: normalizeConfiguration({ scenes: v.scenes }).scenes, versions: (Array.isArray(v.versions) ? v.versions : []).slice(-20).map(version), calibrations: Object.fromEntries(Object.entries(rec(v.calibrations)).slice(0, 30).map(([key, val]) => [key, version(val)])), locked: (Array.isArray(v.locked) ? v.locked : []).map(String).slice(0, 100), ...(typeof v.activeVersionId === "string" ? { activeVersionId: v.activeVersionId } : {}) };
 }
 type ConfiguredArticle = { style: string; aiGenerateSettings: unknown; storySettings?: { advancedStyle?: StyleAdvanced; styleLibrary?: StyleLibrary } };
-export function configurationOf(article: ConfiguredArticle): StyleConfiguration {
-  return normalizeConfiguration({ style: article.style, advancedStyle: article.storySettings?.advancedStyle, generate: article.aiGenerateSettings, scenes: article.storySettings?.styleLibrary?.scenes });
+export function configurationOf(article: ConfiguredArticle, settings?: object): StyleConfiguration {
+  return normalizeConfiguration({ style: article.style, advancedStyle: article.storySettings?.advancedStyle, generate: settings ? articleAiSettings({ aiGenerateSettings: normalizeAiGenerateOptions(article.aiGenerateSettings), chapters: [] }, "generate", settings) : article.aiGenerateSettings, scenes: article.storySettings?.styleLibrary?.scenes });
 }
-export function modelConfiguration(article: ConfiguredArticle, model: string) {
-  const base = configurationOf(article);
+export function modelConfiguration(article: ConfiguredArticle, model: string, settings?: object) {
+  const base = configurationOf(article, settings);
   const calibration = normalizeStyleLibrary(article.storySettings?.styleLibrary).calibrations[model];
   return calibration?.baseFingerprint === configurationFingerprint(base) ? { configuration: calibration.configuration, calibration } : { configuration: base, calibration: undefined };
+}
+
+export function restoreStyleGenerateSettings(current: AiGenerateOptions, before: AiGenerateOptions) {
+  const next = overrideAiSettings(current, { proseControls: before.proseControls, advanced: before.advanced });
+  const inheritance = { ...next.inheritance };
+  for (const key of new Set([...Object.keys(inheritance), ...Object.keys(before.inheritance ?? {})])) {
+    if (!key.startsWith("advanced.") && !key.startsWith("proseControls.")) continue;
+    const mode = before.inheritance?.[key];
+    if (mode) inheritance[key] = mode;
+    else delete inheritance[key];
+  }
+  return { ...next, inheritance: Object.keys(inheritance).length ? inheritance : undefined };
 }
 export function sceneInstructions(scenes: ScenePreference[]) {
   return scenes.length ? "按当前场景功能选择适用偏好，不机械使用全部策略：\n" + scenes.map(s => `${s.name}（${s.when}）：${s.instruction}`).join("\n") : "";

@@ -1,3 +1,4 @@
+import { createInheritedAiSettings } from "@/lib/ai-settings-inheritance";
 import { normalizeStudioData } from "@/lib/studio-normalization";
 import { outline, makeId, findOutlineInArticle, firstOutline, activeExcellentFragments, activeManualExcellent } from "@/lib/studio-entities";
 
@@ -5,7 +6,6 @@ import type { ChatSession, Version, Article, TaskExecutionOrigin, StudioData } f
 
 import { normalizeAppearance } from "@/lib/appearance.mjs";
 
-import { normalizeAiGenerateOptions } from "@/lib/generate-options";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { cloneExcellentFragments, normalizeExcellentFragments, reanchorExcellentFragments, toggleExcellentFragment } from "@/lib/excellent-fragments.mjs";
 import { currentOutlineVersion, deleteOutlineVersion, resolvedOutlineContent, resolvedOutlineSnapshot, selectOutlineVersion } from "@/lib/outline-content";
@@ -62,12 +62,8 @@ createArticle(fields) {
         reviewRuleItems: createDefaultReviewRules(articleId, createdAt),
         chapterNaming: DEFAULT_CHAPTER_NAMING_PROFILE,
         outlineNaming: DEFAULT_OUTLINE_NAMING_PROFILE,
-        aiGenerateSettings: normalizeAiGenerateOptions({
-          model: dataRef.current.settings.generateModel,
-          reasoningEffort: dataRef.current.settings.generateReasoningEffort,
-          targetWords: dataRef.current.settings.generateTargetWords,
-          reviewMaxRounds: dataRef.current.settings.generateReviewMaxRounds,
-        }),
+        aiGenerateSettings: createInheritedAiSettings("generate"),
+        illustrationSettings: createInheritedAiSettings("illustration"),
         createdAt,
         updatedAt: createdAt,
         lastOutlineId: outlineId,

@@ -26,12 +26,14 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     data.articles[0].aiGenerateSettings!.model = model.id;
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/settings/tasks");
+    await page.getByRole("tab", { name: "写作准备与讨论", exact: true }).click();
     await expect(page.getByLabel("写作前最多互动轮次")).toHaveValue("3");
-    await expect(page.getByLabel("写作讨论策略")).toHaveValue("minimal");
+    await expect(page.getByRole("combobox", { name: "讨论策略", exact: true })).toHaveValue("最少条件型");
     await expect(page.getByLabel("准备稿无问题时仍需确认")).not.toBeChecked();
-    await page.getByLabel("写作讨论策略").selectOption("explore");
+    await page.getByRole("combobox", { name: "讨论策略", exact: true }).click();
+    await page.getByRole("option", { name: "最大探索型", exact: true }).click();
     await page.getByLabel("准备稿无问题时仍需确认").check();
-    await page.getByLabel("写作前最多互动轮次").selectOption("1");
+    await page.getByLabel("写作前最多互动轮次").fill("1");
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationMaxRounds).toBe(1);
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationRequireConfirmation).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();

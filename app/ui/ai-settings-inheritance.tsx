@@ -1,9 +1,12 @@
 "use client";
 
-import { Group, Stack, Text, Textarea, NumberInput, Select, Checkbox } from "@mantine/core";
+import { Button, Group, Stack, Text, Textarea, NumberInput, Select, Checkbox } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GENERATE_FIELDS } from "@/lib/advanced-writing";
-import { AI_SETTING_LABELS, aiSettingKeys, inheritAiSettings, overrideAiSettings, readAiSetting, resolveAiSettings, type AiSettingsKind } from "@/lib/ai-settings-inheritance";
+import { AI_SETTING_LABELS, articleAiSettings, globalAiSettings, aiSettingKeys, inheritAiSettings, overrideAiSettings, readAiSetting, resolveAiSettings, type AiSettingsKind } from "@/lib/ai-settings-inheritance";
+import { ArticleReviewRulesPage } from "./review-rules";
+import { ArticleGenerateSettings } from "./article-generate-settings";
+import { ArticleIllustrationSettings } from "./article-illustration-settings";
 import { normalizeChapterSettings } from "@/lib/story-settings";
 import { type AiGenerateOptions } from "@/lib/generate-options";
 import { type IllustrationOptions } from "@/lib/illustration-options";
@@ -29,7 +32,7 @@ export function AiSettingsInheritance<T extends Options>({ kind, targetId, level
     <details className="ai-setting-inheritance-details"><summary>逐项设置继承</summary><Stack gap="xs" mt="sm">
       {keys.filter(key => !key.startsWith("tasks.") && (includeAdvanced || !key.startsWith("advanced."))).map(key => {
         const label = key.startsWith("advanced.") ? GENERATE_FIELDS[key.slice(9) as keyof typeof GENERATE_FIELDS][0] : AI_SETTING_LABELS[key];
-        return <div className="ai-setting-inheritance-row" key={key}><Text size="sm">{label}<small>{value.inheritance?.[key] === "previous" ? `跟随${resolved.previousLabel}` : value.inheritance?.[key] === "article" ? "跟随文章默认" : "当前设置"}</small></Text><AiSettingActions label={label} disabled={disabled} onArticle={() => apply("article", [key])} onPrevious={() => apply("previous", [key])} /></div>;
+          return <div className="ai-setting-inheritance-row" key={key}><Text size="sm">{label}<small>{value.inheritance?.[key] === "previous" ? `跟随${resolved.previousLabel}` : value.inheritance?.[key] === "parent" ? `跟随${resolved.parentLabel}` : value.inheritance?.[key] === "global" ? "跟随全局默认" : value.inheritance?.[key] === "article" ? "跟随文章默认" : "当前设置"}</small></Text><AiSettingActions label={label} disabled={disabled} onArticle={() => apply("article", [key])} onPrevious={() => apply("previous", [key])} /></div>;
       })}
     </Stack></details>
   </div>;
@@ -41,6 +44,24 @@ const choices: Record<string, { value: string; label: string }[]> = {
   reasoningEffort: [{ value: "__inherit__", label: "跟随模型" }, { value: "__omit__", label: "不发送推理参数" }, ...["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map(value => ({ value, label: value }))],
   promptLanguage: [{ value: "zh", label: "中文" }, { value: "en", label: "English" }],
 };
+
+export function ArticleAiSettings() {
+  const studio = useStudio();
+  const generate = articleAiSettings(studio.currentArticle, "generate", studio.data.settings);
+  const illustration = articleAiSettings(studio.currentArticle, "illustration", studio.data.settings);
+  function restore(kind: AiSettingsKind, keys = aiSettingKeys(kind)) {
+    const next = inheritAiSettings(kind === "generate" ? generate : illustration, "global", globalAiSettings(kind, studio.data.settings), keys);
+    studio.updateArticle(kind === "generate" ? { aiGenerateSettings: next as AiGenerateOptions } : { illustrationSettings: next as IllustrationOptions });
+  }
+  function actions(kind: AiSettingsKind) {
+    const value = kind === "generate" ? generate : illustration;
+    return <details className="article-ai-inheritance"><summary>逐项恢复全局默认</summary><Stack gap="xs" mt="sm">{aiSettingKeys(kind).filter(key => !key.startsWith("tasks.") && !["reviewMaxRounds", "reviewInstruction", "firstAppearanceOverrides"].includes(key)).map(key => {
+      const label = key.startsWith("advanced.") ? GENERATE_FIELDS[key.slice(9) as keyof typeof GENERATE_FIELDS][0] : AI_SETTING_LABELS[key];
+      return <Group key={key} justify="space-between"><Text size="sm">{label}<Text component="span" size="xs" c="dimmed"> · {value.inheritance?.[key] === "global" ? "跟随全局默认" : "文章专属修改"}</Text></Text><Button variant="subtle" size="compact-xs" aria-label={`${label}恢复全局默认`} onClick={() => restore(kind, [key])}>恢复全局默认</Button></Group>;
+    })}</Stack></details>;
+  }
+  return <details className="article-ai-settings"><summary>文章 AI 任务设置</summary><Stack gap="md" mt="sm" className="article-ai-task-settings"><Text size="sm" c="dimmed">未修改的项目实时跟随全局默认。旧文章已有配置保留；逐项修改仅作用于本文章。</Text><Button variant="subtle" size="xs" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(generate, "global", globalAiSettings("generate", studio.data.settings), aiSettingKeys("generate")), illustrationSettings: inheritAiSettings(illustration, "global", globalAiSettings("illustration", studio.data.settings), aiSettingKeys("illustration")) })}>恢复全部全局默认</Button><ArticleGenerateSettings />{actions("generate")}<TaskParameterSettings level="article" targetId={studio.currentArticle.id} /><ArticleIllustrationSettings />{actions("illustration")}<ArticleReviewRulesPage /></Stack></details>;
+}
 
 export function ChapterAiSettings({ chapterId }: { chapterId: string }) {
   const studio = useStudio();

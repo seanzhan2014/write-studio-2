@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyLocks, configurationFingerprint, normalizeConfiguration, normalizeStyleLibrary, textStatistics } from "../lib/style-learning.ts";
+import { applyLocks, configurationFingerprint, normalizeConfiguration, normalizeStyleLibrary, restoreStyleGenerateSettings, textStatistics } from "../lib/style-learning.ts";
+import { articleAiSettings, createInheritedAiSettings, overrideAiSettings } from "../lib/ai-settings-inheritance.ts";
 import { normalizeAiGenerateOptions } from "../lib/generate-options.ts";
 import { normalizeArticleStorySettings } from "../lib/story-settings.ts";
 
@@ -18,6 +19,21 @@ test("learning preserves locked text and operational model settings", () => {
   const result = applyLocks(candidate, base, ["style.additional", "generate.narrator"]);
   assert.equal(result.style, "新风格"); assert.equal(result.advancedStyle.additional, "人工要求");
   assert.equal(result.generate.model, "chosen"); assert.equal(result.generate.contentMode, "continue"); assert.equal(result.generate.advanced.narrator, "限知");
+});
+
+test("restoring learned style restores live style inheritance and preserves later operational edits", () => {
+  const article = { aiGenerateSettings: createInheritedAiSettings("generate"), chapters: [] };
+  const before = articleAiSettings(article, "generate", { generateTargetWords: 4000 });
+  let current = overrideAiSettings(before, { proseControls: { ...before.proseControls, dialogueDensity: "high" } });
+  current = overrideAiSettings(current, { targetWords: 2000 });
+  const restored = restoreStyleGenerateSettings(current, before);
+  assert.equal(restored.targetWords, 2000);
+  assert.equal(restored.inheritance.targetWords, undefined);
+  assert.equal(restored.inheritance["proseControls.dialogueDensity"], "global");
+  article.aiGenerateSettings = restored;
+  const next = articleAiSettings(article, "generate", { aiGenerateSettings: { proseControls: { dialogueDensity: "low" } } });
+  assert.equal(next.proseControls.dialogueDensity, "low");
+  assert.equal(next.targetWords, 2000);
 });
 test("reference library, scene preferences and model versions survive article normalization", () => {
   const configuration = normalizeConfiguration({ style: "朴素", scenes: [{ name:"行动",when:"关键过程",instruction:"即时展开" }] });

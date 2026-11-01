@@ -1,4 +1,5 @@
 "use client";
+import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
@@ -69,7 +70,7 @@ function ArticleStyleLabPanel() {
   const [references, setReferences] = useState<ReferenceDocument[]>(library.references);
   const [dirty, setDirty] = useState(false);
   const [models, setModels] = useState<Array<{ id: string; name: string; providerName: string; hasSecret: boolean }>>([]);
-  const [model, setModel] = useState(article.aiGenerateSettings.model);
+  const [model, setModel] = useState(articleAiSettings(article, "generate", studio.data.settings).model);
   const [rounds, setRounds] = useState<number | string>(3);
   const [active, setActive] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState("");
@@ -108,14 +109,14 @@ function ArticleStyleLabPanel() {
     setSelectedJobId(result.job.id); setActive(true); setNotice("任务已提交，可继续写作；过程和成果保存在学习历史中。"); window.dispatchEvent(new CustomEvent("style-lab-progress"));
   }
   function restore(version: ConfigurationVersion, asBase = false) {
-    const current = configurationOf(article); const next = normalizeStyleLibrary(library);
+    const current = configurationOf(article, studio.data.settings); const next = normalizeStyleLibrary(library);
     next.versions.push({ id: crypto.randomUUID(), name: "应用前配置", createdAt: new Date().toISOString(), configuration: current });
     if (version.model && !asBase) {
       next.calibrations[version.model] = { ...version, baseFingerprint: configurationFingerprint(current) };
       studio.updateArticle({ storySettings: { ...article.storySettings!, styleLibrary: normalizeStyleLibrary(next) } });
     } else {
       next.scenes = version.configuration.scenes;
-      studio.updateArticle({ style: version.configuration.style, aiGenerateSettings: { ...article.aiGenerateSettings, proseControls: version.configuration.generate.proseControls, advanced: version.configuration.generate.advanced }, storySettings: { ...article.storySettings!, advancedStyle: version.configuration.advancedStyle, styleLibrary: normalizeStyleLibrary(next) } });
+      studio.updateArticle({ style: version.configuration.style, aiGenerateSettings: overrideAiSettings(articleAiSettings(article, "generate", studio.data.settings), { proseControls: version.configuration.generate.proseControls, advanced: version.configuration.generate.advanced }), storySettings: { ...article.storySettings!, advancedStyle: version.configuration.advancedStyle, styleLibrary: normalizeStyleLibrary(next) } });
     }
     setNotice("已应用配置，可在版本记录中恢复。");
   }
@@ -138,6 +139,6 @@ function ArticleStyleLabPanel() {
     <details className="writing-advanced"><summary>学习与微调高级设定<span>{library.locked.length?`锁定${library.locked.length}项`:"自动"}</span></summary><Stack gap="md" className="writing-advanced-body"><MultiSelect label="锁定设置项" description="学习和微调保留这些项目。" searchable clearable data={lockOptions} value={library.locked} onChange={locked=>studio.updateArticle({storySettings:{...article.storySettings!,styleLibrary:{...library,locked}}})} /><Text size="sm" c="dimmed">多篇材料提取共性，差异保存为场景偏好。微调固定参考大纲、生成模型和评分标准，并沿用当前审校设置。配置变化时结果保留待应用；模型设置变化时需要新建试验。</Text><Button variant="default" onClick={()=>importRef.current?.click()}>导入可复用配置</Button><input ref={importRef} type="file" hidden accept=".json" onChange={event=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void perform(async()=>{const value=JSON.parse(await file.text());if(value.kind!=="writer-studio-style-configuration"||!value.configuration)throw new Error("配置文件格式无效");const configuration=normalizeConfiguration(value.configuration);const version={id:crypto.randomUUID(),name:file.name,createdAt:new Date().toISOString(),configuration};studio.updateArticle({storySettings:{...article.storySettings!,styleLibrary:normalizeStyleLibrary({...library,versions:[...library.versions,version]})}});setNotice("配置已导入版本列表，可对照后应用。");});}} /></Stack></details>
     {!!library.scenes.length && <details className="writing-advanced"><summary>场景偏好<span>{library.scenes.length} 项</span></summary><div className="writing-advanced-body">{library.scenes.map((scene,i)=><div key={i}><strong>{scene.name}</strong><p>{scene.when}</p><p>{scene.instruction}</p></div>)}</div></details>}
     <StyleJobHistory articleId={article.id} initialJobId={selectedJobId} />
-    {!!library.versions.length&&<details className="writing-advanced"><summary>配置版本与复用<span>{library.versions.length} 个</span></summary><Stack gap="md" className="writing-advanced-body">{library.versions.slice().reverse().map(version=><div className="style-version" key={version.id}><strong>{version.name}</strong>{version.model&&<Text size="xs" c="dimmed">模型专用 · {models.find(m=>m.id===version.model)?.name??version.model}{version.baseFingerprint!==configurationFingerprint(configurationOf(article))?" · 基础配置已变更，建议复测":""}</Text>}<Group gap="xs"><Button size="compact-sm" variant="subtle" onClick={()=>restore(version)}>应用此版本</Button>{version.model&&<Button size="compact-sm" variant="subtle" onClick={()=>restore(version,true)}>另存为文章基础配置</Button>}<Button size="compact-sm" variant="subtle" onClick={()=>download("writer-studio-style.json",{kind:"writer-studio-style-configuration",version:1,configuration:version.configuration})}>导出复用</Button></Group><details><summary>查看配置差异</summary><ConfigComparison before={configurationOf(article)} after={version.configuration}/></details></div>)}</Stack></details>}
+    {!!library.versions.length&&<details className="writing-advanced"><summary>配置版本与复用<span>{library.versions.length} 个</span></summary><Stack gap="md" className="writing-advanced-body">{library.versions.slice().reverse().map(version=><div className="style-version" key={version.id}><strong>{version.name}</strong>{version.model&&<Text size="xs" c="dimmed">模型专用 · {models.find(m=>m.id===version.model)?.name??version.model}{version.baseFingerprint!==configurationFingerprint(configurationOf(article, studio.data.settings))?" · 基础配置已变更，建议复测":""}</Text>}<Group gap="xs"><Button size="compact-sm" variant="subtle" onClick={()=>restore(version)}>应用此版本</Button>{version.model&&<Button size="compact-sm" variant="subtle" onClick={()=>restore(version,true)}>另存为文章基础配置</Button>}<Button size="compact-sm" variant="subtle" onClick={()=>download("writer-studio-style.json",{kind:"writer-studio-style-configuration",version:1,configuration:version.configuration})}>导出复用</Button></Group><details><summary>查看配置差异</summary><ConfigComparison before={configurationOf(article, studio.data.settings)} after={version.configuration}/></details></div>)}</Stack></details>}
   </section>;
 }

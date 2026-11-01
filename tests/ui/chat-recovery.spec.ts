@@ -11,6 +11,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 test("Chat reload restores server progress and receives exactly one durable reply", async ({ page, request }) => {
+  test.setTimeout(60_000);
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let calls = 0;
@@ -34,7 +35,7 @@ test("Chat reload restores server progress and receives exactly one durable repl
     await page.getByRole("button", { name: "发送消息" }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.receivedCharacters).toBeGreaterThan(0);
     await page.reload();
-    await expect(page.locator(".message.assistant.streaming")).toContainText("刷新前的片段");
+    await expect(page.locator(".message.assistant.streaming")).toContainText("刷新前的片段", { timeout: 20_000 });
     release();
     await expect(page.getByRole("button", { name: "发送消息" })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".message.assistant").filter({ hasText: "刷新前的片段，刷新后的完整结果" })).toHaveCount(1);

@@ -30,7 +30,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
   const inheritedOptions = normalizeIllustrationOptions(studio.currentArticle.illustrationSettings);
-  const illustrationOptions = resolveAiSettings(studio.currentArticle, outlineId, "illustration").value;
+  const illustrationOptions = resolveAiSettings(studio.currentArticle, outlineId, "illustration", "outline", studio.data.settings).value;
   const styles = normalizeIllustrationStyles(studio.data.settings.illustrationStyles);
   const { promptLanguage, additionalPrompt } = illustrationOptions;
   const stylePreset = resolveIllustrationStyle(illustrationOptions.stylePreset, styles).value;

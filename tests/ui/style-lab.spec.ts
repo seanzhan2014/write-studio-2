@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { normalizeConfiguration } from "../../lib/style-learning";
@@ -22,13 +23,15 @@ test("advanced settings stay optional and reference learning saves inputs before
   await expect(style).not.toHaveAttribute("open",/.*/);
   await style.locator("summary").click(); await style.getByRole("textbox",{name:"附加",exact:true}).fill("保留有意义的情绪呼应");
   await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.articles[0].storySettings?.advancedStyle?.additional).toBe("保留有意义的情绪呼应");
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   const advanced=page.locator(".article-generate-settings details.writing-advanced");
   await expect(advanced).not.toHaveAttribute("open",/.*/); await advanced.locator("summary").click();
   await advanced.getByRole("textbox",{name:"细节组织方式",exact:true}).fill("重复时产生新的意义");
   await advanced.getByRole("textbox",{name:"附加",exact:true}).fill("对话场景允许自然停顿");
   await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings?.advanced?.additional).toBe("对话场景允许自然停顿");
   await advanced.locator("summary").click();
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
   const lab=page.getByRole("region",{name:"风格学习与微调"});
   await lab.locator("summary").filter({hasText:/^参考文章/}).click();
   await lab.getByRole("button",{name:"粘贴参考文章",exact:true}).click();
@@ -64,7 +67,8 @@ test("learning history is available from the task workspace with pagination, evi
     if (route.request().method() === "POST") { archived = true; job.payload.archived = true; }
     await route.fulfill({ json: { job } });
   });
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
   await expect(page.getByText("由本机服务在后台执行", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
   const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
@@ -119,7 +123,8 @@ test("unqualified calibration keeps diagnostics visible and offers no configurat
   const job = { id: "unqualified", articleId: "article-main", kind: "tune", status: "completed", phase: "completed", model: "model", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z", rounds: [], payload: { base: configuration, best: configuration, references: [], outlines: [], analyses: [], inputTokens: 10, outputTokens: 20, bestRound: 0, bestScore: -1, round: 1, history: [{ at: "2026-10-22T00:00:00Z", status: "retrying", phase: "generate", retry: 1, error: "上游临时不可用", diagnostics: { requestId: "failed-generation", provider: "mock-provider" } }] } };
   await page.route(/\/api\/style-lab(?:\?.*)?$/, route => route.fulfill({ json: { jobs: [job], active: 0, total: 1, pages: 1, page: 1, executionMode: "server" } }));
   await page.route("**/api/style-lab/unqualified", route => route.fulfill({ json: { job } }));
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
   const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
   const history = workspace.getByRole("region", { name: "学习历史", exact: true });

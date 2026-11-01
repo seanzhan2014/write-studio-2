@@ -9205,3 +9205,16 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   .task-interaction.full .task-interaction-header { display: none; }
   .task-interaction.full .task-interaction-scroll { padding-block: 10px; }
 }
+
+.ai-task-settings-page { display: grid; gap: 20px; min-width: 0; }
+.ai-task-category-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.ai-task-category-tabs button { border: 1px solid var(--border); border-radius: 8px; background: transparent; color: inherit; padding: 9px 14px; cursor: pointer; }
+.ai-task-category-tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); font-weight: 600; }
+.ai-task-category-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.ai-task-category-panel { min-width: 0; }
+.ai-task-category-panel .task-parameter-settings { margin-top: 0; }
+@media (max-width: 767px) {
+  .ai-task-category-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ai-task-category-tabs button { padding-inline: 8px; }
+  .ai-task-category-panel .form-card { padding: 16px; }
+}

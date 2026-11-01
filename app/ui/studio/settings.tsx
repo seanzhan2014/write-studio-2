@@ -5,28 +5,19 @@ import { CharacterPhotoWorkspace } from "@/app/ui/character-photos";
 import type { CharacterVisual } from "@/lib/character-visual";
 import { ArticleIllustrationSettings } from "@/app/ui/article-illustration-settings";
 
-import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
-
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 
 import { StyleLabPanel } from "@/app/ui/style-lab";
 import { AiPromptSettings } from "@/app/ui/ai-prompt-settings";
 
-import { ReasoningSettings } from "@/app/ui/reasoning-settings";
-
-import { MAX_REVIEW_ROUNDS, MAX_REVIEW_RULE_CHARACTERS, normalizeReviewRounds, normalizeReviewStrategy, REVIEW_STRATEGY_LABELS } from "@/lib/generate-review.mjs";
 import { ArticleReviewRulesPage } from "@/app/ui/review-rules";
-
-import { normalizePreparationRounds, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, MAX_PREPARATION_ROUNDS } from "@/lib/writing-preparation";
 
 import { AppearancePanel } from "@/app/ui/appearance-settings";
 import { AiServices } from "@/app/ui/ai-services";
 
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Group, Menu, NumberInput, Select, SimpleGrid, Slider, Stack, Text, Textarea } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, Menu, Select, SimpleGrid, Stack, Text, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
-
-import { DEFAULT_AI_GENERATE_OPTIONS, CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, normalizeAiGenerateOptions, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
 
 import { CIPAI_OPTIONS, DEFAULT_CHAPTER_NAMING_PROFILE, DEFAULT_OUTLINE_NAMING_PROFILE, NAMING_EXPRESSION_OPTIONS, NAMING_FORMAT_OPTIONS, NAMING_STYLE_OPTIONS, normalizeNamingProfile, type NamingProfile } from "@/lib/naming-options";
 
@@ -40,9 +31,10 @@ import { CHARACTER_PROFILE_KEYS, normalizeCharacterProfile, type ResolvedChapter
 
 import { type View, type ManagedServiceStatusResponse, type ManagedServiceStatus } from "@/app/ui/studio/types";
 
-import { useDismissOnOutside, PageHeader, IconButton, useConfiguredModels, configuredModelForReference, rewriteRetentionOptions, modelDisplayLabel, contentGenerationModeLabel, contentGenerationModes, ProseControlRow, Icon, copyTextToClipboard } from "@/app/ui/studio/shared";
+import { useDismissOnOutside, PageHeader, IconButton, Icon, copyTextToClipboard } from "@/app/ui/studio/shared";
 
 import { ArticleCopyDialog } from "@/app/ui/studio/article-dialogs";
+import { ArticleGenerateSettings } from "@/app/ui/article-generate-settings";
 
 export function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (view: View) => void; onNotice: (message: string) => void }) {
   const studio = useStudio();
@@ -75,17 +67,9 @@ export function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (v
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
       {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
-        ["info-basic", "基本信息"], ["info-ai-tasks", "AI 任务设定"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
+        ["info-basic", "基本信息"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
       ]} active={view} onGo={onGo} />
       {view === "info-basic" && <BasicInfo />}
-      {view === "info-ai-tasks" && <div className="article-ai-task-settings">
-        <StyleLabPanel />
-        <ArticleGenerateSettings />
-        <TaskParameterSettings level="article" targetId={studio.currentArticle.id} />
-        <ArticleIllustrationSettings />
-        <div className="form-card article-ai-task-section"><ArticleReviewRulesPage /></div>
-        <ArticleChapterNames />
-      </div>}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
       {copySource && <ArticleCopyDialog article={copySource} existingTitles={studio.data.articles.map((article) => article.title)} onClose={() => setCopySource(null)} onCreate={copyArticle} />}
@@ -101,61 +85,6 @@ export function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
   return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<small>故事类型、时代背景、世界规则等内容都可以写在这里。</small><textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
-}
-
-export function ArticleGenerateSettings() {
-  const studio = useStudio();
-  const models = useConfiguredModels();
-  const article = studio.currentArticle;
-  const settings = normalizeAiGenerateOptions(article.aiGenerateSettings, DEFAULT_AI_GENERATE_OPTIONS);
-  const selectedRecord = configuredModelForReference(models, settings.model);
-  const selectedModelReference = selectedRecord?.id ?? settings.model;
-  const rewriteRetentionIndex = rewriteRetentionOptions.findIndex((item) => item.value === settings.rewriteRetention);
-  const rewriteRetentionOption = rewriteRetentionOptions[rewriteRetentionIndex] ?? rewriteRetentionOptions[1];
-  const overriddenOutlines = article.chapters.reduce((count, chapter) => count + chapter.outlines.filter((outline) => outline.generateOptions !== null).length, 0);
-  const modelOptions = [
-    { value: "", label: "本地演示引擎" },
-    ...(selectedModelReference && !selectedRecord ? [{ value: selectedModelReference, label: `${selectedModelReference}（不可用）` }] : []),
-    ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
-  ];
-  const patchSettings = (patch: Partial<AiGenerateOptions>) => studio.updateArticle({ aiGenerateSettings: normalizeAiGenerateOptions({ ...settings, ...patch }, DEFAULT_AI_GENERATE_OPTIONS) });
-
-  return <section className="form-card article-ai-task-section article-generate-settings" aria-labelledby="article-generate-title">
-    <header className="article-ai-task-section-heading"><h2 id="article-generate-title">生成</h2><p>新大纲和尚未单独调整过的大纲会使用这些选项。</p></header>
-    <div className="article-generate-basics">
-      <Select label="默认模型" aria-label="文章生成默认模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => patchSettings({ model: value ?? "" })} />
-      <NumberInput label="默认目标字数" aria-label="文章生成默认目标字数" min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" value={settings.targetWords || ""} onChange={(value) => patchSettings({ targetWords: value === "" ? 0 : Number(value) })} />
-    </div>
-    <section className="article-generate-block" aria-labelledby="article-generate-mode-title">
-      <div className="generate-section-heading"><span id="article-generate-mode-title">生成方式</span><strong>{contentGenerationModeLabel(settings.contentMode)}</strong></div>
-      <div className="generate-mode-options" role="radiogroup" aria-label="文章默认正文生成方式">{contentGenerationModes.map((item) => <button className={settings.contentMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={settings.contentMode === item.value} key={item.value} onClick={() => patchSettings({ contentMode: item.value })}><span className="ui-title">{item.label}</span></button>)}</div>
-      <p className="generate-mode-description">{contentGenerationModes.find((item) => item.value === settings.contentMode)?.mobileDescription}</p>
-      {settings.contentMode === "rewrite" && <div className="rewrite-retention-control article-rewrite-retention"><div className="rewrite-retention-heading"><div><span>默认原文保留度</span></div><strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong></div><Slider thumbLabel="默认原文保留度" min={0} max={rewriteRetentionOptions.length - 1} step={1} marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))} value={rewriteRetentionIndex} label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"} onChange={(value) => patchSettings({ rewriteRetention: rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL })} /><p>{rewriteRetentionOption.description}</p></div>}
-    </section>
-    <section className="article-generate-block prose-controls-section" aria-labelledby="article-prose-controls-title">
-            <div className="generate-section-heading"><span id="article-prose-controls-title">表达偏好</span><strong>文章默认</strong></div>
-      <div className="prose-controls-grid">
-        <ProseControlRow id="article-dialogue-density" label="对话密度" value={settings.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...settings.proseControls, dialogueDensity } })} className="dialogue-density-control" />
-        <ProseControlRow id="article-introspection-density" label="内心活动" value={settings.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...settings.proseControls, introspectionDensity } })} />
-        <ProseControlRow id="article-description-detail" label="描写细度" value={settings.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...settings.proseControls, descriptionDetail } })} />
-        <ProseControlRow id="article-narrative-pace" label="叙事节奏" value={settings.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...settings.proseControls, narrativePace } })} />
-        <ProseControlRow id="article-paragraph-length" label="段落长度" value={settings.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...settings.proseControls, paragraphLength } })} />
-        <ProseControlRow id="article-closing-summary" label="收尾总结" value={settings.closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => patchSettings({ closingSummaryLength })} className="closing-summary-control" />
-      </div>
-    </section>
-    <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} />
-    <section className="article-generate-block article-generate-references" aria-labelledby="article-generate-reference-title">
-      <div className="generate-section-heading"><span id="article-generate-reference-title">参考内容</span></div>
-      <div className="article-generate-toggle-grid">
-        <Checkbox label="包含前面大纲" checked={settings.includePrevious} onChange={(event) => patchSettings({ includePrevious: event.currentTarget.checked })} />
-        <Checkbox label="包含相关人物" checked={settings.includeCharacters} onChange={(event) => patchSettings({ includeCharacters: event.currentTarget.checked })} />
-        <Checkbox label="参考优秀片段" checked={settings.includeExcellentFragments} onChange={(event) => patchSettings({ includeExcellentFragments: event.currentTarget.checked })} />
-      </div>
-    </section>
-    <section className="article-generate-block" aria-label="生成附加项"><div className="generate-section-heading"><span>生成附加项</span></div><Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} /></section>
-    <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>
-    <div className="form-foot"><span>{overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>
-  </section>;
 }
 
 export function ArticleChapterNames() {
@@ -288,13 +217,12 @@ export function SettingsPage({ view, onGo }: { view: View; onGo: (view: View) =>
     ["settings-general", "常规"],
     ["settings-appearance", "外观与编辑器"],
     ["settings-models", "AI 服务"],
-    ["settings-prompts", "AI提示"],
     ["settings-tasks", "AI 任务"],
     ["settings-database", "数据管理"],
     ["settings-system", "系统与诊断"],
   ];
   const activeItem = items.find(([key]) => key === view) ?? items[0];
-  return <div className="settings-layout"><nav className="settings-nav" aria-label="设置分类"><button className="settings-back-writing" type="button" onClick={() => onGo("write")}>← 返回写作</button><div><span>Writer Studio</span><span className="ui-title">设置</span></div>{items.map(([key, label]) => <button className={view === key ? "active" : ""} key={key} type="button" onClick={() => onGo(key)}><span className="ui-title">{label}</span></button>)}</nav><div className={`settings-content ${view === "settings-models" ? "ai-settings-content" : ""}`}><PageHeader title={activeItem[1]} />{view === "settings-general" && <GeneralSettings />}{view === "settings-appearance" && <AppearanceSettings />}{view === "settings-models" && <ModelSettings />}{view === "settings-prompts" && <AiPromptSettings />}{view === "settings-tasks" && <TaskSettings />}{view === "settings-database" && <DatabaseSettings />}{view === "settings-system" && <SystemSettings />}</div></div>;
+  return <div className="settings-layout"><nav className="settings-nav" aria-label="设置分类"><button className="settings-back-writing" type="button" onClick={() => onGo("write")}>← 返回写作</button><div><span>Writer Studio</span><span className="ui-title">设置</span></div>{items.map(([key, label]) => <button className={view === key ? "active" : ""} key={key} type="button" onClick={() => onGo(key)}><span className="ui-title">{label}</span></button>)}</nav><div className={`settings-content ${view === "settings-models" ? "ai-settings-content" : ""}`}><PageHeader title={activeItem[1]} />{view === "settings-general" && <GeneralSettings />}{view === "settings-appearance" && <AppearanceSettings />}{view === "settings-models" && <ModelSettings />}{view === "settings-prompts" && <TaskSettings />}{view === "settings-tasks" && <TaskSettings />}{view === "settings-database" && <DatabaseSettings />}{view === "settings-system" && <SystemSettings />}</div></div>;
 }
 
 export function SettingSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -321,30 +249,22 @@ export function ModelSettings() { return <AiServices />; }
 
 export function TaskSettings() {
   const studio = useStudio();
-  const models = useConfiguredModels();
-  const strategy = normalizePreparationStrategy(studio.data.settings.preparationStrategy);
-  const reviewStrategy = normalizeReviewStrategy(studio.data.settings.generateReviewStrategy);
-  const reviewModelReference = studio.data.settings.reviewModelMode === "fixed" ? studio.data.settings.reviewModel : "__inherit__";
-  return <>
-    <SettingSection title="写作准备与讨论">
-      <SettingRow title="讨论策略"><select aria-label="写作讨论策略" value={strategy} onChange={(event) => studio.updateSettings({ preparationStrategy: normalizePreparationStrategy(event.target.value) })}>{Object.entries(PREPARATION_STRATEGY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="readonly-value">{strategy === "minimal" ? "只讨论影响写作的必要条件，条件足够后结束。" : "探索人物、情节和表达的更多可能，没有有价值的新问题时结束。"}</span></SettingRow>
-      <SettingRow title="写作前最多互动轮次"><select aria-label="写作前最多互动轮次" value={normalizePreparationRounds(studio.data.settings.preparationMaxRounds)} onChange={(event) => studio.updateSettings({ preparationMaxRounds: Number(event.target.value) })}>{Array.from({ length: MAX_PREPARATION_ROUNDS + 1 }, (_, value) => <option key={value} value={value}>{value} 轮</option>)}</select><span className="readonly-value">两种策略都可提前结束；0 轮仍整理准备稿。</span></SettingRow>
-      <SettingRow title="准备稿无问题时仍需确认"><Checkbox aria-label="准备稿无问题时仍需确认" checked={studio.data.settings.preparationRequireConfirmation === true} onChange={(event) => studio.updateSettings({ preparationRequireConfirmation: event.currentTarget.checked })} /><span className="readonly-value">关闭后自动写正文；开启后等待作者确认。</span></SettingRow>
-      <p className="form-foot">以上设置对新任务生效。主动选择“结束讨论，检查准备稿”时，仍会等待确认。</p>
-    </SettingSection>
-    <SettingSection title="生成后审校">
-      <SettingRow title="最多修正次数"><NumberInput aria-label="审校最多修正次数" min={0} max={MAX_REVIEW_ROUNDS} allowDecimal={false} allowNegative={false} value={normalizeReviewRounds(studio.data.settings.generateReviewMaxRounds)} onChange={(value) => studio.updateSettings({ generateReviewMaxRounds: normalizeReviewRounds(value) })} /><span className="readonly-value">0 表示关闭；每次修正后仍会复检。</span></SettingRow>
-      <SettingRow title="审校模型"><select aria-label="审校模型" value={reviewModelReference} onChange={(event) => studio.updateSettings(event.target.value === "__inherit__" ? { reviewModelMode: "inherit" } : { reviewModelMode: "fixed", reviewModel: event.target.value })}><option value="__inherit__">跟随本次生成模型</option>{!reviewModelReference && <option value="" disabled>请选择审校模型</option>}{reviewModelReference && reviewModelReference !== "__inherit__" && !configuredModelForReference(models, reviewModelReference) && <option value={reviewModelReference}>原审校模型不可用</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></SettingRow>
-      <SettingRow title="审校类型"><select aria-label="审校类型" value={reviewStrategy} onChange={(event) => studio.updateSettings({ generateReviewStrategy: normalizeReviewStrategy(event.target.value) })}>{Object.entries(REVIEW_STRATEGY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="readonly-value">{reviewStrategy === "minimal" ? "满足明确规则和必要条件后结束。" : "继续寻找人物、情节和表达中有依据的改进。"}</span></SettingRow>
-      <SettingRow title="审校补充指令"><Textarea aria-label="审校补充指令" value={studio.data.settings.generateReviewInstruction ?? ""} maxLength={MAX_REVIEW_RULE_CHARACTERS} autosize minRows={2} maxRows={6} onChange={(event) => studio.updateSettings({ generateReviewInstruction: event.currentTarget.value })} placeholder="例如：重点检查人物对白，压缩重复描写" /></SettingRow>
-      <p className="form-foot">新任务使用以上设置；两种类型都可提前结束。文章专用规则在“文章资料 → AI 任务设定”中管理。</p>
-    </SettingSection>
-    <SettingSection title="任务队列">
-      <SettingRow title="并发任务数"><select value={studio.data.settings.taskConcurrency} onChange={(event) => studio.updateSettings({ taskConcurrency: Number(event.target.value) })}>{[1, 2, 3, 4, 5].map((value) => <option key={value}>{value}</option>)}</select></SettingRow>
-      <SettingRow title="自动重试"><span className="readonly-value">2 次</span></SettingRow>
-      <SettingRow title="任务记录"><button className="secondary-button" type="button" onClick={() => studio.data.tasks.filter((task) => ["success", "failed", "cancelled"].includes(task.state)).forEach((task) => studio.removeTask(task.id))}>清除终态任务</button></SettingRow>
-    </SettingSection>
-  </>;
+  const categories = ["正文生成", "写作准备与讨论", "自动审校", "大纲", "聊天", "图片", "学习与微调", "全局"];
+  const [category, setCategory] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "图片" : "正文生成");
+  return <div className="ai-task-settings-page">
+    <Text size="sm" c="dimmed">这里管理全局 AI 默认设置。文章默认跟随全局；文章、章节和大纲的专属修改在“章节与大纲”的设定中管理。</Text>
+    <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
+    <div id="ai-category-panel" role="tabpanel" aria-labelledby={`ai-category-${categories.indexOf(category)}`} className="ai-task-category-panel">
+      {category === "正文生成" && <ArticleGenerateSettings global />}
+      {category === "写作准备与讨论" && <TaskParameterSettings level="global" targetId="global" groups={["写作准备与讨论"]} title="写作准备与讨论" />}
+      {category === "自动审校" && <Stack gap="lg"><TaskParameterSettings level="global" targetId="global" groups={["自动审校"]} title="自动审校" /><ArticleReviewRulesPage global /></Stack>}
+      {category === "大纲" && <TaskParameterSettings level="global" targetId="global" groups={["命名"]} title="章节与大纲名称" />}
+      {category === "聊天" && <TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" />}
+      {category === "图片" && <Stack gap="lg"><TaskParameterSettings level="global" targetId="global" groups={["插图模型"]} title="图片模型" /><ArticleIllustrationSettings global /><AiPromptSettings /></Stack>}
+      {category === "学习与微调" && <Stack gap="md"><Select label="应用到文章" description="参考资料、学习成果和应用记录属于所选文章。" data={studio.data.articles.map(article => ({ value: article.id, label: article.title }))} value={studio.currentArticle.id || null} allowDeselect={false} searchable onChange={value => { if (value) studio.setCurrentArticle(value); }} />{studio.currentArticle.id ? <StyleLabPanel /> : <Text c="dimmed">创建文章后即可学习与微调。</Text>}</Stack>}
+      {category === "全局" && <><TaskParameterSettings level="global" targetId="global" groups={["任务队列"]} title="全局任务设置" /><SettingSection title="任务管理"><SettingRow title="自动重试"><span className="readonly-value">2 次</span></SettingRow><SettingRow title="清除已结束任务"><button className="secondary-button" type="button" onClick={() => studio.data.tasks.filter(task => ["success", "failed", "cancelled"].includes(task.state)).forEach(task => studio.removeTask(task.id))}>清除终态任务</button></SettingRow></SettingSection></>}
+    </div>
+  </div>;
 }
 
 export function DatabaseSettings() {

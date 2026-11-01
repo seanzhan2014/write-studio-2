@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -927,7 +928,7 @@ test("AI Generate reuses supplementary instructions only within the same outline
   }).toBe("当前码头下一次仍要沿用");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await page.getByRole("tab", { name: "聊天" }).click();
-  await page.getByRole("tab", { name: "生成" }).click();
+  await page.getByRole("tab", { name: "正文生成" }).click();
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await instruction.fill("");
   await page.getByRole("button", { name: "保存指令" }).click();
@@ -983,8 +984,8 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
     return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions?.inheritance?.targetWords;
   }).toBe("article");
 
-  await page.goto("/articles/article-main/info/ai-tasks");
-  await expect(page.getByRole("heading", { name: "生成" })).toBeVisible();
+  await openArticleAiSettings(page);
+  await expect(page.getByRole("heading", { name: "正文生成" })).toBeVisible();
   const articleTarget = page.getByRole("textbox", { name: "文章生成默认目标字数" });
   await articleTarget.fill("6800");
   await articleTarget.press("Tab");
@@ -1059,7 +1060,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     if (route.request().method() === "POST") await saveGate;
     await route.continue();
   });
-  await page.getByRole("tab", { name: "生成" }).click();
+  await page.getByRole("tab", { name: "正文生成" }).click();
   const model = page.getByRole("combobox", { name: "本次模型" });
   await model.click();
   await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
@@ -1071,7 +1072,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
   } finally {
     releaseSave();
   }
-  await page.getByRole("tab", { name: "生成" }).click();
+  await page.getByRole("tab", { name: "正文生成" }).click();
   await expect(page.locator(".generate-view")).toBeVisible();
   expect(modelRequests).toBe(1);
 });
@@ -1604,7 +1605,7 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await page.getByRole("button", { name: "版本" }).click();
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
-  await page.getByRole("tab", { name: "生成" }).click();
+  await page.getByRole("tab", { name: "正文生成" }).click();
   await expect(page.locator(".generate-excellent-fragments-toggle input")).not.toBeChecked();
   await page.locator(".generate-context-summary").click();
   const excellentOption = page.locator(".generate-context-panel").getByLabel("参考优秀片段");
@@ -2609,8 +2610,7 @@ test("full content title row respects AI Review visibility and keeps article rul
     await expect(title).toBeVisible();
     await expect(review).toHaveCount(0);
     await expect(editor.getByRole("button", { name: "保存", exact: true })).toBeVisible();
-    await page.goto("/articles/article-main/info/review-rules");
-    await expect(page.getByRole("tab", { name: "AI 任务设定", exact: true })).toHaveAttribute("aria-selected", "true");
+    await openArticleAiSettings(page);
     await expect(page.getByRole("heading", { name: "审校规则", exact: true })).toBeVisible();
     return;
   }

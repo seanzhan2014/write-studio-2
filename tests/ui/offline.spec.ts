@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 
@@ -23,7 +24,7 @@ test("failed settings saves keep a stable local warning, show the cause and reco
     if (fail) return route.fulfill({ status: 500, json: { error: "save_failed", message: "图片设置数据库暂时无法写入" } });
     return route.continue();
   });
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("离线保存的画面要求");
   const banner = page.locator(".persistence-banner.local");
   await expect(banner).toContainText("图片设置数据库暂时无法写入");

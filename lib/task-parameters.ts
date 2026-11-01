@@ -54,7 +54,7 @@ export function taskParameterDefaults(settings: object = {}, article?: { chapter
   const global = settings as Record<string, unknown>;
   const defaults = Object.fromEntries(TASK_PARAMETER_FIELDS.map(field => [field.key, field.reasoning ? global[field.global ?? field.key] === null ? "__omit__" : global[field.global ?? field.key] ?? field.default : global[field.global ?? field.key] ?? field.default]));
   defaults.illustrationPromptModel = global.illustrationPromptModel || global.generateModel || "";
-  for (const prefix of ["chapterNaming", "outlineNaming"] as const) for (const [key, value] of Object.entries(normalizeNamingProfile(article?.[prefix], prefix === "chapterNaming" ? DEFAULT_CHAPTER_NAMING_PROFILE : DEFAULT_OUTLINE_NAMING_PROFILE))) defaults[`${prefix}_${key}`] = value;
+  for (const prefix of ["chapterNaming", "outlineNaming"] as const) for (const [key, value] of Object.entries(normalizeNamingProfile(article?.[prefix], prefix === "chapterNaming" ? DEFAULT_CHAPTER_NAMING_PROFILE : DEFAULT_OUTLINE_NAMING_PROFILE))) defaults[`${prefix}_${key}`] = article?.[prefix] ? value : global[`${prefix}_${key}`] ?? value;
   return normalizeTaskParameters(defaults);
 }
 export function taskReasoningEffort(value: unknown): ReasoningEffort | null | undefined {
@@ -64,7 +64,8 @@ export function taskNamingProfile(tasks: TaskParameters, prefix: "chapterNaming"
   return normalizeNamingProfile(Object.fromEntries(Object.entries(tasks).filter(([key]) => key.startsWith(`${prefix}_`)).map(([key, value]) => [key.slice(prefix.length + 1), value])), prefix === "chapterNaming" ? DEFAULT_CHAPTER_NAMING_PROFILE : DEFAULT_OUTLINE_NAMING_PROFILE);
 }
 
-export function taskReviewSnapshot(article: Parameters<typeof createReviewRuleSnapshot>[0], tasks: TaskParameters, instruction: string): ReviewRuleSnapshot {
+export function taskReviewSnapshot(article: Parameters<typeof createReviewRuleSnapshot>[0], tasks: TaskParameters, instruction: string, settings: { reviewRuleItems?: import("./review-rules.mjs").ReviewRule[] } = {}): ReviewRuleSnapshot {
+  if (tasks.reviewRules === "__global_rules__") return createReviewRuleSnapshot({ id: "global", reviewRuleItems: settings.reviewRuleItems }, instruction);
   if (tasks.reviewRules === undefined || tasks.reviewRules === "__article_rules__") return createReviewRuleSnapshot(article, instruction);
   const content = String(tasks.reviewRules).trim();
   return normalizeReviewRuleSnapshot({ version: 1, instruction, rules: content ? [{ id: `scoped-review:${article.id}`, title: "本级审校规则", content, revision: 1 }] : [] });

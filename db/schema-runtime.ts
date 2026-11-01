@@ -136,7 +136,7 @@ export const schemaStatements = [
   )`,
 ];
 
-export const RUNTIME_SCHEMA_VERSION = "20";
+export const RUNTIME_SCHEMA_VERSION = "21";
 
 export const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
@@ -231,7 +231,7 @@ export async function ensureDatabase() {
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) SELECT 'database_version', value_json, ? FROM app_settings WHERE key='state_revision'").bind(initializedAt),
-        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '17', ?)").bind(initializedAt),
+        db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES('sync_schema_version', '18', ?)").bind(initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('sync_database_id', ?, ?)").bind(crypto.randomUUID(), initializedAt),
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_write_guard', 'ready', ?)").bind(initializedAt),
         db.prepare("INSERT OR REPLACE INTO app_settings(key, value_json, updated_at) VALUES(?, ?, ?)").bind(RUNTIME_SCHEMA_VERSION_KEY, RUNTIME_SCHEMA_VERSION, initializedAt),

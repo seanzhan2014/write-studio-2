@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import type { AiTask } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -8,7 +9,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 test("closing summary defaults off, inherits article settings and persists an explicit opt-out", async ({ page, request }, testInfo) => {
-  await page.goto("/articles/article-main/info/ai-tasks");
+  await openArticleAiSettings(page);
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).focus();

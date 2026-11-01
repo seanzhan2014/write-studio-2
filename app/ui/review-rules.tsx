@@ -5,6 +5,7 @@ import { Alert, Badge, Button, Checkbox, Group, Menu, Stack, Text, Textarea, Tex
 import { useStudio, type Article } from "@/app/studio-state";
 import { articleReviewRules, MAX_REVIEW_RULES, MAX_REVIEW_RULE_CONTENT, normalizeReviewRuleItems, type ReviewRule, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { ResponsiveModal } from "./overlays";
+import { articleAiSettings, globalAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 
 const originLabels = { default: "默认", custom: "自定义", legacy: "原通用规则", preset: "原全局预设" };
 
@@ -15,9 +16,12 @@ export function ReviewRuleSnapshotView({ snapshot, showInstruction = true }: { s
   </div>;
 }
 
-export function ArticleReviewRulesPage() {
+export function ArticleReviewRulesPage({ global = false }: { global?: boolean } = {}) {
   const studio = useStudio();
-  return <ArticleReviewRulesEditor key={studio.currentArticle.id} article={studio.currentArticle} onUpdate={(reviewRuleItems) => studio.updateArticle({ reviewRuleItems })} presets={studio.data.settings.reviewPresets} />;
+  const value = articleAiSettings(studio.currentArticle, "generate", studio.data.settings);
+  const inherited = value.tasks?.reviewRules === "__global_rules__";
+  const article = global || inherited ? { ...studio.currentArticle, id: "global", reviewRules: "", reviewRuleItems: studio.data.settings.reviewRuleItems } : studio.currentArticle;
+  return <><Text size="sm" c="dimmed">{global ? "未单独修改的文章使用这些全局规则。" : inherited ? "当前跟随全局审校规则；修改后成为文章专属规则。" : "当前使用文章专属审校规则。"}</Text>{!global && <Button size="compact-xs" variant="subtle" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(value, "global", globalAiSettings("generate", studio.data.settings), ["tasks.reviewRules"]) })}>恢复全局审校规则</Button>}<ArticleReviewRulesEditor key={article.id} article={article} onUpdate={(reviewRuleItems) => global ? studio.updateSettings({ reviewRuleItems }) : studio.updateArticle({ reviewRuleItems, aiGenerateSettings: overrideAiSettings(value, { tasks: { ...value.tasks, reviewRules: "__article_rules__" } }) })} presets={studio.data.settings.reviewPresets} /></>;
 }
 
 function ArticleReviewRulesEditor({ article, onUpdate, presets }: { article: Article; onUpdate: (rules: ReviewRule[]) => void; presets: string[] }) {

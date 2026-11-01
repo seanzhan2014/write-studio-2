@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fullStudioFixture } from "./fixtures.mjs";
+import { articleAiSettings } from "../lib/ai-settings-inheritance.ts";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 
@@ -31,6 +32,23 @@ async function resetFixture(transform) {
 
 test("REST validation, cascades, ordering and rollback", async (t) => {
   assert.ok(baseUrl, "WRITER_STUDIO_TEST_BASE_URL is required");
+
+  await t.test("new articles inherit globals and partial AI patches only override the edited fields", async () => {
+    const revision = await resetFixture();
+    const created = await api("/api/articles", { method: "POST", headers: { "If-Match": String(revision) }, body: { title: "全局继承测试" } });
+    assert.equal(created.response.status, 200, created.text);
+    const state = await api("/api/state");
+    const article = state.data.data.articles.find(item => item.title === "全局继承测试");
+    assert.equal(article.aiGenerateSettings.inheritance.model, "global");
+    assert.equal(article.illustrationSettings.inheritance.additionalPrompt, "global");
+    const patched = await api(`/api/articles/${article.id}`, { method: "PATCH", headers: { "If-Match": String(state.data.revision) }, body: { aiGenerateSettings: { targetWords: 2000 } } });
+    assert.equal(patched.response.status, 200, patched.text);
+    const reloaded = (await api("/api/state")).data.data.articles.find(item => item.id === article.id);
+    assert.equal(reloaded.aiGenerateSettings.targetWords, 2000);
+    assert.equal(reloaded.aiGenerateSettings.inheritance.targetWords, undefined);
+    assert.equal(reloaded.aiGenerateSettings.inheritance.model, "global");
+    assert.equal(articleAiSettings(reloaded, "generate", { generateModel: "new-default" }).model, "new-default");
+  });
 
   await t.test("exposes database versions and keeps unconfigured background sync inert", async () => {
     const before = await api("/api/state");

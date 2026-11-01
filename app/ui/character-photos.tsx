@@ -1,4 +1,5 @@
 "use client";
+import { articleAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
@@ -6,7 +7,7 @@ import { useStudio } from "@/app/studio-state";
 import { fetchFromServer, fetchServerAction } from "@/lib/browser-network";
 import { characterPhotos, EMPTY_PHOTO_DRAFT, normalizePhotoDraft, photoSrc, photoStyle, photoSyncStatus, type CharacterPhoto, type CharacterPhotoGallery, type PhotoDraft, type PhotoJob } from "@/lib/character-photos";
 import { normalizeIllustrationStyles, resolveIllustrationStyle } from "@/lib/illustration-styles";
-import { normalizeIllustrationOptions } from "@/lib/illustration-options";
+
 import { supportsImages, imageReferenceCapability, imageParameterValues, type ModelMetadata } from "@/lib/ai-model-capabilities";
 import { modelSelectionLabel } from "@/lib/model-label";
 import { photoModelOptions, type PhotoModelResolution } from "@/lib/photo-model-resolution";
@@ -244,7 +245,7 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
     }).catch(e => { if (!controller.signal.aborted) setModelCheck({ key, error: e instanceof Error ? e.message : "无法检测图像模型" }); });
     return () => controller.abort();
   }, [draft.modelId, chosenModel, hasReferences, modelCheckAttempt]);
-  const currentStyle = photoStyle(draft, gallery, normalizeIllustrationOptions(article?.illustrationSettings).stylePreset);
+  const currentStyle = photoStyle(draft, gallery, article ? articleAiSettings(article, "illustration", studio.data.settings).stylePreset : "auto");
   const referenceIssue = checkingModel ? "" : checkedModel?.error || (referenceCount && !referenceCapability ? "此模型没有可用的参考图或 edit 版本，请选择其他图像模型。" : referenceCapability?.maxImages && referenceCount > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，包括修改底图。` : referenceCapability?.required && !referenceCount ? "此模型需要参考照片。" : "");
   const selected = gallery.photos.find(p => p.id === selectedId);
   const formal = gallery.photos.filter(p => p.status === "approved");

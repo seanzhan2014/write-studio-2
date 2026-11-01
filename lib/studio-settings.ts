@@ -13,6 +13,9 @@ import type { StudioData } from "./studio-types.ts";
 import { DEFAULT_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeGenerateTargetWords } from "./generate-options.ts";
 
 import { normalizeReviewPresets } from "./review-options.ts";
+import { normalizeAiGenerateOptions } from "./generate-options.ts";
+import { normalizeIllustrationOptions } from "./illustration-options.ts";
+import { normalizeReviewRuleItems } from "./review-rules.mjs";
 
 import { DEFAULT_TASK_CONCURRENCY, normalizeTaskConcurrency } from "./task-concurrency.ts";
 
@@ -29,6 +32,9 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     ...DEFAULT_STUDIO_SETTINGS,
     ...settings,
     ...normalizeAppearance(settings),
+    ...(settings.aiGenerateSettings ? { aiGenerateSettings: normalizeAiGenerateOptions(settings.aiGenerateSettings) } : {}),
+    illustrationSettings: normalizeIllustrationOptions(settings.illustrationSettings),
+    reviewRuleItems: normalizeReviewRuleItems(settings.reviewRuleItems, "global"),
     taskConcurrency: normalizeTaskConcurrency(settings.taskConcurrency),
     illustrationStyles: normalizeIllustrationStyles(settings.illustrationStyles),
     namingModelMode: settings.namingModelMode === "fixed" ? "fixed" : "inherit",

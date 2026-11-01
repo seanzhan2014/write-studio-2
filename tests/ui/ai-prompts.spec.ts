@@ -11,8 +11,9 @@ test.beforeEach(async ({ page, request }) => {
 test("manage image styles, persist edits and copies, select them and delete safely", async ({ page, request }, testInfo) => {
   test.setTimeout(90_000);
   await page.goto("/settings/general");
-  await page.getByRole("navigation", { name: "设置分类" }).getByRole("button", { name: "AI提示", exact: true }).click();
-  await expect(page).toHaveURL(/settings\/prompts/);
+  await page.getByRole("navigation", { name: "设置分类" }).getByRole("button", { name: "AI 任务", exact: true }).click();
+  await expect(page).toHaveURL(/settings\/tasks/);
+  await page.getByRole("tab", { name: "图片", exact: true }).click();
   await page.getByRole("button", { name: "添加风格", exact: true }).click();
   const modal = page.getByRole("dialog", { name: "添加图片风格" });
   await modal.getByLabel("风格名称", { exact: true }).fill("复古胶片");
@@ -26,6 +27,7 @@ test("manage image styles, persist edits and copies, select them and delete safe
   await editor.getByRole("button", { name: "保存修改", exact: true }).click();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationStyles?.find((s: { label: string }) => s.label === "复古胶片")?.instruction).toBe("复古胶片，蓝色夜景，细腻颗粒。");
   await page.reload();
+  await page.getByRole("tab", { name: "图片", exact: true }).click();
   await page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /复古胶片/ }).click();
   await expect(editor.getByLabel("风格 Prompt", { exact: true })).toHaveValue("复古胶片，蓝色夜景，细腻颗粒。");
   await editor.getByRole("button", { name: "复制为新风格" }).click();
@@ -49,6 +51,7 @@ test("manage image styles, persist edits and copies, select them and delete safe
   await page.getByRole("dialog", { name: "删除图片风格" }).getByRole("button", { name: "确认删除" }).click();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationStyles?.some((s: { label: string }) => s.label === "胶片夜景")).toBe(false);
   await page.reload();
+  await page.getByRole("tab", { name: "图片", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /胶片夜景/ })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /复古胶片/ })).toHaveCount(1);
   await page.goto("/articles/article-main/outlines/outline-current/write");

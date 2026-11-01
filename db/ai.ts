@@ -107,9 +107,10 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
 export async function resolveWritingSettings(source: SelectedAiContext, modelId: string, advanced: GenerateAdvanced = {}, proseControls?: ProseControls) {
   advanced = normalizeAdvanced(advanced, GENERATE_FIELDS);
   if (source.article.calibrationHandled || source.article.id === "style-trial") return { source, advanced, proseControls };
-  const article = (await readStudioState()).data?.articles.find(a => a.id === source.article.id);
+  const state = (await readStudioState()).data;
+  const article = state?.articles.find(a => a.id === source.article.id);
   if (!article) return { source, advanced, proseControls };
-  const base = configurationOf(article); const selected = modelConfiguration(article, modelId);
+  const base = configurationOf(article, state?.settings); const selected = modelConfiguration(article, modelId, state?.settings);
   const model = selected.calibration ? await findModel(modelId) : null;
   const config = selected.calibration && (!model || selected.calibration.modelFingerprint !== modelSettingsFingerprint(model)) ? base : selected.configuration;
   // A chapter/outline's explicit style remains authoritative.

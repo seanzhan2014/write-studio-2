@@ -110,7 +110,7 @@ export async function POST(request: Request) {
     const sourceArticle = snapshot.data?.articles.find(article => article.id === articleId);
     const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks! : {};
     const executionParameters = { ...scopedParameters, ...normalizeTaskParameters(body.taskParameters) };
-    const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, executionParameters, reviewInstruction);
+    const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, executionParameters, reviewInstruction, snapshot.data?.settings);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
 
     const executionOrigin = currentTaskExecutionOrigin();

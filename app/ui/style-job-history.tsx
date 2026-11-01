@@ -36,7 +36,7 @@ function StyleJobDetail({ job }: { job: StyleJob }) {
   const studio = useStudio();
   const p = job.payload;
   const article = studio.data.articles.find(a => a.id === job.articleId);
-  const current = article ? configurationOf(article) : undefined;
+  const current = article ? configurationOf(article, studio.data.settings) : undefined;
   return <Stack gap="md" className="style-job-detail">
     <Text size="sm">{p.providerName ? `${p.providerName} · ` : ""}{p.modelName || job.model} · 输入 {p.inputTokens.toLocaleString()} / 输出 {p.outputTokens.toLocaleString()} tokens</Text>
     <Text size="sm" c="dimmed">提交于 {time(job.createdAt)}{p.completedAt ? ` · 完成于 ${time(p.completedAt)}` : ""}</Text>

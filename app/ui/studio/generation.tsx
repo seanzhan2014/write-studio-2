@@ -5,7 +5,7 @@ import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
 import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
-import { resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { resolveReasoningEffort } from "@/lib/reasoning-options";
@@ -27,7 +27,7 @@ import { detectFirstAppearanceCharacters, selectAiContext, type FirstAppearanceS
 
 import { resolvedOutlineContentName } from "@/lib/content-name.mjs";
 
-import { DEFAULT_AI_GENERATE_OPTIONS, CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
+import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 
@@ -132,7 +132,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
   const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
-  const inheritedGenerateOptions = normalizeAiGenerateOptions(studio.currentArticle.aiGenerateSettings, DEFAULT_AI_GENERATE_OPTIONS);
+  const inheritedGenerateOptions = articleAiSettings(studio.currentArticle, "generate", studio.data.settings);
   const resolvedGenerateSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings);
   const initialGenerateOptions = resolvedGenerateSettings.value;
   if (!hasCurrentContent && initialGenerateOptions.contentMode !== "fresh") initialGenerateOptions.contentMode = "fresh";
@@ -328,11 +328,11 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
-    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction))) && !hasActiveProseControls(proseControls) && !advancedText({ ...inheritedGenerateOptions.advanced, ...generateOptions.advanced }, GENERATE_FIELDS)) { setNotice("请在文章 AI 任务设定中添加审校规则，或在设置 → AI 任务中添加审校指令、关闭审校。"); return; }
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings)) && !hasActiveProseControls(proseControls) && !advancedText({ ...inheritedGenerateOptions.advanced, ...generateOptions.advanced }, GENERATE_FIELDS)) { setNotice("请添加本文章生效的审校规则或补充指令，也可将修正次数设为 0。"); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction)))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
       const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
@@ -369,7 +369,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
         advanced: generateOptions.advanced,
         proseControls,
         dialogueDensity: proseControls.dialogueDensity,
-        reviewRuleSnapshot: taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction)),
+        reviewRuleSnapshot: taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings),
         reviewMaxRounds,
         reviewInstruction: normalizeReviewRules(reviewInstruction),
         firstAppearanceCharacterIds: effectiveFirstAppearanceIds,

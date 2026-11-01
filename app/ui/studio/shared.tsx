@@ -1,7 +1,7 @@
 "use client";
 
-import { taskParameterDefaults, taskReasoningEffort, taskNamingProfile, type TaskParameters } from "@/lib/task-parameters";
-import { resolveAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { taskReasoningEffort, taskNamingProfile, type TaskParameters } from "@/lib/task-parameters";
+import { articleAiSettings, resolveAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 
@@ -18,7 +18,7 @@ import { selectAiContext, summarizeAiContext } from "@/lib/ai-context";
 import type { NamingArticleContext } from "@/db/ai-naming";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { descriptionDetailLabel, dialogueDensityLabel, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeAiGenerateOptions, normalizeProseControls, type AiGenerateOptions, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { descriptionDetailLabel, dialogueDensityLabel, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeProseControls, type AiGenerateOptions, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { modelSelectionLabel } from "@/lib/model-label";
@@ -143,8 +143,8 @@ export function namingArticleContext(article: Article, globalSettings: object = 
     title: article.title,
     summary: article.summary,
     style: article.style,
-    chapterNaming: article.chapterNaming,
-    outlineNaming: article.outlineNaming,
+    chapterNaming: taskNamingProfile(defaults.tasks!, "chapterNaming"),
+    outlineNaming: taskNamingProfile(defaults.tasks!, "outlineNaming"),
     chapters: article.chapters.map((chapter) => ({
       id: chapter.id,
       title: chapter.title,
@@ -291,9 +291,9 @@ export function canonicalModelReference(models: ConfiguredModel[], reference: st
 }
 
 export function updateScopedTaskParameters(studio: ReturnType<typeof useStudio>, level: "article" | "chapter" | "outline", targetId: string, patch: TaskParameters) {
-  const options = resolveAiSettings(studio.currentArticle, targetId, "generate", level === "chapter" ? "chapter" : "outline", studio.data.settings).value;
+  const options = level === "article" ? articleAiSettings(studio.currentArticle, "generate", studio.data.settings) : resolveAiSettings(studio.currentArticle, targetId, "generate", level === "chapter" ? "chapter" : "outline", studio.data.settings).value;
   const next = overrideAiSettings(options, { tasks: { ...options.tasks, ...patch } });
-  if (level === "article") studio.updateArticle({ aiGenerateSettings: normalizeAiGenerateOptions({ ...studio.currentArticle.aiGenerateSettings, tasks: { ...studio.currentArticle.aiGenerateSettings.tasks, ...patch } }) });
+  if (level === "article") studio.updateArticle({ aiGenerateSettings: next });
   else if (level === "outline") studio.updateOutline(targetId, { generateOptions: next });
   else { const chapter = studio.currentArticle.chapters.find(chapter => chapter.id === targetId)!; studio.updateChapter(targetId, { settings: { ...chapter.settings!, aiTasks: { ...chapter.settings?.aiTasks, generate: next } } }); }
 }
@@ -303,7 +303,7 @@ export function TaskReasoningSettings({ kind, model, disabled = false, level = "
   const key = `${kind}ReasoningEffort` as const;
   const id = targetId ?? studio.currentOutline.id;
   const options = resolveAiSettings(studio.currentArticle, id, "generate", level === "chapter" ? "chapter" : "outline", studio.data.settings).value;
-  const tasks = level === "article" ? { ...taskParameterDefaults(studio.data.settings, studio.currentArticle), ...studio.currentArticle.aiGenerateSettings.tasks } : options.tasks!;
+  const tasks = level === "article" ? articleAiSettings(studio.currentArticle, "generate", studio.data.settings).tasks! : options.tasks!;
   return <ReasoningSettings value={kind === "generate" ? options.reasoningEffort : taskReasoningEffort(tasks[key])} modelValue={model?.reasoningEffort} disabled={disabled} onChange={(value) => { if (kind === "generate") studio.updateOutline(id, { generateOptions: overrideAiSettings(options, { reasoningEffort: value }) }); else updateScopedTaskParameters(studio, level, id, { [key]: value === null ? "__omit__" : value ?? "__inherit__" }); }} />;
 }
 
@@ -456,17 +456,16 @@ export function viewFromPath(pathname: string): View {
   if (pathname.includes("/chapters/")) return "chapter";
   if (pathname.endsWith("/edit") || pathname.endsWith("/read")) return "read";
   if (pathname.endsWith("/search")) return "search";
-  if (pathname.includes("/info/ai-tasks")) return "info-ai-tasks";
-  // Keep existing bookmarks working after the article settings are grouped
-  // under the AI task settings tab.
-  if (pathname.includes("/info/review-rules")) return "info-ai-tasks";
-  if (pathname.includes("/info/chapters")) return "info-ai-tasks";
+  if (pathname.includes("/info/ai-tasks")) return "outline-edit";
+  // Keep old article AI bookmarks in the chapter and outline settings view.
+  if (pathname.includes("/info/review-rules")) return "outline-edit";
+  if (pathname.includes("/info/chapters")) return "outline-edit";
   if (pathname.includes("/info/characters")) return "info-characters";
   if (pathname.includes("/info/relationships")) return "info-relationships";
   if (pathname.includes("/info/")) return "info-basic";
   if (pathname.includes("/settings/appearance")) return "settings-appearance";
   if (pathname.includes("/settings/models")) return "settings-models";
-  if (pathname.includes("/settings/prompts")) return "settings-prompts";
+  if (pathname.includes("/settings/prompts")) return "settings-tasks";
   if (pathname.includes("/settings/tasks")) return "settings-tasks";
   if (pathname.includes("/settings/database")) return "settings-database";
   if (pathname.includes("/settings/system")) return "settings-system";

@@ -1,3 +1,5 @@
+import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { taskReviewSnapshot } from "@/lib/task-parameters";
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { supportsText } from "@/lib/ai-model-capabilities";
 import { ensureDatabase, getDatabase, readStudioState, applyStudioChanges } from "./studio-state";
@@ -13,10 +15,10 @@ import { reviewGeneratedText, reviseGeneratedText } from "@/db/ai-review";
 import { createWritingPreparation, PreparationResponseError } from "@/lib/writing-preparation";
 import { normalizeArticleStorySettings } from "@/lib/story-settings";
 import { DEFAULT_OUTLINE_NAMING_PROFILE } from "@/lib/naming-options";
-import { createReviewRuleSnapshot, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
+import { type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { runGenerateReview, type GenerateReviewCheckpoint } from "@/lib/generate-review.mjs";
 import { STYLE_FIELDS, advancedText } from "@/lib/advanced-writing";
-import { LEARNING_RULES, SCORE_DIMENSIONS, STYLE_SCORE_RUBRIC, STYLE_TRIAL_INSTRUCTION, STYLE_TRIAL_EVALUATION_RULES, MIN_STYLE_CONTENT_SCORE, MAX_REFERENCE_TOTAL, applyLocks, configurationFingerprint, configurationOf, configurationSchema, fingerprint, modelConfiguration, normalizeConfiguration, normalizeStyleLibrary, sceneInstructions, textStatistics, type StyleConfiguration, type ReferenceDocument, type ConfigurationVersion } from "@/lib/style-learning";
+import { LEARNING_RULES, SCORE_DIMENSIONS, STYLE_SCORE_RUBRIC, STYLE_TRIAL_INSTRUCTION, STYLE_TRIAL_EVALUATION_RULES, MIN_STYLE_CONTENT_SCORE, MAX_REFERENCE_TOTAL, applyLocks, restoreStyleGenerateSettings, configurationFingerprint, configurationOf, configurationSchema, fingerprint, modelConfiguration, normalizeConfiguration, normalizeStyleLibrary, sceneInstructions, textStatistics, type StyleConfiguration, type ReferenceDocument, type ConfigurationVersion } from "@/lib/style-learning";
 import type { SelectedAiContext } from "@/lib/ai-context";
 
 type Plan = { referenceId: string; scenes: Array<{ title: string; plan: string; targetWords: number }> };
@@ -104,13 +106,14 @@ export async function createStyleJob(input: Record<string, unknown>) {
   if (!Number.isInteger(maximum) || maximum < 1 && input.kind === "tune" || maximum > 10) throw new AiInputError("微调次数必须为1–10的整数");
   const running = await getDatabase().prepare("SELECT id FROM style_lab_jobs WHERE article_id=? AND status IN ('queued','running','paused') LIMIT 1").bind(article.id).first();
   if (running) throw new AiInputError("本文章已有进行中的风格任务，请先完成或停止");
-  const base = configurationOf(article);
-  const previous = modelConfiguration(article, model.id);
+  const base = configurationOf(article, snapshot.data.settings);
+  const previous = modelConfiguration(article, model.id, snapshot.data.settings);
   const initial = previous.calibration?.modelFingerprint === modelFingerprint(model) ? previous.configuration : base;
-  const reviewModel = snapshot.data.settings.reviewModelMode === "fixed" ? await findModel(snapshot.data.settings.reviewModel) : model;
-  const reviewRounds = Math.max(0, Math.min(10, Number(snapshot.data.settings.generateReviewMaxRounds) || 0));
+  const taskDefaults = articleAiSettings(article, "generate", snapshot.data.settings).tasks!;
+  const reviewModel = taskDefaults.reviewModelMode === "fixed" ? await findModel(String(taskDefaults.reviewModel)) : model;
+  const reviewRounds = Math.max(0, Math.min(10, Number(taskDefaults.reviewMaxRounds) || 0));
   if (reviewRounds && !reviewModel?.hasSecret) throw new AiInputError("当前审校模型不可用，请先调整 AI 任务设置");
-  const payload: Payload = { references: library.references, base, candidate: initial, best: initial, bestScore: -1, bestRound: 0, maxRounds: maximum, round: 0, referenceIndex: 0, outlines: [], analyses: [], locked: library.locked, modelFingerprint: modelFingerprint(model), reviewModel: reviewModel?.id ?? model.id, reviewModelFingerprint: modelFingerprint(reviewModel ?? model), preparation: true, reviewRounds, reviewStrategy: snapshot.data.settings.generateReviewStrategy === "explore" ? "explore" : "minimal", rules: createReviewRuleSnapshot(article, snapshot.data.settings.generateReviewInstruction), inputTokens: 0, outputTokens: 0 };
+  const payload: Payload = { references: library.references, base, candidate: initial, best: initial, bestScore: -1, bestRound: 0, maxRounds: maximum, round: 0, referenceIndex: 0, outlines: [], analyses: [], locked: library.locked, modelFingerprint: modelFingerprint(model), reviewModel: reviewModel?.id ?? model.id, reviewModelFingerprint: modelFingerprint(reviewModel ?? model), preparation: true, reviewRounds, reviewStrategy: taskDefaults.reviewStrategy === "explore" ? "explore" : "minimal", rules: taskReviewSnapshot(article, taskDefaults, String(taskDefaults.reviewInstruction ?? ""), snapshot.data.settings), inputTokens: 0, outputTokens: 0 };
   const id = `style-${crypto.randomUUID()}`; const now = stamp();
   const phase = input.kind === "learn" ? "learn" : "outline";
   Object.assign(payload, { autoApply: input.autoApply !== false, executionOrigin: currentTaskExecutionOrigin(), modelName: model.name, providerName: model.providerName, modelSnapshot: { modelId: model.modelId, baseUrl: model.baseUrl, systemPrompt: model.systemPrompt, temperature: model.temperature, maxOutput: model.maxOutput, reasoningEffort: model.reasoningEffort }, applications: [], history: [{ at: now, status: "queued", phase }] });
@@ -129,7 +132,7 @@ export async function applyStyleResult(id: string, force = false) {
     if (!await hasQualifiedStyleResult(job)) throw new AiInputError(`没有内容覆盖达到${MIN_STYLE_CONTENT_SCORE}分的试写结果，请查看评分后新建试验`);
     const next = structuredClone(snapshot.data); const article = next.articles.find(a => a.id === job.articleId); if (!article) throw new AiInputError("文章不存在");
     const story = normalizeArticleStorySettings(article.storySettings); const library = normalizeStyleLibrary(story.styleLibrary);
-    const current = configurationOf(article);
+    const current = configurationOf(article, snapshot.data.settings);
     if (!force && p.applied) { p.autoApplyPending = false; await saveJobPayload(job); return; }
     if (!force && (configurationFingerprint(current) !== configurationFingerprint(p.base) || json(library.references) !== json(p.references))) {
       p.notice = "任务期间配置或参考资料已改变，结果已保留，请对照后应用。";
@@ -148,7 +151,7 @@ export async function applyStyleResult(id: string, force = false) {
       library.versions.push(version);
       library.scenes = p.best.scenes;
       article.style = p.best.style; story.advancedStyle = p.best.advancedStyle;
-      article.aiGenerateSettings = { ...article.aiGenerateSettings, proseControls: p.best.generate.proseControls, advanced: p.best.generate.advanced };
+      article.aiGenerateSettings = overrideAiSettings(articleAiSettings(article, "generate", snapshot.data.settings), { proseControls: p.best.generate.proseControls, advanced: p.best.generate.advanced });
     } else { library.versions.push(version); library.calibrations[job.model] = version; }
     if (job.kind === "learn") library.activeVersionId = id;
     story.styleLibrary = normalizeStyleLibrary(library); article.storySettings = story; article.updatedAt = at;
@@ -169,10 +172,10 @@ async function restoreStyleApplication(id: string) {
     const next = structuredClone(snapshot.data); const article = next.articles.find(a => a.id === job.articleId); if (!article) throw new AiInputError("文章不存在");
     const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
     if (job.kind === "learn") {
-      if (configurationFingerprint(configurationOf(article)) !== configurationFingerprint(p.best)) throw new AiInputError("当前配置已经修改，请先对照学习历史，避免覆盖人工修改");
+      if (configurationFingerprint(configurationOf(article, snapshot.data.settings)) !== configurationFingerprint(p.best)) throw new AiInputError("当前配置已经修改，请先对照学习历史，避免覆盖人工修改");
       const before = application.before;
       article.style = before.style;
-      article.aiGenerateSettings = { ...article.aiGenerateSettings, proseControls: before.generate.proseControls, advanced: before.generate.advanced };
+      article.aiGenerateSettings = restoreStyleGenerateSettings(articleAiSettings(article, "generate", snapshot.data.settings), before.generate);
       library.scenes = before.scenes; library.activeVersionId = undefined;
       article.storySettings = { ...normalizeArticleStorySettings(article.storySettings), advancedStyle: before.advancedStyle };
     } else {

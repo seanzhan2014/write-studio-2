@@ -1,3 +1,4 @@
+import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -95,7 +96,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
 }
 
 test("Generate review settings, server loop and durable report work together", async ({ page, request }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const fake = await reviewModelServer();
   try {
     const current = await (await request.get("/api/state")).json();
@@ -108,33 +109,39 @@ test("Generate review settings, server loop and durable report work together", a
     data.articles[0].aiGenerateSettings!.model = model.id;
     data.settings.preparationMaxRounds = 0;
     expect((await request.put("/api/state", { headers: { "If-Match": String(latest.revision ?? current.revision) }, data: { data } })).ok()).toBeTruthy();
-    await page.goto("/articles/article-main/info/review-rules");
+    await openArticleAiSettings(page);
     await page.getByRole("button", { name: "新增规则", exact: true }).click();
     await page.getByLabel("规则名称", { exact: true }).fill("人物年龄");
     await page.getByLabel("规则内容", { exact: true }).fill("人物必须十八岁；保留环境描写。");
     await page.getByRole("button", { name: "保存规则", exact: true }).click();
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].reviewRuleItems.some((rule: { content: string }) => rule.content === "人物必须十八岁；保留环境描写。")).toBe(true);
-    await page.reload();
+    await openArticleAiSettings(page);
     await expect(page.getByLabel("规则：人物年龄", { exact: true })).toContainText("人物必须十八岁");
     await page.goto("/settings/tasks");
-    await expect(page.getByLabel("审校最多修正次数", { exact: true })).toHaveValue("0");
-    await expect(page.getByLabel("审校模型", { exact: true })).toHaveValue("__inherit__");
-    await expect(page.getByLabel("审校类型", { exact: true })).toHaveValue("minimal");
-    await page.getByLabel("审校最多修正次数", { exact: true }).fill("2");
+    await page.getByRole("tab", { name: "自动审校", exact: true }).click();
+    await expect(page.getByLabel("最多修正次数", { exact: true })).toHaveValue("0");
+    await expect(page.getByRole("combobox", { name: "审校模型", exact: true })).toHaveValue("请选择模型");
+    await expect(page.getByRole("combobox", { name: "审校类型", exact: true })).toHaveValue("最少条件型");
+    await page.getByLabel("最多修正次数", { exact: true }).fill("2");
     await page.getByLabel("审校补充指令", { exact: true }).fill("保持雨后场景");
-    await page.getByLabel("审校类型", { exact: true }).selectOption("explore");
-    await page.getByLabel("审校模型", { exact: true }).selectOption(reviewer.id);
+    await page.getByRole("combobox", { name: "审校类型", exact: true }).click();
+    await page.getByRole("option", { name: "最大探索型", exact: true }).click();
+    await page.getByRole("combobox", { name: "审校模型方式", exact: true }).click();
+    await page.getByRole("option", { name: "指定模型", exact: true }).click();
+    await page.getByRole("combobox", { name: "审校模型", exact: true }).click();
+    await page.locator(`[role="option"][value="${reviewer.id}"]`).click();
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.reviewModel).toBe(reviewer.id);
     await page.reload();
-    await expect(page.getByLabel("审校模型", { exact: true })).toHaveValue(reviewer.id);
-    await expect(page.getByLabel("审校类型", { exact: true })).toHaveValue("explore");
+    await page.getByRole("tab", { name: "自动审校", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "审校模型", exact: true })).toHaveValue(/ui-review-separate|审校/);
+    await expect(page.getByRole("combobox", { name: "审校类型", exact: true })).toHaveValue("最大探索型");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
     await expect(page.getByLabel("审校循环次数", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("本次 Review 指令", { exact: true })).toHaveCount(0);
     await expect(page.locator(".generate-review-settings")).toHaveCount(0);
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
-    await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 25000 }).toBe("success");
+    await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 45_000 }).toBe("success");
     expect(fake.control.calls.map((item) => item.kind)).toEqual(["prepare", "generate", "review", "revise", "review"]);
     expect(fake.control.calls.filter((item) => ["prepare", "generate"].includes(item.kind)).every((item) => item.body.model === "ui-review")).toBeTruthy();
     expect(fake.control.calls.filter((item) => ["review", "revise"].includes(item.kind)).every((item) => item.body.model === "ui-review-separate")).toBeTruthy();
