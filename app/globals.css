@@ -9232,10 +9232,12 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .ai-task-action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding-top: 8px; }
 .ai-task-action-row > div > span { display: block; font-size: var(--font-ui); font-weight: 500; margin-bottom: 5px; }
 .ai-task-settings-page .article-ai-task-section-heading { margin: 0; }
+.ai-task-generation > .article-ai-task-section-heading h2 { margin-bottom: 0; }
 .ai-task-settings-page .article-generate-settings { gap: 24px; }
 .ai-task-settings-page .article-generate-basics { gap: 18px 24px; align-items: start; }
 .ai-task-generation .article-generate-basics > .mantine-NumberInput-root { max-width: 210px; }
 .ai-task-generation .article-generate-block { padding-top: 24px; }
+.ai-task-generation .prose-controls-section { border: 0; border-top: 1px solid var(--border-soft); border-radius: 0; background: transparent; padding-inline: 0; padding-bottom: 0; }
 .ai-task-generation .generate-section-heading { align-items: baseline; }
 .ai-task-generation .generate-section-heading > strong { display: none; }
 .ai-task-generation .article-generate-block .generate-section-heading > span { margin-bottom: 12px; }
