@@ -1,5 +1,6 @@
 "use client";
 import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { resolveStyleLearningSettings } from "@/lib/style-learning-settings";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
@@ -70,11 +71,13 @@ function ArticleStyleLabPanel() {
   const [references, setReferences] = useState<ReferenceDocument[]>(library.references);
   const [dirty, setDirty] = useState(false);
   const [models, setModels] = useState<Array<{ id: string; name: string; providerName: string; hasSecret: boolean }>>([]);
-  const [model, setModel] = useState(articleAiSettings(article, "generate", studio.data.settings).model);
-  const [rounds, setRounds] = useState<number | string>(3);
+  const defaults = resolveStyleLearningSettings(studio.data.settings, articleAiSettings(article, "generate", studio.data.settings).model);
+  const [taskOptions, setTaskOptions] = useState<{ model?: string; maxRounds?: number | string; autoApply?: boolean }>({});
+  const model = taskOptions.model ?? defaults.model;
+  const rounds = taskOptions.maxRounds ?? defaults.maxRounds;
+  const autoApply = taskOptions.autoApply ?? defaults.autoApply;
   const [active, setActive] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState("");
-  const [autoApply, setAutoApply] = useState(true);
   const [executionMode, setExecutionMode] = useState<"server" | "browser" | null>(null);
   const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
   const state = useRef({ article, studio });
@@ -130,9 +133,11 @@ function ArticleStyleLabPanel() {
       <input ref={fileRef} type="file" hidden multiple accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={event => { const files=Array.from(event.currentTarget.files ?? []); event.currentTarget.value=""; void perform(async () => { if (files.length+references.length>8) throw new Error("最多添加8篇参考文章"); const additions=await Promise.all(files.map(async file => { const text=await file.text(); if(text.length>100000) throw new Error(`${file.name} 超过100,000字符`); return { id:crypto.randomUUID(), title:file.name, text }; })); if(total+additions.reduce((n,r)=>n+r.text.length,0)>MAX_REFERENCE_TOTAL) throw new Error("参考材料总长度超过240,000字符"); setReferences(current=>[...current,...additions]);setDirty(true); }); }} />
       <Text size="xs" c="dimmed">最多8篇，每篇100,000字符，总计240,000字符。模型输入不足时会明确提示。</Text>
     </Stack></section>
-    <section className="ai-task-section ai-task-learning-options" aria-label="模型与执行"><h2>模型与执行</h2>
-    <div className="style-lab-controls"><Select label="学习 / 生成模型" placeholder="选择文本模型" data={models.map(m => ({ value:m.id,label:`${m.providerName} · ${m.name}${m.hasSecret?"":"（需密钥）"}`,disabled:!m.hasSecret }))} value={model} onChange={value=>setModel(value??"")} /><NumberInput label="微调轮次" description={`基线1次＋最多${Number(rounds)||0}次调整，另含准备与评估请求。`} min={1} max={10} allowDecimal={false} value={rounds} onChange={setRounds} /></div>
-    <Checkbox label="完成后自动应用" description="文章配置或参考资料有变化时，成果会保留为待应用。" checked={autoApply} onChange={event => setAutoApply(event.currentTarget.checked)} />
+    <section className="ai-task-section ai-task-learning-options" aria-label="学习与微调"><h2>学习与微调</h2>
+    <Text size="sm" c="dimmed">使用全局任务默认设置，可为本次任务单独调整。成果应用到当前文章。</Text>
+    <div className="style-lab-controls"><Select label="学习 / 生成模型" placeholder="选择文本模型" data={models.map(m => ({ value:m.id,label:`${m.providerName} · ${m.name}${m.hasSecret?"":"（需密钥）"}`,disabled:!m.hasSecret }))} value={model} onChange={value=>setTaskOptions(current => ({ ...current, model: value ?? "" }))} /><NumberInput label="微调轮次" description={`基线1次＋最多${Number(rounds)||0}次调整，另含准备与评估请求。`} min={1} max={10} allowDecimal={false} value={rounds} onChange={maxRounds => setTaskOptions(current => ({ ...current, maxRounds }))} /></div>
+    <Checkbox label="完成后自动应用" description="文章配置或参考资料有变化时，成果会保留为待应用。" checked={autoApply} onChange={event => { const autoApply = event.currentTarget.checked; setTaskOptions(current => ({ ...current, autoApply })); }} />
+    {Object.keys(taskOptions).length > 0 && <Button variant="subtle" size="compact-sm" onClick={() => setTaskOptions({})}>恢复全局任务默认</Button>}
     <Group><Button loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("learn"))}>学习并设定</Button><Button variant="light" loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("tune"))}>微调设定</Button></Group>
     {executionMode && <Text size="sm" c="dimmed">{executionMode === "server" ? "由本机服务在后台执行，服务运行时关闭页面也会继续；重启后接续已保存进度。" : "当前云端任务需要保留一个应用页面，过程与结果会持续保存。"}</Text>}
     <Button variant="subtle" size="compact-sm" onClick={() => window.dispatchEvent(new CustomEvent("writer-studio-open-task", { detail: "style:" + selectedJobId }))}>在 AI 任务中查看学习与微调</Button>

@@ -4,6 +4,17 @@ import { applyLocks, configurationFingerprint, normalizeConfiguration, normalize
 import { articleAiSettings, createInheritedAiSettings, overrideAiSettings } from "../lib/ai-settings-inheritance.ts";
 import { normalizeAiGenerateOptions } from "../lib/generate-options.ts";
 import { normalizeArticleStorySettings } from "../lib/story-settings.ts";
+import { normalizeStudioSettings } from "../lib/studio-settings.ts";
+import { resolveStyleLearningSettings } from "../lib/style-learning-settings.ts";
+
+test("learning defaults preserve legacy behavior and normalize persisted task settings", () => {
+  assert.deepEqual(resolveStyleLearningSettings({}, "article-model"), { model: "article-model", maxRounds: 3, autoApply: true });
+  const settings = normalizeStudioSettings({ styleLearningSettings: { model: " fixed-model ", maxRounds: 5, autoApply: false } });
+  assert.deepEqual(resolveStyleLearningSettings(settings, "article-model"), { model: "fixed-model", maxRounds: 5, autoApply: false });
+  assert.equal(normalizeStudioSettings({ styleLearningSettings: { maxRounds: 99 } }).styleLearningSettings.maxRounds, 10);
+  assert.equal(normalizeStudioSettings({ styleLearningSettings: { maxRounds: 0 } }).styleLearningSettings.maxRounds, 1);
+  assert.equal(normalizeStudioSettings({ styleLearningSettings: { maxRounds: 1.5 } }).styleLearningSettings.maxRounds, 3);
+});
 
 test("advanced preferences inherit per field, can explicitly clear, and ignore unknown keys", () => {
   const base = normalizeAiGenerateOptions({ advanced: { detailOrganization: "有意义的递进", additional: "保留特殊要求" } });

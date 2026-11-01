@@ -238,6 +238,7 @@ export type AiTask = {
 };
 
 export type StudioSettings = AppearanceSettings & {
+  styleLearningSettings?: import("./style-learning-settings").StyleLearningSettings;
   aiGenerateSettings?: AiGenerateOptions;
   illustrationSettings?: IllustrationOptions;
   reviewRuleItems?: ReviewRule[];

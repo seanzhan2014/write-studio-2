@@ -96,7 +96,7 @@ export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle, r
   function actions(job: StyleJob) {
     const terminal = ["completed", "failed", "cancelled"].includes(job.status);
     return <Group gap="xs">
-      {!articleId && <Button size="compact-sm" variant="subtle" onClick={() => { studio.setCurrentArticle(job.articleId); window.history.pushState({}, "", `/articles/${job.articleId}/info/ai-tasks`); window.dispatchEvent(new PopStateEvent("popstate")); onOpenArticle?.(); }}>打开文章</Button>}
+      {!articleId && <Button size="compact-sm" variant="subtle" onClick={() => { studio.setCurrentArticle(job.articleId); window.history.pushState({}, "", `/articles/${job.articleId}/info/references`); window.dispatchEvent(new PopStateEvent("popstate")); onOpenArticle?.(); }}>打开文章</Button>}
       {selectedId !== job.id && <Button size="compact-sm" variant="subtle" onClick={() => { setSelected(null); setSelectedId(job.id); }}>查看过程</Button>}
       {["queued", "running"].includes(job.status) && <Button disabled={busy} size="compact-sm" variant="subtle" onClick={() => void action(job, "pause")}>暂停</Button>}
       {["paused", "failed"].includes(job.status) && <Button disabled={busy} size="compact-sm" variant="subtle" onClick={() => void action(job, job.status === "failed" ? "retry" : "resume")}>{job.status === "failed" ? "重试本步骤" : "继续"}</Button>}

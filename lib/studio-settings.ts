@@ -18,12 +18,14 @@ import { normalizeIllustrationOptions } from "./illustration-options.ts";
 import { normalizeReviewRuleItems } from "./review-rules.mjs";
 
 import { DEFAULT_TASK_CONCURRENCY, normalizeTaskConcurrency } from "./task-concurrency.ts";
+import { DEFAULT_STYLE_LEARNING_SETTINGS, normalizeStyleLearningSettings } from "./style-learning-settings.ts";
 
 export const DEFAULT_STUDIO_SETTINGS: StudioData["settings"] = {
   ...DEFAULT_APPEARANCE,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: DEFAULT_TASK_CONCURRENCY, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
+  styleLearningSettings: DEFAULT_STYLE_LEARNING_SETTINGS,
 };
 
 export function normalizeStudioSettings(value: unknown): StudioData["settings"] {
@@ -32,6 +34,7 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     ...DEFAULT_STUDIO_SETTINGS,
     ...settings,
     ...normalizeAppearance(settings),
+    styleLearningSettings: normalizeStyleLearningSettings(settings.styleLearningSettings),
     ...(settings.aiGenerateSettings ? { aiGenerateSettings: normalizeAiGenerateOptions(settings.aiGenerateSettings) } : {}),
     illustrationSettings: normalizeIllustrationOptions(settings.illustrationSettings),
     reviewRuleItems: normalizeReviewRuleItems(settings.reviewRuleItems, "global"),

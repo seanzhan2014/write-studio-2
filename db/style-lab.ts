@@ -1,4 +1,5 @@
 import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { resolveStyleLearningSettings } from "@/lib/style-learning-settings";
 import { taskReviewSnapshot } from "@/lib/task-parameters";
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { supportsText } from "@/lib/ai-model-capabilities";
@@ -100,9 +101,10 @@ export async function createStyleJob(input: Record<string, unknown>) {
   const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
   if (!library.references.length || library.references.some(r => !r.text.trim())) throw new AiInputError("请先添加并保存参考文章");
   if (library.references.reduce((n, r) => n + r.text.length, 0) > MAX_REFERENCE_TOTAL) throw new AiInputError("参考材料总长度超过上限");
-  const model = await findModel(String(input.model ?? ""));
+  const defaults = resolveStyleLearningSettings(snapshot.data.settings, articleAiSettings(article, "generate", snapshot.data.settings).model);
+  const model = await findModel(String(input.model ?? defaults.model));
   if (!model?.hasSecret || !supportsText(model)) throw new AiInputError("请选择已配置密钥的文本模型");
-  const maximum = input.kind === "tune" ? Number(input.maxRounds ?? 3) : 0;
+  const maximum = input.kind === "tune" ? Number(input.maxRounds ?? defaults.maxRounds) : 0;
   if (!Number.isInteger(maximum) || maximum < 1 && input.kind === "tune" || maximum > 10) throw new AiInputError("微调次数必须为1–10的整数");
   const running = await getDatabase().prepare("SELECT id FROM style_lab_jobs WHERE article_id=? AND status IN ('queued','running','paused') LIMIT 1").bind(article.id).first();
   if (running) throw new AiInputError("本文章已有进行中的风格任务，请先完成或停止");
@@ -116,7 +118,7 @@ export async function createStyleJob(input: Record<string, unknown>) {
   const payload: Payload = { references: library.references, base, candidate: initial, best: initial, bestScore: -1, bestRound: 0, maxRounds: maximum, round: 0, referenceIndex: 0, outlines: [], analyses: [], locked: library.locked, modelFingerprint: modelFingerprint(model), reviewModel: reviewModel?.id ?? model.id, reviewModelFingerprint: modelFingerprint(reviewModel ?? model), preparation: true, reviewRounds, reviewStrategy: taskDefaults.reviewStrategy === "explore" ? "explore" : "minimal", rules: taskReviewSnapshot(article, taskDefaults, String(taskDefaults.reviewInstruction ?? ""), snapshot.data.settings), inputTokens: 0, outputTokens: 0 };
   const id = `style-${crypto.randomUUID()}`; const now = stamp();
   const phase = input.kind === "learn" ? "learn" : "outline";
-  Object.assign(payload, { autoApply: input.autoApply !== false, executionOrigin: currentTaskExecutionOrigin(), modelName: model.name, providerName: model.providerName, modelSnapshot: { modelId: model.modelId, baseUrl: model.baseUrl, systemPrompt: model.systemPrompt, temperature: model.temperature, maxOutput: model.maxOutput, reasoningEffort: model.reasoningEffort }, applications: [], history: [{ at: now, status: "queued", phase }] });
+  Object.assign(payload, { autoApply: typeof input.autoApply === "boolean" ? input.autoApply : defaults.autoApply, executionOrigin: currentTaskExecutionOrigin(), modelName: model.name, providerName: model.providerName, modelSnapshot: { modelId: model.modelId, baseUrl: model.baseUrl, systemPrompt: model.systemPrompt, temperature: model.temperature, maxOutput: model.maxOutput, reasoningEffort: model.reasoningEffort }, applications: [], history: [{ at: now, status: "queued", phase }] });
   const db = getDatabase();
   const inserted = await db.batch([db.prepare("INSERT INTO style_lab_jobs(id,article_id,kind,status,phase,model_id,payload_json,created_at,updated_at) SELECT ?,?,?,'queued',?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM style_lab_jobs WHERE article_id=? AND status IN ('queued','running','paused'))").bind(id, article.id, input.kind, phase, model.id, json(payload), now, now, article.id), styleLabChangedStatement(db)]);
   if (!Number(inserted[0]?.meta?.changes)) throw new AiInputError("本文章已有进行中的风格任务，请先完成或停止");

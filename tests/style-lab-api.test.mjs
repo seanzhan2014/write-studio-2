@@ -7,6 +7,35 @@ import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method="GET", data, headers={}) { const response=await fetch(`${baseUrl}${path}`,{method,headers:{"Content-Type":"application/json",...headers},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.ok(response.ok,`${response.status}: ${JSON.stringify(body)}`);return body; }
 
+test("style tasks snapshot global defaults, allow per-task overrides and follow article models", async () => {
+  const provider = await api("/api/providers", "POST", { name: "learning-defaults", baseUrl: "http://127.0.0.1:9/v1", secret: "test-key" });
+  const fixed = await api("/api/models", "POST", { providerId: provider.id, name: "fixed-learning", modelId: "fixed-learning" });
+  const other = await api("/api/models", "POST", { providerId: provider.id, name: "article-learning", modelId: "article-learning" });
+  const current = await api("/api/state");
+  const data = fullStudioFixture(); data.tasks = [];
+  data.settings.styleLearningSettings = { model: fixed.id, maxRounds: 5, autoApply: false };
+  data.articles[0].aiGenerateSettings.model = other.id;
+  data.articles[0].storySettings = { styleLibrary: { references: [{ id: "saved-reference", title: "已有参考文章", text: "两位朋友核对书籍后道别。" }] } };
+  await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) });
+  const first = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "tune" })).job;
+  assert.equal(first.model, fixed.id); assert.equal(first.payload.maxRounds, 5); assert.equal(first.payload.autoApply, false);
+  const changed = await api("/api/state");
+  changed.data.settings.styleLearningSettings = { model: "", maxRounds: 2, autoApply: true };
+  changed.data.articles[0].storySettings.styleLibrary.references[0].title = "修改后的参考文章";
+  await api("/api/state", "PUT", { data: changed.data }, { "If-Match": String(changed.revision) });
+  const snapshot = (await api(`/api/style-lab/${first.id}`)).job;
+  assert.equal(snapshot.payload.maxRounds, 5); assert.equal(snapshot.payload.autoApply, false);
+  assert.equal(snapshot.payload.references[0].title, "已有参考文章");
+  await api(`/api/style-lab/${first.id}`, "POST", { action: "stop" });
+  const override = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "tune", model: fixed.id, maxRounds: 1, autoApply: false })).job;
+  assert.equal(override.model, fixed.id); assert.equal(override.payload.maxRounds, 1); assert.equal(override.payload.autoApply, false);
+  await api(`/api/style-lab/${override.id}`, "POST", { action: "stop" });
+  const following = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "learn" })).job;
+  assert.equal(following.model, other.id); assert.equal(following.payload.autoApply, true);
+  assert.equal(following.payload.references[0].title, "修改后的参考文章");
+  await api(`/api/style-lab/${following.id}`, "POST", { action: "stop" });
+});
+
 test("learning and model calibration persist, resume and use validated best settings in real generation", async () => {
   const calls=[]; let evaluation=0; let fail=0; let preparations=0; let invalidPreparations=0;
   const config={style:"通俗而克制的叙述",advancedStyle:{voice:"亲近",additional:"模型建议"},generate:{proseControls:{dialogueDensity:"balanced"},advanced:{detailOrganization:"每次呼应产生意义变化",additional:"使用目标作品的事实"}},scenes:[{name:"对白交锋",when:"人物目标存在分歧",instruction:"用停顿与回避推动交流"}],notes:"来源1：短段落与口语对白"};

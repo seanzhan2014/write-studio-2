@@ -8,6 +8,7 @@ import { ArticleIllustrationSettings } from "@/app/ui/article-illustration-setti
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 
 import { StyleLabPanel } from "@/app/ui/style-lab";
+import { StyleLearningDefaultsSettings } from "@/app/ui/style-learning-settings";
 import { AiPromptSettings } from "@/app/ui/ai-prompt-settings";
 
 import { ArticleReviewRulesPage } from "@/app/ui/review-rules";
@@ -67,11 +68,12 @@ export function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (v
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
       {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
-        ["info-basic", "基本信息"], ["info-characters", "人物"], ["info-relationships", "人物关系"],
+        ["info-basic", "基本信息"], ["info-characters", "人物"], ["info-relationships", "人物关系"], ["info-references", "参考文章"],
       ]} active={view} onGo={onGo} />
       {view === "info-basic" && <BasicInfo />}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
+      {view === "info-references" && <MantineThemeProvider theme={aiTaskFormTheme}><div className="article-reference-page ai-task-settings-page"><Text size="sm" c="dimmed">管理当前文章的参考资料，学习写作风格或为模型微调。材料、成果和学习记录随文章保存。</Text><StyleLabPanel /></div></MantineThemeProvider>}
       {copySource && <ArticleCopyDialog article={copySource} existingTitles={studio.data.articles.map((article) => article.title)} onClose={() => setCopySource(null)} onCreate={copyArticle} />}
     </div></div>
   );
@@ -254,7 +256,7 @@ export function TaskSettings() {
   const categories = ["正文生成", "写作准备与讨论", "自动审校", "大纲", "聊天", "图片", "学习与微调", "全局"];
   const [category, setCategory] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "图片" : "正文生成");
   const [imageTab, setImageTab] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "风格库" : "生成设置");
-  const autoSaving = !["学习与微调"].includes(category) && !(category === "图片" && imageTab === "风格库");
+  const autoSaving = !(category === "图片" && imageTab === "风格库");
   return <MantineThemeProvider theme={aiTaskFormTheme}><div className="ai-task-settings-page">
     <div className="ai-task-intro"><Text size="sm" c="dimmed">文章默认继承全局 AI 设置。文章、章节和大纲的专属修改在“章节与大纲”中管理。</Text>{autoSaving && <Text size="xs" c={studio.saveStatus === "failed" ? "red" : "dimmed"} role="status">{studio.saveStatus === "saved" ? "设置已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存设置…"}</Text>}</div>
     <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
@@ -265,7 +267,7 @@ export function TaskSettings() {
       {category === "大纲" && <TaskParameterSettings level="global" targetId="global" groups={["命名"]} title="章节与大纲名称" />}
       {category === "聊天" && <TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" />}
       {category === "图片" && <><div className="ai-task-subtabs" role="tablist" aria-label="图片设置分类">{["生成设置", "风格库"].map(tab => <button type="button" role="tab" key={tab} id={`ai-image-${tab === "生成设置" ? "generation" : "styles"}`} aria-selected={imageTab === tab} aria-controls="ai-image-panel" onClick={() => setImageTab(tab)}>{tab}</button>)}</div><div id="ai-image-panel" role="tabpanel" aria-labelledby={`ai-image-${imageTab === "生成设置" ? "generation" : "styles"}`}>{imageTab === "生成设置" ? <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["插图模型"]} title="图片模型" /><ArticleIllustrationSettings global /></div> : <AiPromptSettings />}</div></>}
-      {category === "学习与微调" && <div className="ai-task-sections"><section className="ai-task-section"><h2>应用到文章</h2><Select aria-label="应用到文章" description="参考资料、学习成果和应用记录属于所选文章。" data={studio.data.articles.map(article => ({ value: article.id, label: article.title }))} value={studio.currentArticle.id || null} allowDeselect={false} searchable onChange={value => { if (value) studio.setCurrentArticle(value); }} /></section>{studio.currentArticle.id ? <StyleLabPanel /> : <Text c="dimmed">创建文章后即可学习与微调。</Text>}</div>}
+      {category === "学习与微调" && <StyleLearningDefaultsSettings />}
       {category === "全局" && <TaskParameterSettings level="global" targetId="global" groups={["任务队列"]} title="全局任务设置" />}
     </div>
   </div></MantineThemeProvider>;

@@ -2,6 +2,56 @@ import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { normalizeConfiguration } from "../../lib/style-learning";
+import { normalizeArticleStorySettings } from "../../lib/story-settings";
+
+test("global learning defaults are separate from article references and one-time task choices", async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  await page.route("**/api/connectivity", route => route.fulfill({ status: 204 }));
+  await page.route("**/api/models", route => route.fulfill({ json: { models: [{ id: "style-default", name: "默认学习模型", providerName: "测试", hasSecret: true }] } }));
+  const original = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture(); data.tasks = [];
+  data.articles[0].storySettings = normalizeArticleStorySettings({ styleLibrary: { references: [{ id: "existing-ref", title: "已有参考文章", text: "两位朋友归还书籍，核对以后相互道别。" }] } });
+  data.articles.push({ ...structuredClone(data.articles[0]), id: "article-other", title: "另一篇文章", chapters: [], characters: [], relationships: [], storySettings: normalizeArticleStorySettings({}) });
+  expect((await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data } })).ok()).toBeTruthy();
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await expect(page.getByRole("button", { name: "学习并设定", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "粘贴参考文章", exact: true })).toHaveCount(0);
+  await page.getByRole("combobox", { name: "默认学习 / 生成模型", exact: true }).click();
+  await page.getByRole("option", { name: "测试 · 默认学习模型", exact: true }).click();
+  await page.getByLabel("默认微调轮次", { exact: true }).fill("5");
+  await page.getByRole("checkbox", { name: "完成后默认自动应用", exact: true }).uncheck();
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.styleLearningSettings).toEqual({ model: "style-default", maxRounds: 5, autoApply: false });
+  await page.reload();
+  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "默认学习 / 生成模型", exact: true })).toHaveValue("测试 · 默认学习模型");
+  await page.screenshot({ path: info.outputPath("learning-defaults.png"), fullPage: true });
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("tab", { name: "参考文章", exact: true }).click();
+  await expect(page).toHaveURL(/\/info\/references$/);
+  const lab = page.getByRole("region", { name: "风格学习与微调", exact: true });
+  await expect(lab.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveValue("已有参考文章");
+  await expect(lab.getByRole("combobox", { name: "学习 / 生成模型", exact: true })).toHaveValue("测试 · 默认学习模型");
+  await expect(lab.getByLabel("微调轮次", { exact: true })).toHaveValue("5");
+  await expect(lab.getByRole("checkbox", { name: "完成后自动应用", exact: true })).not.toBeChecked();
+  await lab.getByLabel("微调轮次", { exact: true }).fill("2");
+  await lab.getByRole("checkbox", { name: "完成后自动应用", exact: true }).check();
+  let submitted: Record<string, unknown> | undefined;
+  const configuration = normalizeConfiguration({ style: "参考文章风格" });
+  const job = { id: "split-learning", articleId: "article-main", kind: "tune", status: "queued", phase: "outline", model: "style-default", createdAt: "now", updatedAt: "now", payload: { base: configuration, best: configuration, references: [], outlines: [], analyses: [], inputTokens: 0, outputTokens: 0, round: 0, bestRound: 0, bestScore: -1 }, rounds: [] };
+  await page.route(/\/api\/style-lab(?:\?.*)?$/, route => { if (route.request().method() === "POST") { submitted = route.request().postDataJSON(); return route.fulfill({ json: { job } }); } return route.fulfill({ json: { jobs: [], active: 0 } }); });
+  await page.route("**/api/style-lab/split-learning", route => route.fulfill({ json: { job } }));
+  await lab.getByRole("button", { name: "微调设定", exact: true }).click();
+  await expect.poll(() => submitted).toEqual({ articleId: "article-main", kind: "tune", model: "style-default", maxRounds: 2, autoApply: true });
+  expect((await (await request.get("/api/state")).json()).data.settings.styleLearningSettings).toEqual({ model: "style-default", maxRounds: 5, autoApply: false });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  await page.screenshot({ path: info.outputPath("article-references.png"), fullPage: true });
+  await page.goto("/articles/article-other/info/references");
+  await expect(page.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveCount(0);
+  await page.goto("/articles/article-main/info/references");
+  await expect(page.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveValue("已有参考文章");
+  await expect(page.getByLabel("微调轮次", { exact: true })).toHaveValue("5");
+});
 
 test("advanced settings stay optional and reference learning saves inputs before starting", async ({ page, request }, testInfo) => {
   test.setTimeout(90_000);
@@ -30,8 +80,8 @@ test("advanced settings stay optional and reference learning saves inputs before
   await advanced.getByRole("textbox",{name:"附加",exact:true}).fill("对话场景允许自然停顿");
   await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings?.advanced?.additional).toBe("对话场景允许自然停顿");
   await advanced.locator("summary").click();
-  await page.goto("/settings/tasks");
-  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   const lab=page.getByRole("region",{name:"风格学习与微调"});
   await expect(lab.getByRole("region", {name:"参考文章", exact:true})).toBeVisible();
   await lab.getByRole("button",{name:"粘贴参考文章",exact:true}).click();
@@ -67,8 +117,8 @@ test("learning history is available from the task workspace with pagination, evi
     if (route.request().method() === "POST") { archived = true; job.payload.archived = true; }
     await route.fulfill({ json: { job } });
   });
-  await page.goto("/settings/tasks");
-  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   await expect(page.getByText("由本机服务在后台执行", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
   const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
@@ -87,6 +137,9 @@ test("learning history is available from the task workspace with pagination, evi
   await expect(history.getByText("1 条记录", { exact: false })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("style-history-tasks.png"), fullPage: true });
+  await history.getByRole("button", { name: "打开文章", exact: true }).first().click();
+  await expect(page).toHaveURL(/\/info\/references$/);
+  await expect(page.getByRole("tab", { name: "参考文章", exact: true })).toHaveAttribute("aria-selected", "true");
 });
 
 test("the ordinary task entry shows failed calibrations in all tasks by default", async ({ page, request }, testInfo) => {
@@ -123,8 +176,8 @@ test("unqualified calibration keeps diagnostics visible and offers no configurat
   const job = { id: "unqualified", articleId: "article-main", kind: "tune", status: "completed", phase: "completed", model: "model", createdAt: "2026-10-22T00:00:00Z", updatedAt: "2026-10-22T00:00:00Z", rounds: [], payload: { base: configuration, best: configuration, references: [], outlines: [], analyses: [], inputTokens: 10, outputTokens: 20, bestRound: 0, bestScore: -1, round: 1, history: [{ at: "2026-10-22T00:00:00Z", status: "retrying", phase: "generate", retry: 1, error: "上游临时不可用", diagnostics: { requestId: "failed-generation", provider: "mock-provider" } }] } };
   await page.route(/\/api\/style-lab(?:\?.*)?$/, route => route.fulfill({ json: { jobs: [job], active: 0, total: 1, pages: 1, page: 1, executionMode: "server" } }));
   await page.route("**/api/style-lab/unqualified", route => route.fulfill({ json: { job } }));
-  await page.goto("/settings/tasks");
-  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await page.goto("/articles/article-main/info/basic");
+  await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
   const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
   const history = workspace.getByRole("region", { name: "学习历史", exact: true });

@@ -463,6 +463,7 @@ export function viewFromPath(pathname: string): View {
   if (pathname.includes("/info/chapters")) return "outline-edit";
   if (pathname.includes("/info/characters")) return "info-characters";
   if (pathname.includes("/info/relationships")) return "info-relationships";
+  if (pathname.includes("/info/references")) return "info-references";
   if (pathname.includes("/info/")) return "info-basic";
   if (pathname.includes("/settings/appearance")) return "settings-appearance";
   if (pathname.includes("/settings/models")) return "settings-models";
@@ -487,6 +488,7 @@ export function routeFor(view: View, articleId: string, outlineId: string, chapt
     read: `${base}/edit`,
     search: `${base}/search`,
     "info-basic": `${base}/info/basic`,
+    "info-references": `${base}/info/references`,
     "info-ai-tasks": `${base}/info/ai-tasks`,
     "info-characters": `${base}/info/characters`,
     "info-relationships": `${base}/info/relationships`,

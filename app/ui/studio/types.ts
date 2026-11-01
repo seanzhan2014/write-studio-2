@@ -30,6 +30,7 @@ export type View =
   | "search"
   | "info-ai-tasks"
   | "info-basic"
+  | "info-references"
   | "info-characters"
   | "info-relationships"
   | "settings-general"
