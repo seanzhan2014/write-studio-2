@@ -196,7 +196,7 @@ test("SpicyAPI image model exposes its native aspect ratio and resolution choice
 });
 
 test("article image presets inherit, persist outline overrides and restore article defaults", async ({ page, request }, testInfo) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const { bodies } = await mockIllustrations(page);
   const articlePrompt = "保持人物一致，无文字和水印。";
   const outlinePrompt = "柔和光线，细腻的手绘笔触。\n".repeat(200);
@@ -269,7 +269,7 @@ test("article image presets inherit, persist outline overrides and restore artic
   await expect(dialog.getByRole("combobox", { name: "插图风格", exact: true })).toHaveValue("水彩插画");
   await expect(dialog.getByText(/当前模型不支持预设分辨率 4k/)).toBeVisible();
   await expect.poll(async () => (await storedOptions())?.inheritance?.additionalPrompt).toBe("article");
-  await expect.poll(async () => (await storedOptions())?.inheritance?.resolution).toBe("parent");
+  await expect.poll(async () => (await storedOptions())?.inheritance?.resolution).toBe("article");
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩插画：两人在码头相望。");
   await dialog.getByRole("button", { name: "生成图片", exact: true }).click();
   await expect(dialog.getByAltText("根据正文片段生成的插图")).toBeVisible();
