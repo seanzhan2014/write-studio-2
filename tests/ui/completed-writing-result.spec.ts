@@ -1,0 +1,81 @@
+import { expect, test } from "@playwright/test";
+import type { StudioData } from "../../app/studio-state";
+import { fullStudioFixture } from "../fixtures.mjs";
+import { createWritingPreparation } from "../../lib/writing-preparation";
+
+test("completed writing keeps long results visible in task details and the generated version", async ({ page, request }, info) => {
+  const current = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture() as unknown as StudioData;
+  const outline = data.articles[0].chapters[0].outlines.find(item => item.id === "outline-current")!;
+  const text = "生成结果开头。\n\n" + "林澈站在档案柜前，核实记录的日期，再把线索写进笔记。\n\n".repeat(160) + "生成结果结尾。";
+  const preparation = createWritingPreparation(0);
+  preparation.revision = 1;
+  preparation.stage = "writing";
+  preparation.autoApprovedAt = new Date().toISOString();
+  preparation.brief = "写作准备内容。".repeat(500);
+  outline.versions.unshift({ id: "generated-result", name: "最新生成正文", content: text, source: "AI Generate", createdAt: preparation.autoApprovedAt, taskId: "completed-writing" });
+  outline.currentVersionId = "generated-result";
+  data.tasks = [{ id: "completed-writing", articleId: "article-main", chapterId: "chapter-main", outlineId: outline.id, target: "正文", prompt: "核实档案记录。", model: "test-model", executionOrigin: "local", state: "success", phase: "completed", createdAt: preparation.autoApprovedAt, resultText: text, resultVersionId: "generated-result", receivedCharacters: text.length, contextOptions: { includePrevious: true, includeCharacters: true, estimatedCharacters: 800, writingPreparation: preparation } }];
+  expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByLabel("AI 任务已完成").filter({ visible: true }).first().click();
+  const result = page.locator(".task-interaction.full").getByLabel("任务结果", { exact: true });
+  await expect(result).toBeVisible();
+  const scroll = page.locator(".task-interaction.full .task-interaction-scroll");
+  const geometry = await scroll.evaluate(element => ({ height: element.clientHeight, scrollHeight: element.scrollHeight, top: element.getBoundingClientRect().top, bottom: element.getBoundingClientRect().bottom, viewport: innerHeight }));
+  expect(geometry.height).toBeGreaterThan(100);
+  expect(geometry.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewport + 1);
+  await expect(result).toBeInViewport();
+  await page.screenshot({ path: info.outputPath("completed-task-result.png") });
+  await scroll.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(result).toContainText("生成结果结尾。");
+  await page.getByRole("button", { name: "打开生成版本", exact: true }).click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toContainText("生成结果开头。");
+  await expect(page.getByLabel("正文内容", { exact: true })).toBeInViewport();
+  await page.screenshot({ path: info.outputPath("completed-version-result.png") });
+  const latest = await (await request.get("/api/state")).json();
+  const updatedOutline = latest.data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current");
+  updatedOutline.versions.unshift({ id: "newer-generated-result", name: "下一次生成正文", content: "下一次生成后自动显示的新正文。", source: "AI Generate", createdAt: new Date().toISOString() });
+  updatedOutline.currentVersionId = "newer-generated-result";
+  expect((await request.put("/api/state", { headers: { "If-Match": String(latest.revision) }, data: { data: latest.data } })).ok()).toBeTruthy();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.getByLabel("正文内容", { exact: true })).toContainText("下一次生成后自动显示的新正文。");
+});
+
+test("a completed task retries loading its generated version after the completion refresh fails", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const snapshot = await (await request.get("/api/state")).json();
+  const initial = fullStudioFixture() as unknown as StudioData;
+  const createdAt = new Date().toISOString();
+  initial.tasks = [{ id: "refresh-result", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文", prompt: "继续核实线索", model: "mock-model", executionOrigin: "local", state: "running", phase: "generating", createdAt, runnerId: "mock-runner", leaseUntil: new Date(Date.now() + 600_000).toISOString() }];
+  const completed = structuredClone(initial);
+  const outline = completed.articles[0].chapters[0].outlines.find(item => item.id === "outline-current")!;
+  outline.versions.unshift({ id: "recovered-result", name: "恢复的生成正文", content: "网络恢复后可见的生成结果。", source: "AI Generate", createdAt, taskId: "refresh-result" });
+  outline.currentVersionId = "recovered-result";
+  completed.tasks[0] = { ...initial.tasks[0], state: "success", phase: "completed", resultVersionId: "recovered-result", resultText: "网络恢复后可见的生成结果。" };
+  let stateReads = 0;
+  await page.route("**/api/state", route => {
+    stateReads++;
+    if (stateReads === 2) return route.fulfill({ status: 503, json: { error: "临时无法读取正文版本" } });
+    return route.fulfill({ json: { ...snapshot, revision: snapshot.revision + (stateReads > 1 ? 1 : 0), data: stateReads === 1 ? initial : completed } });
+  });
+  await page.route("**/api/ai/tasks", route => route.fulfill({ json: { tasks: completed.tasks, revision: snapshot.revision + 1, runningOutlineIds: [] } }));
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await expect(page.getByLabel("AI 任务已完成").filter({ visible: true }).first()).toBeVisible({ timeout: 20_000 });
+  await expect.poll(() => stateReads, { timeout: 15_000 }).toBeGreaterThan(2);
+  await expect(page.getByLabel("正文内容", { exact: true })).toContainText("网络恢复后可见的生成结果。");
+});
+
+test("opening a missing generated version keeps the task result visible instead of showing old body text", async ({ page, request }) => {
+  const current = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture() as unknown as StudioData;
+  data.tasks = [{ id: "missing-version", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文", prompt: "核实记录", model: "mock-model", executionOrigin: "local", state: "success", phase: "completed", createdAt: new Date().toISOString(), resultVersionId: "unavailable-version", resultText: "任务记录里仍保留的生成结果。" }];
+  expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  await page.getByLabel("AI 任务已完成").filter({ visible: true }).first().click();
+  await page.getByRole("button", { name: "打开生成版本", exact: true }).click();
+  await expect(page.getByText("生成版本尚未载入，请稍后重试；可先在任务详情查看生成结果。", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("AI 任务工作区")).toBeVisible();
+  await expect(page.getByLabel("任务结果", { exact: true })).toHaveText("任务记录里仍保留的生成结果。");
+});

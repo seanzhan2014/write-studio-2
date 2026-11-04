@@ -30,7 +30,7 @@ import { formatTime, useStudio, type AiTask } from "@/app/studio-state";
 
 import { useConfiguredModels, cancelActiveChatStream, generateTargetWordsLabel, proseControlsSummary, contentGenerationModeLabel, rewriteRetentionLabel, modelDisplayLabel, resolvedProseControls, IconButton } from "@/app/ui/studio/shared";
 
-export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: { initialTaskId?: string; onClose: () => void; onOpenIllustration: (task: AiTask) => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => void }) {
+export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId = "" }: { initialTaskId?: string; onClose: () => void; onOpenIllustration: (task: AiTask) => void; onOpen: (id: string, next?: "write" | "chat", previewVersionId?: string) => Promise<boolean> }) {
   const studio = useStudio();
   const models = useConfiguredModels();
   const { active: styleTaskCount, total: styleTaskTotal, failed: styleFailureCount } = useStyleTaskSummary();
@@ -53,18 +53,16 @@ export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId =
   const selectedFirstAppearanceNames = selectedArticle?.characters
     .filter((character) => selectedTask?.contextOptions?.firstAppearanceCharacterIds?.includes(character.id))
     .map((character) => character.name) ?? [];
-  function locate(task: AiTask) {
+  async function locate(task: AiTask) {
     if (isIllustrationTarget(task.target)) { onOpenIllustration(task); return; }
-    studio.setCurrentArticle(task.articleId);
     if (task.target === "全部名称") {
+      studio.setCurrentArticle(task.articleId);
       window.history.pushState({}, "", `/articles/${task.articleId}/outlines/edit-all`);
       window.dispatchEvent(new PopStateEvent("popstate"));
       onClose();
       return;
     }
-    studio.setCurrentOutline(task.outlineId);
-    onOpen(task.outlineId, task.target === "AI Chat" ? "chat" : "write", task.target === "正文" ? task.resultVersionId : undefined);
-    onClose();
+    if (await onOpen(task.outlineId, task.target === "AI Chat" ? "chat" : "write", task.target === "正文" ? task.resultVersionId : undefined)) onClose();
   }
   async function updateTaskState(task: AiTask, action: "cancel" | "retry" | "transfer") {
     const response = await fetchServerAction(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });

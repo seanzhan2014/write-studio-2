@@ -52,6 +52,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   const pendingRecoveredOfflineDraftIdsRef = useRef<string[]>([]);
   const pendingLegacyMigrationRef = useRef(false);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+  const taskResultRefreshPendingRef = useRef(false);
   const stateIdentityRef = useRef<StudioStateIdentity | null>(null);
   const offlineCacheReadyRef = useRef(false);
   const refreshCachedStateOnHydrateRef = useRef(false);
@@ -476,10 +477,22 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!hydrated) return;
     let polling = false;
-    const refreshVisible = () => { if (document.visibilityState === "visible") void refreshFromServer(); };
+    // Cached task progress can arrive before the full outline/version snapshot.
+    // Retain the refresh request after the task becomes terminal, including
+    // across temporary network failures and unrelated unsaved edits.
+    taskResultRefreshPendingRef.current ||= dataRef.current.tasks.some((task) => task.state === "success" && task.target === "正文" && task.resultVersionId && dataRef.current.articles
+      .flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines)
+      .some((outline) => outline.id === task.outlineId && !outline.versions.some((version) => version.id === task.resultVersionId)));
+    const refreshResults = async () => { if (await refreshFromServer()) taskResultRefreshPendingRef.current = false; };
+    const refreshVisible = () => { if (document.visibilityState === "visible") void refreshResults(); };
     const timer = window.setInterval(() => {
-      if (browserIsOffline() || polling || document.visibilityState !== "visible" || !dataRef.current.tasks.some((task) => task.executionOrigin === executionOrigin && (task.state === "waiting" || task.state === "running"))) return;
+      const hasActiveTasks = dataRef.current.tasks.some((task) => task.executionOrigin === executionOrigin && (task.state === "waiting" || task.state === "running"));
+      if (browserIsOffline() || polling || document.visibilityState !== "visible" || (!hasActiveTasks && !taskResultRefreshPendingRef.current)) return;
       polling = true;
+      if (!hasActiveTasks) {
+        void refreshResults().finally(() => { polling = false; });
+        return;
+      }
       void fetchFromServer("/api/ai/tasks", { cache: "no-store" })
         .then(async (response) => {
           const payload = await response.json() as { tasks?: AiTask[]; runningOutlineIds?: string[]; revision?: number };
@@ -491,7 +504,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           // and its original outline cannot remain stuck as running; a clean
           // full refresh below then brings in the generated version and title.
           acceptServerMutation(payload.revision, (current) => ({ ...reconcileTaskPoll(current, payload.tasks!, payload.runningOutlineIds ?? []) }), "partial");
-          if (terminalTransition) await refreshFromServer();
+          if (terminalTransition) taskResultRefreshPendingRef.current = true;
+          if (taskResultRefreshPendingRef.current) await refreshResults();
         })
         .catch(() => undefined)
         .finally(() => { polling = false; });

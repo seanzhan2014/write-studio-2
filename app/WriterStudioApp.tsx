@@ -200,10 +200,26 @@ export function WriterStudioInner() {
   }
 
   async function openOutline(outlineId: string, next: "write" | "chat" | "illustrations" = "write", previewVersionId?: string) {
-    if (requiresSaveBeforeNavigation && outlineId !== currentOutline && !await studio.saveNow()) return;
-    setPreviewSelection(previewVersionId ? { outlineId, versionId: previewVersionId } : null);
-    studio.setCurrentOutline(outlineId);
+    if (requiresSaveBeforeNavigation && outlineId !== currentOutline && !await studio.saveNow()) return false;
+    if (previewVersionId) {
+      const hasVersion = () => studioRef.current.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines)
+        .some((outline) => outline.id === outlineId && outline.versions.some((version) => version.id === previewVersionId));
+      if (!hasVersion()) {
+        if (!await studioRef.current.saveNow()) return false;
+        await studioRef.current.refreshFromServer();
+        if (!hasVersion()) {
+          setToast("生成版本尚未载入，请稍后重试；可先在任务详情查看生成结果。");
+          return false;
+        }
+      }
+    }
+    const targetOutline = studioRef.current.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((outline) => outline.id === outlineId);
+    // Opening the current result should keep following the current body. Only
+    // an explicitly selected historical version needs a pinned preview.
+    setPreviewSelection(previewVersionId && previewVersionId !== targetOutline?.currentVersionId ? { outlineId, versionId: previewVersionId } : null);
+    studioRef.current.setCurrentOutline(outlineId);
     await go(next, outlineId, true);
+    return true;
   }
 
   async function openRewriteSource(sourceId: string) {
@@ -294,7 +310,7 @@ export function WriterStudioInner() {
             onMode={go}
             onVersions={() => setVersions(true)}
             onFocus={() => setFocusMode((value) => !value)}
-            onTaskCreated={() => setToast("生成任务已加入队列")}
+            onTaskCreated={() => { setPreviewSelection(null); setToast("生成任务已加入队列"); }}
             onOpenTasks={() => setTaskPanel(true)}
             onNotice={setToast}
             previewVersion={previewVersion}
