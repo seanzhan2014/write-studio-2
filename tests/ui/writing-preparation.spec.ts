@@ -82,6 +82,8 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await full.getByRole("button", { name: "确认准备稿并写正文", exact: true }).click();
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 20000 }).toBe("success");
     await expect(full).toContainText("正文已完成");
+    await expect(full.getByRole("tab", { name: "生成结果", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(full.getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await full.getByRole("tab", { name: "运行历史", exact: true }).click();
     await expect(full).toContainText("生成目标");
     await page.getByRole("button", { name: "打开生成版本", exact: true }).click();
@@ -109,6 +111,8 @@ test("default preparation automatically writes without spending discussion round
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const inline = page.locator(".task-interaction.inline");
     await expect(inline).toContainText("正文已完成", { timeout: 25_000 });
+    await expect(inline.getByRole("tab", { name: "生成结果", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(inline.getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await expect(inline).toContainText("最少条件型讨论");
     await expect(page.getByRole("button", { name: "确认准备稿并写正文", exact: true })).toHaveCount(0);
     expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "write"]);
@@ -117,6 +121,7 @@ test("default preparation automatically writes without spending discussion round
     expect(task.contextOptions.writingPreparation.autoApprovedAt).toBeTruthy();
     await inline.getByRole("button", { name: "打开完整任务 →" }).click();
     await expect(page.locator(".task-interaction.full")).toContainText("正文已完成");
+    await expect(page.locator(".task-interaction.full").getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await fitsViewport(page, page.locator(".task-workspace"));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   } finally { await fake.close(); }

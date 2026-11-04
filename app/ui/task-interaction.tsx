@@ -61,7 +61,7 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
   const workflow = task.contextOptions!.writingPreparation!;
   const key = `${studio.executionOrigin}:${task.id}:${workflow.revision}`;
   const draft = useSyncExternalStore(subscribeDraft, () => readDraft(key, workflow.draft), () => workflow.draft);
-  const [tab, setTab] = useState<"discussion" | "brief" | "history">("discussion");
+  const [tab, setTab] = useState<"discussion" | "brief" | "history" | "result">(task.state === "success" ? "result" : "discussion");
   const [editing, setEditing] = useState(false);
   const [briefEdit, setBriefEdit] = useState(workflow.brief);
   const [busy, setBusy] = useState(false);
@@ -71,8 +71,13 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
   const awaiting = isTaskAwaitingAuthor(task);
   const editable = awaiting && task.executionOrigin === studio.executionOrigin;
   const authorTurn = editable && workflow.stage === "awaiting_author";
+  const resultText = task.resultText || studio.data.articles
+    .flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines)
+    .find((outline) => outline.id === task.outlineId)?.versions
+    .find((version) => version.id === task.resultVersionId)?.content || "";
   const stateRef = useRef({ task, studio });
   useEffect(() => { stateRef.current = { task, studio }; }, [task, studio]);
+  useEffect(() => { if (task.state === "success") setTab("result"); }, [task.state]);
   useEffect(() => {
     const incoming = JSON.stringify(workflow.draft);
     const previous = draftBases.get(key);
@@ -124,9 +129,9 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
   return <section ref={shell} className={`task-interaction ${full ? "full" : "inline"}`} aria-label="写作准备与作者互动">
     <header className="task-interaction-header"><div><h3>写作准备与讨论</h3><span>{PREPARATION_STRATEGY_LABELS[normalizePreparationStrategy(workflow.strategy)]} · {workflow.round} / {workflow.maxRounds} 轮 · {preparationNeedsConfirmation(workflow) ? "完成后等待确认" : "无待答问题后自动写正文"}</span></div>{!full && <button className="text-button" onClick={() => openWritingTask(task.id)}>打开完整任务 →</button>}</header>
     <WritingTaskProgress task={task} />
-    <div className="task-interaction-tabs" role="tablist" aria-label="写作任务内容"><button role="tab" aria-selected={tab === "discussion"} onClick={() => setTab("discussion")}>讨论</button><button role="tab" aria-selected={tab === "brief"} onClick={() => setTab("brief")}>准备稿</button><button role="tab" aria-selected={tab === "history"} onClick={() => setTab("history")}>运行历史</button></div>
+    <div className="task-interaction-tabs" role="tablist" aria-label="写作任务内容">{task.state === "success" && <button role="tab" aria-selected={tab === "result"} onClick={() => setTab("result")}>生成结果</button>}<button role="tab" aria-selected={tab === "discussion"} onClick={() => setTab("discussion")}>讨论</button><button role="tab" aria-selected={tab === "brief"} onClick={() => setTab("brief")}>准备稿</button><button role="tab" aria-selected={tab === "history"} onClick={() => setTab("history")}>运行历史</button></div>
     <div className="task-interaction-layout"><div className="task-interaction-main"><div className="task-interaction-scroll">
-      {tab === "brief" ? brief : tab === "history" ? <><TaskHistory task={task} />{details}</> : <div className="writing-discussion">
+      {tab === "result" ? <section className="task-detail-section"><h3>正文已完成</h3>{task.contextOptions?.reviewCandidateOnly && <p className="task-interaction-warning">原正文已有修改，终稿已保存为候选版本，没有替换当前正文。</p>}{resultText ? <div className="writing-brief-text" aria-label="任务结果">{resultText}</div> : <p className="task-detail-empty">生成正文暂不可用，请打开生成版本查看。</p>}{task.contextOptions?.reviewReport && <GenerateReviewReportView report={task.contextOptions.reviewReport} />}</section> : tab === "brief" ? brief : tab === "history" ? <><TaskHistory task={task} />{details}</> : <div className="writing-discussion">
         <article className="writing-message author"><strong>作者 · 本次要求</strong><p>{task.prompt || "按当前大纲准备并写作。"}</p></article>
         {workflow.history.map((exchange) => <article className="writing-message author" key={exchange.round}><strong>作者 · 第 {exchange.round} 轮回答</strong>{exchange.questions.map((question) => { const option = question.options.find((item) => item.id === exchange.reply.answers[question.id]); return option ? <p key={question.id}>{question.title}<br />{option.label}</p> : null; })}{exchange.reply.note && <p>{exchange.reply.note}</p>}<details><summary>回答前的准备稿</summary><div className="writing-brief-text">{exchange.brief}</div></details></article>)}
         <article className="writing-message assistant"><strong>写作助手</strong><p>{task.state === "success" ? "正文已完成，准备稿及讨论记录保留在本任务中。" : task.state === "failed" ? "任务执行失败，已保存的准备稿和回答可以在重试后继续使用。" : task.state === "cancelled" ? "任务已取消，已有准备稿和讨论记录保留。" : workflow.stage === "preparing" ? "正在根据资料及作者的选择整理写作准备稿…" : workflow.stage === "writing" ? workflow.confirmedAt ? "正在按照已确认的准备稿生成正文…" : "准备稿已完成，正在生成正文…" : workflow.stage === "awaiting_confirmation" ? "准备稿已整理完成。请检查已知事实、人物认知和未决项，确认后开始正文写作。" : "准备稿已更新。以下选择会影响人物行动和情节推进，需要听听你的想法。"}</p></article>
@@ -135,7 +140,7 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
         {task.contextOptions?.reviewCandidateOnly && <p className="task-interaction-warning">原正文已有修改，终稿已保存为候选版本，没有替换当前正文。</p>}
         {task.contextOptions?.reviewReport && <GenerateReviewReportView report={task.contextOptions.reviewReport} />}
         {!!task.contextOptions?.reviewMaxRounds && !task.contextOptions.reviewReport && workflow.stage === "writing" && <p>生成后审校：{REVIEW_STRATEGY_LABELS[normalizeReviewStrategy(task.contextOptions.reviewStrategy)]}{task.contextOptions.reviewModelName && ` · ${task.contextOptions.reviewModelName}`}。已修正 {task.contextOptions.reviewRound ?? 0} / {task.contextOptions.reviewMaxRounds} 次。{task.state === "failed" ? "重试将从保存的审校进度继续。" : ""}</p>}
-        {task.state === "success" && task.resultText && <details><summary>查看生成正文</summary><div className="writing-brief-text">{task.resultText}</div></details>}
+        {task.state === "success" && <button className="secondary-button" type="button" onClick={() => setTab("result")}>查看生成正文</button>}
         <div ref={end} />
       </div>}
     </div>
