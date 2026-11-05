@@ -100,6 +100,21 @@ test("legacy articles follow global workflow settings until explicitly overridde
   assert.deepEqual(normalized.inheritance, { "tasks.preparationMaxRounds": "previous" });
 });
 
+test("preparation enablement follows global defaults and preserves a scoped override", () => {
+  const article = fixture();
+  const settings = { preparationEnabled: false };
+  let resolved = resolveAiSettings(article, "b", "generate", "outline", settings);
+  assert.equal(resolved.value.tasks.preparationEnabled, false);
+  article.chapters[0].outlines[1].generateOptions = normalizeAiGenerateOptions(overrideAiSettings(resolved.value, { tasks: { ...resolved.value.tasks, preparationEnabled: true } }));
+  assert.equal(resolveAiSettings(article, "b", "generate", "outline", settings).value.tasks.preparationEnabled, true);
+  assert.equal(resolveAiSettings(article, "a", "generate", "outline", settings).value.tasks.preparationEnabled, false);
+  article.chapters[0].outlines[1].generateOptions = inheritAiSettings(resolved.value, "global", resolved.articleDefaults, ["tasks.preparationEnabled"]);
+  settings.preparationEnabled = true;
+  resolved = resolveAiSettings(article, "b", "generate", "outline", settings);
+  assert.equal(resolved.value.tasks.preparationEnabled, true);
+  assert.equal(resolved.value.tasks.preparationMaxRounds, 4);
+});
+
 test("scoped review rules support article rules, explicit replacement, and intentional disabling", () => {
   const article = { id: "article", createdAt: "2026-10-22T00:00:00Z", reviewRules: "保持事实一致" };
   assert.ok(taskReviewSnapshot(article, { reviewRules: "__article_rules__" }, "").rules.length > 0);

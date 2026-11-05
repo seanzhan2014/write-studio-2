@@ -28,7 +28,7 @@ test("one-time generation executes its preparation and review choices without ch
     await workflow.locator(":scope > summary").click();
     await expect(workflow.getByText("聊天", { exact: true })).toHaveCount(0);
     await expect(workflow.getByText("插图模型", { exact: true })).toHaveCount(0);
-    const preparation = workflow.locator(".task-parameter-group").filter({ has: page.locator("summary > span", { hasText: "写作准备与讨论" }) });
+    const preparation = workflow.locator(".task-parameter-group").filter({ has: page.locator("summary > span", { hasText: "写作准备" }) });
     await preparation.locator(":scope > summary").click();
     await preparation.getByLabel("写作前最多互动轮次", { exact: true }).fill("0");
     await preparation.getByLabel("准备稿无问题时仍需确认", { exact: true }).check();
@@ -79,4 +79,52 @@ test("saving one-time preferences as article defaults preserves unrelated task d
   expect(saved.chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions).toBeNull();
   await page.reload();
   await expect(page.getByRole("textbox", { name: "正文目标字数", exact: true })).toHaveValue("900 字");
+});
+
+for (const reviewMaxRounds of [0, 1]) test(`disabled preparation skips the model call and confirmation with review rounds ${reviewMaxRounds}`, async ({ page, request }, info) => {
+  test.setTimeout(90_000);
+  const fake = await reviewModelServer();
+  fake.control.mode = "clean";
+  try {
+    const provider = await (await request.post("/api/providers", { data: { name: "Direct writing", baseUrl: fake.baseUrl, secret: "fake-key" } })).json();
+    const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "Direct writing", modelId: "direct-writing", maxInputCharacters: 120000 } })).json();
+    const current = await (await request.get("/api/state")).json();
+    const data = fullStudioFixture() as unknown as StudioData;
+    data.tasks = [];
+    data.articles[0].reviewRules = "保留人物年龄与环境描写。";
+    data.articles[0].aiGenerateSettings = normalizeAiGenerateOptions({ model: model.id, tasks: { preparationEnabled: true, preparationMaxRounds: 4, preparationRequireConfirmation: true, reviewMaxRounds } });
+    expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
+    await page.goto("/articles/article-main/outlines/outline-current/generate");
+    await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
+    await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
+    const workflow = page.locator(".generate-workflow-section > .task-parameter-settings");
+    await workflow.locator(":scope > summary").click();
+    await workflow.getByText("写作准备", { exact: true }).click();
+    const enabled = workflow.getByRole("checkbox", { name: "生成写作准备稿", exact: true });
+    await expect(enabled).toBeChecked();
+    await enabled.uncheck();
+    await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toBeDisabled();
+    await expect(workflow.getByLabel("讨论策略", { exact: true })).toBeDisabled();
+    await expect(workflow.getByLabel("准备稿无问题时仍需确认", { exact: true })).toBeDisabled();
+    await expect(page.locator(".generate-auto-apply-note")).toContainText("直接生成正文");
+    await expect(page.locator(".generate-workflow-summary")).toContainText("写作准备已关闭");
+    await enabled.check();
+    await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("4");
+    await expect(workflow.getByLabel("准备稿无问题时仍需确认", { exact: true })).toBeChecked();
+    await enabled.uncheck();
+    await page.screenshot({ path: info.outputPath("preparation-disabled.png"), fullPage: true });
+    const submitted = page.waitForRequest(request => request.method() === "POST" && new URL(request.url()).pathname === "/api/ai/tasks");
+    await page.getByRole("button", { name: "开始生成", exact: true }).click();
+    const payload = (await submitted).postDataJSON();
+    expect(payload.preparationEnabled).toBe(false);
+    expect(payload.preparationRounds).toBeUndefined();
+    await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks[0]?.state, { timeout: 30000 }).toBe("success");
+    const task = (await (await request.get("/api/ai/tasks")).json()).tasks[0];
+    expect(task.contextOptions.writingPreparation).toBeUndefined();
+    expect(fake.control.calls.map(call => call.kind)).toEqual(reviewMaxRounds ? ["generate", "review"] : ["generate"]);
+    await expect(page.getByRole("button", { name: "确认准备稿并写正文", exact: true })).toHaveCount(0);
+    const article = (await (await request.get("/api/state")).json()).data.articles[0];
+    expect(article.aiGenerateSettings.tasks.preparationEnabled).toBe(true);
+    expect(article.chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions).toBeNull();
+  } finally { fake.close(); }
 });

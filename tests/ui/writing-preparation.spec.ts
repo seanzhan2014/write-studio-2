@@ -26,7 +26,7 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     data.articles[0].aiGenerateSettings!.model = model.id;
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/settings/tasks");
-    await page.getByRole("tab", { name: "写作准备与讨论", exact: true }).click();
+    await page.getByRole("tab", { name: "写作准备", exact: true }).click();
     await expect(page.getByLabel("写作前最多互动轮次")).toHaveValue("3");
     await expect(page.getByRole("combobox", { name: "讨论策略", exact: true })).toHaveValue("最少条件型");
     await expect(page.getByLabel("准备稿无问题时仍需确认")).not.toBeChecked();

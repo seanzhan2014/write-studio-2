@@ -153,6 +153,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
   const taskParameters = useMemo(() => ({ ...resolvedGenerateSettings.value.tasks!, ...generateOptions.tasks }), [resolvedGenerateSettings.value.tasks, generateOptions.tasks]);
+  const preparationEnabled = taskParameters.preparationEnabled !== false;
   const reviewMaxRounds = normalizeReviewRounds(taskParameters.reviewMaxRounds);
   const reviewInstruction = normalizeReviewRules(taskParameters.reviewInstruction);
   const reviewStrategy = normalizeReviewStrategy(taskParameters.reviewStrategy);
@@ -234,7 +235,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     const next = normalizeAiGenerateOptions(generateOptions);
     delete next.inheritance;
     next.firstAppearanceOverrides = {};
-    const workflowKeys = new Set(TASK_PARAMETER_FIELDS.filter(field => ["写作准备与讨论", "自动审校", "命名"].includes(field.group)).map(field => field.key));
+    const workflowKeys = new Set(TASK_PARAMETER_FIELDS.filter(field => ["写作准备", "自动审校", "命名"].includes(field.group)).map(field => field.key));
     next.tasks = { ...studio.currentArticle.aiGenerateSettings.tasks, ...Object.fromEntries(Object.entries(taskParameters).filter(([key]) => workflowKeys.has(key))) };
     studio.updateArticle({ aiGenerateSettings: next });
     setNotice("已设为文章默认，未单独设置的章节和大纲将沿用这些选项。");
@@ -527,15 +528,15 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           </section>
           </section>
           <section className="generate-workflow-section" aria-labelledby="generate-workflow-heading">
-            <div className="generate-section-heading"><h3 id="generate-workflow-heading">流程设置</h3><span>准备 → 写作 → 审校</span></div>
-            <div className="generate-workflow-summary"><span>写作前讨论 · 最多 {Number(taskParameters.preparationMaxRounds)} 轮</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div>
+            <div className="generate-section-heading"><h3 id="generate-workflow-heading">流程设置</h3><span>{preparationEnabled ? "准备 → " : ""}写作{reviewMaxRounds ? " → 审校" : ""}</span></div>
+            <div className="generate-workflow-summary"><span>{preparationEnabled ? `写作准备 · 最多互动 ${Number(taskParameters.preparationMaxRounds)} 轮` : "写作准备已关闭 · 直接写作"}</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div>
               <label className="generate-outline-title-toggle">
                 <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => rememberGenerateOptions({ includeOutlineTitle: event.currentTarget.checked })} />
                 <span><span className="ui-label">同时生成大纲名</span><small>遵循大纲命名设置</small></span>
               </label>
-            <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备与讨论", "自动审校", "命名"]} title="调整讨论、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} />
+            <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备", "自动审校", "命名"]} title="调整准备、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} />
           </section>
-          <section className="generate-inheritance-section" aria-label="参数来源与继承"><AiSettingsInheritance taskGroups={["写作准备与讨论", "自动审校", "命名"]} kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} /></section>
+          <section className="generate-inheritance-section" aria-label="参数来源与继承"><AiSettingsInheritance taskGroups={["写作准备", "自动审校", "命名"]} kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} /></section>
           <section className="generate-execution-section" aria-labelledby="generate-execution-heading">
             <div className="generate-section-heading"><h3 id="generate-execution-heading">执行与结果</h3></div>
               <div className="generate-reasoning-options"><ReasoningSettings value={reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(value) => rememberGenerateOptions({ reasoningEffort: value })} /></div>
@@ -545,7 +546,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
               <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
             </div>
-            <p className="generate-auto-apply-note">{selectedModelReference ? taskParameters.preparationRequireConfirmation === true ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "先整理写作准备稿，无待答问题后自动写正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
+            <p className="generate-auto-apply-note">{selectedModelReference ? !preparationEnabled ? "直接生成正文；完成后更新当前正文，旧版本保留。" : taskParameters.preparationRequireConfirmation === true ? "先整理写作准备稿，确认后生成正文；完成后更新当前正文，旧版本保留。" : "先整理写作准备稿，无待答问题后自动写正文；完成后更新当前正文，旧版本保留。" : "演示生成完成后更新当前正文，旧版本保留。"}</p>
           </div>
         </section>
 

@@ -20,7 +20,7 @@ test("AI parameter inheritance persists and controls real preparation tasks", as
     await page.goto("/articles/article-main/outlines/outline-current/generate");
     const settings = page.locator(".generate-workflow-section > .task-parameter-settings");
     await settings.locator(":scope > summary").click();
-    const discussion = settings.locator(".task-parameter-group").filter({ has: page.locator("summary", { hasText: "写作准备与讨论" }) });
+    const discussion = settings.locator(".task-parameter-group").filter({ has: page.locator("summary", { hasText: "写作准备" }) });
     await discussion.locator(":scope > summary").click();
     for (const label of ["讨论策略", "写作前最多互动轮次", "准备稿无问题时仍需确认"]) await discussion.getByRole("group", { name: `${label}继承`, exact: true }).getByRole("button", { name: "继承上一项", exact: true }).click();
     await expect(discussion.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("0");
@@ -52,14 +52,14 @@ test("article and chapter defaults expose all workflow parameter groups", async 
   await openArticleAiSettings(page);
   const settings = page.locator(".article-ai-task-settings > .task-parameter-settings");
   await settings.locator(":scope > summary").click();
-  for (const group of ["写作准备与讨论", "自动审校", "大纲", "聊天", "插图模型"]) await expect(settings.getByText(group, { exact: true })).toBeVisible();
-  await settings.getByText("写作准备与讨论", { exact: true }).click();
+  for (const group of ["写作准备", "自动审校", "大纲", "聊天", "插图模型"]) await expect(settings.getByText(group, { exact: true })).toBeVisible();
+  await settings.getByText("写作准备", { exact: true }).click();
   await settings.getByLabel("写作前最多互动轮次", { exact: true }).fill("1");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.tasks?.preparationMaxRounds).toBe(1);
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   const scoped = page.locator(".generate-workflow-section > .task-parameter-settings");
   await scoped.locator(":scope > summary").click();
-  await scoped.getByText("写作准备与讨论", { exact: true }).click();
+  await scoped.getByText("写作准备", { exact: true }).click();
   await expect(scoped.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("4");
   await scoped.getByRole("group", { name: "写作前最多互动轮次继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
   await expect(scoped.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("1");

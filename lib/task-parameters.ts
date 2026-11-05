@@ -8,9 +8,10 @@ export type TaskParameterField = { key: string; label: string; group: string; de
 const strategies = [{ value: "minimal", label: "最少条件型" }, { value: "explore", label: "最大探索型" }];
 const modelModes = [{ value: "inherit", label: "跟随生成模型" }, { value: "fixed", label: "指定模型" }];
 export const TASK_PARAMETER_FIELDS: TaskParameterField[] = [
-  { key: "preparationStrategy", label: "讨论策略", group: "写作准备与讨论", default: "minimal", options: strategies },
-  { key: "preparationMaxRounds", label: "写作前最多互动轮次", group: "写作准备与讨论", default: 3, max: 5 },
-  { key: "preparationRequireConfirmation", label: "准备稿无问题时仍需确认", group: "写作准备与讨论", default: false },
+  { key: "preparationEnabled", label: "生成写作准备稿", group: "写作准备", default: true },
+  { key: "preparationStrategy", label: "讨论策略", group: "写作准备", default: "minimal", options: strategies },
+  { key: "preparationMaxRounds", label: "写作前最多互动轮次", group: "写作准备", default: 3, max: 5 },
+  { key: "preparationRequireConfirmation", label: "准备稿无问题时仍需确认", group: "写作准备", default: false },
   { key: "reviewMaxRounds", label: "最多修正次数", group: "自动审校", default: 0, global: "generateReviewMaxRounds", max: 10 },
   { key: "reviewStrategy", label: "审校类型", group: "自动审校", default: "minimal", global: "generateReviewStrategy", options: strategies },
   { key: "reviewInstruction", label: "审校补充指令", group: "自动审校", default: "", global: "generateReviewInstruction", max: 20000 },

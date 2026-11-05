@@ -246,6 +246,7 @@ export type StudioSettings = AppearanceSettings & {
   showArchived: boolean;
   openLastArticle: boolean;
   taskConcurrency: number;
+  preparationEnabled?: boolean;
   preparationMaxRounds?: number;
   preparationStrategy?: import("./writing-preparation").PreparationStrategy;
   preparationRequireConfirmation?: boolean;

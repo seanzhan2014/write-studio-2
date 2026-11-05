@@ -60,14 +60,16 @@ test("durable preparation, author discussion and final writing", async (t) => {
     await t.test("global interaction rounds persist through settings API and normalize invalid values", async () => {
       await reset();
       let current = await api("/api/state");
+      assert.equal(current.data.settings.preparationEnabled, true);
       assert.equal(current.data.settings.preparationStrategy, "minimal");
       assert.equal(current.data.settings.preparationRequireConfirmation, false);
-      await api("/api/settings", "PUT", { preparationMaxRounds: 5, preparationStrategy: "explore", preparationRequireConfirmation: true }, { "If-Match": String(current.revision) });
+      await api("/api/settings", "PUT", { preparationEnabled: false, preparationMaxRounds: 5, preparationStrategy: "explore", preparationRequireConfirmation: true }, { "If-Match": String(current.revision) });
       current = await api("/api/state");
+      assert.equal(current.data.settings.preparationEnabled, false);
       assert.equal(current.data.settings.preparationMaxRounds, 5);
       assert.equal(current.data.settings.preparationStrategy, "explore");
       assert.equal(current.data.settings.preparationRequireConfirmation, true);
-      await api("/api/settings", "PUT", { preparationMaxRounds: 99, preparationStrategy: "invalid", preparationRequireConfirmation: false }, { "If-Match": String(current.revision) });
+      await api("/api/settings", "PUT", { preparationEnabled: true, preparationMaxRounds: 99, preparationStrategy: "invalid", preparationRequireConfirmation: false }, { "If-Match": String(current.revision) });
       current = await api("/api/state");
       assert.equal(current.data.settings.preparationMaxRounds, 3);
       assert.equal(current.data.settings.preparationStrategy, "minimal");
@@ -108,6 +110,35 @@ test("durable preparation, author discussion and final writing", async (t) => {
       assert.equal(task.state, "success", task.error);
       assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "write"]);
       assert.equal(task.contextOptions.writingPreparation.questions.length, 0);
+    });
+
+    for (const contentMode of ["fresh", "rewrite", "continue"]) await t.test(`disabled preparation writes ${contentMode} directly despite discussion and confirmation settings`, async () => {
+      await reset();
+      const created = await create(5, { contentMode, preparationEnabled: false, preparationRequireConfirmation: true });
+      await api(`/api/ai/tasks/${created.id}/execute`, "POST");
+      const task = await waitTask(created.id, (item) => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "success", task.error);
+      assert.equal(task.contextOptions.writingPreparation, undefined);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["write"]);
+      assert.ok(task.resultVersionId);
+    });
+
+    await t.test("the server honors inherited disabled preparation and an explicit task override", async () => {
+      await reset();
+      let current = await api("/api/state");
+      await api("/api/settings", "PUT", { preparationEnabled: false }, { "If-Match": String(current.revision) });
+      const created = await create();
+      await api(`/api/ai/tasks/${created.id}/execute`, "POST");
+      const task = await waitTask(created.id, (item) => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "success", task.error);
+      assert.equal(task.contextOptions.writingPreparation, undefined);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["write"]);
+      fake.control.calls = []; fake.control.ask = false;
+      const enabled = await waitTask((await create(0, { preparationEnabled: true, preparationRequireConfirmation: false })).id, (item) => ["success", "failed"].includes(item.state));
+      assert.equal(enabled.state, "success", enabled.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "write"]);
+      current = await api("/api/state");
+      assert.equal(current.data.settings.preparationEnabled, false);
     });
 
     await t.test("opt-in confirmation pauses a question-free brief and remains frozen when the global switch is turned off", async () => {
@@ -157,7 +188,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
 
     await t.test("invalid discussion preferences are rejected before calling the model", async () => {
       await reset();
-      for (const options of [{ preparationStrategy: ["explore"] }, { preparationStrategy: "invalid" }, { preparationRequireConfirmation: "false" }]) {
+      for (const options of [{ preparationEnabled: "false" }, { preparationStrategy: ["explore"] }, { preparationStrategy: "invalid" }, { preparationRequireConfirmation: "false" }]) {
         const response = await fetch(`${baseUrl}/api/ai/tasks`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: 3, ...options }) });
         assert.equal(response.status, 400);
       }

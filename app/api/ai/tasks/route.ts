@@ -79,6 +79,7 @@ export async function POST(request: Request) {
     if (!articleId || !chapterId || !outlineId || !target || !["content", "outline", "chapter-title", "all-names"].includes(target)) return json({ error: "任务目标无效" }, 400);
     const instruction = String(body.instruction ?? "").trim().slice(0, 20_000);
     const preparationRounds = body.preparationRounds;
+    if (body.preparationEnabled !== undefined && (target !== "content" || typeof body.preparationEnabled !== "boolean")) return json({ error: "写作准备开关必须为布尔值，仅支持正文生成" }, 400);
     if (preparationRounds !== undefined && (target !== "content" || typeof preparationRounds !== "number" || !Number.isInteger(preparationRounds) || preparationRounds < 0 || preparationRounds > MAX_PREPARATION_ROUNDS)) return json({ error: `写作互动轮次必须为 0–${MAX_PREPARATION_ROUNDS}` }, 400);
     if (body.preparationStrategy !== undefined && (preparationRounds === undefined || (body.preparationStrategy !== "minimal" && body.preparationStrategy !== "explore"))) return json({ error: "写作讨论策略无效" }, 400);
     if (body.preparationRequireConfirmation !== undefined && (preparationRounds === undefined || typeof body.preparationRequireConfirmation !== "boolean")) return json({ error: "准备稿确认设置必须为布尔值" }, 400);
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
     const sourceArticle = snapshot.data?.articles.find(article => article.id === articleId);
     const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks! : {};
     const executionParameters = { ...scopedParameters, ...normalizeTaskParameters(body.taskParameters) };
+    const preparationEnabled = preparationRounds !== undefined && (body.preparationEnabled ?? executionParameters.preparationEnabled) !== false;
     const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, executionParameters, reviewInstruction, snapshot.data?.settings);
     if (reviewMaxRounds > 0 && body.reviewRuleSnapshot !== undefined && JSON.stringify(normalizeReviewRuleSnapshot(body.reviewRuleSnapshot)) !== JSON.stringify(reviewRuleSnapshot)) return json({ error: "文章 Review 规则已变更，请刷新后重新创建任务" }, 409);
 
@@ -120,7 +122,7 @@ export async function POST(request: Request) {
     const requestedModel = String(body.model ?? "").trim();
     const configuredModel = requestedModel ? await findModel(requestedModel) : null;
     if (requestedModel && !configuredModel) return json({ error: "所选模型不存在，请重新选择" }, 422);
-    if (preparationRounds !== undefined && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "写作准备需要配置可用模型，请先选择模型" }, 422);
+    if (preparationEnabled && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "写作准备需要配置可用模型，请先选择模型" }, 422);
     if (reviewMaxRounds > 0 && (!configuredModel || !configuredModel.hasSecret)) return json({ error: "自动审校需要配置可用模型；循环次数为 0 时可使用本地引擎" }, 422);
     const reviewModelMode = (body.reviewModelMode ?? snapshot.data?.settings.reviewModelMode) === "fixed" ? "fixed" : "inherit";
     const reviewModelReference = String(body.reviewModel ?? snapshot.data?.settings.reviewModel ?? "").trim();
@@ -150,10 +152,10 @@ export async function POST(request: Request) {
     let reviewSourceContent: string | undefined;
     let reviewSourceVersionId: string | null | undefined;
     let writingPreparation: WritingPreparation | undefined;
-    if (reviewMaxRounds > 0 || preparationRounds !== undefined) {
+    if (reviewMaxRounds > 0 || preparationEnabled) {
       const sourceOutline = snapshot.data?.articles.find((article) => article.id === articleId)?.chapters.find((chapter) => chapter.id === chapterId)?.outlines.find((outline) => outline.id === outlineId);
       if (!snapshot.data || !sourceOutline) return json({ error: "生成正文已不存在" }, 409);
-      if (preparationRounds !== undefined) writingPreparation = createWritingPreparation(preparationRounds as number, {
+      if (preparationEnabled) writingPreparation = createWritingPreparation(preparationRounds as number, {
         strategy: normalizePreparationStrategy(body.preparationStrategy ?? snapshot.data.settings.preparationStrategy),
         requireConfirmation: (body.preparationRequireConfirmation ?? snapshot.data.settings.preparationRequireConfirmation) === true,
       });

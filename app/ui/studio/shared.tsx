@@ -87,11 +87,13 @@ export function chapterIsEmpty(chapter: Chapter) {
 export async function createServerTask(studio: ReturnType<typeof useStudio>, input: ServerTaskInput) {
   const taskId = clientId("task");
   const taskParameters = input.taskParameters ?? resolveAiSettings(studio.currentArticle, input.outlineId, "generate", "outline", studio.data.settings).value.tasks!;
+  const preparationEnabled = (input.preparationEnabled ?? taskParameters.preparationEnabled) !== false;
   const response = await fetchServerAction("/api/ai/tasks", {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
     body: JSON.stringify({ ...input, ...(input.target === "content" ? {
+      preparationEnabled,
       reviewMaxRounds: normalizeReviewRounds(taskParameters.reviewMaxRounds),
       reviewInstruction: normalizeReviewRules(taskParameters.reviewInstruction),
       reviewStrategy: normalizeReviewStrategy(taskParameters.reviewStrategy),
@@ -99,7 +101,7 @@ export async function createServerTask(studio: ReturnType<typeof useStudio>, inp
       reviewModel: taskParameters.reviewModel,
       reviewReasoningEffort: taskReasoningEffort(taskParameters.reviewReasoningEffort),
       reviewReasoningEffortInheritModel: taskParameters.reviewReasoningEffort === "__inherit__",
-    } : {}), ...(input.target === "content" && input.model.trim() ? {
+    } : {}), ...(input.target === "content" && input.model.trim() && preparationEnabled ? {
       preparationRounds: input.preparationRounds ?? normalizePreparationRounds(taskParameters.preparationMaxRounds),
       preparationStrategy: input.preparationStrategy ?? normalizePreparationStrategy(taskParameters.preparationStrategy),
       preparationRequireConfirmation: input.preparationRequireConfirmation ?? taskParameters.preparationRequireConfirmation === true,

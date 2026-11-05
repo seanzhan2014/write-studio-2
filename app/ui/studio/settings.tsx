@@ -253,7 +253,7 @@ const aiTaskFormTheme = createTheme({ components: { InputWrapper: { defaultProps
 
 export function TaskSettings() {
   const studio = useStudio();
-  const categories = ["正文生成", "写作准备与讨论", "自动审校", "大纲", "聊天", "图片", "学习与微调", "全局"];
+  const categories = ["正文生成", "写作准备", "自动审校", "大纲", "聊天", "图片", "学习与微调", "全局"];
   const [category, setCategory] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "图片" : "正文生成");
   const [imageTab, setImageTab] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "风格库" : "生成设置");
   const autoSaving = !(category === "图片" && imageTab === "风格库");
@@ -262,7 +262,7 @@ export function TaskSettings() {
     <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
     <div id="ai-category-panel" role="tabpanel" aria-labelledby={`ai-category-${categories.indexOf(category)}`} className="ai-task-category-panel">
       {category === "正文生成" && <ArticleGenerateSettings global />}
-      {category === "写作准备与讨论" && <TaskParameterSettings level="global" targetId="global" groups={["写作准备与讨论"]} title="写作准备与讨论" />}
+      {category === "写作准备" && <TaskParameterSettings level="global" targetId="global" groups={["写作准备"]} title="写作准备" />}
       {category === "自动审校" && <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["自动审校"]} title="自动审校" /><ArticleReviewRulesPage global /></div>}
       {category === "大纲" && <TaskParameterSettings level="global" targetId="global" groups={["命名"]} title="章节与大纲名称" />}
       {category === "聊天" && <TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" />}

@@ -80,6 +80,7 @@ export type IconName =
 
 export type ServerTaskInput = {
   taskParameters?: TaskParameters;
+  preparationEnabled?: boolean;
   preparationRounds?: number;
   preparationStrategy?: PreparationStrategy;
   preparationRequireConfirmation?: boolean;

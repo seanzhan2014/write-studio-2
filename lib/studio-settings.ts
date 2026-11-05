@@ -22,7 +22,7 @@ import { DEFAULT_STYLE_LEARNING_SETTINGS, normalizeStyleLearningSettings } from 
 
 export const DEFAULT_STUDIO_SETTINGS: StudioData["settings"] = {
   ...DEFAULT_APPEARANCE,
-  outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: DEFAULT_TASK_CONCURRENCY, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
+  outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: DEFAULT_TASK_CONCURRENCY, preparationEnabled: true, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
   styleLearningSettings: DEFAULT_STYLE_LEARNING_SETTINGS,
@@ -51,6 +51,7 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     generateReviewStrategy: normalizeReviewStrategy(settings.generateReviewStrategy),
     generateReviewInstruction: normalizeReviewRules(settings.generateReviewInstruction),
     reviewModelMode: settings.reviewModelMode === "fixed" ? "fixed" : "inherit",
+    preparationEnabled: settings.preparationEnabled !== false,
     preparationMaxRounds: normalizePreparationRounds(settings.preparationMaxRounds),
     preparationStrategy: normalizePreparationStrategy(settings.preparationStrategy),
     preparationRequireConfirmation: settings.preparationRequireConfirmation === true,
