@@ -68,6 +68,7 @@ test("empty body title can choose a candidate with the keyboard and editing prot
   await expect(menu).toBeHidden();
   await expect(title).toBeFocused();
   await page.keyboard.press("Enter");
+  await expect(menu.locator("[data-autofocus]")).toBeFocused();
   await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitemradio", { name: /空白正文/ })).toBeFocused();
   await page.keyboard.press("ArrowDown");
