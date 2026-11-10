@@ -1359,7 +1359,7 @@ test("desktop version chooser previews the selected body and P sets it as defaul
   await expect(page.locator(".content-word-count")).toHaveText("7 字");
   await expect(page.locator(".start-edit-button,.appreciate-body-button,.set-default-body-button")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "设为当前", exact: true })).toHaveCount(0);
-  const bodyTitle = page.getByRole("button", { name: "正文标题，双击设为默认正文" });
+  const bodyTitle = page.getByRole("button", { name: "正文标题，选择正文候选" });
   await expect(bodyTitle).toContainText("手动快照");
   const previewState = await request.get("/api/state");
   const previewPayload = await previewState.json() as { data: ReturnType<typeof fullStudioFixture> };
@@ -1551,7 +1551,7 @@ test("body title markers expose default and persist manual excellence", async ({
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  const title = page.getByRole("button", { name: "正文标题，双击取消默认正文" });
+  const title = page.getByRole("button", { name: "正文标题，选择正文候选" });
   const defaultButton = page.getByRole("button", { name: "取消默认正文", exact: true });
   const excellentButton = page.getByRole("button", { name: "设为优秀正文", exact: true });
   await expect(title).toContainText("手动快照");

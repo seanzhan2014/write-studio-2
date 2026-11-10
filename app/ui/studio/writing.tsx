@@ -5,9 +5,9 @@ import { ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Group } from "@mantine/core";
+import { Button, Group, Menu } from "@mantine/core";
 
-import { resolvedOutlineContentName } from "@/lib/content-name.mjs";
+import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
 
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
@@ -43,7 +43,6 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const selectionPointerActiveRef = useRef(false);
   const selectionMenuTimerRef = useRef<number | null>(null);
   const lastReaderTouchRef = useRef<{ at: number; x: number; y: number } | null>(null);
-  const lastTitleTouchRef = useRef<{ at: number; x: number; y: number } | null>(null);
   const settingDefaultRef = useRef(false);
   const settingExcellentRef = useRef(false);
   const editingRef = useRef(false);
@@ -64,6 +63,8 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const plan = planSnapshot?.plan ?? "";
   const displayedContent = previewVersion?.content ?? resolvedOutlineContent(studio.currentOutline);
   const displayedContentName = displayedVersion?.name ?? resolvedOutlineContentName(studio.currentOutline);
+  const directContentName = studio.currentOutline.contentName?.trim() || timestampContentName(studio.currentOutline.updatedAt);
+  const showDirectContent = !currentVersion || Boolean(studio.currentOutline.content.trim() || studio.currentOutline.contentName?.trim());
   const content = editing ? draftContent : displayedContent;
   const displayedFragments = displayedVersion
     ? normalizeExcellentFragments(displayedVersion.content, displayedVersion.excellentFragments)
@@ -315,6 +316,13 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     onNotice(saved ? `正文已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
   }
 
+  async function selectContent(versionId?: string) {
+    studio.setCurrentVersion(studio.currentOutline.id, versionId);
+    onClearPreview();
+    const saved = await studio.saveNow();
+    if (!saved) onNotice("正文已切换，保存未完成，请查看保存状态");
+  }
+
   async function toggleDisplayedContentDefault() {
     if (!displayedContent.trim() || settingDefaultRef.current) return;
     settingDefaultRef.current = true;
@@ -434,7 +442,20 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
         <section className="content-editor-section">
           <div className="editor-heading">
             <div className="body-title-cluster">
-              <button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={`正文标题，双击${displayedIsDefault ? "取消" : "设为"}默认正文`} title={`${displayedContentName} · 双击${displayedIsDefault ? "取消" : "设为"}默认正文`} onClick={(event) => { if (event.detail === 0) void toggleDisplayedContentDefault(); }} onDoubleClick={() => void toggleDisplayedContentDefault()} onPointerUp={(event) => { if (isTouchDoubleTap(event, lastTitleTouchRef)) void toggleDisplayedContentDefault(); }}><span>{displayedContentName}</span></button>
+              <Menu position="bottom-start" shadow="md" width="min(400px, calc(100vw - 24px))" withinPortal>
+                <Menu.Target>
+                  <button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={editing || savingEdit || settingDefault || settingExcellent} aria-label="正文标题，选择正文候选" title={editing ? "完成编辑后可切换正文" : `${displayedContentName} · 选择正文候选`}><span>{displayedContentName}</span><Icon name="chevron" /></button>
+                </Menu.Target>
+                <Menu.Dropdown className="body-title-dropdown">
+                  <Menu.Label>正文候选</Menu.Label>
+                  {showDirectContent && <Menu.RadioItem value={directContentId(studio.currentOutline.id)} checked={!displayedVersion || displayedIsDirectContent} closeMenuOnClick onClick={() => void selectContent()}>
+                    <span className="body-title-option"><span className="body-title-option-name">{directContentName}</span><small>{!currentVersion ? "当前 · " : ""}已直接保存 · {wordCount(studio.currentOutline.content).toLocaleString("zh-CN")} 字</small></span>
+                  </Menu.RadioItem>}
+                  {studio.currentOutline.versions.map((version) => <Menu.RadioItem key={version.id} value={version.id} checked={displayedVersion?.id === version.id} closeMenuOnClick onClick={() => void selectContent(version.id)}>
+                    <span className="body-title-option"><span className="body-title-option-name">{version.name}</span><small>{currentVersion?.id === version.id ? "当前 · " : ""}{studio.currentOutline.defaultVersionId === version.id ? "默认 · " : ""}{wordCount(version.content).toLocaleString("zh-CN")} 字 · {version.source === "AI Chat" ? "聊天" : version.source === "AI Generate" ? "生成" : version.source}</small></span>
+                  </Menu.RadioItem>)}
+                </Menu.Dropdown>
+              </Menu>
               <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><span aria-hidden="true">P</span></button>
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
               <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent} onClick={() => void deleteDisplayedContent()}><Icon name="trash" /></button>

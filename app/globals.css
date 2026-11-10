@@ -1468,7 +1468,7 @@ button:disabled {
   align-items: center;
   border: 0;
   color: var(--text-primary);
-  cursor: default;
+  cursor: pointer;
   display: flex;
   flex: 0 1 auto;
   font: inherit;
@@ -1487,8 +1487,50 @@ button:disabled {
   white-space: nowrap;
 }
 
+.editor-heading .body-title-toggle > .icon {
+  flex: 0 0 auto;
+}
+
+.editor-heading .body-title-toggle[aria-expanded="true"],
+.editor-heading .body-title-toggle:not(:disabled):hover {
+  color: var(--accent);
+}
+
 .editor-heading .body-title-toggle:disabled {
+  cursor: default;
   opacity: 1;
+}
+
+.body-title-dropdown {
+  max-height: min(380px, 50dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.body-title-dropdown [role="menuitemradio"] {
+  min-height: 48px;
+}
+
+.body-title-dropdown [aria-checked="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.body-title-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.body-title-option-name {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.body-title-option small {
+  color: var(--text-secondary);
+  font-size: 11px;
 }
 
 .editor-heading > .editor-tools {
