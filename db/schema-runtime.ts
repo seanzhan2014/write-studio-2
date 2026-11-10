@@ -1,4 +1,5 @@
-import { ensureTableColumns } from "@/db/schema-columns";
+import { AI_GENERATE_SETTINGS_COLUMNS, ensureTableColumns } from "@/db/schema-columns";
+import { databaseSchemaMatches, missingDatabaseColumns } from "@/db/schema-match";
 
 import { styleLabSchema } from "@/db/style-lab-schema";
 
@@ -12,7 +13,7 @@ import { normalizeReviewRules } from "@/lib/generate-review.mjs";
 
 import { decryptAiSecret } from "@/lib/ai-secret";
 
-import { getDatabase, isCloudDatabase, type SqliteDatabase } from "@/db/sqlite";
+import { getDatabase, type SqliteDatabase } from "@/db/sqlite";
 
 import { rows, safeJson } from "@/db/sql-helpers";
 
@@ -37,7 +38,7 @@ export const schemaStatements = [
     id TEXT PRIMARY KEY NOT NULL, article_id TEXT NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
     chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, title TEXT NOT NULL,
     name_versions_json TEXT NOT NULL DEFAULT '[]', default_name_version_id TEXT,
-    summary TEXT NOT NULL DEFAULT '', generate_instruction TEXT NOT NULL DEFAULT '', generate_options_json TEXT, settings_json TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+    summary TEXT NOT NULL DEFAULT '', generate_instruction TEXT NOT NULL DEFAULT '', generate_options_json TEXT, expansion_json TEXT, settings_json TEXT NOT NULL DEFAULT '{}', position INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'saved', title_generation_pending INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1, UNIQUE(chapter_id, position)
@@ -136,7 +137,7 @@ export const schemaStatements = [
   )`,
 ];
 
-export const RUNTIME_SCHEMA_VERSION = "21";
+export const RUNTIME_SCHEMA_VERSION = "22";
 
 export const RUNTIME_SCHEMA_VERSION_KEY = "runtime_schema_version";
 
@@ -155,11 +156,8 @@ export async function hasCurrentRuntimeSchema(db: SqliteDatabase) {
       .bind(RUNTIME_SCHEMA_VERSION_KEY)
       .first<string>("value_json");
     if (version !== RUNTIME_SCHEMA_VERSION) return false;
-    // A version marker alone must not hide missing additive feature tables.
-    // This also repairs databases marked current by an incomplete deployment.
-    const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('style_lab_jobs','style_lab_rounds','style_lab_artifacts')").all<{ name: string }>();
-    const columns = await db.prepare("PRAGMA table_info(versions)").all<{ name: string }>();
-    return tables.results?.length === 3 && Boolean(columns.results?.some((column) => column.name === "last_selected_at"));
+    // Validate every declared business table and column, even with a current marker.
+    return databaseSchemaMatches(db);
   } catch {
     // Fresh and legacy databases may not have app_settings yet.
     return false;
@@ -197,7 +195,7 @@ export async function ensureDatabase() {
       if (await hasCurrentRuntimeSchema(db)) return;
 
       await db.batch([...schemaStatements, ...styleLabSchema].map((statement) => db.prepare(statement)));
-      if (!isCloudDatabase()) await db.batch(illustrationSchema.map((statement) => db.prepare(statement)));
+      await db.batch(illustrationSchema.map((statement) => db.prepare(statement)));
       await ensureAiModelSecretColumn(db);
       await ensureAiModelMaxInputCharactersColumn(db);
       await ensureAiProviderShape(db);
@@ -227,6 +225,9 @@ export async function ensureDatabase() {
       await db.batch(taskHistoryTriggers.map((statement) => db.prepare(statement)));
       await migrateReviewRules(db);
       await createSearchIndex(db);
+      if (!await databaseSchemaMatches(db)) {
+        throw new Error(`数据库结构与代码不匹配，升级未完成：${(await missingDatabaseColumns(db)).join("、") || "结构探测失败"}`);
+      }
       const initializedAt = new Date().toISOString();
       await db.batch([
         db.prepare("INSERT OR IGNORE INTO app_settings(key, value_json, updated_at) VALUES('state_revision', '0', ?)").bind(initializedAt),
@@ -498,8 +499,7 @@ export async function ensureArticleNamingColumns(db: SqliteDatabase) {
 }
 
 export async function ensureAiGenerateSettingsColumns(db: SqliteDatabase) {
-  await ensureTableColumns(db, "articles", {"illustration_settings_json":"TEXT NOT NULL DEFAULT '{}'","ai_generate_settings_json":"TEXT NOT NULL DEFAULT '{}'"});
-  await ensureTableColumns(db, "outlines", {"illustration_options_json":"TEXT","generate_options_json":"TEXT","expansion_json":"TEXT"});
+  for (const [table, columns] of Object.entries(AI_GENERATE_SETTINGS_COLUMNS)) await ensureTableColumns(db, table, columns);
 }
 
 export async function ensureOutlineSettingsColumn(db: SqliteDatabase) {

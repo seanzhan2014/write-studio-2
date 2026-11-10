@@ -15,6 +15,7 @@
     "test": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run build && node scripts/run-tests.mjs && npm run test:ui",
     "typecheck": "tsc --noEmit",
     "test:ui": "node scripts/run-ui-tests.mjs",
+    "test:db-match": "node --test tests/database-schema-match.test.mjs tests/runtime-schema-upgrade.test.mjs tests/schema-columns.test.mjs",
     "test:sync": "node scripts/run-tests.mjs studio-snapshot.test.mjs studio-conflict.test.mjs studio-roundtrip.test.mjs && node scripts/run-ui-tests.mjs tests/ui/studio-lifecycle.spec.ts --project=desktop-chromium --project=mobile-chromium --output=.test-data/sync-ui-results",
     "lint": "eslint . --format ./scripts/eslint-formatter.mjs",
     "clean:workspace": "node scripts/clean-workspace.mjs",

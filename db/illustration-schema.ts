@@ -1,5 +1,5 @@
-// Hosted databases receive this schema through Drizzle migrations. The same
-// statements bootstrap self-hosted SQLite databases only.
+// Drizzle migrations and idempotent runtime bootstrap share this schema on both
+// hosted D1 and self-hosted SQLite, including recovery of a missing table.
 export const illustrationSchema = [
   `CREATE TABLE IF NOT EXISTS illustration_history (
     id TEXT PRIMARY KEY NOT NULL,
