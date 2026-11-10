@@ -1,0 +1,82 @@
+import { expect, test } from "@playwright/test";
+import type { StudioData } from "../../app/studio-state";
+import { fullStudioFixture } from "../fixtures.mjs";
+
+test("body title lists all candidates and persists selection without changing the default", async ({ page, request }, info) => {
+  const snapshot = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture() as unknown as StudioData;
+  const outline = data.articles[0].chapters[0].outlines.find(item => item.id === "outline-current")!;
+  outline.contentName = "直接保存的正文";
+  outline.defaultVersionId = "version-manual";
+  const originalContent = outline.content;
+  for (let index = 1; index <= 20; index++) {
+    outline.versions.push({ id: `candidate-${index}`, name: `正文候选 ${index} · ${"很长的正文标题".repeat(5)}`, content: `第 ${index} 个候选的正文。`, source: "AI Generate", createdAt: outline.updatedAt });
+  }
+  expect((await request.put("/api/state", { headers: { "If-Match": String(snapshot.revision) }, data: { data } })).ok()).toBeTruthy();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const title = page.getByRole("button", { name: "正文标题，选择正文候选" });
+  const menu = page.getByRole("menu", { name: "正文标题，选择正文候选" });
+  await title.click();
+  await expect(menu.getByRole("menuitemradio")).toHaveCount(22);
+  await expect(menu.getByRole("menuitemradio", { name: /直接保存的正文/ })).toHaveAttribute("aria-checked", "true");
+  await expect(menu.getByRole("menuitemradio", { name: /手动快照/ })).toContainText("默认");
+  const geometry = await menu.evaluate(element => ({ left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, bottom: element.getBoundingClientRect().bottom, height: element.clientHeight, scrollHeight: element.scrollHeight, scrollWidth: element.scrollWidth, width: element.clientWidth, viewportWidth: innerWidth, viewportHeight: innerHeight }));
+  expect(geometry.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.height);
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width + 1);
+  await page.screenshot({ path: info.outputPath("body-title-candidates.png") });
+  await menu.getByRole("menuitemradio", { name: /正文候选 20 ·/ }).click();
+  await expect(menu).toBeHidden();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("第 20 个候选的正文。");
+  await expect(title).toContainText("正文候选 20");
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/state")).json();
+    const saved = state.data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === outline.id);
+    return { current: saved.currentVersionId, default: saved.defaultVersionId, content: saved.content, versions: saved.versions.length };
+  }).toEqual({ current: "candidate-20", default: "version-manual", content: originalContent, versions: 21 });
+  await page.reload();
+  await expect(title).toContainText("正文候选 20");
+  await title.click();
+  await expect(menu.getByRole("menuitemradio", { name: /正文候选 20 ·/ })).toHaveAttribute("aria-checked", "true");
+  await menu.getByRole("menuitemradio", { name: /手动快照/ }).click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("不可变版本正文");
+  await expect(page.getByRole("button", { name: "取消默认正文", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await title.click();
+  await menu.getByRole("menuitemradio", { name: /直接保存的正文/ }).click();
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText(originalContent);
+  await page.reload();
+  await expect(title).toContainText("直接保存的正文");
+});
+
+test("empty body title can choose a candidate with the keyboard and editing protects the draft", async ({ page, request }) => {
+  const snapshot = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture() as unknown as StudioData;
+  const outline = data.articles[0].chapters[0].outlines.find(item => item.id === "outline-current")!;
+  outline.content = "";
+  outline.contentName = "空白正文";
+  expect((await request.put("/api/state", { headers: { "If-Match": String(snapshot.revision) }, data: { data } })).ok()).toBeTruthy();
+  await page.goto("/articles/article-main/outlines/outline-current/write");
+  const title = page.getByRole("button", { name: "正文标题，选择正文候选" });
+  const menu = page.getByRole("menu", { name: "正文标题，选择正文候选" });
+  await expect(title).toBeEnabled();
+  await title.focus();
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(title).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(menu.locator("[data-autofocus]")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitemradio", { name: /空白正文/ })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("正文内容", { exact: true })).toHaveText("不可变版本正文");
+  await page.getByLabel("正文内容", { exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByLabel("正文编辑器").fill("尚未保存的修改");
+  await expect(title).toBeDisabled();
+  await expect(page.getByLabel("正文编辑器")).toHaveValue("尚未保存的修改");
+});

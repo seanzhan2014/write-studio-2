@@ -196,6 +196,14 @@ npm run db:migrate:d1 -- --source /path/to/legacy.sqlite --target /path/to/write
 
 默认 `npm run build` 生成 Node 自托管版本。Sites 发布时设置 `WRITER_STUDIO_BUILD_TARGET=sites`，再通过 Sites 构建工具运行构建；两个目标分别加载对应的运行时，避免 Node 加载 Cloudflare 专用模块。切换目标后需重新构建。
 
+PowerShell 中构建 Sites 发布包时，应在调用构建工具的同一进程环境中设置目标：
+
+```powershell
+$env:WRITER_STUDIO_BUILD_TARGET = 'sites'
+```
+
+打包前确认 `dist/server/index.js` 的默认导出含有 `fetch` 方法。若误将 Node 构建保存为站点版本，修正构建目标后需保存新的源码版本再发布。
+
 ```powershell
 npm run typecheck
 npm run lint -- --max-warnings=0
