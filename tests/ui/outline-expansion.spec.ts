@@ -146,7 +146,7 @@ test('chapter and outline views retain total limits and show exact multipliers o
   await block.locator(".outline-expansion-defaults > summary").click();
   await expect(block.getByRole('textbox', { name: '大纲默认倍率', exact: true })).toHaveValue('12.345678×');
   await block.getByRole('button', { name: '编辑大纲文字', exact: true }).click();
-  await block.getByRole('textbox', { name: '大纲内容：当前码头', exact: true }).fill('甲乙丙。丁戊己。庚辛。');
+  await block.getByRole('textbox', { name: '大纲内容：当前码头', exact: true }).fill('甲乙丙。丁戊己！庚辛。');
   await block.getByRole('button', { name: '完成文字编辑', exact: true }).click();
   await expect(block.getByRole('button', { name: /^第3句，25倍，跟随前句/ })).toBeVisible();
   await expect(block.getByRole('textbox', { name: '大纲默认倍率', exact: true })).toHaveValue('12.345678×');
