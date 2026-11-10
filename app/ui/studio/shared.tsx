@@ -1,5 +1,7 @@
 "use client";
 
+import { rebaseOutlineExpansion } from "@/lib/outline-expansion";
+
 import { taskReasoningEffort, taskNamingProfile, type TaskParameters } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 
@@ -120,6 +122,7 @@ export async function createServerTask(studio: ReturnType<typeof useStudio>, inp
         outlines: chapter.outlines.map((outline) => outline.id !== input.outlineId ? outline : ({
           ...outline,
           plan: input.currentPlan!,
+          expansion: input.currentExpansion === undefined ? rebaseOutlineExpansion(outline.plan, input.currentPlan!, outline.expansion) : input.currentExpansion,
           generateInstruction: input.instruction,
           generateOptions: input.generateOptions === undefined ? outline.generateOptions : input.generateOptions,
           titleGenerationPending: input.currentPlan !== outline.plan ? true : outline.titleGenerationPending,
@@ -383,6 +386,11 @@ export function ProseControlRow<T extends string>({ id, label, value, options, o
     </div>
     {compactHelp ? <small id={descriptionId} className="prose-control-description">{options.find((item) => item.value === value)?.description}</small> : <details className="prose-control-help"><summary>{label}说明</summary><small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small></details>}
   </div>;
+}
+
+export function generateLengthLabel(options?: AiTask["contextOptions"]) {
+  const expansion = options?.promptContext?.currentOutline.expansion;
+  return expansion ? `大纲倍率 · 预计约 ${expansion.estimatedCharacters.toLocaleString("zh-CN")} 字` : generateTargetWordsLabel(options?.targetWords);
 }
 
 export function generateTargetWordsLabel(targetWords?: number) {

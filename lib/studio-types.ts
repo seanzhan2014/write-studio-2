@@ -61,6 +61,7 @@ export type Version = {
   outlineSnapshot?: {
     title: string;
     plan: string;
+    expansion?: import("./outline-expansion").ExpansionSnapshot;
   };
   settingSnapshot?: ResolvedChapterSettings;
   manualExcellent?: boolean;
@@ -72,6 +73,7 @@ export type Outline = {
   title: string;
   titleGenerationPending: boolean;
   plan: string;
+  expansion?: import("./outline-expansion").OutlineExpansion;
   generateInstruction: string;
   generateOptions: AiGenerateOptions | null;
   illustrationOptions?: IllustrationOptions | null;
@@ -83,6 +85,7 @@ export type Outline = {
   contentOutlineSnapshot?: {
     title: string;
     plan: string;
+    expansion?: import("./outline-expansion").ExpansionSnapshot;
   };
   /** Legacy import-only fields. */
   contentOverride?: boolean;
@@ -267,6 +270,7 @@ export type StudioSettings = AppearanceSettings & {
   generateReviewInstruction?: string;
   reviewModelMode?: "inherit" | "fixed";
   generateTargetWords: number;
+  outlineExpansionMultiplier?: number;
   generatePresets: string[];
   reviewPresets: string[];
 };

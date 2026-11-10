@@ -322,6 +322,7 @@ export async function executeTask(taskId: string) {
             outlineSnapshot: {
               title: task.contextOptions?.outlineTitleSnapshot ?? found.outline.title,
               plan: task.contextOptions?.outlinePlanSnapshot ?? found.outline.plan,
+              expansion: task.contextOptions?.promptContext?.currentOutline.expansion,
             },
             settingSnapshot: resolveOutlineSettings(found.article, found.outline.id),
             excellentFragments: task.contextOptions?.contentMode && task.contextOptions.contentMode !== "fresh"

@@ -28,7 +28,7 @@ export async function generateText(input: { outlineId: string; instruction?: str
   const source = suppliedPromptContext(input.context, input.outlineId, input.target)
     ?? await selectPromptContext(input.outlineId, input.target, input);
   const instruction = String(input.instruction ?? "").trim();
-  const targetWords = normalizeOptionalGenerateTargetWords(input.targetWords);
+  const targetWords = source.currentOutline.expansion ? undefined : normalizeOptionalGenerateTargetWords(input.targetWords);
   if (input.target === "content" && contentMode !== "fresh" && !source.currentOutline.content.trim()) {
     throw new AiInputError(contentMode === "rewrite" ? "当前正文为空，无法改写" : "当前正文为空，无法续写");
   }
@@ -38,7 +38,7 @@ export async function generateText(input: { outlineId: string; instruction?: str
   const model = await findModel(input.model);
   if (input.model && !model) throw new AiInputError("所选模型不存在，请重新选择");
   const outlineNaming = normalizeNamingProfile(source.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
-  if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, targetWords ?? DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
+  if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, source.currentOutline.expansion?.estimatedCharacters || targetWords || DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
   const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循作者已确认的写作准备稿；原始资料中的事实与约束仍有效。未決项不得擅自写成事实。` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary));
   const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target) }, input.reasoningEffort);

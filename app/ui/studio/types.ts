@@ -115,6 +115,7 @@ export type ServerTaskInput = {
   timeoutMs?: number;
   promptContext?: SelectedAiContext;
   currentPlan?: string;
+  currentExpansion?: import("@/lib/outline-expansion").OutlineExpansion;
   outlineTitleSnapshot?: string;
   /** undefined leaves the stored outline choice unchanged; null keeps article-level inheritance. */
   generateOptions?: AiGenerateOptions | null;

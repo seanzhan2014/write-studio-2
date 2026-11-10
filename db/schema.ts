@@ -47,6 +47,7 @@ export const outlines = sqliteTable("outlines", {
   generateInstruction: text("generate_instruction").notNull().default(""),
   illustrationOptionsJson: text("illustration_options_json"),
   generateOptionsJson: text("generate_options_json"),
+  expansionJson: text("expansion_json"),
   settingsJson: text("settings_json").notNull().default("{}"),
   position: integer("position").notNull(),
   archived: integer("archived", { mode: "boolean" }).notNull().default(false),

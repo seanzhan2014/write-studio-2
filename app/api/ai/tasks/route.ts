@@ -1,3 +1,4 @@
+import { normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion } from "@/lib/outline-expansion";
 import { taskFromRow } from "@/lib/task-record";
 import { parseGenerateFields } from "@/lib/generate-request";
 import { readJsonObject, RequestInputError } from "@/lib/request-input";
@@ -136,6 +137,10 @@ export async function POST(request: Request) {
 
     const createdAt = new Date().toISOString();
     const submittedPlan = target === "content" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
+    const sourceOutline = sourceArticle?.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
+    const expansionPlan = submittedPlan ?? String(outlineRow.summary);
+    if (target === "content" && !validOutlineExpansion(expansionPlan, body.currentExpansion)) return json({ error: "大纲倍率必须应用于完整句子，倍率范围为 0.1–1000，最多一位小数" }, 400);
+    const submittedExpansion = body.currentExpansion !== undefined ? normalizeOutlineExpansion(expansionPlan, body.currentExpansion) : rebaseOutlineExpansion(String(outlineRow.summary), expansionPlan, sourceOutline?.expansion);
     const hasSubmittedGenerateOptions = target === "content" && Object.prototype.hasOwnProperty.call(body, "generateOptions");
     const submittedGenerateOptions = hasSubmittedGenerateOptions && body.generateOptions && typeof body.generateOptions === "object"
       ? normalizeAiGenerateOptions(body.generateOptions)
@@ -165,6 +170,8 @@ export async function POST(request: Request) {
     }
     if (target === "content" && snapshot.data) {
       promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, includeExcellentFragments: body.includeExcellentFragments === true, excellentFragmentIds: uniqueStrings(body.excellentFragmentIds), contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
+      promptContext.currentOutline.plan = expansionPlan;
+      promptContext.currentOutline.expansion = resolveOutlineExpansion(expansionPlan, submittedExpansion, snapshot.data.settings.outlineExpansionMultiplier);
       const resolved = await resolveWritingSettings(promptContext, configuredModel?.id ?? "", normalizeAdvanced(body.advanced, GENERATE_FIELDS), proseControls);
       body.advanced = resolved.advanced; proseControls = resolved.proseControls ?? proseControls;
     }
@@ -192,7 +199,7 @@ export async function POST(request: Request) {
       estimatedCharacters: Number.isFinite(estimate) ? Math.max(0, estimate) : 0,
       ...(target === "content" ? {
         ...(writingPreparation ? { writingPreparation, reviewSourceContent, reviewSourceVersionId } : {}),
-        targetWords: rawTargetWords,
+        targetWords: promptContext?.currentOutline.expansion ? undefined : rawTargetWords,
         contentMode,
         rewriteRetention,
         rewriteSourceId,
@@ -241,7 +248,7 @@ export async function POST(request: Request) {
     };
     const statements = [];
     if (target === "content") {
-      statements.push(db.prepare("UPDATE outlines SET summary=COALESCE(?,summary),generate_instruction=?,generate_options_json=CASE WHEN ?=1 THEN ? ELSE generate_options_json END,title_generation_pending=CASE WHEN ? IS NOT NULL AND ?<>summary THEN 1 ELSE title_generation_pending END,updated_at=?,revision=revision+1 WHERE id=?").bind(submittedPlan ?? null, instruction, hasSubmittedGenerateOptions ? 1 : 0, submittedGenerateOptions ? JSON.stringify(submittedGenerateOptions) : null, submittedPlan ?? null, submittedPlan ?? null, createdAt, outlineId));
+      statements.push(db.prepare("UPDATE outlines SET summary=COALESCE(?,summary),generate_instruction=?,expansion_json=?,generate_options_json=CASE WHEN ?=1 THEN ? ELSE generate_options_json END,title_generation_pending=CASE WHEN ? IS NOT NULL AND ?<>summary THEN 1 ELSE title_generation_pending END,updated_at=?,revision=revision+1 WHERE id=?").bind(submittedPlan ?? null, instruction, submittedExpansion ? JSON.stringify(submittedExpansion) : null, hasSubmittedGenerateOptions ? 1 : 0, submittedGenerateOptions ? JSON.stringify(submittedGenerateOptions) : null, submittedPlan ?? null, submittedPlan ?? null, createdAt, outlineId));
       statements.push(db.prepare("UPDATE articles SET updated_at=?,revision=revision+1 WHERE id=?").bind(createdAt, articleId));
     }
     statements.push(db.prepare("INSERT INTO ai_tasks(id,article_id,chapter_id,outline_id,target,instruction,model_id,execution_origin,context_options_json,idempotency_key,status,attempt,phase,received_characters,timeout_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(task.id, articleId, chapterId, outlineId, target, instruction, task.model, executionOrigin, JSON.stringify(contextOptions), task.id, "queued", 0, "queued", 0, task.timeoutMs, createdAt));

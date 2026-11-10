@@ -499,7 +499,7 @@ export async function ensureArticleNamingColumns(db: SqliteDatabase) {
 
 export async function ensureAiGenerateSettingsColumns(db: SqliteDatabase) {
   await ensureTableColumns(db, "articles", {"illustration_settings_json":"TEXT NOT NULL DEFAULT '{}'","ai_generate_settings_json":"TEXT NOT NULL DEFAULT '{}'"});
-  await ensureTableColumns(db, "outlines", {"illustration_options_json":"TEXT","generate_options_json":"TEXT"});
+  await ensureTableColumns(db, "outlines", {"illustration_options_json":"TEXT","generate_options_json":"TEXT","expansion_json":"TEXT"});
 }
 
 export async function ensureOutlineSettingsColumn(db: SqliteDatabase) {

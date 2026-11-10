@@ -118,6 +118,7 @@ const entityNames = {
 const fieldNames = {
   title: "标题",
   plan: "大纲内容",
+  expansion: "大纲句子倍率",
   content: "正文",
   contentName: "正文名称",
   summary: "简介",

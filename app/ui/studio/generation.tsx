@@ -3,6 +3,8 @@
 import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
 import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
+import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
+import { normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
@@ -41,7 +43,7 @@ import { type GenerateTextareaHeightRecord, type GenerateTextareaHeightSlot, typ
 
 import { generateTextareaHeightStorageKey, maxRememberedGenerateTextareas } from "@/app/ui/studio/writing";
 
-import { rewriteRetentionOptions, generateContextSummary, configuredModelForReference, modelDisplayLabel, resolvedProseControls, createServerTask, Icon, contentGenerationModes, ProseControlRow, contentGenerationModeLabel, rewriteRetentionLabel, proseControlsSummary, generateTargetWordsLabel } from "@/app/ui/studio/shared";
+import { rewriteRetentionOptions, generateContextSummary, configuredModelForReference, modelDisplayLabel, resolvedProseControls, createServerTask, Icon, contentGenerationModes, ProseControlRow, contentGenerationModeLabel, rewriteRetentionLabel, proseControlsSummary, generateLengthLabel } from "@/app/ui/studio/shared";
 
 export function readGenerateTextareaHeights(): GenerateTextareaHeightRecord {
   if (typeof window === "undefined") return {};
@@ -168,6 +170,15 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const [targetWordsInput, setTargetWordsInput] = useState(() => generateOptions.targetWords > 0 ? String(generateOptions.targetWords) : "");
   const [outlinePlanDraft, setOutlinePlanDraft] = useState(outline.plan);
   const outlinePlanDraftRef = useRef(outline.plan);
+  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion));
+  const expansionDraftRef = useRef(expansionDraft);
+  const lastSyncedExpansionRef = useRef(studio.currentOutline.expansion);
+  const expansionSnapshot = useMemo(() => resolveOutlineExpansion(outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier), [outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier]);
+  function changeExpansion(next?: OutlineExpansion, plan = outlinePlanDraftRef.current) {
+    const normalized = normalizeOutlineExpansion(plan, next);
+    expansionDraftRef.current = normalized;
+    setExpansionDraft(normalized);
+  }
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);
   const outlinePlanHeightRef = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "outlinePlan");
@@ -198,11 +209,11 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   };
   const parsedTargetWords = Number(targetWordsInput);
   const targetWordsUnset = targetWordsInput.trim() === "" || parsedTargetWords === 0;
-  const targetWordsValid = targetWordsUnset || (Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS);
-  const targetWords = targetWordsValid && !targetWordsUnset ? parsedTargetWords : undefined;
+  const targetWordsValid = expansionDraft?.enabled === true || targetWordsUnset || (Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS);
+  const targetWords = !expansionDraft?.enabled && targetWordsValid && !targetWordsUnset ? parsedTargetWords : undefined;
   const rewriteRetentionIndex = rewriteRetentionOptions.findIndex((item) => item.value === rewriteRetention);
   const rewriteRetentionOption = rewriteRetentionOptions[rewriteRetentionIndex] ?? rewriteRetentionOptions[1];
-  const outlinePlanDirty = outlinePlanDraft !== outline.plan;
+  const outlinePlanDirty = outlinePlanDraft !== outline.plan || JSON.stringify(expansionDraft) !== JSON.stringify(studio.currentOutline.expansion);
   const normalizedPrompt = prompt.trim().slice(0, 20_000);
   const promptDirty = normalizedPrompt !== savedPrompt;
 
@@ -247,8 +258,13 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
       outlinePlanDraftRef.current = outline.plan;
       setOutlinePlanDraft(outline.plan);
     }
+    if (previous.id !== studio.currentOutline.id || JSON.stringify(expansionDraftRef.current) === JSON.stringify(lastSyncedExpansionRef.current)) {
+      const nextExpansion = normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion);
+      expansionDraftRef.current = nextExpansion; setExpansionDraft(nextExpansion);
+    }
+    lastSyncedExpansionRef.current = studio.currentOutline.expansion;
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
-  }, [studio.currentOutline.id, outline.plan]);
+  }, [studio.currentOutline.id, studio.currentOutline.expansion, outline.plan]);
   const appearanceSuggestions = useMemo(() => detectFirstAppearanceCharacters(
     { articles: [studio.currentArticle] },
     studio.currentOutline.id,
@@ -291,13 +307,13 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   }
 
   const saveOutlineDraft = useCallback(async () => {
-    if (outlinePlanDraft === studio.currentOutline.plan) return true;
+    if (!outlinePlanDirty) return true;
     setOutlineSaving(true);
-    const saved = await studio.saveOutlinePlan(studio.currentOutline.id, outlinePlanDraft);
+    const saved = await studio.saveOutlinePlan(studio.currentOutline.id, outlinePlanDraft, expansionDraftRef.current);
     if (saved) lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outlinePlanDraft };
     setOutlineSaving(false);
     return saved;
-  }, [outlinePlanDraft, studio]);
+  }, [outlinePlanDraft, outlinePlanDirty, studio]);
 
   const saveGenerateInstruction = useCallback(async () => {
     if (!promptDirty) return true;
@@ -333,10 +349,11 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && JSON.stringify(task.contextOptions?.promptContext?.currentOutline.expansion) === JSON.stringify(expansionSnapshot) && task.contextOptions?.outlinePlanSnapshot === outlinePlanDraft && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
-      const promptContext = selectAiContext({ articles: [studio.currentArticle] }, studio.currentOutline.id, "content", {
+      const promptContext = selectAiContext({ articles: [studio.currentArticle], settings: studio.data.settings }, studio.currentOutline.id, "content", {
+        expansion: expansionDraft,
         includePrevious,
         includeCharacters,
         includeExcellentFragments,
@@ -377,10 +394,12 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
         timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
         promptContext,
         currentPlan: outlinePlanDraft,
+        currentExpansion: expansionDraft,
         outlineTitleSnapshot: studio.currentOutline.title,
         generateOptions: settingsScope === "task" ? undefined : studio.currentOutline.generateOptions === null ? null : generateOptions,
       });
       lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outlinePlanDraft };
+      lastSyncedExpansionRef.current = expansionDraft;
       setPrompt(normalizedPrompt);
       setSavedPrompt(normalizedPrompt);
       setPromptSaveFailed(false);
@@ -389,7 +408,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, generateOptions, inheritedGenerateOptions.advanced, settingsScope, taskParameters, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, expansionDraft, expansionSnapshot, generateOptions, inheritedGenerateOptions.advanced, settingsScope, taskParameters, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -410,7 +429,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               <label htmlFor="generate-outline-plan">大纲内容</label>
               <span>{outlinePlanDraft.length.toLocaleString("zh-CN")} / 10,000</span>
             </div>
-            <Textarea
+            <OutlineExpansionEditor plan={outlinePlanDraft} value={expansionDraft} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} onChange={changeExpansion}><Textarea
               ref={outlinePlanHeightRef}
               id="generate-outline-plan"
               aria-label="生成使用的大纲内容"
@@ -419,13 +438,13 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               maxLength={10000}
               rows={6}
               value={outlinePlanDraft}
-              onChange={(event) => { outlinePlanDraftRef.current = event.target.value; setOutlinePlanDraft(event.target.value); }}
-            />
+              onChange={(event) => { const nextPlan = event.target.value; changeExpansion(rebaseOutlineExpansion(outlinePlanDraftRef.current, nextPlan, expansionDraftRef.current), nextPlan); outlinePlanDraftRef.current = nextPlan; setOutlinePlanDraft(nextPlan); }}
+            /></OutlineExpansionEditor>
             {(outlinePlanDirty || outlineSaving) && <div className="generate-outline-save-row">
               <span className={`generate-outline-save-state ${outlinePlanDirty ? "unsaved" : "saved"}`}>{outlineSaving ? "正在保存…" : outlinePlanDirty ? "有未保存修改" : "已保存"}</span>
               <Button className="generate-outline-save-button" variant={outlinePlanDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!outlinePlanDirty || outlineSaving} loading={outlineSaving} onClick={() => void saveOutlineDraft()}>保存大纲</Button>
             </div>}
-            <div className="generate-outline-resize-divider">
+            <div className="generate-outline-resize-divider" hidden={expansionDraft?.enabled}>
               <button
                 className="generate-outline-resize-handle"
                 type="button"
@@ -460,7 +479,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             <div className="generate-scope-description">{settingsScope === "task" ? "以下参数仅用于本次任务，离开页面后恢复已保存设置。" : "以下参数自动保存到当前大纲，后续生成继续使用。"}{studio.currentOutline.generateOptions ? <span className="generate-settings-source">正在使用此大纲最近的生成设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
             <Button variant="subtle" size="compact-sm" disabled={!targetWordsValid} onClick={saveAsArticleDefaults}>设为文章默认</Button>
           </section>
-          <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid">
+          <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid" data-expansion-mode={expansionDraft?.enabled || undefined}>
           <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
             <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span></div>
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
@@ -492,7 +511,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             <p>{rewriteRetentionOption.description}</p>
             {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
           </section>}
-            <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />
+            {!expansionDraft?.enabled && <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />}
           </div></section>
           <section className="prose-controls-section" aria-labelledby="prose-controls-heading">
             <div className="generate-section-heading"><span id="prose-controls-heading">表达偏好</span><strong>写作倾向</strong></div>
@@ -571,7 +590,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
         {interactiveTask && <TaskInteraction key={`${interactiveTask.id}:${interactiveTask.contextOptions!.writingPreparation!.revision}`} task={interactiveTask} />}
         {(activeTasks.length > 0 || latestFailed) && <section className="generate-task-section">
           <div className="generate-results-title"><div><span>任务</span><h3>进行中</h3></div><button type="button" onClick={onOpenTasks}>查看全部 AI 任务 →</button></div>
-          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state}`} />{isTaskAwaitingAuthor(task) ? taskPhaseLabels[task.phase!] : task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : taskPhaseLabels[task.phase ?? "generating"]}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)} · {proseControlsSummary(task.contextOptions)} · 目标 {generateTargetWordsLabel(task.contextOptions?.targetWords)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><TaskHistory task={task} collapsible /><div className="generation-progress"><span /></div><button type="button" onClick={() => { void changeGenerateTaskState(task, "cancel"); }}>取消任务</button></article>)}
+          {activeTasks.map((task, index) => <article className="generation-card running-card" key={task.id}><div className="generation-state"><span className={`state-dot ${isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state}`} />{isTaskAwaitingAuthor(task) ? taskPhaseLabels[task.phase!] : task.state === "waiting" ? `等待中 · 队列第 ${index + 1} 位` : taskPhaseLabels[task.phase ?? "generating"]}</div><span className="ui-title">{task.prompt || "按大纲生成"}</span><p>{contentGenerationModeLabel(task.contextOptions?.contentMode)}{task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · {modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)} · {proseControlsSummary(task.contextOptions)} · 目标 {generateLengthLabel(task.contextOptions)} · 上下文约 {task.contextOptions?.estimatedCharacters?.toLocaleString("zh-CN") ?? "—"} 字符{task.contextOptions?.includeOutlineTitle ? " · 同时生成大纲名" : ""}</p><TaskHistory task={task} collapsible /><div className="generation-progress"><span /></div><button type="button" onClick={() => { void changeGenerateTaskState(task, "cancel"); }}>取消任务</button></article>)}
           {!activeTasks.length && latestFailed && <article className="generation-card failed-generation-card"><div className="generation-state"><span className="state-dot failed" />需要处理</div><span className="ui-title">{latestFailed.prompt || "按大纲生成"}</span><p>{latestFailed.error || "生成失败"}</p><div className="candidate-actions"><button type="button" onClick={() => setPrompt(latestFailed.prompt)}>编辑指令</button><button type="button" onClick={() => { void changeGenerateTaskState(latestFailed, "retry"); }}>原样重试</button></div></article>}
         </section>}
 

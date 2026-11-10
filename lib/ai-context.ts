@@ -1,3 +1,4 @@
+import { rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion, type ExpansionSnapshot } from "./outline-expansion.ts";
 import { resolvedOutlineContent } from "./outline-content.ts";
 import { outlineDisplayTitle } from "./outline-title.ts";
 import { STYLE_FIELDS, advancedText } from "./advanced-writing.ts";
@@ -15,6 +16,7 @@ type ContextOutline = {
   title: string;
   titleGenerationPending?: boolean;
   plan: string;
+  expansion?: OutlineExpansion;
   content: string;
   settings?: OutlineSettings;
   currentVersionId?: string | null;
@@ -42,13 +44,13 @@ type ContextArticle = {
   relationships: ContextRelationship[];
 };
 
-export type AiContextData = { articles: ContextArticle[] };
+export type AiContextData = { articles: ContextArticle[]; settings?: { outlineExpansionMultiplier?: number } };
 
 export type SelectedAiContext = {
   kind: AiContextKind;
   article: { id: string; title: string; summary: string; style: string; location: string; negativeConstraints: string; outlineNaming: NamingProfile; calibrationHandled?: boolean };
   currentChapter: { id: string; title: string; inheritedFromChapter?: { id: string; title: string } };
-  currentOutline: { id: string; title: string; titleGenerationPending: boolean; plan: string; content: string };
+  currentOutline: { id: string; title: string; titleGenerationPending: boolean; plan: string; content: string; expansion?: ExpansionSnapshot };
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
   previousContentTail: string;
   chapterOutlines: Array<{ id: string; title: string; plan: string }>;
@@ -65,6 +67,7 @@ export type AiContextOptions = {
   contentMode?: ContentGenerationMode;
   instruction?: string;
   currentPlan?: string;
+  expansion?: OutlineExpansion;
   firstAppearanceCharacterIds?: string[];
   includeExcellentFragments?: boolean;
   excellentFragmentIds?: string[];
@@ -226,6 +229,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
       title: outlineDisplayTitle(outline),
       titleGenerationPending: outline.titleGenerationPending === true,
       plan: currentPlan,
+      ...(kind === "content" ? { expansion: resolveOutlineExpansion(currentPlan, options.expansion ?? rebaseOutlineExpansion(outline.plan, currentPlan, outline.expansion), data.settings?.outlineExpansionMultiplier) } : {}),
       content: kind === "chat" || kind === "content" ? currentContent : "",
     },
     previousOutlines: kind === "chapter-title" ? [] : previous.map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })),

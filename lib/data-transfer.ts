@@ -338,6 +338,7 @@ function cloneOutline(source: Outline, ids: IdMaps): Outline {
   }];
   return {
     ...source,
+    ...(source.expansion ? { expansion: structuredClone(source.expansion) } : {}),
     id,
     ...cloneNameState(source, ids),
     settings: cloneChapterSettings(source.settings, ids),

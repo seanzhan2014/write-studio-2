@@ -1,3 +1,4 @@
+import { normalizeOutlineExpansion } from "./outline-expansion.ts";
 import type { Message, Character, Article, AiTask, StudioSettings, StudioData } from "./studio-types.ts";
 
 import { normalizeIllustrationOptions } from "./illustration-options.ts";
@@ -186,6 +187,7 @@ export function normalizeStudioData(source: StudioData): StudioData {
             generateInstruction: String(item.generateInstruction ?? "").slice(0, 20000),
             illustrationOptions: item.illustrationOptions == null ? null : normalizeIllustrationOptions(item.illustrationOptions, normalizeIllustrationOptions(article.illustrationSettings)),
             generateOptions: item.generateOptions == null ? null : normalizeAiGenerateOptions(item.generateOptions, DEFAULT_AI_GENERATE_OPTIONS),
+            ...(item.expansion ? { expansion: normalizeOutlineExpansion(item.plan, item.expansion) } : {}),
             settings: normalizeChapterSettings(item.settings),
             contentName: item.contentName?.trim() || timestampContentName(item.updatedAt),
             currentVersionId,

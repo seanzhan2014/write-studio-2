@@ -1,3 +1,4 @@
+import { normalizeOutlineExpansion, rebaseOutlineExpansion } from "@/lib/outline-expansion";
 import { createInheritedAiSettings } from "@/lib/ai-settings-inheritance";
 import { normalizeStudioData } from "@/lib/studio-normalization";
 import { outline, makeId, findOutlineInArticle, firstOutline, activeExcellentFragments, activeManualExcellent } from "@/lib/studio-entities";
@@ -327,13 +328,13 @@ updateOutline(outlineId, patch) {
             : planChanged
               ? true
               : item.titleGenerationPending;
-        return { ...item, ...patch, titleGenerationPending, updatedAt: new Date().toISOString() };
+        return { ...item, ...patch, ...(Object.hasOwn(patch, "expansion") ? { expansion: normalizeOutlineExpansion(patch.plan ?? item.plan, patch.expansion) } : planChanged ? { expansion: rebaseOutlineExpansion(item.plan, patch.plan!, item.expansion) } : {}), titleGenerationPending, updatedAt: new Date().toISOString() };
       }) })) })) }));
     },
-saveOutlinePlan(outlineId, plan) {
+saveOutlinePlan(outlineId, plan, expansion) {
       const updatedAt = new Date().toISOString();
       const nextPlan = plan.slice(0, 10000);
-      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, plan: nextPlan, titleGenerationPending: nextPlan !== item.plan ? true : item.titleGenerationPending, updatedAt } : item) })) })) };
+      const snapshot = { ...dataRef.current, articles: dataRef.current.articles.map((article) => ({ ...article, updatedAt: article.id === dataRef.current.currentArticleId ? updatedAt : article.updatedAt, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, plan: nextPlan, expansion: expansion ? normalizeOutlineExpansion(nextPlan, expansion) : rebaseOutlineExpansion(item.plan, nextPlan, item.expansion), titleGenerationPending: nextPlan !== item.plan ? true : item.titleGenerationPending, updatedAt } : item) })) })) };
       dataRef.current = snapshot;
       setData(snapshot);
       return enqueueSave(snapshot);
@@ -459,7 +460,7 @@ copyOutline(outlineId) {
           const source = chapter.outlines[index];
           const items = [...chapter.outlines];
           const sourceTitle = normalizeOutlineTitle(source.title);
-          items.splice(index + 1, 0, { ...outline(id, sourceTitle ? `${sourceTitle}（副本）` : "", source.plan, ""), titleGenerationPending: true, archived: source.archived });
+          items.splice(index + 1, 0, { ...outline(id, sourceTitle ? `${sourceTitle}（副本）` : "", source.plan, ""), expansion: source.expansion ? structuredClone(source.expansion) : undefined, titleGenerationPending: true, archived: source.archived });
           copied = true;
           return { ...chapter, outlines: items };
         }) };

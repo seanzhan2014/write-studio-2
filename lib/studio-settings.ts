@@ -1,6 +1,7 @@
 
 
 import { normalizePreparationRounds, normalizePreparationStrategy } from "./writing-preparation.ts";
+import { DEFAULT_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier } from "./outline-expansion.ts";
 
 import { normalizeIllustrationStyles } from "./illustration-styles.ts";
 
@@ -25,6 +26,7 @@ export const DEFAULT_STUDIO_SETTINGS: StudioData["settings"] = {
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: DEFAULT_TASK_CONCURRENCY, preparationEnabled: true, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
+  outlineExpansionMultiplier: DEFAULT_EXPANSION_MULTIPLIER,
   styleLearningSettings: DEFAULT_STYLE_LEARNING_SETTINGS,
 };
 
@@ -45,6 +47,7 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     illustrationPromptModel: String(settings.illustrationPromptModel ?? ""),
     illustrationImageModel: String(settings.illustrationImageModel ?? ""),
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),
+    outlineExpansionMultiplier: normalizeExpansionMultiplier(settings.outlineExpansionMultiplier),
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
     generateReviewMaxRounds: normalizeReviewRounds(settings.generateReviewMaxRounds),
