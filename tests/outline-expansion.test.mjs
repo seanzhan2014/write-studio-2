@@ -1,11 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { outlineSentences, normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion, isExpansionMultiplier } from "../lib/outline-expansion.ts";
+import { outlineSentences, normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion, isExpansionMultiplier, convertTargetWordsToExpansion, outlineExpansionForEditing } from "../lib/outline-expansion.ts";
 import { selectAiContext } from "../lib/ai-context.ts";
 import { duplicateOutlineForImport } from "../lib/data-transfer.ts";
 import { fullStudioFixture } from "./fixtures.mjs";
 
 const config = (plan, entries = [], defaultMultiplier) => ({ enabled: true, ...(defaultMultiplier === undefined ? {} : { defaultMultiplier }), marks: entries.map(([index, multiplier]) => ({ ...outlineSentences(plan)[index], multiplier })) });
+
+test("legacy totals convert by outline word count with precise large and fractional multipliers", () => {
+  const plan = '甲乙丙。丁戊己。';
+  assert.equal(convertTargetWordsToExpansion(plan, 600).defaultMultiplier, 100);
+  assert.equal(resolveOutlineExpansion(plan, convertTargetWordsToExpansion(plan, 601)).estimatedCharacters, 601);
+  const short = '甲。乙。丙。';
+  const large = convertTargetWordsToExpansion(short, 50000);
+  assert.equal(large.defaultMultiplier, 16666.666667);
+  assert.equal(resolveOutlineExpansion(short, large).estimatedCharacters, 50000);
+  const many = '甲。'.repeat(5000);
+  const small = convertTargetWordsToExpansion(many, 100);
+  assert.equal(small.defaultMultiplier, 0.02);
+  assert.equal(resolveOutlineExpansion(many, small).estimatedCharacters, 100, 'round cumulative budgets instead of rounding each tiny sentence to zero');
+});
+
+test("conversion preserves explicit sentence settings and cannot divide an empty outline", () => {
+  const plan = '第一句。第二句。';
+  const marked = config(plan, [[1, 7]], 3);
+  assert.deepEqual(outlineExpansionForEditing(plan, marked, 5000), marked);
+  const converted = convertTargetWordsToExpansion(plan, 600, { ...marked, enabled: false });
+  assert.equal(converted.defaultMultiplier, 100);
+  assert.deepEqual(converted.marks, marked.marks);
+  for (const empty of ['', '  \n', '。！？']) {
+    const expansion = outlineExpansionForEditing(empty, undefined, 5000);
+    assert.equal(expansion.enabled, true);
+    assert.equal(expansion.defaultMultiplier, undefined);
+    assert.equal(resolveOutlineExpansion(empty, expansion, 8).defaultMultiplier, 8);
+  }
+  assert.equal(convertTargetWordsToExpansion(plan, 0).defaultMultiplier, undefined);
+});
 
 test("sentence boundaries preserve quotes, decimals, original markers and unpunctuated paragraphs", () => {
   const plan = '他说：“展开 ×20。”\n价钱是3.5元，记作[10x]；继续说明！ Really? 最后一句';
@@ -29,7 +59,7 @@ test("multipliers follow the previous sentence across paragraphs, then outline, 
 test("only complete sentences accept valid custom multipliers", () => {
   const plan = '完整的一句话。';
   assert.equal(validOutlineExpansion(plan, config(plan, [[0, 2.5]])), true);
-  for (const value of [0, -1, NaN, Infinity, 0.01, 1001, '10']) assert.equal(isExpansionMultiplier(value), false);
+  for (const value of [0, -1, NaN, Infinity, 0.0000001, 100001, '10']) assert.equal(isExpansionMultiplier(value), false);
   assert.equal(validOutlineExpansion(plan, { enabled: true, marks: [{ start: 0, end: 1, text: '完', multiplier: 10 }] }), false);
   assert.equal(resolveOutlineExpansion(plan, { ...config(plan), enabled: false }), undefined);
 });

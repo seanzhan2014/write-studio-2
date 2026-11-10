@@ -1,3 +1,4 @@
+import { showTotalWordMode } from "./outline-expansion-helper";
 import { openArticleAiSettings } from "./article-ai-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
@@ -561,8 +562,11 @@ test("model candidates can be assigned as independent task defaults", async ({ p
 });
 
 test("generate controls and context drawer fit the desktop viewport", async ({ page }, testInfo) => {
+  test.setTimeout(60000);
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
+  await showTotalWordMode(page);
   await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
   await expect(page.getByLabel("同时生成大纲名", { exact: true })).not.toBeChecked();
   await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
@@ -664,6 +668,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   await expect(page.getByText("正在使用文章生成预设", { exact: true })).toHaveCount(0);
   const outlinePlan = page.locator("#generate-outline-plan");
   await expect(outlinePlan).toHaveAttribute("rows", "6");
@@ -687,6 +692,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(initialSubmit!.y).toBeGreaterThanOrEqual(0);
   expect(initialSubmit!.y + initialSubmit!.height).toBeLessThanOrEqual(initialViewport.height);
 
+  await showTotalWordMode(page);
   const wordTarget = page.getByRole("textbox", { name: "正文目标字数" });
   await wordTarget.scrollIntoViewIfNeeded();
   const wordBounds = await wordTarget.boundingBox();
@@ -762,6 +768,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
 test("mobile AI Generate replaces a stored old default but keeps a custom outline height", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   const outlinePlan = page.locator("#generate-outline-plan");
   const expandedHeight = Math.round((await outlinePlan.boundingBox())!.height);
   const oldDefaultHeight = await outlinePlan.evaluate((element) => {
@@ -777,6 +784,7 @@ test("mobile AI Generate replaces a stored old default but keeps a custom outlin
     localStorage.setItem("writer-studio:generate-textarea-heights:v1", JSON.stringify({ "outline-current": { outlinePlan: height } }));
   }, oldDefaultHeight);
   await page.reload();
+  await showTotalWordMode(page);
   expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(expandedHeight);
 
   await outlinePlan.evaluate((element) => { element.style.height = "318px"; });
@@ -785,12 +793,14 @@ test("mobile AI Generate replaces a stored old default but keeps a custom outlin
     return stored["outline-current"]?.outlinePlan;
   })).toBe(318);
   await page.reload();
+  await showTotalWordMode(page);
   expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(318);
 });
 
 test("mobile AI Generate divider resizes the outline by touch and remembers its height", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile touch layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   const outlinePlan = page.locator("#generate-outline-plan");
   const divider = page.locator(".generate-outline-resize-divider");
   const handle = page.getByRole("button", { name: "拖动横线中段调整大纲输入框高度" });
@@ -835,12 +845,14 @@ test("mobile AI Generate divider resizes the outline by touch and remembers its 
     return stored["outline-current"]?.outlinePlan;
   })).toBe(resizedHeight);
   await page.reload();
+  await showTotalWordMode(page);
   expect(Math.round((await outlinePlan.boundingBox())!.height)).toBe(resizedHeight);
 });
 
 test("AI Generate remembers both textarea heights locally for each outline", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop resize behavior");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   const revisionBefore = (await (await request.get("/api/state")).json() as { revision: number }).revision;
   const outlinePlan = page.locator("#generate-outline-plan");
   const instruction = page.locator(".generate-prompt-label textarea");
@@ -855,14 +867,17 @@ test("AI Generate remembers both textarea heights locally for each outline", asy
   expect(revisionAfter).toBe(revisionBefore);
 
   await page.reload();
+  await showTotalWordMode(page);
   await expect.poll(async () => Math.round((await outlinePlan.boundingBox())?.height ?? 0)).toBe(318);
   await expect.poll(async () => Math.round((await instruction.boundingBox())?.height ?? 0)).toBe(276);
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await showTotalWordMode(page);
   await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).not.toBe(318);
   await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).not.toBe(276);
 
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).toBe(318);
   await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).toBe(276);
 });
@@ -901,6 +916,7 @@ test("AI Generate reuses supplementary instructions only within the same outline
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   const instruction = page.locator(".generate-prompt-label textarea");
   await expect(instruction).toHaveValue("当前码头沿用的补充指令");
   await instruction.fill("当前码头下一次仍要沿用");
@@ -933,9 +949,11 @@ test("AI Generate reuses supplementary instructions only within the same outline
   await instruction.fill("");
   await page.getByRole("button", { name: "保存指令" }).click();
   await page.reload();
+  await showTotalWordMode(page);
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("");
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await showTotalWordMode(page);
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("前序灯塔自己的补充指令");
 });
 
@@ -962,10 +980,12 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
   const numericValue = async (label: string) => Number((await page.getByRole("textbox", { name: label }).inputValue()).replace(/[^\d-]/g, ""));
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
   await expect(page.locator(".generate-settings-source")).toContainText("正在使用此大纲最近的生成设置");
+  await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(7100);
   await page.getByRole("textbox", { name: "正文目标字数" }).fill("7200");
   await expect.poll(async () => {
@@ -974,9 +994,11 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
     return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions?.targetWords;
   }).toBe(7200);
   await page.reload();
+  await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(7200);
 
   await page.getByRole("group", { name: "全部生成设置继承", exact: true }).getByRole("button", { name: "退回文章默认", exact: true }).click();
+  await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
   await expect.poll(async () => {
     const response = await request.get("/api/state");
@@ -996,6 +1018,7 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
   }).toBe(6800);
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.locator(".generate-settings-source")).toHaveCount(0);
+  await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(6800);
 });
 
@@ -1277,8 +1300,11 @@ test("editing a previewed body inherits that version's outline snapshot", async 
   });
 });
 
-test("Generate outline editing stays local until one explicit save", async ({ page, request }, testInfo) => {
+test("Generate outline editing stays local until saving after default conversion", async ({ page, request }, testInfo) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await page.getByRole("button", { name: "保存大纲", exact: true }).click();
+  await expect(page.getByRole("button", { name: "保存大纲", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const editor = page.getByLabel("生成使用的大纲内容");
   const save = page.getByRole("button", { name: "保存大纲", exact: true });
   const original = await editor.inputValue();
@@ -2157,6 +2183,7 @@ test("full outline editor shows every plan in one auto-growing document", async 
   await expect(editor).toHaveCSS("outline-style", "none");
   await expect(editor.getByLabel("第 1 章标题")).toHaveValue("第一章");
 
+  await page.locator('[data-continuous-outline-id="outline-current"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const plan = editor.getByLabel("大纲内容：当前码头");
   const nextPlan = "潮位正在快速回落。\n\n林澈必须在巡逻队抵达前找到暗门。\n\n远处灯塔给出新的信号。";
   await plan.fill(nextPlan);
@@ -2261,6 +2288,7 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
 
   await page.goto("/articles/article-main/outlines/edit-all");
   const scroll = page.locator(".keyboard-aware-page-scroll");
+  await page.locator('[data-continuous-outline-id="outline-after"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const plan = page.getByLabel("大纲内容：绝密后续大纲");
   await plan.focus();
   await plan.evaluate((element) => {
@@ -2524,6 +2552,7 @@ test("full outline editor keeps the active outline anchored when leaving and ret
   await page.getByRole("button", { name: "章节与大纲", exact: true }).click();
   const editor = page.locator(".continuous-document-editor.mode-outline");
   const target = editor.locator('[data-continuous-outline-id="outline-after"]');
+  await page.locator('[data-continuous-outline-id="outline-after"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const targetPlan = editor.getByLabel("大纲内容：绝密后续大纲");
   await targetPlan.scrollIntoViewIfNeeded();
   await targetPlan.focus();

@@ -4,7 +4,7 @@ import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
 import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
-import { normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
+import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
@@ -77,6 +77,8 @@ export function writeGenerateTextareaHeight(outlineId: string, slot: GenerateTex
 
 export function useRememberedGenerateTextareaHeight(outlineId: string, slot: GenerateTextareaHeightSlot) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [element, setElement] = useState<HTMLTextAreaElement | null>(null);
+  const registerTextarea = useCallback((node: HTMLTextAreaElement | null) => { textareaRef.current = node; setElement(node); }, []);
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -124,8 +126,8 @@ export function useRememberedGenerateTextareaHeight(outlineId: string, slot: Gen
       if (saveTimer !== undefined) window.clearTimeout(saveTimer);
       flush();
     };
-  }, [outlineId, slot]);
-  return textareaRef;
+  }, [outlineId, slot, element]);
+  return [textareaRef, registerTextarea] as const;
 }
 
 export function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOpenTasks }: { models: ConfiguredModel[]; outline: { title: string; plan: string; content: string }; initialPrompt?: string; onTaskCreated: () => void; onOpenTasks: () => void }) {
@@ -170,7 +172,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const [targetWordsInput, setTargetWordsInput] = useState(() => generateOptions.targetWords > 0 ? String(generateOptions.targetWords) : "");
   const [outlinePlanDraft, setOutlinePlanDraft] = useState(outline.plan);
   const outlinePlanDraftRef = useRef(outline.plan);
-  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion));
+  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => outlineExpansionForEditing(outline.plan, studio.currentOutline.expansion, initialGenerateOptions.targetWords));
   const expansionDraftRef = useRef(expansionDraft);
   const lastSyncedExpansionRef = useRef(studio.currentOutline.expansion);
   const expansionSnapshot = useMemo(() => resolveOutlineExpansion(outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier), [outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier]);
@@ -181,8 +183,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   }
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);
-  const outlinePlanHeightRef = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "outlinePlan");
-  const instructionHeightRef = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "instruction");
+  const [outlinePlanHeightRef, registerOutlinePlan] = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "outlinePlan");
+  const [, registerInstruction] = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "instruction");
   const outlineResizePointerRef = useRef<{ id: number; startY: number; startHeight: number } | null>(null);
   const resizeOutlinePlan = (height: number) => {
     const textarea = outlinePlanHeightRef.current;
@@ -259,12 +261,14 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
       setOutlinePlanDraft(outline.plan);
     }
     if (previous.id !== studio.currentOutline.id || JSON.stringify(expansionDraftRef.current) === JSON.stringify(lastSyncedExpansionRef.current)) {
-      const nextExpansion = normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion);
+      const nextExpansion = studio.currentOutline.expansion
+        ? normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion)
+        : outlineExpansionForEditing(outline.plan, undefined, resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.targetWords);
       expansionDraftRef.current = nextExpansion; setExpansionDraft(nextExpansion);
     }
     lastSyncedExpansionRef.current = studio.currentOutline.expansion;
     lastSyncedOutlineRef.current = { id: studio.currentOutline.id, plan: outline.plan };
-  }, [studio.currentOutline.id, studio.currentOutline.expansion, outline.plan]);
+  }, [studio.currentOutline.id, studio.currentOutline.expansion, studio.currentArticle, studio.data.settings, outline.plan]);
   const appearanceSuggestions = useMemo(() => detectFirstAppearanceCharacters(
     { articles: [studio.currentArticle] },
     studio.currentOutline.id,
@@ -429,8 +433,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               <label htmlFor="generate-outline-plan">大纲内容</label>
               <span>{outlinePlanDraft.length.toLocaleString("zh-CN")} / 10,000</span>
             </div>
-            <OutlineExpansionEditor plan={outlinePlanDraft} value={expansionDraft} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} onChange={changeExpansion}><Textarea
-              ref={outlinePlanHeightRef}
+            <OutlineExpansionEditor plan={outlinePlanDraft} value={expansionDraft} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} legacyTargetWords={generateOptions.targetWords} onChange={changeExpansion}><Textarea
+              ref={registerOutlinePlan}
               id="generate-outline-plan"
               aria-label="生成使用的大纲内容"
               className="generate-outline-plan-control"
@@ -465,7 +469,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           </section>
           <div className="generate-prompt-label">
             <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
-            <Textarea ref={instructionHeightRef} maxLength={20000} rows={4} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
+            <Textarea ref={registerInstruction} maxLength={20000} rows={4} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
             {(promptDirty || promptSaving || promptSaveFailed) && <div className="generate-instruction-save-row">
               <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>

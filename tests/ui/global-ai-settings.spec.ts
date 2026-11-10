@@ -1,3 +1,4 @@
+import { showTotalWordMode } from "./outline-expansion-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { createInheritedAiSettings } from "../../lib/ai-settings-inheritance";
@@ -56,6 +57,7 @@ test("global changes propagate across reloads while an article field override re
   await expect(page.getByLabel("文章生成默认目标字数", { exact: true })).toHaveValue("4,000 字");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.inheritance.targetWords).toBe("global");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
   await expect(page.getByLabel("正文目标字数", { exact: true })).toHaveValue("4,000 字");
 });
 

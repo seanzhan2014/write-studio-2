@@ -1,3 +1,4 @@
+import { showTotalWordMode } from "./outline-expansion-helper";
 import { expect, test } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { normalizeAiGenerateOptions } from "../../lib/generate-options";
@@ -20,6 +21,7 @@ test("one-time generation executes its preparation and review choices without ch
     await page.screenshot({ path: info.outputPath("generation-input.png") });
     await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
     await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
+    await showTotalWordMode(page);
     await page.getByRole("textbox", { name: "正文目标字数", exact: true }).fill("700");
     await page.locator(".generate-command-card > .writing-advanced > summary").click();
     const characters = page.getByRole("group", { name: /^人物表现/ });
@@ -51,6 +53,7 @@ test("one-time generation executes its preparation and review choices without ch
     expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "generate", "review"]);
     expect(JSON.stringify(fake.control.calls.find(call => call.kind === "generate")?.body)).toContain("700");
     await page.reload();
+    await showTotalWordMode(page);
     await expect(page.getByRole("textbox", { name: "正文目标字数", exact: true })).toHaveValue("5,000 字");
     await expect(interaction.getByLabel("生成进度").locator('[aria-current="step"]')).toContainText("完成");
     const finalArticle = (await (await request.get("/api/state")).json()).data.articles[0];
@@ -70,6 +73,7 @@ test("saving one-time preferences as article defaults preserves unrelated task d
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
   await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
+  await showTotalWordMode(page);
   await page.getByRole("textbox", { name: "正文目标字数", exact: true }).fill("900");
   await page.getByRole("button", { name: "设为文章默认", exact: true }).click();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.targetWords).toBe(900);
@@ -78,6 +82,7 @@ test("saving one-time preferences as article defaults preserves unrelated task d
   expect(saved.aiGenerateSettings.inheritance).toBeUndefined();
   expect(saved.chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions).toBeNull();
   await page.reload();
+  await showTotalWordMode(page);
   await expect(page.getByRole("textbox", { name: "正文目标字数", exact: true })).toHaveValue("900 字");
 });
 

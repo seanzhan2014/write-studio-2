@@ -4438,6 +4438,14 @@ kbd {
 }
 
 .outline-expansion-editor { min-width: 0; }
+.outline-expansion-converter { margin: 8px 0; color: var(--text-secondary); font-size: var(--font-meta); }
+.outline-expansion-converter > summary { cursor: pointer; width: fit-content; padding: 4px 0; }
+.outline-expansion-converter > div { margin-top: 8px; }
+.outline-expansion-converter p { line-height: 1.65; overflow-wrap: anywhere; }
+.outline-expansion-defaults { min-width: 0; max-width: 100%; }
+.outline-expansion-defaults > summary { cursor: pointer; padding: 4px 0; }
+.outline-expansion-defaults > div { width: min(320px, 100%); margin-top: 8px; }
+.continuous-outline-block > .outline-expansion-editor { margin-top: 10px; }
 .outline-expansion-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 10px; }
 .outline-expansion-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px; color: var(--text-secondary); font-size: var(--font-meta); }
 .outline-sentence-document { border: 1px solid var(--border); border-radius: 9px; padding: 12px; min-height: 112px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 2; }

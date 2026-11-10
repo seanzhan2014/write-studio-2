@@ -1,5 +1,5 @@
 "use client";
-import { isExpansionMultiplier, MAX_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier } from "@/lib/outline-expansion";
+import { EXPANSION_DECIMALS, isExpansionMultiplier, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier } from "@/lib/outline-expansion";
 import { Checkbox, NumberInput, Select, Slider } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GenerateAdvancedFields } from "./advanced-writing";
@@ -37,7 +37,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
       {global && <ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} />}
       <NumberInput label="默认目标字数" aria-label="文章生成默认目标字数" min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" value={settings.targetWords || ""} onChange={(value) => patchSettings({ targetWords: value === "" ? 0 : Number(value) })} />
     </div>
-    {global && <div className="article-generate-block"><NumberInput label="大纲展开默认倍率" aria-label="全局大纲默认倍率" description="句子优先跟随前句，再使用大纲默认；大纲未设置时跟随此值。" value={normalizeExpansionMultiplier(studio.data.settings.outlineExpansionMultiplier)} min={0.1} max={MAX_EXPANSION_MULTIPLIER} decimalScale={1} suffix="×" onChange={value => { if (isExpansionMultiplier(value)) studio.updateSettings({ outlineExpansionMultiplier: value }); }} /></div>}
+    {global && <div className="article-generate-block"><NumberInput label="大纲展开默认倍率" aria-label="全局大纲默认倍率" description="句子优先跟随前句，再使用大纲默认；大纲未设置时跟随此值。" value={normalizeExpansionMultiplier(studio.data.settings.outlineExpansionMultiplier)} min={MIN_EXPANSION_MULTIPLIER} max={MAX_EXPANSION_MULTIPLIER} decimalScale={EXPANSION_DECIMALS} suffix="×" onChange={value => { if (isExpansionMultiplier(value)) studio.updateSettings({ outlineExpansionMultiplier: value }); }} /></div>}
     <section className="article-generate-block" aria-labelledby="article-generate-mode-title">
       <div className="generate-section-heading"><span id="article-generate-mode-title">生成方式</span><strong>{contentGenerationModeLabel(settings.contentMode)}</strong></div>
       <div className="generate-mode-options" role="radiogroup" aria-label="文章默认正文生成方式">{contentGenerationModes.map((item) => <button className={settings.contentMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={settings.contentMode === item.value} key={item.value} onClick={() => patchSettings({ contentMode: item.value })}><span className="ui-title">{item.label}</span></button>)}</div>

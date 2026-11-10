@@ -1,6 +1,8 @@
 "use client";
 
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
+import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
+import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion } from "@/lib/outline-expansion";
 import { taskReasoningEffort, taskNamingProfile } from "@/lib/task-parameters";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 
@@ -355,6 +357,9 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
   onMoveChapter?: () => void;
   onOpenChat?: () => void;
 }) {
+  const studio = useStudio();
+  const legacyTargetWords = mode === "outline" ? resolveAiSettings(studio.currentArticle, item.id, "generate", "outline", studio.data.settings).value.targetWords : undefined;
+  const expansion = mode === "outline" ? outlineExpansionForEditing(text, item.expansion, legacyTargetWords) : undefined;
   const displayTitle = outlineDisplayTitle(item);
   const selectedVersion = item.versions.find((version) => version.id === selectedVersionId);
   const currentVersion = currentOutlineVersion(item);
@@ -362,6 +367,18 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
   const currentContentName = resolvedOutlineContentName(item);
   const currentExcellentFragments = resolvedExcellentFragments(item);
   const { attributes, listeners, setActivatorNodeRef, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, data: { type: "outline", outlineId: item.id } });
+  const textEditor = <AutoGrowTextarea
+    className={`continuous-text-editor ${mode === "content" ? "content" : "plan"}`}
+    value={text}
+    maxLength={mode === "outline" ? 10000 : undefined}
+    placeholder={mode === "outline" ? "输入大纲内容" : "从这里开始写作"}
+    label={`${mode === "outline" ? "大纲内容" : "正文"}：${displayTitle}`}
+    spellCheck={mode === "content" ? false : true}
+    style={contentStyle}
+    onFocus={onContentFocus}
+    onBlur={onContentBlur}
+    onChange={onText}
+  />;
   return <article
     ref={setNodeRef}
     data-continuous-outline-id={item.id}
@@ -429,18 +446,7 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
         {selectedVersion && selectedVersion.id !== item.defaultVersionId && <button className="continuous-set-default" type="button" aria-label={`将“${selectedVersion.name}”设为默认正文`} onClick={() => onSetDefaultVersion?.(selectedVersion.id)}>设为默认</button>}
       </div>
     </div>}
-    <AutoGrowTextarea
-      className={`continuous-text-editor ${mode === "content" ? "content" : "plan"}`}
-      value={text}
-      maxLength={mode === "outline" ? 10000 : undefined}
-      placeholder={mode === "outline" ? "输入大纲内容" : "从这里开始写作"}
-      label={`${mode === "outline" ? "大纲内容" : "正文"}：${displayTitle}`}
-      spellCheck={mode === "content" ? false : true}
-      style={contentStyle}
-      onFocus={onContentFocus}
-      onBlur={onContentBlur}
-      onChange={onText}
-    />
+    {mode === "outline" ? <OutlineExpansionEditor plan={text} value={expansion} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} legacyTargetWords={legacyTargetWords} multiplierOnly onChange={next => studio.updateOutline(item.id, { expansion: normalizeOutlineExpansion(text, next) })}>{textEditor}</OutlineExpansionEditor> : textEditor}
   </article>;
 }
 
@@ -1022,7 +1028,12 @@ export function ContinuousDocumentEditor({ mode, positionMemory, onNotice, onTas
               onNames={mode === "outline" ? () => setOutlinePanel((current) => current?.outlineId === item.id && current.view === "names" ? null : { outlineId: item.id, view: "names" }) : undefined}
               onTitle={(value) => studio.updateOutline(item.id, { title: value.slice(0, 80) })}
               onTitleCommit={mode === "outline" ? (value) => commitEditedName("outline", item.id, value, group) : undefined}
-              onText={(value) => mode === "outline" ? studio.updateOutline(item.id, { plan: value.slice(0, 10000) }) : changeContent(item.id, value, versionSelections[item.id])}
+              onText={(value) => {
+                if (mode !== "outline") return changeContent(item.id, value, versionSelections[item.id]);
+                const plan = value.slice(0, 10000);
+                const expansion = outlineExpansionForEditing(item.plan, item.expansion, resolveAiSettings(studio.currentArticle, item.id, "generate", "outline", studio.data.settings).value.targetWords);
+                studio.updateOutline(item.id, { plan, expansion: rebaseOutlineExpansion(item.plan, plan, expansion) });
+              }}
               onContentBlur={mode === "content" ? () => commitContent(item.id) : undefined}
               onSelectVersion={mode === "content" ? (versionId) => selectContentVersion(item, versionId) : undefined}
               onSetCurrentVersion={mode === "content" ? (versionId) => setContentCurrentVersion(item, versionId) : undefined}

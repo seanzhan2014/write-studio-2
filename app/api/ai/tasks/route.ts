@@ -1,4 +1,4 @@
-import { normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion } from "@/lib/outline-expansion";
+import { EXPANSION_MULTIPLIER_HELP, normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion } from "@/lib/outline-expansion";
 import { taskFromRow } from "@/lib/task-record";
 import { parseGenerateFields } from "@/lib/generate-request";
 import { readJsonObject, RequestInputError } from "@/lib/request-input";
@@ -139,7 +139,7 @@ export async function POST(request: Request) {
     const submittedPlan = target === "content" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
     const sourceOutline = sourceArticle?.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
     const expansionPlan = submittedPlan ?? String(outlineRow.summary);
-    if (target === "content" && !validOutlineExpansion(expansionPlan, body.currentExpansion)) return json({ error: "大纲倍率必须应用于完整句子，倍率范围为 0.1–1000，最多一位小数" }, 400);
+    if (target === "content" && !validOutlineExpansion(expansionPlan, body.currentExpansion)) return json({ error: `大纲倍率必须应用于完整句子。${EXPANSION_MULTIPLIER_HELP}` }, 400);
     const submittedExpansion = body.currentExpansion !== undefined ? normalizeOutlineExpansion(expansionPlan, body.currentExpansion) : rebaseOutlineExpansion(String(outlineRow.summary), expansionPlan, sourceOutline?.expansion);
     const hasSubmittedGenerateOptions = target === "content" && Object.prototype.hasOwnProperty.call(body, "generateOptions");
     const submittedGenerateOptions = hasSubmittedGenerateOptions && body.generateOptions && typeof body.generateOptions === "object"
