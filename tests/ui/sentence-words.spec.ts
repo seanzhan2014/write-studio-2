@@ -1,0 +1,87 @@
+import { expect, test } from '@playwright/test';
+import { fullStudioFixture } from '../fixtures.mjs';
+import type { StudioData } from '../../lib/studio-types';
+
+test('sentence words and mixed controls persist with the selected mode on desktop and mobile', async ({ page, request }, info) => {
+  test.setTimeout(120000);
+  const old = await (await request.get('/api/state')).json();
+  const data = fullStudioFixture() as unknown as StudioData;
+  data.tasks = [];
+  const outline = data.articles[0].chapters[0].outlines.find(item => item.id === 'outline-current')!;
+  const plan = '原文已有500字和×3。第二句。第三句。第四句。';
+  outline.plan = plan;
+  delete outline.expansion;
+  expect((await request.put('/api/state', { headers: { 'If-Match': String(old.revision) }, data: { data } })).ok()).toBeTruthy();
+  const read = async () => (await (await request.get('/api/state')).json()).data as StudioData;
+  const current = (state: StudioData) => state.articles[0].chapters[0].outlines.find(item => item.id === outline.id)!;
+  const mode = page.getByRole('combobox', { name: '篇幅控制', exact: true });
+  const chooseMode = async (label: string) => { await mode.click(); await page.getByRole('option', { name: label, exact: true }).click(); };
+  const sentence = (index: number) => page.getByRole('button', { name: new RegExp(`^第${index}句，`) });
+  await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await expect(mode).toHaveValue('总体字数控制', { timeout: 20000 });
+  await chooseMode('大纲句子字数');
+  await expect.poll(async () => current(await read()).expansion?.mode).toBe('words');
+  await expect.poll(async () => (await read()).settings.outlineLengthMode).toBe('words');
+  await page.reload();
+  await expect(mode).toHaveValue('大纲句子字数');
+  await expect(sentence(1)).toHaveAttribute('aria-label', /^第1句，300字，全局默认/);
+  await page.getByRole('textbox', { name: '大纲默认字数', exact: true }).fill('200');
+  await sentence(2).click();
+  await page.getByRole('textbox', { name: '本句字数', exact: true }).fill('500');
+  await page.getByRole('button', { name: '应用字数', exact: true }).click();
+  await expect(sentence(3)).toHaveAttribute('aria-label', /^第3句，500字，跟随前句/);
+  await sentence(3).click();
+  await page.getByRole('combobox', { name: '本句控制', exact: true }).click();
+  await page.getByRole('option', { name: '倍率', exact: true }).click();
+  await page.getByRole('textbox', { name: '本句倍率', exact: true }).fill('2.5');
+  await page.getByRole('button', { name: '应用倍率', exact: true }).click();
+  await expect(sentence(4)).toHaveAttribute('aria-label', /^第4句，2\.5倍，跟随前句/);
+  await page.getByRole('button', { name: '保存大纲', exact: true }).click();
+  await expect(page.getByRole('button', { name: '保存大纲', exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(sentence(2)).toHaveAttribute('aria-label', /^第2句，500字，本句设置/);
+  await expect(sentence(4)).toHaveAttribute('aria-label', /^第4句，2\.5倍，跟随前句/);
+  // The selected mode persists immediately, even with unsaved outline text.
+  await page.getByRole('button', { name: '编辑大纲文字', exact: true }).click();
+  await page.getByRole('textbox', { name: '生成使用的大纲内容', exact: true }).fill('尚未保存的草稿。' + plan);
+  await chooseMode('总体字数控制');
+  await expect.poll(async () => current(await read()).expansion?.enabled).toBe(false);
+  expect(current(await read()).plan).toBe(plan);
+  await page.reload();
+  await expect(mode).toHaveValue('总体字数控制');
+  await chooseMode('大纲句子字数');
+  await expect(page.getByRole('textbox', { name: '大纲默认字数', exact: true })).toHaveValue('200 字');
+  await expect(sentence(2)).toHaveAttribute('aria-label', /^第2句，500字，本句设置/);
+  for (const route of ['/articles/article-main/chapters/edit-all', '/articles/article-main/outlines/edit-all']) {
+    await page.goto(route);
+    const block = page.locator('[data-continuous-outline-id="outline-current"]');
+    await expect(block.locator('.outline-expansion-defaults > summary')).toHaveText('精确字数限制 · 默认 200 字 · 本大纲设置');
+    await expect(block.getByRole('button', { name: /^第2句，500字/ }).locator('.outline-multiplier')).toHaveText('500 字');
+    await expect(block.getByRole('button', { name: /^第1句，200字/ })).toContainText('原文已有500字和×3。');
+  }
+  const block = page.locator('[data-continuous-outline-id="outline-current"]');
+  await block.getByRole('button', { name: /^第2句，500字/ }).click();
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 480 }, { width: 667, height: 375 }]) {
+    await page.setViewportSize(viewport);
+    await block.getByRole('button', { name: '恢复跟随前句', exact: true }).scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await block.locator('.outline-expansion-defaults > summary').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('sentence-words-mobile.png') });
+  // New outlines use the remembered mode. Explicit existing choices stay fixed.
+  const existingIds = new Set((await read()).articles[0].chapters[0].outlines.map(item => item.id));
+  await block.getByRole('button', { name: '当前码头更多操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '在下方新建', exact: true }).click();
+  await expect.poll(async () => (await read()).articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))?.expansion).toMatchObject({ enabled: true, mode: 'words' });
+  const state = await read();
+  const created = state.articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))!;
+  expect(created.expansion).toMatchObject({ enabled: true, mode: 'words' });
+  await page.goto(`/articles/article-main/outlines/${created.id}/generate`);
+  await expect(mode).toHaveValue('大纲句子字数');
+  await chooseMode('总体字数控制');
+  await expect.poll(async () => (await read()).settings.outlineLengthMode).toBe('target');
+  await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await expect(mode).toHaveValue('大纲句子字数');
+  await expect(sentence(2)).toHaveAttribute('aria-label', /^第2句，500字，本句设置/);
+});

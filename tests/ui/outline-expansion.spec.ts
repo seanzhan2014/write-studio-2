@@ -92,7 +92,7 @@ test('an empty outline keeps normal typing when sentence mode is enabled', async
   await input.pressSequentially('ABC. DEF.');
   await expect(input).toHaveValue('ABC. DEF.');
   await page.getByRole('button', { name: '完成文字编辑', exact: true }).click();
-  await expect(page.getByRole('group', { name: '按完整句子设置倍率', exact: true }).getByRole('button')).toHaveCount(2);
+  await expect(page.getByRole('group', { name: '按完整句子设置篇幅', exact: true }).getByRole('button')).toHaveCount(2);
 });
 
 test('chapter and outline views retain total limits and show exact multipliers only in multiplier mode', async ({ page, request }, info) => {
@@ -111,7 +111,7 @@ test('chapter and outline views retain total limits and show exact multipliers o
     await page.goto(route);
     await expect(block.getByText('整体字数限制 600 字', { exact: true })).toBeVisible();
     await expect(block.getByRole('textbox', { name: '大纲默认倍率', exact: true })).toHaveCount(0);
-    await expect(block.getByRole('group', { name: '按完整句子设置倍率', exact: true })).toHaveCount(0);
+    await expect(block.getByRole('group', { name: '按完整句子设置篇幅', exact: true })).toHaveCount(0);
     await expect(block.getByText('按总字数换算倍率', { exact: true })).toHaveCount(0);
   }
   await block.getByRole('textbox', { name: '大纲内容：当前码头', exact: true }).fill('甲乙丙。丁戊己！');
@@ -123,13 +123,13 @@ test('chapter and outline views retain total limits and show exact multipliers o
     return item.plan;
   }).toBe('甲乙丙。丁戊己！');
   await page.goto('/articles/article-main/outlines/outline-current/generate');
-  await expect(page.getByRole('combobox', { name: '篇幅控制', exact: true })).toHaveValue('总目标字数');
+  await expect(page.getByRole('combobox', { name: '篇幅控制', exact: true })).toHaveValue('总体字数控制');
   await expect(page.getByRole('textbox', { name: '正文目标字数', exact: true })).toHaveValue('600 字');
-  // A conversion is still available as an explicit generation-page action.
+  // Switching control modes never converts the existing total.
   await page.getByRole('combobox', { name: '篇幅控制', exact: true }).click();
   await page.getByRole('option', { name: '大纲句子倍率', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '篇幅控制', exact: true })).toHaveValue('大纲句子倍率');
-  await expect(page.getByRole('textbox', { name: '大纲默认倍率', exact: true })).toHaveValue('100×');
+  await expect(page.getByRole('button', { name: /^第1句，8倍/ })).toBeVisible();
   await page.getByRole('textbox', { name: '大纲默认倍率', exact: true }).fill('12.345678');
   await page.getByRole('button', { name: /^第2句，12\.345678倍/ }).click();
   await page.getByRole('textbox', { name: '本句倍率', exact: true }).fill('25');

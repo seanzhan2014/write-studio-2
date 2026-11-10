@@ -1,4 +1,4 @@
-import { normalizeOutlineExpansion, rebaseOutlineExpansion } from "@/lib/outline-expansion";
+import { normalizeOutlineExpansion, normalizeOutlineLengthMode, rebaseOutlineExpansion, withOutlineLengthMode } from "@/lib/outline-expansion";
 import { createInheritedAiSettings } from "@/lib/ai-settings-inheritance";
 import { normalizeStudioData } from "@/lib/studio-normalization";
 import { outline, makeId, findOutlineInArticle, firstOutline, activeExcellentFragments, activeManualExcellent } from "@/lib/studio-entities";
@@ -309,7 +309,7 @@ createOutline(chapterId, afterId) {
           const items = [...chapter.outlines];
           const requestedAfterId = afterId ?? (items.some((item) => item.id === current.currentOutlineId) ? current.currentOutlineId : undefined);
           const index = requestedAfterId ? items.findIndex((item) => item.id === requestedAfterId) + 1 : items.length;
-          items.splice(Math.max(0, index), 0, outline(id, "", "", ""));
+          items.splice(Math.max(0, index), 0, { ...outline(id, "", "", ""), expansion: withOutlineLengthMode(undefined, normalizeOutlineLengthMode(current.settings.outlineLengthMode)) });
           return { ...chapter, outlines: items };
         }) };
       }) }));

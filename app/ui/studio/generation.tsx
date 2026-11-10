@@ -4,7 +4,7 @@ import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
 import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
-import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
+import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion, type OutlineLengthMode } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
@@ -172,14 +172,20 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const [targetWordsInput, setTargetWordsInput] = useState(() => generateOptions.targetWords > 0 ? String(generateOptions.targetWords) : "");
   const [outlinePlanDraft, setOutlinePlanDraft] = useState(outline.plan);
   const outlinePlanDraftRef = useRef(outline.plan);
-  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => outlineExpansionForEditing(outline.plan, studio.currentOutline.expansion));
+  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => outlineExpansionForEditing(outline.plan, studio.currentOutline.expansion, studio.data.settings.outlineLengthMode));
   const expansionDraftRef = useRef(expansionDraft);
   const lastSyncedExpansionRef = useRef(studio.currentOutline.expansion);
-  const expansionSnapshot = useMemo(() => resolveOutlineExpansion(outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier), [outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier]);
+  const expansionSnapshot = useMemo(() => resolveOutlineExpansion(outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier, studio.data.settings.outlineExpansionWords), [outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier, studio.data.settings.outlineExpansionWords]);
   function changeExpansion(next?: OutlineExpansion, plan = outlinePlanDraftRef.current) {
     const normalized = normalizeOutlineExpansion(plan, next);
     expansionDraftRef.current = normalized;
     setExpansionDraft(normalized);
+  }
+  function changeLengthMode(mode: OutlineLengthMode, next: OutlineExpansion) {
+    changeExpansion(next);
+    // Store the mode immediately without committing unsaved outline text.
+    studio.updateOutline(studio.currentOutline.id, { expansion: rebaseOutlineExpansion(outlinePlanDraftRef.current, outline.plan, next) });
+    studio.updateSettings({ outlineLengthMode: mode });
   }
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);
@@ -263,7 +269,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     if (previous.id !== studio.currentOutline.id || JSON.stringify(expansionDraftRef.current) === JSON.stringify(lastSyncedExpansionRef.current)) {
       const nextExpansion = studio.currentOutline.expansion
         ? normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion)
-        : outlineExpansionForEditing(outline.plan, undefined);
+        : outlineExpansionForEditing(outline.plan, undefined, studio.data.settings.outlineLengthMode);
       expansionDraftRef.current = nextExpansion; setExpansionDraft(nextExpansion);
     }
     lastSyncedExpansionRef.current = studio.currentOutline.expansion;
@@ -432,7 +438,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               <label htmlFor="generate-outline-plan">大纲内容</label>
               <span>{outlinePlanDraft.length.toLocaleString("zh-CN")} / 10,000</span>
             </div>
-            <OutlineExpansionEditor plan={outlinePlanDraft} value={expansionDraft} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} legacyTargetWords={generateOptions.targetWords} onChange={changeExpansion}><Textarea
+            <OutlineExpansionEditor plan={outlinePlanDraft} value={expansionDraft} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} globalTargetWords={studio.data.settings.outlineExpansionWords} legacyTargetWords={generateOptions.targetWords} onChange={changeExpansion} onModeChange={changeLengthMode}><Textarea
               ref={registerOutlinePlan}
               id="generate-outline-plan"
               aria-label="生成使用的大纲内容"

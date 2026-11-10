@@ -1,5 +1,5 @@
 "use client";
-import { EXPANSION_DECIMALS, isExpansionMultiplier, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier } from "@/lib/outline-expansion";
+import { EXPANSION_DECIMALS, isExpansionMultiplier, isSentenceTargetWords, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, MAX_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode } from "@/lib/outline-expansion";
 import { Checkbox, NumberInput, Select, Slider } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GenerateAdvancedFields } from "./advanced-writing";
@@ -37,7 +37,11 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
       {global && <ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} />}
       <NumberInput label="默认目标字数" aria-label="文章生成默认目标字数" min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" value={settings.targetWords || ""} onChange={(value) => patchSettings({ targetWords: value === "" ? 0 : Number(value) })} />
     </div>
-    {global && <div className="article-generate-block"><NumberInput label="大纲展开默认倍率" aria-label="全局大纲默认倍率" description="句子优先跟随前句，再使用大纲默认；大纲未设置时跟随此值。" value={normalizeExpansionMultiplier(studio.data.settings.outlineExpansionMultiplier)} min={MIN_EXPANSION_MULTIPLIER} max={MAX_EXPANSION_MULTIPLIER} decimalScale={EXPANSION_DECIMALS} suffix="×" onChange={value => { if (isExpansionMultiplier(value)) studio.updateSettings({ outlineExpansionMultiplier: value }); }} /></div>}
+    {global && <div className="article-generate-block">
+      <Select label="默认篇幅控制" aria-label="全局默认篇幅控制" description="新建或未设置的大纲沿用此方式；生成页面切换方式后会记住选择。" value={normalizeOutlineLengthMode(studio.data.settings.outlineLengthMode)} allowDeselect={false} data={[{ value: "target", label: "总体字数控制" }, { value: "multiplier", label: "大纲句子倍率" }, { value: "words", label: "大纲句子字数" }]} onChange={value => studio.updateSettings({ outlineLengthMode: normalizeOutlineLengthMode(value) })} />
+      <NumberInput label="大纲展开默认倍率" aria-label="全局大纲默认倍率" description="句子优先跟随前句，再使用大纲默认；大纲未设置时跟随此值。" value={normalizeExpansionMultiplier(studio.data.settings.outlineExpansionMultiplier)} min={MIN_EXPANSION_MULTIPLIER} max={MAX_EXPANSION_MULTIPLIER} decimalScale={EXPANSION_DECIMALS} suffix="×" onChange={value => { if (isExpansionMultiplier(value)) studio.updateSettings({ outlineExpansionMultiplier: value }); }} />
+      <NumberInput label="大纲每句默认字数" aria-label="全局大纲每句默认字数" description="逐句字数控制时，首句未设置大纲默认就使用此值。" value={normalizeSentenceTargetWords(studio.data.settings.outlineExpansionWords)} min={1} max={MAX_SENTENCE_TARGET_WORDS} decimalScale={0} suffix=" 字" onChange={value => { if (isSentenceTargetWords(value)) studio.updateSettings({ outlineExpansionWords: value }); }} />
+    </div>}
     <section className="article-generate-block" aria-labelledby="article-generate-mode-title">
       <div className="generate-section-heading"><span id="article-generate-mode-title">生成方式</span><strong>{contentGenerationModeLabel(settings.contentMode)}</strong></div>
       <div className="generate-mode-options" role="radiogroup" aria-label="文章默认正文生成方式">{contentGenerationModes.map((item) => <button className={settings.contentMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={settings.contentMode === item.value} key={item.value} onClick={() => patchSettings({ contentMode: item.value })}><span className="ui-title">{item.label}</span></button>)}</div>

@@ -1,4 +1,4 @@
-import { rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion, type ExpansionSnapshot } from "./outline-expansion.ts";
+import { outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion, type ExpansionSnapshot, type OutlineLengthMode } from "./outline-expansion.ts";
 import { resolvedOutlineContent } from "./outline-content.ts";
 import { outlineDisplayTitle } from "./outline-title.ts";
 import { STYLE_FIELDS, advancedText } from "./advanced-writing.ts";
@@ -44,7 +44,7 @@ type ContextArticle = {
   relationships: ContextRelationship[];
 };
 
-export type AiContextData = { articles: ContextArticle[]; settings?: { outlineExpansionMultiplier?: number } };
+export type AiContextData = { articles: ContextArticle[]; settings?: { outlineExpansionMultiplier?: number; outlineExpansionWords?: number; outlineLengthMode?: OutlineLengthMode } };
 
 export type SelectedAiContext = {
   kind: AiContextKind;
@@ -229,7 +229,7 @@ export function selectAiContext(data: AiContextData, outlineId: string, kind: Ai
       title: outlineDisplayTitle(outline),
       titleGenerationPending: outline.titleGenerationPending === true,
       plan: currentPlan,
-      ...(kind === "content" ? { expansion: resolveOutlineExpansion(currentPlan, options.expansion ?? rebaseOutlineExpansion(outline.plan, currentPlan, outline.expansion), data.settings?.outlineExpansionMultiplier) } : {}),
+      ...(kind === "content" ? { expansion: resolveOutlineExpansion(currentPlan, options.expansion ?? rebaseOutlineExpansion(outline.plan, currentPlan, outline.expansion) ?? outlineExpansionForEditing(currentPlan, undefined, data.settings?.outlineLengthMode), data.settings?.outlineExpansionMultiplier, data.settings?.outlineExpansionWords) } : {}),
       content: kind === "chat" || kind === "content" ? currentContent : "",
     },
     previousOutlines: kind === "chapter-title" ? [] : previous.map((item) => ({ id: item.id, title: outlineDisplayTitle(item), plan: item.plan })),

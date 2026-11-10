@@ -271,6 +271,8 @@ export type StudioSettings = AppearanceSettings & {
   reviewModelMode?: "inherit" | "fixed";
   generateTargetWords: number;
   outlineExpansionMultiplier?: number;
+  outlineExpansionWords?: number;
+  outlineLengthMode?: import("./outline-expansion").OutlineLengthMode;
   generatePresets: string[];
   reviewPresets: string[];
 };

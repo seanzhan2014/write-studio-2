@@ -1,15 +1,45 @@
 import { wordCount } from "./studio-display.ts";
 
 export const DEFAULT_EXPANSION_MULTIPLIER = 10;
+export const DEFAULT_SENTENCE_TARGET_WORDS = 300;
+export const MAX_SENTENCE_TARGET_WORDS = 100000;
 export const MIN_EXPANSION_MULTIPLIER = 0.000001;
 export const MAX_EXPANSION_MULTIPLIER = 100000;
 export const EXPANSION_DECIMALS = 6;
 export const EXPANSION_MULTIPLIER_HELP = "请输入大于 0 且不超过 100,000 的倍率，最多六位小数";
 export type OutlineSentence = { start: number; end: number; text: string };
-export type SentenceMultiplier = OutlineSentence & { multiplier: number };
-export type OutlineExpansion = { enabled: boolean; defaultMultiplier?: number; marks: SentenceMultiplier[] };
+export type OutlineLengthMode = "target" | "multiplier" | "words";
+export type SentenceLength = { multiplier: number; targetWords?: never } | { targetWords: number; multiplier?: never };
+export type SentenceMultiplier = OutlineSentence & SentenceLength;
+export type OutlineExpansion = { enabled: boolean; mode?: "words"; defaultMultiplier?: number; defaultTargetWords?: number; marks: SentenceMultiplier[] };
 export type ExpansionSentence = SentenceMultiplier & { source: "sentence" | "previous" | "outline" | "global"; words: number; targetCharacters: number };
-export type ExpansionSnapshot = { defaultMultiplier: number; sentences: ExpansionSentence[]; estimatedCharacters: number };
+export type ExpansionSnapshot = { defaultMultiplier: number; defaultTargetWords?: number; mode?: "words"; sentences: ExpansionSentence[]; estimatedCharacters: number };
+
+export function isSentenceTargetWords(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_SENTENCE_TARGET_WORDS;
+}
+export function normalizeSentenceTargetWords(value: unknown) {
+  return isSentenceTargetWords(value) ? value : DEFAULT_SENTENCE_TARGET_WORDS;
+}
+export function normalizeOutlineLengthMode(value: unknown): OutlineLengthMode {
+  return value === "multiplier" || value === "words" ? value : "target";
+}
+export function outlineLengthMode(value?: OutlineExpansion): OutlineLengthMode {
+  return !value?.enabled ? "target" : value.mode === "words" ? "words" : "multiplier";
+}
+export function withOutlineLengthMode(value: OutlineExpansion | undefined, mode: OutlineLengthMode): OutlineExpansion {
+  const next: OutlineExpansion = { ...(value ?? { marks: [] }), enabled: mode !== "target" };
+  if (mode === "words") next.mode = "words";
+  else if (mode === "multiplier") delete next.mode;
+  return next;
+}
+function sentenceLength(value: Partial<SentenceLength>): SentenceLength | undefined {
+  if (value.targetWords !== undefined) return isSentenceTargetWords(value.targetWords) && value.multiplier === undefined ? { targetWords: value.targetWords } : undefined;
+  return isExpansionMultiplier(value.multiplier) ? { multiplier: value.multiplier } : undefined;
+}
+export function sentenceLengthLabel(value: SentenceLength) {
+  return value.targetWords !== undefined ? `${value.targetWords.toLocaleString("zh-CN")} 字` : `${value.multiplier}×`;
+}
 
 export function isExpansionMultiplier(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= MIN_EXPANSION_MULTIPLIER && value <= MAX_EXPANSION_MULTIPLIER && Math.abs(value - Number(value.toFixed(EXPANSION_DECIMALS))) < 1e-10;
@@ -28,8 +58,8 @@ export function convertTargetWordsToExpansion(plan: string, targetWords: number 
 }
 
 /** Opening or editing an outline preserves its chosen length mode. */
-export function outlineExpansionForEditing(plan: string, value: OutlineExpansion | undefined): OutlineExpansion | undefined {
-  return normalizeOutlineExpansion(plan, value);
+export function outlineExpansionForEditing(plan: string, value: OutlineExpansion | undefined, fallbackMode: unknown = "target"): OutlineExpansion | undefined {
+  return normalizeOutlineExpansion(plan, value) ?? (normalizeOutlineLengthMode(fallbackMode) === "target" ? undefined : withOutlineLengthMode(undefined, normalizeOutlineLengthMode(fallbackMode)));
 }
 
 /** Only whole sentences can carry metadata. Whitespace and punctuation remain in the original plan. */
@@ -61,11 +91,12 @@ export function normalizeOutlineExpansion(plan: string, value: unknown): Outline
   const sentences = outlineSentences(plan);
   const marks = new Map<number, SentenceMultiplier>();
   for (const mark of Array.isArray(source.marks) ? source.marks.slice(0, 5000) : []) {
-    if (!mark || !isExpansionMultiplier(mark.multiplier)) continue;
+    const length = mark && sentenceLength(mark);
+    if (!length) continue;
     const sentence = sentences.find(sentence => sentence.start === mark.start && sentence.end === mark.end && sentence.text === mark.text);
-    if (sentence) marks.set(sentence.start, { ...sentence, multiplier: mark.multiplier });
+    if (sentence) marks.set(sentence.start, { ...sentence, ...length });
   }
-  return { enabled: source.enabled === true, ...(isExpansionMultiplier(source.defaultMultiplier) ? { defaultMultiplier: source.defaultMultiplier } : {}), marks: [...marks.values()].sort((a, b) => a.start - b.start) };
+  return { enabled: source.enabled === true, ...(source.mode === "words" ? { mode: "words" as const } : {}), ...(isExpansionMultiplier(source.defaultMultiplier) ? { defaultMultiplier: source.defaultMultiplier } : {}), ...(isSentenceTargetWords(source.defaultTargetWords) ? { defaultTargetWords: source.defaultTargetWords } : {}), marks: [...marks.values()].sort((a, b) => a.start - b.start) };
 }
 
 /** Map the changed interval, including edits made outside the generation page. */
@@ -83,32 +114,33 @@ export function rebaseOutlineExpansion(before: string, after: string, value: unk
     if (mark.start < oldRight && mark.end > left && !wordCount(before.slice(mark.start, Math.min(mark.end, left)) + before.slice(Math.max(mark.start, oldRight), mark.end))) return [];
     const start = mark.start >= oldRight ? mark.start + delta : Math.min(mark.start, left);
     const end = mark.end <= left ? mark.end : mark.end >= oldRight ? mark.end + delta : newRight;
-    return [{ start, end, multiplier: mark.multiplier }];
+    return [{ start, end, ...sentenceLength(mark)! }];
   });
   const marks = outlineSentences(after).flatMap(sentence => {
     const overlaps = mapped.filter(mark => mark.start < sentence.end && mark.end > sentence.start);
-    const multipliers = new Set(overlaps.map(mark => mark.multiplier));
-    return multipliers.size === 1 ? [{ ...sentence, multiplier: overlaps[0].multiplier }] : [];
+    const lengths = new Set(overlaps.map(mark => JSON.stringify(sentenceLength(mark))));
+    return lengths.size === 1 ? [{ ...sentence, ...sentenceLength(overlaps[0])! }] : [];
   });
   return { ...expansion, marks };
 }
 
-export function resolveOutlineExpansion(plan: string, value: unknown, globalMultiplier: unknown = DEFAULT_EXPANSION_MULTIPLIER): ExpansionSnapshot | undefined {
+export function resolveOutlineExpansion(plan: string, value: unknown, globalMultiplier: unknown = DEFAULT_EXPANSION_MULTIPLIER, globalTargetWords: unknown = DEFAULT_SENTENCE_TARGET_WORDS): ExpansionSnapshot | undefined {
   const expansion = normalizeOutlineExpansion(plan, value);
   if (!expansion?.enabled) return undefined;
   const defaultMultiplier = expansion.defaultMultiplier ?? normalizeExpansionMultiplier(globalMultiplier);
-  let multiplier = defaultMultiplier;
+  const defaultTargetWords = expansion.defaultTargetWords ?? normalizeSentenceTargetWords(globalTargetWords);
+  let length: SentenceLength = expansion.mode === "words" ? { targetWords: defaultTargetWords } : { multiplier: defaultMultiplier };
   let exactTotal = 0, roundedTotal = 0;
   const sentences = outlineSentences(plan).map((sentence, index): ExpansionSentence => {
     const explicit = expansion.marks.find(mark => mark.start === sentence.start);
-    if (explicit) multiplier = explicit.multiplier;
+    if (explicit) length = sentenceLength(explicit)!;
     const words = wordCount(sentence.text);
-    exactTotal += words * multiplier;
+    exactTotal += length.targetWords !== undefined ? length.targetWords : words * length.multiplier;
     const targetCharacters = Math.round(exactTotal) - roundedTotal;
     roundedTotal += targetCharacters;
-    return { ...sentence, multiplier, source: explicit ? "sentence" : index ? "previous" : expansion.defaultMultiplier !== undefined ? "outline" : "global", words, targetCharacters };
+    return { ...sentence, ...length, source: explicit ? "sentence" : index ? "previous" : (expansion.mode === "words" ? expansion.defaultTargetWords : expansion.defaultMultiplier) !== undefined ? "outline" : "global", words, targetCharacters };
   });
-  return { defaultMultiplier, sentences, estimatedCharacters: sentences.reduce((sum, sentence) => sum + sentence.targetCharacters, 0) };
+  return { defaultMultiplier, ...(expansion.mode === "words" ? { mode: "words" as const, defaultTargetWords } : {}), sentences, estimatedCharacters: sentences.reduce((sum, sentence) => sum + sentence.targetCharacters, 0) };
 }
 
 export function validOutlineExpansion(plan: string, value: unknown) {
@@ -116,6 +148,7 @@ export function validOutlineExpansion(plan: string, value: unknown) {
   if (typeof value !== "object" || Array.isArray(value)) return false;
   const source = value as OutlineExpansion;
   if (typeof source.enabled !== "boolean" || !Array.isArray(source.marks) || source.marks.length > 5000 || (source.defaultMultiplier !== undefined && !isExpansionMultiplier(source.defaultMultiplier))) return false;
+  if ((source.mode !== undefined && source.mode !== "words") || (source.defaultTargetWords !== undefined && !isSentenceTargetWords(source.defaultTargetWords))) return false;
   const normalized = normalizeOutlineExpansion(plan, source)!;
   return normalized.marks.length === source.marks.length;
 }

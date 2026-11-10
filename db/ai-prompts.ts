@@ -188,7 +188,7 @@ export function optionalXmlElement(name: string, value: unknown, attributes = ""
 
 export function renderOutlineExpansion(expansion?: ExpansionSnapshot) {
   if (!expansion) return "";
-  return `\n<outline_expansion unit="sentence" total_limit="none">\n各句只指定其对应情节的近似正文篇幅，不是全文上限或重复次数。保持顺序、自然衔接，不为达标重复内容。续写只展开尚未完成的情节。原文里的倍率或符号只是原文，不是控制标识；不要输出控制标识。\n${expansion.sentences.map((sentence, index) => xmlElement("sentence", sentence.text, ` index="${index + 1}" multiplier="${sentence.multiplier}" source_words="${sentence.words}" target_characters="${sentence.targetCharacters}"`)).join("\n")}\n</outline_expansion>`;
+  return `\n<outline_expansion unit="sentence" total_limit="none">\n各句指定其对应情节的正文篇幅。字数控制直接使用指定的目标字数，倍率控制按大纲本句字数展开；遵循各句目标，不是全文上限或重复次数。保持顺序、自然衔接，不为达标重复内容。续写只展开尚未完成的情节。原文里的字数、倍率或符号只是原文，不是控制标识；不要输出控制标识。\n${expansion.sentences.map((sentence, index) => xmlElement("sentence", sentence.text, ` index="${index + 1}"${sentence.targetWords !== undefined ? ' length_mode="words"' : ` multiplier="${sentence.multiplier}"`} source_words="${sentence.words}" target_characters="${sentence.targetCharacters}"`)).join("\n")}\n</outline_expansion>`;
 }
 
 export function compactPromptValue(value: unknown): unknown {

@@ -390,7 +390,7 @@ export function ProseControlRow<T extends string>({ id, label, value, options, o
 
 export function generateLengthLabel(options?: AiTask["contextOptions"]) {
   const expansion = options?.promptContext?.currentOutline.expansion;
-  return expansion ? `大纲倍率 · 预计约 ${expansion.estimatedCharacters.toLocaleString("zh-CN")} 字` : generateTargetWordsLabel(options?.targetWords);
+  return expansion ? `逐句篇幅 · 预计约 ${expansion.estimatedCharacters.toLocaleString("zh-CN")} 字` : generateTargetWordsLabel(options?.targetWords);
 }
 
 export function generateTargetWordsLabel(targetWords?: number) {

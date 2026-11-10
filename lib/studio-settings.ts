@@ -1,7 +1,7 @@
 
 
 import { normalizePreparationRounds, normalizePreparationStrategy } from "./writing-preparation.ts";
-import { DEFAULT_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier } from "./outline-expansion.ts";
+import { DEFAULT_EXPANSION_MULTIPLIER, DEFAULT_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode } from "./outline-expansion.ts";
 
 import { normalizeIllustrationStyles } from "./illustration-styles.ts";
 
@@ -27,6 +27,8 @@ export const DEFAULT_STUDIO_SETTINGS: StudioData["settings"] = {
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
   reviewPresets: [],
   outlineExpansionMultiplier: DEFAULT_EXPANSION_MULTIPLIER,
+  outlineExpansionWords: DEFAULT_SENTENCE_TARGET_WORDS,
+  outlineLengthMode: "target",
   styleLearningSettings: DEFAULT_STYLE_LEARNING_SETTINGS,
 };
 
@@ -48,6 +50,8 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     illustrationImageModel: String(settings.illustrationImageModel ?? ""),
     generateTargetWords: normalizeGenerateTargetWords(settings.generateTargetWords),
     outlineExpansionMultiplier: normalizeExpansionMultiplier(settings.outlineExpansionMultiplier),
+    outlineExpansionWords: normalizeSentenceTargetWords(settings.outlineExpansionWords),
+    outlineLengthMode: normalizeOutlineLengthMode(settings.outlineLengthMode),
     generatePresets: normalizeGeneratePresets(settings.generatePresets),
     reviewPresets: normalizeReviewPresets(settings.reviewPresets),
     generateReviewMaxRounds: normalizeReviewRounds(settings.generateReviewMaxRounds),
