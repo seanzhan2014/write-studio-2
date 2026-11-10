@@ -17,7 +17,7 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 import { modelSelectionLabel } from "@/lib/model-label";
 
-import { browserIsOffline, fetchFromServer, fetchServerAction, OFFLINE_OPERATION_MESSAGE } from "@/lib/browser-network";
+import { browserIsOffline, fetchFromServer, fetchServerAction, readServerJson, OFFLINE_OPERATION_MESSAGE } from "@/lib/browser-network";
 import { chatSessionHasUnread, formatTime, useStudio, type AiTask, type Message } from "@/app/studio-state";
 
 import { ResponsiveModal } from "@/app/ui/overlays";
@@ -166,7 +166,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
     const response = await sendChatCompletion(`/api/outlines/${encodeURIComponent(outline.id)}/chat/transactions`, {
       action: "finalize", taskId: stream.taskId, sessionId: stream.sessionId, status, result: stream.result, error, stopped, chatbotName,
     });
-    const payload = await response.json() as { revision?: number; task?: Partial<AiTask>; message?: Message; sessionUpdatedAt?: string; error?: string };
+    const payload = await readServerJson<{ revision?: number; task?: Partial<AiTask>; message?: Message; sessionUpdatedAt?: string; error?: string }>(response, "聊天结果保存失败");
     if (!response.ok || payload.revision === undefined || !payload.task) throw new Error(payload.error || "聊天结果保存失败");
     applyChatTransaction({ revision: payload.revision, task: payload.task, message: payload.message, sessionUpdatedAt: payload.sessionUpdatedAt }, stream.taskId, stream.sessionId);
     setLocalStreaming((current) => current?.taskId === stream.taskId ? null : current);

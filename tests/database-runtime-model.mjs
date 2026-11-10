@@ -5,7 +5,7 @@ import { characterPhotoSchema } from "../db/character-photo-schema.ts";
 import { styleLabSchema } from "../db/style-lab-schema.ts";
 import { illustrationSchema } from "../db/illustration-schema.ts";
 import { AI_GENERATE_SETTINGS_COLUMNS, ensureTableColumns } from "../db/schema-columns.ts";
-import { databaseSchemaMatches, missingDatabaseColumns } from "../db/schema-match.ts";
+import { databaseSchemaMatches, missingDatabaseColumns, verifyDatabaseSchema } from "../db/schema-match.ts";
 import { normalizeReviewRuleItems, createReviewRuleSnapshot } from "../lib/review-rules.mjs";
 import { normalizeReviewRules } from "../lib/generate-review.mjs";
 import { decryptAiSecret } from "../lib/ai-secret.ts";
@@ -25,14 +25,14 @@ export function runtimeHarness(cloud = false) {
   function statement(sql, values = []) {
     return {
       bind: (...next) => statement(sql, next),
-      async run() { writes++; native.prepare(sql).run(...values); return { success: true }; },
+      async run() { if (!/^\s*(SELECT|PRAGMA)\b/i.test(sql)) writes++; native.prepare(sql).run(...values); return { success: true }; },
       async all() { return { success: true, results: native.prepare(sql).all(...values) }; },
       async first(column) { const row = native.prepare(sql).get(...values); return column ? row?.[column] ?? null : row ?? null; },
     };
   }
   const db = { prepare: sql => statement(sql), batch: async statements => Promise.all(statements.map(statement => statement.run())) };
   const noop = async () => {};
-  const context = { characterPhotoSchema, styleLabSchema, AI_GENERATE_SETTINGS_COLUMNS, ensureTableColumns, databaseSchemaMatches, missingDatabaseColumns, normalizeReviewRuleItems, createReviewRuleSnapshot, normalizeReviewRules, decryptAiSecret, getDatabase: () => db, isCloudDatabase: () => cloud, illustrationSchema, taskHistoryTriggers: [], onDatabaseReady: noop };
+  const context = { characterPhotoSchema, styleLabSchema, AI_GENERATE_SETTINGS_COLUMNS, ensureTableColumns, databaseSchemaMatches, missingDatabaseColumns, verifyDatabaseSchema, normalizeReviewRuleItems, createReviewRuleSnapshot, normalizeReviewRules, decryptAiSecret, getDatabase: () => db, isCloudDatabase: () => cloud, illustrationSchema, taskHistoryTriggers: [], onDatabaseReady: noop };
   const runtime = Function(...Object.keys(context), `${code}\nreturn { ensureDatabase, hasCurrentRuntimeSchema, schemaStatements, version: RUNTIME_SCHEMA_VERSION, newIsolate() { initialized = null; } };`)(...Object.values(context));
   return { native, runtime, db, writes: () => writes };
 }

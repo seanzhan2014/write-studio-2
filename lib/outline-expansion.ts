@@ -27,9 +27,9 @@ export function convertTargetWordsToExpansion(plan: string, targetWords: number 
   return { enabled: true, ...(isExpansionMultiplier(multiplier) ? { defaultMultiplier: multiplier } : {}), marks: normalized?.marks ?? [] };
 }
 
-export function outlineExpansionForEditing(plan: string, value: OutlineExpansion | undefined, legacyTargetWords?: number): OutlineExpansion {
-  const normalized = normalizeOutlineExpansion(plan, value);
-  return normalized?.enabled ? normalized : convertTargetWordsToExpansion(plan, legacyTargetWords, normalized);
+/** Opening or editing an outline preserves its chosen length mode. */
+export function outlineExpansionForEditing(plan: string, value: OutlineExpansion | undefined): OutlineExpansion | undefined {
+  return normalizeOutlineExpansion(plan, value);
 }
 
 /** Only whole sentences can carry metadata. Whitespace and punctuation remain in the original plan. */

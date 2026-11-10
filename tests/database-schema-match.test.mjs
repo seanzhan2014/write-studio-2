@@ -6,7 +6,7 @@ import { runtimeHarness } from './database-runtime-model.mjs';
 import { REQUIRED_DATABASE_COLUMNS, databaseSchemaMatches, missingDatabaseColumns } from '../db/schema-match.ts';
 
 const quote = value => '"' + value.replaceAll('"', '""') + '"';
-const adapter = native => ({ prepare: sql => ({ async all() { return { results: native.prepare(sql).all() }; } }) });
+const adapter = native => ({ prepare: sql => ({ async all() { return { results: native.prepare(sql).all() }; } }), batch: statements => Promise.all(statements.map(statement => statement.all())) });
 const entries = Object.entries(REQUIRED_DATABASE_COLUMNS);
 
 for (const cloud of [false, true]) test(`database matching: ${cloud ? 'cloud' : 'local'} initialization exactly matches declared business tables and columns`, async () => {

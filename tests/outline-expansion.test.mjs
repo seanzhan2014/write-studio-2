@@ -24,15 +24,14 @@ test("legacy totals convert by outline word count with precise large and fractio
 test("conversion preserves explicit sentence settings and cannot divide an empty outline", () => {
   const plan = '第一句。第二句。';
   const marked = config(plan, [[1, 7]], 3);
-  assert.deepEqual(outlineExpansionForEditing(plan, marked, 5000), marked);
+  assert.deepEqual(outlineExpansionForEditing(plan, marked), marked);
+  assert.deepEqual(outlineExpansionForEditing(plan, { ...marked, enabled: false }), { ...marked, enabled: false });
   const converted = convertTargetWordsToExpansion(plan, 600, { ...marked, enabled: false });
   assert.equal(converted.defaultMultiplier, 100);
   assert.deepEqual(converted.marks, marked.marks);
   for (const empty of ['', '  \n', '。！？']) {
-    const expansion = outlineExpansionForEditing(empty, undefined, 5000);
-    assert.equal(expansion.enabled, true);
-    assert.equal(expansion.defaultMultiplier, undefined);
-    assert.equal(resolveOutlineExpansion(empty, expansion, 8).defaultMultiplier, 8);
+    assert.equal(outlineExpansionForEditing(empty, undefined), undefined);
+    assert.equal(resolveOutlineExpansion(empty, undefined, 8), undefined);
   }
   assert.equal(convertTargetWordsToExpansion(plan, 0).defaultMultiplier, undefined);
 });

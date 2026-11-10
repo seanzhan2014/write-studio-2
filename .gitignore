@@ -57,3 +57,4 @@ next-env.d.ts
 /work/
 /logs/
 /.writer-studio-restart-*/
+/.writer-studio-runtime-*/

@@ -1,5 +1,5 @@
 import { AI_GENERATE_SETTINGS_COLUMNS, ensureTableColumns } from "@/db/schema-columns";
-import { databaseSchemaMatches, missingDatabaseColumns } from "@/db/schema-match";
+import { databaseSchemaMatches, missingDatabaseColumns, verifyDatabaseSchema } from "@/db/schema-match";
 
 import { styleLabSchema } from "@/db/style-lab-schema";
 
@@ -225,8 +225,10 @@ export async function ensureDatabase() {
       await db.batch(taskHistoryTriggers.map((statement) => db.prepare(statement)));
       await migrateReviewRules(db);
       await createSearchIndex(db);
-      if (!await databaseSchemaMatches(db)) {
-        throw new Error(`数据库结构与代码不匹配，升级未完成：${(await missingDatabaseColumns(db)).join("、") || "结构探测失败"}`);
+      try {
+        await verifyDatabaseSchema(db);
+      } catch (error) {
+        throw new Error(`数据库结构与代码不匹配，升级未完成：${(await missingDatabaseColumns(db)).join("、") || (error instanceof Error ? error.message : "结构探测失败")}`, { cause: error });
       }
       const initializedAt = new Date().toISOString();
       await db.batch([

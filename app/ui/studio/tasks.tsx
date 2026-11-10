@@ -25,7 +25,7 @@ import { closingSummaryLengthLabel, descriptionDetailLabel, dialogueDensityLabel
 
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 
-import { fetchServerAction } from "@/lib/browser-network";
+import { fetchServerAction, readServerJson } from "@/lib/browser-network";
 import { formatTime, useStudio, type AiTask } from "@/app/studio-state";
 
 import { useConfiguredModels, cancelActiveChatStream, generateLengthLabel, proseControlsSummary, contentGenerationModeLabel, rewriteRetentionLabel, modelDisplayLabel, resolvedProseControls, IconButton } from "@/app/ui/studio/shared";
@@ -66,7 +66,7 @@ export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId =
   }
   async function updateTaskState(task: AiTask, action: "cancel" | "retry" | "transfer") {
     const response = await fetchServerAction(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
-    const payload = await response.json() as { task?: Partial<AiTask>; revision?: number; error?: string };
+    const payload = await readServerJson<{ task?: Partial<AiTask>; revision?: number; error?: string }>(response, "任务状态更新失败");
     if (!response.ok || !payload.task || payload.revision === undefined) throw new Error(payload.error || "任务状态更新失败");
     studio.acceptServerMutation(payload.revision, (current) => ({
       ...current,

@@ -359,7 +359,7 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
 }) {
   const studio = useStudio();
   const legacyTargetWords = mode === "outline" ? resolveAiSettings(studio.currentArticle, item.id, "generate", "outline", studio.data.settings).value.targetWords : undefined;
-  const expansion = mode === "outline" ? outlineExpansionForEditing(text, item.expansion, legacyTargetWords) : undefined;
+  const expansion = mode === "outline" ? outlineExpansionForEditing(text, item.expansion) : undefined;
   const displayTitle = outlineDisplayTitle(item);
   const selectedVersion = item.versions.find((version) => version.id === selectedVersionId);
   const currentVersion = currentOutlineVersion(item);
@@ -446,7 +446,7 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
         {selectedVersion && selectedVersion.id !== item.defaultVersionId && <button className="continuous-set-default" type="button" aria-label={`将“${selectedVersion.name}”设为默认正文`} onClick={() => onSetDefaultVersion?.(selectedVersion.id)}>设为默认</button>}
       </div>
     </div>}
-    {mode === "outline" ? <OutlineExpansionEditor plan={text} value={expansion} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} legacyTargetWords={legacyTargetWords} multiplierOnly onChange={next => studio.updateOutline(item.id, { expansion: normalizeOutlineExpansion(text, next) })}>{textEditor}</OutlineExpansionEditor> : textEditor}
+    {mode === "outline" ? <OutlineExpansionEditor plan={text} value={expansion} globalMultiplier={studio.data.settings.outlineExpansionMultiplier} legacyTargetWords={legacyTargetWords} documentView onChange={next => studio.updateOutline(item.id, { expansion: normalizeOutlineExpansion(text, next) })}>{textEditor}</OutlineExpansionEditor> : textEditor}
   </article>;
 }
 
@@ -1031,7 +1031,7 @@ export function ContinuousDocumentEditor({ mode, positionMemory, onNotice, onTas
               onText={(value) => {
                 if (mode !== "outline") return changeContent(item.id, value, versionSelections[item.id]);
                 const plan = value.slice(0, 10000);
-                const expansion = outlineExpansionForEditing(item.plan, item.expansion, resolveAiSettings(studio.currentArticle, item.id, "generate", "outline", studio.data.settings).value.targetWords);
+                const expansion = outlineExpansionForEditing(item.plan, item.expansion);
                 studio.updateOutline(item.id, { plan, expansion: rebaseOutlineExpansion(item.plan, plan, expansion) });
               }}
               onContentBlur={mode === "content" ? () => commitContent(item.id) : undefined}

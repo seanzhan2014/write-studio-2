@@ -45,3 +45,22 @@ export async function fetchServerAction(input: RequestInfo | URL, init?: Request
   }
   return fetchFromServer(input, init);
 }
+
+export async function readServerJson<T>(response: Response, failureMessage: string): Promise<T> {
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(response.ok
+      ? `${failureMessage}：服务端返回了无效响应，请刷新后重试。`
+      : `${failureMessage}（HTTP ${response.status}），请稍后重试。`);
+  }
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" ? payload as { message?: unknown; error?: unknown } : {};
+    throw new Error(typeof detail.message === "string" && detail.message
+      ? detail.message
+      : typeof detail.error === "string" && detail.error ? detail.error : `${failureMessage}（HTTP ${response.status}）`);
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error(`${failureMessage}：服务端返回了无效响应，请刷新后重试。`);
+  return payload as T;
+}

@@ -18,12 +18,16 @@ required.search_documents = ["article_id", "chapter_id", "outline_id", "entity_t
 export const REQUIRED_DATABASE_COLUMNS: Readonly<Record<string, readonly string[]>> = required;
 const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const tables = Object.entries(required);
-// SQLite resolves every referenced table/column before executing WHERE 0. This
-// checks the complete contract in one D1 query without reading any business row.
-export const DATABASE_SCHEMA_PROBE_SQL = `SELECT ${tables.flatMap(([, columns], index) => columns.map(column => `t${index}.${quote(column)}`)).join(",")} FROM ${tables.map(([table], index) => `${quote(table)} AS t${index}`).join(" CROSS JOIN ")} WHERE 0`;
+// Resolve every qualified column without reading business rows. One statement
+// per table respects D1's result-column limits; batch uses one binding call.
+export const DATABASE_SCHEMA_PROBE_STATEMENTS = tables.map(([table, columns]) => `SELECT ${columns.map(column => `t.${quote(column)}`).join(",")} FROM ${quote(table)} AS t WHERE 0`);
+
+export async function verifyDatabaseSchema(db: SqliteDatabase) {
+  await db.batch(DATABASE_SCHEMA_PROBE_STATEMENTS.map(sql => db.prepare(sql)));
+}
 
 export async function databaseSchemaMatches(db: SqliteDatabase) {
-  try { await db.prepare(DATABASE_SCHEMA_PROBE_SQL).all(); return true; }
+  try { await verifyDatabaseSchema(db); return true; }
   catch { return false; }
 }
 

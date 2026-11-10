@@ -2,13 +2,13 @@ import "./load-service-config.mjs";
 import path from "node:path";
 import { access } from "node:fs/promises";
 import { startProdServer, tryServeStatic } from "vinext/server/prod-server";
+import { prepareProductionRuntime } from "./production-runtime.mjs";
 
 const workspace = process.cwd();
 const host = process.env.WRITER_STUDIO_HOST ?? "0.0.0.0";
 const rawPort = process.env.WRITER_STUDIO_PORT ?? process.env.PORT ?? "3002";
 const port = Number(rawPort);
 const outputDirectory = path.join(workspace, "dist");
-const clientDirectory = path.join(outputDirectory, "client");
 const serverEntry = path.join(outputDirectory, "server", "index.js");
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -21,7 +21,15 @@ try {
   throw new Error("Production build is missing. Run `npm run build` before `npm start` or `npm run service`.");
 }
 
-const { server } = await startProdServer({ host, port, outDir: outputDirectory });
+const runtime = await prepareProductionRuntime(workspace);
+const clientDirectory = path.join(runtime.outDir, "client");
+let server;
+try {
+  ({ server } = await startProdServer({ host, port, outDir: runtime.outDir }));
+} catch (error) {
+  await runtime.cleanup();
+  throw error;
+}
 // Initialize durable review recovery even before a browser reconnects.
 const recoveryHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 void fetch(`http://${recoveryHost}:${port}/api/database/status`).catch((error) => console.error("Review recovery initialization failed", error));
@@ -83,6 +91,7 @@ async function shutdown(signal) {
   const forceTimer = setTimeout(() => process.exit(1), 10_000);
   forceTimer.unref();
   await new Promise((resolve) => server.close(resolve));
+  await runtime.cleanup();
   clearTimeout(forceTimer);
   process.exit(0);
 }

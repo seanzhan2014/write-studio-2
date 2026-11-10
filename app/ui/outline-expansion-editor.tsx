@@ -5,8 +5,8 @@ import { Button, NumberInput, Select } from "@mantine/core";
 import { convertTargetWordsToExpansion, EXPANSION_DECIMALS, EXPANSION_MULTIPLIER_HELP, isExpansionMultiplier, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, normalizeExpansionMultiplier, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { wordCount } from "@/lib/studio-display";
 
-export function OutlineExpansionEditor({ plan, value, globalMultiplier, legacyTargetWords, multiplierOnly = false, onChange, children }: {
-  plan: string; value?: OutlineExpansion; globalMultiplier?: number; legacyTargetWords?: number; multiplierOnly?: boolean; onChange: (value: OutlineExpansion) => void; children: ReactNode;
+export function OutlineExpansionEditor({ plan, value, globalMultiplier, legacyTargetWords, documentView = false, onChange, children }: {
+  plan: string; value?: OutlineExpansion; globalMultiplier?: number; legacyTargetWords?: number; documentView?: boolean; onChange: (value: OutlineExpansion) => void; children: ReactNode;
 }) {
   const [editing, setEditing] = useState(!plan.trim());
   const [selected, setSelected] = useState<number | null>(null);
@@ -30,13 +30,14 @@ export function OutlineExpansionEditor({ plan, value, globalMultiplier, legacyTa
   const converter = <details className="outline-expansion-converter"><summary>按总字数换算倍率</summary><div className="outline-multiplier-actions"><NumberInput label="换算目标字数" aria-label="换算目标字数" min={1} max={100000} decimalScale={0} value={conversionWords} onChange={setConversionWords} suffix=" 字" /><Button color="gray" variant="default" disabled={!conversionValid} onClick={() => onChange(converted)}>换算为倍率</Button></div><p>{planWords ? `大纲 ${planWords.toLocaleString("zh-CN")} 字${conversionValid ? ` · ${Number(conversionWords).toLocaleString("zh-CN")} ÷ ${planWords.toLocaleString("zh-CN")} ≈ ${converted.defaultMultiplier}×` : ""}。换算后保留本句设置，不再限制整体字数。` : "大纲为空，暂时无法换算；先使用全局默认倍率。"}</p></details>;
   const sourceLabel = `默认 ${resolved?.defaultMultiplier}× · ${config.defaultMultiplier === undefined ? "来自全局" : "本大纲设置"}`;
   return <div className="outline-expansion-editor" onFocusCapture={event => { if (config.enabled && event.target instanceof HTMLTextAreaElement) setEditing(true); }}>
-    {!multiplierOnly && <div className="outline-expansion-controls">
-      {!multiplierOnly && <Select label="篇幅控制" aria-label="篇幅控制" allowDeselect={false} value={config.enabled ? "outline" : "target"} data={[{ value: "target", label: "总目标字数" }, { value: "outline", label: "大纲句子倍率" }]} onChange={mode => { onChange(mode === "outline" ? convertTargetWordsToExpansion(plan, legacyTargetWords, config) : { ...config, enabled: false }); setSelected(null); }} />}
+    {documentView && !config.enabled && <p className="outline-expansion-estimate">{legacyTargetWords && legacyTargetWords > 0 ? `整体字数限制 ${legacyTargetWords.toLocaleString("zh-CN")} 字` : "无整体字数限制"}</p>}
+    {!documentView && <div className="outline-expansion-controls">
+      <Select label="篇幅控制" aria-label="篇幅控制" allowDeselect={false} value={config.enabled ? "outline" : "target"} data={[{ value: "target", label: "总目标字数" }, { value: "outline", label: "大纲句子倍率" }]} onChange={mode => { onChange(mode === "outline" ? convertTargetWordsToExpansion(plan, legacyTargetWords, config) : { ...config, enabled: false }); setSelected(null); }} />
       {defaultControl}
     </div>}
     {config.enabled && <>
-      {!multiplierOnly && converter}
-      <div className="outline-expansion-toolbar">{multiplierOnly ? <details className="outline-expansion-defaults"><summary>{sourceLabel}</summary><div>{defaultControl}{converter}</div></details> : <span>{sourceLabel}</span>}<Button variant="subtle" color="gray" size="compact-sm" onClick={() => { setEditing(!editing); setSelected(null); }}>{editing ? "完成文字编辑" : "编辑大纲文字"}</Button></div>
+      {!documentView && converter}
+      <div className="outline-expansion-toolbar">{documentView ? <details className="outline-expansion-defaults"><summary>精确倍数限制 · {sourceLabel}</summary><div>{defaultControl}</div></details> : <span>{sourceLabel}</span>}<Button variant="subtle" color="gray" size="compact-sm" onClick={() => { setEditing(!editing); setSelected(null); }}>{editing ? "完成文字编辑" : "编辑大纲文字"}</Button></div>
       {!editing && plan.trim() ? <div className="outline-sentence-document" role="group" aria-label="按完整句子设置倍率" onCopy={event => {
         const selection = window.getSelection();
         if (!selection?.rangeCount) return;
@@ -61,8 +62,8 @@ export function OutlineExpansionEditor({ plan, value, globalMultiplier, legacyTa
         <div className="outline-multiplier-actions"><NumberInput label="本句倍率" aria-label="本句倍率" value={input} onChange={setInput} min={MIN_EXPANSION_MULTIPLIER} max={MAX_EXPANSION_MULTIPLIER} decimalScale={EXPANSION_DECIMALS} suffix="×" error={invalid ? EXPANSION_MULTIPLIER_HELP : undefined} /><Button color="gray" variant="default" disabled={invalid} onClick={() => setMultiplier(Number(input))}>应用倍率</Button></div>
         <div className="outline-multiplier-presets">{[1, 10, 100].map(multiplier => <Button key={multiplier} color="gray" variant="subtle" size="compact-sm" onClick={() => { setInput(multiplier); setMultiplier(multiplier); }}>{multiplier}×</Button>)}<Button color="gray" variant="subtle" size="compact-sm" onClick={() => { setMultiplier(); setSelected(null); }}>{resolved?.sentences[0].start === sentence.start ? "恢复默认倍率" : "恢复跟随前句"}</Button><Button color="gray" variant="subtle" size="compact-sm" onClick={() => setSelected(null)}>关闭</Button></div>
       </div>}
-      {!multiplierOnly && <p className="outline-expansion-hint">点击整句设置倍率；未单独设置的句子跟随前句，首句使用大纲默认，再跟随全局。标识不属于大纲文字。</p>}
-      <p className="outline-expansion-estimate">预计展开约 {resolved?.estimatedCharacters.toLocaleString("zh-CN")} 字 · 无整体字数限制{(resolved?.estimatedCharacters ?? 0) > 30000 ? "。篇幅较长，请留意所选模型的单次输出能力。" : ""}</p>
+      {!documentView && <><p className="outline-expansion-hint">点击整句设置倍率；未单独设置的句子跟随前句，首句使用大纲默认，再跟随全局。标识不属于大纲文字。</p>
+      <p className="outline-expansion-estimate">预计展开约 {resolved?.estimatedCharacters.toLocaleString("zh-CN")} 字 · 无整体字数限制{(resolved?.estimatedCharacters ?? 0) > 30000 ? "。篇幅较长，请留意所选模型的单次输出能力。" : ""}</p></>}
     </>}
     {!config.enabled && children}
   </div>;

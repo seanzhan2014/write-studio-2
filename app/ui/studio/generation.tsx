@@ -33,7 +33,7 @@ import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DET
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 
-import { fetchServerAction } from "@/lib/browser-network";
+import { fetchServerAction, readServerJson } from "@/lib/browser-network";
 import { useStudio, type AiTask, type Character } from "@/app/studio-state";
 
 import { ResponsiveModal, ScrollableDrawer } from "@/app/ui/overlays";
@@ -172,7 +172,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const [targetWordsInput, setTargetWordsInput] = useState(() => generateOptions.targetWords > 0 ? String(generateOptions.targetWords) : "");
   const [outlinePlanDraft, setOutlinePlanDraft] = useState(outline.plan);
   const outlinePlanDraftRef = useRef(outline.plan);
-  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => outlineExpansionForEditing(outline.plan, studio.currentOutline.expansion, initialGenerateOptions.targetWords));
+  const [expansionDraft, setExpansionDraft] = useState<OutlineExpansion | undefined>(() => outlineExpansionForEditing(outline.plan, studio.currentOutline.expansion));
   const expansionDraftRef = useRef(expansionDraft);
   const lastSyncedExpansionRef = useRef(studio.currentOutline.expansion);
   const expansionSnapshot = useMemo(() => resolveOutlineExpansion(outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier), [outlinePlanDraft, expansionDraft, studio.data.settings.outlineExpansionMultiplier]);
@@ -263,7 +263,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     if (previous.id !== studio.currentOutline.id || JSON.stringify(expansionDraftRef.current) === JSON.stringify(lastSyncedExpansionRef.current)) {
       const nextExpansion = studio.currentOutline.expansion
         ? normalizeOutlineExpansion(outline.plan, studio.currentOutline.expansion)
-        : outlineExpansionForEditing(outline.plan, undefined, resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.targetWords);
+        : outlineExpansionForEditing(outline.plan, undefined);
       expansionDraftRef.current = nextExpansion; setExpansionDraft(nextExpansion);
     }
     lastSyncedExpansionRef.current = studio.currentOutline.expansion;
@@ -340,8 +340,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   async function changeGenerateTaskState(task: AiTask, action: "cancel" | "retry") {
     try {
       const response = await fetchServerAction(`/api/ai/tasks/${encodeURIComponent(task.id)}/state`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
-      const payload = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(payload.error || "任务状态更新失败");
+      await readServerJson(response, "任务状态更新失败");
       await studio.refreshFromServer();
     } catch (error) { setNotice(error instanceof Error ? error.message : "任务状态更新失败"); }
   }
