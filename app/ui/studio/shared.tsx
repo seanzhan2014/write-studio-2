@@ -366,25 +366,22 @@ export function proseControlsSummary(options?: AiTask["contextOptions"]) {
   return `对话 ${dialogueDensityLabel(controls.dialogueDensity)} · 心理 ${introspectionDensityLabel(controls.introspectionDensity)} · 描写 ${descriptionDetailLabel(controls.descriptionDetail)} · 节奏 ${narrativePaceLabel(controls.narrativePace)} · 段落 ${paragraphLengthLabel(controls.paragraphLength)}`;
 }
 
-export function ProseControlRow<T extends string>({ id, label, value, options, onChange, className = "", compactHelp = false }: {
+export function ProseControlRow<T extends string>({ id, label, value, options, onChange, className = "" }: {
   id: string;
   label: string;
   value: T;
   options: ReadonlyArray<{ value: T; label: string; description: string }>;
   onChange: (value: T) => void;
   className?: string;
-  compactHelp?: boolean;
 }) {
-  const descriptionId = `${id}-description`;
   return <div className={`prose-control-row ${className}`}>
     <div className="prose-control-heading"><span id={`${id}-heading`}>{label}</span></div>
-    <div className={`prose-control-options ${className === "dialogue-density-control" ? "dialogue-density-options" : ""}`} role="radiogroup" aria-label={label} aria-describedby={descriptionId}>
+    <div className={`prose-control-options ${className === "dialogue-density-control" ? "dialogue-density-options" : ""}`} role="radiogroup" aria-label={label}>
       {options.map((item) => <label className={value === item.value ? "selected" : ""} key={item.value} title={item.description}>
         <input type="radio" name={`generate-${id}`} value={item.value} checked={value === item.value} onChange={() => onChange(item.value)} />
         <span>{item.label}</span>
       </label>)}
     </div>
-    {compactHelp ? <small id={descriptionId} className="prose-control-description">{options.find((item) => item.value === value)?.description}</small> : <details className="prose-control-help"><summary>{label}说明</summary><small id={descriptionId}>{options.find((item) => item.value === value)?.description}</small></details>}
   </div>;
 }
 

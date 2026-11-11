@@ -85,7 +85,7 @@ export function NewArticleDialog({ onClose, onCreate }: { onClose: () => void; o
   >
     <form className="new-article-form" onSubmit={(event) => { event.preventDefault(); onCreate({ title: title.trim(), summary, type: "", style }); }}>
       <label>标题 <em>必填</em><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} required maxLength={120} /></label>
-      <label>简介 <small>故事类型、时代背景、世界规则等内容都可以写在这里。</small><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={10000} /></label>
+      <label>简介 <textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={10000} /></label>
       <label>写作风格<input value={style} onChange={(event) => setStyle(event.target.value)} maxLength={5000} /></label>
       <footer><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-compact" type="submit" disabled={!title.trim()}>创建文章</button></footer>
     </form>

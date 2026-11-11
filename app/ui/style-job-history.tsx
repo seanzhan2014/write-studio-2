@@ -107,7 +107,7 @@ export function StyleJobHistory({ articleId, initialJobId = "", onOpenArticle, r
     </Group>;
   }
   const controls = <>
-    <Group justify="space-between" align="end"><div><Text fw={600}>学习历史</Text><Text size="xs" c="dimmed">{total} 条记录 · 原始材料、试写与成果持续保存，归档后仍可查看</Text></div><Select aria-label="筛选学习历史" value={filter} onChange={value => { setFilter(value); setPage(1); }} data={[{ value: "all", label: "全部记录" }, { value: "active", label: "进行中与待处理" }, { value: "completed", label: "已完成" }, { value: "pending", label: "待应用" }, { value: "archived", label: "已归档" }]} /></Group>
+    <Group justify="space-between" align="end"><div><Text fw={600}>学习历史</Text><Text size="xs" c="dimmed">{total} 条记录</Text></div><Select aria-label="筛选学习历史" value={filter} onChange={value => { setFilter(value); setPage(1); }} data={[{ value: "all", label: "全部记录" }, { value: "active", label: "进行中与待处理" }, { value: "completed", label: "已完成" }, { value: "pending", label: "待应用" }, { value: "archived", label: "已归档" }]} /></Group>
     {notice && <Alert role="status" color="yellow">{notice}</Alert>}
     {selected && <article className="style-selected-job"><Group justify="space-between"><Text fw={600}>{selected.kind === "learn" ? "文章学习" : "风格微调"} · {styleStatuses[selected.status]}</Text><Button variant="subtle" size="compact-sm" onClick={() => { setSelectedId(""); setSelected(null); }}>关闭详情</Button></Group>{selected.error && <Alert color="red">{selected.error}</Alert>}{selected.payload.notice && <Alert>{selected.payload.notice}</Alert>}{actions(selected)}<StyleJobDetail job={selected} /></article>}
   </>;

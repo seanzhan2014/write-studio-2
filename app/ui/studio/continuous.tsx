@@ -475,7 +475,6 @@ export function ContinuousOutlinePropertiesDrawer({ outline, chapter, chapters, 
     classNames={{ content: "continuous-outline-properties-drawer", body: "continuous-outline-properties-body" }}
   >
     {moving ? <div className="continuous-outline-move-panel">
-      <Text size="sm" c="dimmed">选择目标章节；大纲内容、正文版本和聊天会一起保留。</Text>
       <Stack gap="xs">
         {chapters.filter((item) => item.id !== chapter.id).map((item) => <Button variant="default" justify="space-between" key={item.id} onClick={() => onMove(item.id)}><span>{item.title}</span><Icon name="move" /></Button>)}
       </Stack>

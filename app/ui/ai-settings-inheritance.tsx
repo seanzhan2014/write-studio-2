@@ -28,7 +28,6 @@ export function AiSettingsInheritance<T extends Options>({ kind, targetId, level
   }
   return <div className="ai-settings-inheritance">
     <Group justify="space-between" gap="xs"><Text size="sm" c="dimmed">参数来源 · {resolved.baselineLabel}</Text><AiSettingActions label={kind === "generate" ? "全部生成设置" : "全部插图设置"} disabled={disabled} onArticle={() => apply("article", keys)} onPrevious={() => apply("previous", keys)} /></Group>
-    <Text size="xs" c="dimmed">“继承上一项”跟随{resolved.previousLabel}；明确选择后随来源更新。</Text>
     <details className="ai-setting-inheritance-details"><summary>逐项设置继承</summary><Stack gap="xs" mt="sm">
       {keys.filter(key => !key.startsWith("tasks.") && (includeAdvanced || !key.startsWith("advanced."))).map(key => {
         const label = key.startsWith("advanced.") ? GENERATE_FIELDS[key.slice(9) as keyof typeof GENERATE_FIELDS][0] : AI_SETTING_LABELS[key];
@@ -60,7 +59,7 @@ export function ArticleAiSettings() {
       return <Group key={key} justify="space-between"><Text size="sm">{label}<Text component="span" size="xs" c="dimmed"> · {value.inheritance?.[key] === "global" ? "跟随全局默认" : "文章专属修改"}</Text></Text><Button variant="subtle" size="compact-xs" aria-label={`${label}恢复全局默认`} onClick={() => restore(kind, [key])}>恢复全局默认</Button></Group>;
     })}</Stack></details>;
   }
-  return <details className="article-ai-settings"><summary>文章 AI 任务设置</summary><Stack gap="md" mt="sm" className="article-ai-task-settings"><Text size="sm" c="dimmed">未修改的项目实时跟随全局默认。旧文章已有配置保留；逐项修改仅作用于本文章。</Text><Button variant="subtle" size="xs" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(generate, "global", globalAiSettings("generate", studio.data.settings), aiSettingKeys("generate")), illustrationSettings: inheritAiSettings(illustration, "global", globalAiSettings("illustration", studio.data.settings), aiSettingKeys("illustration")) })}>恢复全部全局默认</Button><ArticleGenerateSettings />{actions("generate")}<TaskParameterSettings level="article" targetId={studio.currentArticle.id} /><ArticleIllustrationSettings />{actions("illustration")}<ArticleReviewRulesPage /></Stack></details>;
+  return <details className="article-ai-settings"><summary>文章 AI 任务设置</summary><Stack gap="md" mt="sm" className="article-ai-task-settings"><Button variant="subtle" size="xs" onClick={() => studio.updateArticle({ aiGenerateSettings: inheritAiSettings(generate, "global", globalAiSettings("generate", studio.data.settings), aiSettingKeys("generate")), illustrationSettings: inheritAiSettings(illustration, "global", globalAiSettings("illustration", studio.data.settings), aiSettingKeys("illustration")) })}>恢复全部全局默认</Button><ArticleGenerateSettings />{actions("generate")}<TaskParameterSettings level="article" targetId={studio.currentArticle.id} /><ArticleIllustrationSettings />{actions("illustration")}<ArticleReviewRulesPage /></Stack></details>;
 }
 
 export function ChapterAiSettings({ chapterId }: { chapterId: string }) {
@@ -77,7 +76,7 @@ export function ChapterAiSettings({ chapterId }: { chapterId: string }) {
     const settings = normalizeChapterSettings(chapter!.settings);
     studio.updateChapter(chapterId, { settings: { ...settings, aiTasks: { ...settings.aiTasks, [kind]: value } } });
   }
-  return <details className="chapter-ai-settings"><summary>AI 任务设置</summary><Text size="sm" c="dimmed" mt="sm">下一章的首个大纲点选择“继承上一项”时，使用本章的设置。没有上一章时使用文章默认。</Text>
+  return <details className="chapter-ai-settings"><summary>AI 任务设置</summary>
     <TaskParameterSettings level="chapter" targetId={chapterId} />
     {(["generate", "illustration"] as const).map(kind => {
       const { value } = resolveAiSettings(studio.currentArticle, chapterId, kind, "chapter", studio.data.settings);

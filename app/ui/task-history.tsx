@@ -20,7 +20,7 @@ export function TaskHistory({ task, collapsible = false }: { task: AiTask; colla
         {entry.error && <p className="task-history-error">{entry.error}</p>}
       </li>;
     })}
-  </ol> : <p className="task-detail-empty">该任务尚无运行历史记录。后续步骤将自动保留。</p>;
+  </ol> : <p className="task-detail-empty">该任务尚无运行历史记录。</p>;
   return collapsible ? <details className="task-history-disclosure" open={active || undefined}><summary>运行历史{history.length ? ` · ${history.length} 条` : ""}</summary>{content}</details>
     : <section className="task-detail-section task-history"><h3>运行历史</h3>{content}</section>;
 }

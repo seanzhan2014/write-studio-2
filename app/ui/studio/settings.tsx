@@ -73,7 +73,7 @@ export function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (v
       {view === "info-basic" && <BasicInfo />}
       {view === "info-characters" && <Characters />}
       {view === "info-relationships" && <Relationships />}
-      {view === "info-references" && <MantineThemeProvider theme={aiTaskFormTheme}><div className="article-reference-page ai-task-settings-page"><Text size="sm" c="dimmed">管理当前文章的参考资料，学习写作风格或为模型微调。材料、成果和学习记录随文章保存。</Text><StyleLabPanel /></div></MantineThemeProvider>}
+      {view === "info-references" && <MantineThemeProvider theme={aiTaskFormTheme}><div className="article-reference-page ai-task-settings-page"><StyleLabPanel /></div></MantineThemeProvider>}
       {copySource && <ArticleCopyDialog article={copySource} existingTitles={studio.data.articles.map((article) => article.title)} onClose={() => setCopySource(null)} onCreate={copyArticle} />}
     </div></div>
   );
@@ -86,7 +86,7 @@ export function Tabs({ items, active, onGo }: { items: [View, string][]; active:
 export function BasicInfo() {
   const studio = useStudio();
   const article = studio.currentArticle;
-  return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<small>故事类型、时代背景、世界规则等内容都可以写在这里。</small><textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
+  return <div className="form-card article-story-settings"><div className="form-grid"><label className="full">文章标题<input value={article.title} maxLength={120} onChange={(event) => studio.updateArticle({ title: event.target.value })} /></label><label className="full">简介<textarea value={article.summary} maxLength={10000} onChange={(event) => studio.updateArticle({ summary: event.target.value })} /></label></div><ArticleStoryFields article={article} /><div className="form-foot"><span>创建于 {formatTime(article.createdAt)} · 修改于 {formatTime(article.updatedAt)}</span><span className="save-state"><i /> 已自动保存</span></div></div>;
 }
 
 export function ArticleChapterNames() {
@@ -95,7 +95,7 @@ export function ArticleChapterNames() {
   const activeChapters = article.chapters.filter((chapter) => !chapter.archived);
   const eligibleOutlineCount = activeChapters.reduce((total, chapter) => total + chapter.outlines.filter((outline) => !outline.archived && outline.plan.trim()).length, 0);
   return <section className="form-card article-ai-task-section article-naming-page" aria-labelledby="article-naming-title">
-      <header className="article-ai-task-section-heading"><h2 id="article-naming-title">命名规则</h2><p>用于 AI 生成章节和大纲名称。</p></header>
+      <header className="article-ai-task-section-heading"><h2 id="article-naming-title">命名规则</h2></header>
       <section className="article-naming-settings">
         {!eligibleOutlineCount && <Alert color="studio" variant="light">当前没有包含内容的未归档大纲。填写大纲内容后即可生成全部名称。</Alert>}
         <div className="article-naming-grid"><NamingProfileEditor title="章节命名" profile={article.chapterNaming} fallback={DEFAULT_CHAPTER_NAMING_PROFILE} onChange={(chapterNaming) => studio.updateArticle({ chapterNaming })} /><NamingProfileEditor title="大纲命名" profile={article.outlineNaming} fallback={DEFAULT_OUTLINE_NAMING_PROFILE} onChange={(outlineNaming) => studio.updateArticle({ outlineNaming })} /></div>
@@ -169,7 +169,7 @@ export function Characters() {
       classNames={{ content: "character-edit-dialog", body: "character-edit-dialog-body" }}
     >
       <div className="character-edit-tabs" role="tablist" aria-label="人物编辑页面"><button type="button" role="tab" aria-selected={!photoTab} onClick={() => setPhotoTab(false)}>资料</button><button type="button" role="tab" aria-selected={photoTab} disabled={!form.name.trim()} onClick={showPhotos}>照片</button></div>
-      {photoTab && editingId ? <CharacterPhotoWorkspace key={editingId} characterId={editingId} /> : <div className="character-edit-scroll" data-ui-overlay-scroll><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<small>身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。</small><textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div>}
+      {photoTab && editingId ? <CharacterPhotoWorkspace key={editingId} characterId={editingId} /> : <div className="character-edit-scroll" data-ui-overlay-scroll><label>人名<input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>别名<textarea value={form.aliases} onChange={(event) => setForm({ ...form, aliases: event.target.value })} placeholder="使用逗号、分号或换行分隔" /></label><div className="character-profile-form">{CHARACTER_PROFILE_KEYS.map((key) => <label key={key} className={CHARACTER_LABELS[key].rows ? "full" : ""}>{CHARACTER_LABELS[key].label}{CHARACTER_LABELS[key].rows ? <textarea value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} /> : <input value={form.profile[key]} onChange={(event) => setForm({ ...form, profile: { ...form.profile, [key]: event.target.value } })} placeholder={CHARACTER_LABELS[key].placeholder} />}</label>)}</div><label>人物说明<textarea className="character-description-input" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label></div>}
       {!photoTab && <footer className="character-edit-actions"><button className="secondary-button" type="button" onClick={() => setFormOpen(false)}>取消</button><button className="primary-compact" type="button" disabled={!form.name.trim()} onClick={save}>保存</button></footer>}
     </ResponsiveModal>
   </>;
@@ -258,7 +258,7 @@ export function TaskSettings() {
   const [imageTab, setImageTab] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "风格库" : "生成设置");
   const autoSaving = !(category === "图片" && imageTab === "风格库");
   return <MantineThemeProvider theme={aiTaskFormTheme}><div className="ai-task-settings-page">
-    <div className="ai-task-intro"><Text size="sm" c="dimmed">文章默认继承全局 AI 设置。文章、章节和大纲的专属修改在“章节与大纲”中管理。</Text>{autoSaving && <Text size="xs" c={studio.saveStatus === "failed" ? "red" : "dimmed"} role="status">{studio.saveStatus === "saved" ? "设置已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存设置…"}</Text>}</div>
+    {autoSaving && <div className="ai-task-intro"><Text size="xs" c={studio.saveStatus === "failed" ? "red" : "dimmed"} role="status">{studio.saveStatus === "saved" ? "设置已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存设置…"}</Text></div>}
     <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
     <div id="ai-category-panel" role="tabpanel" aria-labelledby={`ai-category-${categories.indexOf(category)}`} className="ai-task-category-panel">
       {category === "正文生成" && <ArticleGenerateSettings global />}
@@ -346,21 +346,20 @@ export function DatabaseSettings() {
   const syncHealthy = syncStatus?.state === "synced";
   return <>
     <SettingSection title="完整备份">
-      <div className="transfer-hero"><div><span className="ui-title">导出全部 Writer Studio 数据</span><p>包含所有文章、正文、版本、聊天、任务、系统设置、Provider 和模型参数，不包含 API Key。</p></div><Button leftSection={<Icon name="saveAs" />} onClick={() => void transfer.exportComplete()}>导出全部</Button></div>
+      <div className="transfer-hero"><div><span className="ui-title">导出全部 Writer Studio 数据</span><p>不包含 API Key。</p></div><Button leftSection={<Icon name="saveAs" />} onClick={() => void transfer.exportComplete()}>导出全部</Button></div>
     </SettingSection>
     <SettingSection title="批量迁移">
       <div className="transfer-grid">
-        <article className="transfer-card"><div><span className="ui-title">所有文章</span><p>{studio.data.articles.length} 篇文章，以及对应的章节、大纲、正文、版本、人物、聊天和任务记录。</p></div><Group gap="xs"><Button variant="default" size="xs" onClick={transfer.exportAllArticles}>导出</Button><Button variant="light" size="xs" onClick={() => void transfer.importAllArticles()}>导入</Button></Group></article>
-        <article className="transfer-card"><div><span className="ui-title">系统配置</span><p>界面、编辑器、任务和生成设置，以及 Provider 与模型参数；API Key 需要在新环境重新输入。</p></div><Group gap="xs"><Button variant="default" size="xs" onClick={() => void transfer.exportSystemConfig()}>导出</Button><Button variant="light" size="xs" onClick={() => void transfer.importSystemConfig()}>导入</Button></Group></article>
+        <article className="transfer-card"><div><span className="ui-title">所有文章</span><p>{studio.data.articles.length} 篇文章</p></div><Group gap="xs"><Button variant="default" size="xs" onClick={transfer.exportAllArticles}>导出</Button><Button variant="light" size="xs" onClick={() => void transfer.importAllArticles()}>导入</Button></Group></article>
+        <article className="transfer-card"><div><span className="ui-title">系统配置</span><p>API Key 需要在新环境重新输入。</p></div><Group gap="xs"><Button variant="default" size="xs" onClick={() => void transfer.exportSystemConfig()}>导出</Button><Button variant="light" size="xs" onClick={() => void transfer.importSystemConfig()}>导入</Button></Group></article>
       </div>
     </SettingSection>
     <SettingSection title="当前数据"><div className="database-card"><span className="db-icon">DB</span><div><span className="ui-title">{status?.engine ?? "SQLite"}</span><p>数据库版本 {status?.databaseVersion ?? "—"} · 保存修订 {status?.revision ?? "—"} · 搜索 {status?.searchMode ?? "检测中"}</p></div><span className={status?.connected === false ? "status-warning" : "status-online"}>{status?.connected === false ? "连接失败" : "已连接"}</span><button className="secondary-button" type="button" onClick={() => window.alert(status?.engine?.toLocaleLowerCase().includes("d1") ? "当前 Site 使用云端 D1 数据库。" : "当前使用本机 SQLite 数据库，默认文件位于 data/writer-studio.sqlite。")}>数据位置</button></div></SettingSection>
     <SettingSection title="云端同步">
       <div className="sync-card">
         <div className="sync-card-heading"><div><span className="ui-title">本地与云端数据库</span><p>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动后台上传已关闭 · " : ""}{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动上传关闭" : syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
-        <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span><p>关闭后只保存本地数据库，仍可随时手动选择覆盖方向。</p></div><Toggle checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
+        <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span></div><Toggle checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
         <div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
-        <p className="sync-rule">只有“云端版本 = 同步基线”时才允许后台上传；版本不同会立即停止，必须手动选择覆盖方向。结构版本不同不能覆盖，需要先升级应用。</p>
         <div className="sync-overwrite-options"><span className="ui-label">手动覆盖范围</span><Checkbox checked={overwriteModels} onChange={(event) => { const checked = event.currentTarget.checked; setOverwriteModels(checked); if (!checked) setOverwriteSecrets(false); }} label="同时覆盖大模型配置" /><Checkbox checked={overwriteSecrets} disabled={!overwriteModels} onChange={(event) => setOverwriteSecrets(event.currentTarget.checked)} label="同时覆盖 API Key / Secret（敏感信息）" /><p>未选择 API Key 时，会保留目标端相同模型 ID 的密钥；目标端多余模型会随模型配置覆盖而删除。</p></div>
         {syncNotice && <div className={syncNotice.includes("完成") || syncNotice.includes("已用") ? "sync-notice success" : "sync-notice error"} role="status">{syncNotice}</div>}
         <Group gap="sm" className="sync-actions">

@@ -66,7 +66,7 @@ function ArticleReviewRulesEditor({ article, onUpdate, presets, compact = false 
 
   return <section className={`article-review-rules${compact ? " ai-task-section ai-task-rule-list" : ""}`} aria-label="审校规则管理">
     <Group justify="space-between" align="flex-start">
-      <div><h2>审校规则</h2><Text size="sm" c="dimmed">正文生成后的检查标准，点击编辑查看完整内容。</Text></div>
+      <div><h2>审校规则</h2></div>
       <Group gap="xs">{presets.length > 0 && <Button variant="default" onClick={() => { setSelected([]); setError(""); setImporting(true); }}>导入原全局预设</Button>}<Button disabled={rules.length >= MAX_REVIEW_RULES} onClick={() => openEditor("new")}>新增规则</Button></Group>
     </Group>
     <Group gap="xs" className="review-rule-filters"><Button variant={archived ? "subtle" : "light"} aria-pressed={!archived} onClick={() => setArchived(false)}>生效中（{activeCount}）</Button><Button variant={archived ? "light" : "subtle"} aria-pressed={archived} onClick={() => setArchived(true)}>已归档（{rules.length - activeCount}）</Button></Group>
@@ -78,7 +78,7 @@ function ArticleReviewRulesEditor({ article, onUpdate, presets, compact = false 
     </article>)}</Stack>
     {!visible.length && <Text c="dimmed" className="review-rule-empty">{archived ? "暂无已归档规则。" : "暂无生效规则，可新增规则。"}</Text>}
     <ResponsiveModal opened={Boolean(editing)} onClose={() => setEditing(null)} title={editing === "new" ? "新增 Review 规则" : "编辑 Review 规则"} size="lg" centered>
-      <Stack><TextInput label="规则名称" value={title} maxLength={120} onChange={(event) => setTitle(event.currentTarget.value)} autoFocus /><Textarea label="规则内容" description="完整说明检查标准，以及需要保留的例外。" value={content} maxLength={MAX_REVIEW_RULE_CONTENT} minRows={5} maxRows={12} autosize onChange={(event) => setContent(event.currentTarget.value)} />{error && <Alert color="red">{error}</Alert>}<Group justify="flex-end"><Button variant="default" onClick={() => setEditing(null)}>取消</Button><Button disabled={!title.trim() || !content.trim()} onClick={saveRule}>保存规则</Button></Group></Stack>
+      <Stack><TextInput label="规则名称" value={title} maxLength={120} onChange={(event) => setTitle(event.currentTarget.value)} autoFocus /><Textarea label="规则内容" value={content} maxLength={MAX_REVIEW_RULE_CONTENT} minRows={5} maxRows={12} autosize onChange={(event) => setContent(event.currentTarget.value)} />{error && <Alert color="red">{error}</Alert>}<Group justify="flex-end"><Button variant="default" onClick={() => setEditing(null)}>取消</Button><Button disabled={!title.trim() || !content.trim()} onClick={saveRule}>保存规则</Button></Group></Stack>
     </ResponsiveModal>
     <ResponsiveModal opened={Boolean(deleting)} onClose={() => setDeleting(null)} title="删除 Review 规则" centered>
       <Stack><Text>删除“{deleting?.title}”？删除后不会自动补回，历史任务和报告仍保留原规则。</Text><Group justify="flex-end"><Button variant="default" onClick={() => setDeleting(null)}>取消</Button><Button color="red" onClick={() => { if (commit(rules.filter((rule) => rule.id !== deleting?.id))) setDeleting(null); }}>确认删除</Button></Group></Stack>
