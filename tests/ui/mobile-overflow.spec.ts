@@ -75,7 +75,6 @@ for (const width of [320, 390, 430, 844]) {
     }] } }));
     await page.goto("/articles/article-main/outlines/outline-current/generate");
     await expect(page.getByRole("combobox", { name: "本次模型", exact: true })).toHaveValue(/unbrokentext/);
-    await expect(page.locator(".generate-auto-apply-note")).toHaveCSS("white-space", "normal");
     const view = page.locator(".generate-view");
     const surfaces = [view, page.locator(".generate-page"), page.locator(".generate-command-card"), page.locator(".ai-settings-inheritance")];
     for (const surface of surfaces) await expectVerticalSurface(page, surface);

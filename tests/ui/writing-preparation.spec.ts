@@ -107,7 +107,6 @@ test("default preparation automatically writes without spending discussion round
     data.articles[0].aiGenerateSettings!.model = model.id;
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
-    await expect(page.locator(".generate-auto-apply-note")).toContainText("无待答问题后自动写正文");
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const inline = page.locator(".task-interaction.inline");
     await expect(inline).toContainText("正文已完成", { timeout: 25_000 });

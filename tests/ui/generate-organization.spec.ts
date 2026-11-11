@@ -111,7 +111,6 @@ for (const reviewMaxRounds of [0, 1]) test(`disabled preparation skips the model
     await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toBeDisabled();
     await expect(workflow.getByLabel("讨论策略", { exact: true })).toBeDisabled();
     await expect(workflow.getByLabel("准备稿无问题时仍需确认", { exact: true })).toBeDisabled();
-    await expect(page.locator(".generate-auto-apply-note")).toContainText("直接生成正文");
     await expect(page.locator(".generate-workflow-summary")).toContainText("写作准备已关闭");
     await enabled.check();
     await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("4");

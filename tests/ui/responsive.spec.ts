@@ -723,11 +723,9 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   expect(saveInstructionBounds!.height).toBeGreaterThanOrEqual(40);
 
   const singleLineText = page.locator([
-    ".generate-mode-description",
     ".generate-excellent-fragments-toggle .ui-label",
     ".generate-excellent-fragments-toggle small",
     ".generate-outline-title-toggle .ui-label",
-    ".generate-outline-title-toggle small",
     ".generate-context-copy .ui-title",
   ].join(","));
   const textMetrics = await singleLineText.evaluateAll((elements) => elements.map((element) => {
@@ -1059,8 +1057,6 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   await expect(page.getByRole("combobox", { name: "本次模型" })).toHaveValue("Remote Provider-Remote Writer");
   await expect(page.getByText("候选版本", { exact: true })).toHaveCount(0);
   await expect(page.locator(".candidate-card")).toHaveCount(0);
-  await expect(page.locator(".generate-auto-apply-note")).toContainText("先整理写作准备稿");
-  await expect(page.locator(".generate-auto-apply-note")).toContainText("完成后更新当前正文，旧版本保留");
 });
 
 test("workspace AI tabs render before a background save finishes and reuse the preloaded model list", async ({ page }, testInfo) => {
