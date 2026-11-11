@@ -8,6 +8,7 @@ test('sentence words and mixed controls persist with the selected mode on deskto
   const data = fullStudioFixture() as unknown as StudioData;
   data.tasks = [];
   const outline = data.articles[0].chapters[0].outlines.find(item => item.id === 'outline-current')!;
+  data.articles[0].chapters[0].outlines.find(item => item.id === 'outline-after')!.expansion = { enabled: true, defaultMultiplier: 12, marks: [] };
   const plan = '原文已有500字和×3。第二句。第三句。第四句。';
   outline.plan = plan;
   delete outline.expansion;
@@ -21,7 +22,7 @@ test('sentence words and mixed controls persist with the selected mode on deskto
   await expect(mode).toHaveValue('总体字数控制', { timeout: 20000 });
   await chooseMode('大纲句子字数');
   await expect.poll(async () => current(await read()).expansion?.mode).toBe('words');
-  await expect.poll(async () => (await read()).settings.outlineLengthMode).toBe('words');
+  expect((await read()).settings.outlineLengthMode).toBe('target');
   await page.reload();
   await expect(mode).toHaveValue('大纲句子字数');
   await expect(sentence(1)).toHaveAttribute('aria-label', /^第1句，300字，全局默认/);
@@ -69,18 +70,23 @@ test('sentence words and mixed controls persist with the selected mode on deskto
   await page.setViewportSize({ width: 390, height: 844 });
   await block.locator('.outline-expansion-defaults > summary').scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('sentence-words-mobile.png') });
-  // New outlines use the remembered mode. Explicit existing choices stay fixed.
+  // Changing one outline must not alter defaults, other outlines or new outlines.
   const existingIds = new Set((await read()).articles[0].chapters[0].outlines.map(item => item.id));
   await block.getByRole('button', { name: '当前码头更多操作', exact: true }).click();
   await page.getByRole('menuitem', { name: '在下方新建', exact: true }).click();
-  await expect.poll(async () => (await read()).articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))?.expansion).toMatchObject({ enabled: true, mode: 'words' });
+  await expect.poll(async () => (await read()).articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))?.expansion).toMatchObject({ enabled: false });
   const state = await read();
   const created = state.articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))!;
-  expect(created.expansion).toMatchObject({ enabled: true, mode: 'words' });
+  expect(created.expansion).toMatchObject({ enabled: false });
   await page.goto(`/articles/article-main/outlines/${created.id}/generate`);
-  await expect(mode).toHaveValue('大纲句子字数');
-  await chooseMode('总体字数控制');
-  await expect.poll(async () => (await read()).settings.outlineLengthMode).toBe('target');
+  await expect(mode).toHaveValue('总体字数控制');
+  await chooseMode('大纲句子倍率');
+  expect((await read()).settings.outlineLengthMode).toBe('target');
+  await page.goto('/articles/article-main/outlines/outline-after/generate');
+  await expect(mode).toHaveValue('大纲句子倍率');
+  await expect(sentence(1)).toHaveAttribute('aria-label', /^第1句，12倍，大纲默认/);
+  await page.goto('/articles/article-main/outlines/outline-previous/generate');
+  await expect(mode).toHaveValue('总体字数控制');
   await page.goto('/articles/article-main/outlines/outline-current/generate');
   await expect(mode).toHaveValue('大纲句子字数');
   await expect(sentence(2)).toHaveAttribute('aria-label', /^第2句，500字，本句设置/);

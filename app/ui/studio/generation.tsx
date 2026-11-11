@@ -4,7 +4,7 @@ import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
 import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
-import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion, type OutlineLengthMode } from "@/lib/outline-expansion";
+import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
@@ -181,11 +181,10 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     expansionDraftRef.current = normalized;
     setExpansionDraft(normalized);
   }
-  function changeLengthMode(mode: OutlineLengthMode, next: OutlineExpansion) {
+  function changeLengthMode(next: OutlineExpansion) {
     changeExpansion(next);
     // Store the mode immediately without committing unsaved outline text.
     studio.updateOutline(studio.currentOutline.id, { expansion: rebaseOutlineExpansion(outlinePlanDraftRef.current, outline.plan, next) });
-    studio.updateSettings({ outlineLengthMode: mode });
   }
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);

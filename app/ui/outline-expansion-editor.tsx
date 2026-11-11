@@ -2,11 +2,11 @@
 
 import { Fragment, useState, type ReactNode } from "react";
 import { Button, NumberInput, Select } from "@mantine/core";
-import { convertTargetWordsToExpansion, EXPANSION_DECIMALS, EXPANSION_MULTIPLIER_HELP, isExpansionMultiplier, isSentenceTargetWords, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, MAX_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode, outlineLengthMode, resolveOutlineExpansion, sentenceLengthLabel, withOutlineLengthMode, type OutlineExpansion, type OutlineLengthMode } from "@/lib/outline-expansion";
+import { convertTargetWordsToExpansion, EXPANSION_DECIMALS, EXPANSION_MULTIPLIER_HELP, isExpansionMultiplier, isSentenceTargetWords, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, MAX_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode, outlineLengthMode, resolveOutlineExpansion, sentenceLengthLabel, withOutlineLengthMode, type OutlineExpansion } from "@/lib/outline-expansion";
 import { wordCount } from "@/lib/studio-display";
 
 export function OutlineExpansionEditor({ plan, value, globalMultiplier, globalTargetWords, legacyTargetWords, documentView = false, onChange, onModeChange, children }: {
-  plan: string; value?: OutlineExpansion; globalMultiplier?: number; globalTargetWords?: number; legacyTargetWords?: number; documentView?: boolean; onChange: (value: OutlineExpansion) => void; onModeChange?: (mode: OutlineLengthMode, value: OutlineExpansion) => void; children: ReactNode;
+  plan: string; value?: OutlineExpansion; globalMultiplier?: number; globalTargetWords?: number; legacyTargetWords?: number; documentView?: boolean; onChange: (value: OutlineExpansion) => void; onModeChange?: (value: OutlineExpansion) => void; children: ReactNode;
 }) {
   const [editing, setEditing] = useState(!plan.trim());
   const [selected, setSelected] = useState<number | null>(null);
@@ -36,7 +36,7 @@ export function OutlineExpansionEditor({ plan, value, globalMultiplier, globalTa
   return <div className="outline-expansion-editor" onFocusCapture={event => { if (config.enabled && event.target instanceof HTMLTextAreaElement) setEditing(true); }}>
     {documentView && !config.enabled && <p className="outline-expansion-estimate">{legacyTargetWords && legacyTargetWords > 0 ? `整体字数限制 ${legacyTargetWords.toLocaleString("zh-CN")} 字` : "无整体字数限制"}</p>}
     {!documentView && <div className="outline-expansion-controls">
-      <Select label="篇幅控制" aria-label="篇幅控制" allowDeselect={false} value={outlineLengthMode(config)} data={[{ value: "target", label: "总体字数控制" }, { value: "multiplier", label: "大纲句子倍率" }, { value: "words", label: "大纲句子字数" }]} onChange={mode => { const selectedMode = normalizeOutlineLengthMode(mode); const next = withOutlineLengthMode(config, selectedMode); if (onModeChange) onModeChange(selectedMode, next); else onChange(next); setSelected(null); }} />
+      <Select label="篇幅控制" aria-label="篇幅控制" allowDeselect={false} value={outlineLengthMode(config)} data={[{ value: "target", label: "总体字数控制" }, { value: "multiplier", label: "大纲句子倍率" }, { value: "words", label: "大纲句子字数" }]} onChange={mode => { const selectedMode = normalizeOutlineLengthMode(mode); const next = withOutlineLengthMode(config, selectedMode); if (onModeChange) onModeChange(next); else onChange(next); setSelected(null); }} />
       {defaultControl}
     </div>}
     {config.enabled && <>
