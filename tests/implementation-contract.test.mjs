@@ -266,7 +266,7 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /function ContinuousDocumentEditor/);
   assert.match(app, /function AutoGrowTextarea/);
   assert.match(app, /const mirror = node\.cloneNode\(false\) as HTMLTextAreaElement/);
-  assert.match(app, /const nextHeight = Math\.max\(mirror\.scrollHeight, 34\)/);
+  assert.match(app, /const nextHeight = Math\.max\(mirror\.scrollHeight \+ verticalInsets, 34\)/);
   assert.match(app, /node\.style\.height = `\$\{nextHeight\}px`/);
   assert.match(app, /mode === "outline" \? studio\.updateOutline/);
   assert.match(app, /onContentBlur=\{mode === "content" \? \(\) => commitContent\(item\.id\)/);

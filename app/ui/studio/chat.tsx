@@ -124,6 +124,26 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
   useEffect(() => {
     const thread = chatThreadRef.current;
     if (!thread) return;
+    let followingLatest = true;
+    let width = thread.clientWidth;
+    let height = thread.clientHeight;
+    const trackPosition = () => {
+      // A layout change must not be mistaken for scrolling back in history.
+      if (width !== thread.clientWidth || height !== thread.clientHeight) return;
+      followingLatest = thread.scrollHeight - thread.clientHeight - thread.scrollTop < 48;
+    };
+    const observer = new ResizeObserver(() => {
+      width = thread.clientWidth;
+      height = thread.clientHeight;
+      if (followingLatest) thread.scrollTop = thread.scrollHeight;
+    });
+    observer.observe(thread);
+    thread.addEventListener("scroll", trackPosition, { passive: true });
+    return () => { observer.disconnect(); thread.removeEventListener("scroll", trackPosition); };
+  }, [session?.id]);
+  useEffect(() => {
+    const thread = chatThreadRef.current;
+    if (!thread) return;
     const frame = window.requestAnimationFrame(() => {
       thread.scrollTop = thread.scrollHeight;
       threadEndRef.current?.scrollIntoView({ block: "end", inline: "nearest" });

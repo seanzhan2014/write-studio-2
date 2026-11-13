@@ -325,7 +325,7 @@ test("Civitai connections automatically select the image adapter and enable nati
   const connection = page.getByRole("dialog", { name: "添加服务连接", exact: true });
   await connection.getByRole("textbox", { name: "连接名称", exact: true }).fill("Civitai");
   await connection.getByRole("textbox", { name: "接口地址", exact: true }).fill("https://civitai.com/api/v1");
-  await expect(connection.getByRole("alert")).toContainText("生成插图");
+  await expect(connection.getByRole("alert")).toContainText("完整 AIR ID");
   await connection.locator('input[autocomplete="new-password"]').fill("fake-civitai-key");
   await connection.getByText("高级设置", { exact: true }).click();
   await expect(connection.getByRole("combobox", { name: "接口适配", exact: true })).toHaveValue("Civitai（图像生成）");

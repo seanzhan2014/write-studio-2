@@ -14,7 +14,7 @@ import { ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 import { createReviewRuleSnapshot, hasReviewRules, type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Alert, Button, Group, Menu, Select, Stack, Text, Textarea } from "@mantine/core";
+import { Alert, Button, Group, Menu, Select, Stack, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { closestCenter, DndContext, DragOverlay, KeyboardSensor, MouseSensor, TouchSensor, useDroppable, useSensor, useSensors, type DragEndEvent, type DragOverEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";

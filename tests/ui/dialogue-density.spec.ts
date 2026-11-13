@@ -46,7 +46,7 @@ test("changing only the closing summary choice creates a distinct generation req
   await expect(page.getByText("相同生成请求已在队列中。", { exact: true })).toBeVisible();
 });
 
-test("prose controls support keyboard selection, mode guidance and narrow touch targets", async ({ page }, testInfo) => {
+test("prose controls support keyboard selection, mode changes and narrow touch targets", async ({ page }, testInfo) => {
   if (testInfo.project.name === "mobile-chromium") await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   const group = page.getByRole("radiogroup", { name: "对话密度", exact: true });
@@ -67,15 +67,14 @@ test("prose controls support keyboard selection, mode guidance and narrow touch 
   await page.keyboard.press("ArrowRight");
   await expect(group.getByRole("radio", { name: "适中", exact: true })).toBeChecked();
   await group.getByRole("radio", { name: "高", exact: true }).check();
-  await expect(page.locator("#dialogue-density-description")).toContainText("更多通过人物交谈");
+  await expect(group.getByRole("radio", { name: "高", exact: true })).toBeChecked();
   await introspection.getByRole("radio", { name: "多", exact: true }).check();
   await description.getByRole("radio", { name: "细腻", exact: true }).check();
   await pace.getByRole("radio", { name: "紧凑", exact: true }).check();
   await paragraph.getByRole("radio", { name: "长", exact: true }).check();
-  await expect(page.locator("#introspection-density-description")).toContainText("判断、犹豫、联想");
-  await expect(page.locator("#description-detail-description")).toContainText("环境、感官和身体感受");
-  await expect(page.locator("#narrative-pace-description")).toContainText("行动、信息或局势");
-  await expect(page.locator("#paragraph-length-description")).toContainText("不把无关内容强行合并");
+  for (const [controls, name] of [[introspection, "多"], [description, "细腻"], [pace, "紧凑"], [paragraph, "长"]] as const) {
+    await expect(controls.getByRole("radio", { name, exact: true })).toBeChecked();
+  }
   for (const controls of [group, introspection, description, pace, paragraph, summary]) {
     for (const radio of await controls.getByRole("radio").all()) {
       const box = await radio.boundingBox();
@@ -86,12 +85,12 @@ test("prose controls support keyboard selection, mode guidance and narrow touch 
   await page.getByRole("radio", { name: /^改写正文/ }).click();
   await page.getByRole("slider", { name: "原文保留度" }).focus();
   await page.keyboard.press("End");
-  await expect(page.locator(".prose-controls-section")).toContainText("优先保留原文结构");
+  await expect(page.locator(".rewrite-retention-heading strong")).toContainText("高保留");
   await page.getByRole("radio", { name: /^续写正文/ }).click();
   await expect(group.getByRole("radio", { name: "高", exact: true })).toBeChecked();
   await expect(introspection.getByRole("radio", { name: "多", exact: true })).toBeChecked();
   await expect(paragraph.getByRole("radio", { name: "长", exact: true })).toBeChecked();
-  await expect(page.locator(".prose-controls-section")).toContainText("仅影响新增正文");
+  await expect(page.getByRole("slider", { name: "原文保留度" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
 });
 

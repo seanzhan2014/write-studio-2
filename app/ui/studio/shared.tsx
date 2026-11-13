@@ -530,7 +530,13 @@ export function AutoGrowTextarea({ value, onChange, onFocus, onBlur, className, 
   const resize = useCallback((node: HTMLTextAreaElement | null) => {
     if (!node) return;
     const bounds = node.getBoundingClientRect();
+    const computed = getComputedStyle(node);
     const mirror = node.cloneNode(false) as HTMLTextAreaElement;
+    // The mirror lives outside the editor, so retain styles inherited from
+    // its layout, theme and responsive selectors when measuring wrapped text.
+    for (const property of ["font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "word-spacing", "text-transform", "text-indent", "white-space", "word-break", "overflow-wrap", "tab-size", "padding-top", "padding-right", "padding-bottom", "padding-left", "border-top-width", "border-bottom-width", "border-left-width", "border-right-width"]) {
+      mirror.style.setProperty(property, computed.getPropertyValue(property));
+    }
     mirror.setAttribute("aria-hidden", "true");
     mirror.tabIndex = -1;
     mirror.rows = 1;
@@ -541,18 +547,35 @@ export function AutoGrowTextarea({ value, onChange, onFocus, onBlur, className, 
     mirror.style.visibility = "hidden";
     mirror.style.pointerEvents = "none";
     mirror.style.width = `${bounds.width}px`;
+    mirror.style.boxSizing = "border-box";
     mirror.style.height = "0px";
     mirror.style.minHeight = "0";
     mirror.style.maxHeight = "none";
     mirror.style.overflow = "hidden";
     mirror.style.setProperty("field-sizing", "fixed");
     document.body.append(mirror);
-    const nextHeight = Math.max(mirror.scrollHeight, 34);
+    const verticalInsets = computed.boxSizing === "border-box"
+      ? parseFloat(computed.borderTopWidth) + parseFloat(computed.borderBottomWidth)
+      : -parseFloat(computed.paddingTop) - parseFloat(computed.paddingBottom);
+    const nextHeight = Math.max(mirror.scrollHeight + verticalInsets, 34);
     mirror.remove();
     node.style.height = `${nextHeight}px`;
     node.scrollTop = 0;
   }, []);
   useLayoutEffect(() => { resize(ref.current); }, [value, resize]);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    let width = node.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const nextWidth = node.getBoundingClientRect().width;
+      if (Math.abs(nextWidth - width) < .5) return;
+      width = nextWidth;
+      resize(node);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [resize]);
   return <textarea
     ref={(node) => { ref.current = node; resize(node); }}
     className={className}

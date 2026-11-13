@@ -35,6 +35,7 @@ const eslintConfig = defineConfig([
     "data/**",
     "logs/**",
     ".writer-studio-restart-*/**",
+    ".writer-studio-runtime-*/**",
   ]),
 ]);
 

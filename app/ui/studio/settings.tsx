@@ -235,16 +235,16 @@ export function SettingRow({ title, children }: { title: string; children: React
   return <div className="setting-row"><div><span className="ui-label">{title}</span></div>{children}</div>;
 }
 
-export function Toggle({ checked = true, disabled = false, onChange }: { checked?: boolean; disabled?: boolean; onChange?: (checked: boolean) => void }) { return <button type="button" disabled={disabled} className={`toggle ${checked ? "on" : ""}`} aria-label={checked ? "已开启" : "已关闭"} aria-pressed={checked} onClick={() => onChange?.(!checked)}><span /></button>; }
+export function Toggle({ label, checked = true, disabled = false, onChange }: { label: string; checked?: boolean; disabled?: boolean; onChange?: (checked: boolean) => void }) { return <button type="button" role="switch" disabled={disabled} className={`toggle ${checked ? "on" : ""}`} aria-label={label} aria-checked={checked} onClick={() => onChange?.(!checked)}><span /></button>; }
 
 export function GeneralSettings() {
   const studio = useStudio();
-  return <SettingSection title="语言与启动"><SettingRow title="界面语言"><select><option>简体中文</option></select></SettingRow><SettingRow title="启动时打开上次文章"><Toggle checked={studio.data.settings.openLastArticle} onChange={(checked) => studio.updateSettings({ openLastArticle: checked })} /></SettingRow><SettingRow title="默认显示已归档内容"><Toggle checked={studio.data.settings.showArchived} onChange={(checked) => studio.updateSettings({ showArchived: checked })} /></SettingRow></SettingSection>;
+  return <SettingSection title="语言与启动"><SettingRow title="界面语言"><select aria-label="界面语言"><option>简体中文</option></select></SettingRow><SettingRow title="启动时打开上次文章"><Toggle label="启动时打开上次文章" checked={studio.data.settings.openLastArticle} onChange={(checked) => studio.updateSettings({ openLastArticle: checked })} /></SettingRow><SettingRow title="默认显示已归档内容"><Toggle label="默认显示已归档内容" checked={studio.data.settings.showArchived} onChange={(checked) => studio.updateSettings({ showArchived: checked })} /></SettingRow></SettingSection>;
 }
 
 export function AppearanceSettings() {
   const studio = useStudio();
-  return <><AppearancePanel /><SettingSection title="侧栏"><SettingRow title="大纲内容默认展开"><Toggle checked={studio.data.settings.outlineExpanded} onChange={(checked) => studio.updateSettings({ outlineExpanded: checked })} /></SettingRow></SettingSection></>;
+  return <><AppearancePanel /><SettingSection title="侧栏"><SettingRow title="大纲内容默认展开"><Toggle label="大纲内容默认展开" checked={studio.data.settings.outlineExpanded} onChange={(checked) => studio.updateSettings({ outlineExpanded: checked })} /></SettingRow></SettingSection></>;
 }
 
 export function ModelSettings() { return <AiServices />; }
@@ -358,7 +358,7 @@ export function DatabaseSettings() {
     <SettingSection title="云端同步">
       <div className="sync-card">
         <div className="sync-card-heading"><div><span className="ui-title">本地与云端数据库</span><p>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动后台上传已关闭 · " : ""}{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动上传关闭" : syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
-        <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span></div><Toggle checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
+        <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span></div><Toggle label="本地保存后自动异步复制到云端" checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
         <div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
         <div className="sync-overwrite-options"><span className="ui-label">手动覆盖范围</span><Checkbox checked={overwriteModels} onChange={(event) => { const checked = event.currentTarget.checked; setOverwriteModels(checked); if (!checked) setOverwriteSecrets(false); }} label="同时覆盖大模型配置" /><Checkbox checked={overwriteSecrets} disabled={!overwriteModels} onChange={(event) => setOverwriteSecrets(event.currentTarget.checked)} label="同时覆盖 API Key / Secret（敏感信息）" /><p>未选择 API Key 时，会保留目标端相同模型 ID 的密钥；目标端多余模型会随模型配置覆盖而删除。</p></div>
         {syncNotice && <div className={syncNotice.includes("完成") || syncNotice.includes("已用") ? "sync-notice success" : "sync-notice error"} role="status">{syncNotice}</div>}

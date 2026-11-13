@@ -2728,6 +2728,8 @@ button:disabled {
   min-height: 28px;
 }
 
+.continuous-outline-title-input { overflow: hidden; resize: none; }
+
 .continuous-outline-title-input::placeholder { color: var(--text-primary); opacity: .72; }
 
 .continuous-content-heading {
@@ -3453,13 +3455,27 @@ kbd {
 .service-restart-notice.error { color: var(--danger); }
 
 .toggle {
-  background: #c7c7c1;
+  align-items: center;
+  background: transparent;
   border: 0;
   border-radius: 20px;
-  height: 24px;
-  padding: 3px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 4px;
+  position: relative;
+  width: 50px;
+}
+
+.toggle::before {
+  background: #c7c7c1;
+  border-radius: 20px;
+  content: "";
+  height: 32px;
+  inset-inline: 0;
+  position: absolute;
+  top: 6px;
   transition: background 120ms ease;
-  width: 42px;
 }
 
 .toggle span {
@@ -3467,14 +3483,17 @@ kbd {
   border-radius: 50%;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
   display: block;
-  height: 18px;
+  height: 24px;
+  position: relative;
   transform: translateX(0);
   transition: transform 120ms ease;
-  width: 18px;
+  width: 24px;
 }
 
-.toggle.on { background: var(--accent); }
+.toggle.on::before { background: var(--accent); }
 .toggle.on span { transform: translateX(18px); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.toggle:disabled { opacity: .5; }
 
 .segmented {
   background: var(--app-bg);
@@ -3838,7 +3857,7 @@ kbd {
 }
 
 .transfer-hero > div,
-.transfer-card > div { display: grid; gap: 5px; }
+.transfer-card > div:not(.mantine-Group-root) { display: grid; gap: 5px; }
 .transfer-hero p,
 .transfer-card p { color: var(--text-secondary); font-size: 12px; line-height: 1.55; margin: 0; }
 .transfer-hero .mantine-Button-root { flex: 0 0 auto; }
@@ -6618,9 +6637,7 @@ kbd {
   .settings-nav button span:not(.ui-title) { display: none; }
   .settings-content { overflow: visible; padding: 28px 15px 70px; }
   .setting-row { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
-  .setting-row .toggle { height: 32px; width: 50px; }
-  .setting-row .toggle i { height: 24px; width: 24px; }
-  .setting-row .toggle.on i { transform: translateX(18px); }
+  .setting-row .toggle { height: 44px; width: 50px; }
   .segmented button { min-height: 40px; }
   .setting-row input[type="range"] { margin-left: 0; width: calc(100% - 70px); }
   .shortcut-grid { grid-template-columns: 1fr; }
@@ -7697,7 +7714,7 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   }
 
   .setting-row .toggle.on span {
-    transform: translateX(20px);
+    transform: translateX(18px);
   }
 
   .mantine-Input-input,
@@ -7892,6 +7909,11 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 
 @media (max-width: 767px) {
   .mobile-article-import-actions { display: grid; flex: 0 0 auto; gap: 8px; grid-template-columns: 1fr 1fr; }
+  .settings-layout .settings-content .mantine-Button-root,
+  .settings-layout .settings-content .mantine-Input-input,
+  .ai-task-category-tabs > button,
+  .ai-task-subtabs > button { min-height: 44px; }
+  .settings-layout .settings-content .mantine-ActionIcon-root { min-height: 44px; min-width: 44px; }
   .transfer-hero { align-items: stretch; flex-direction: column; }
   .transfer-hero .mantine-Button-root { width: 100%; }
   .transfer-grid { grid-template-columns: 1fr; }
@@ -8616,6 +8638,8 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
     --sidebar-width: 180px !important;
   }
 
+  .sidebar.collapsed { flex-basis: 56px; }
+
   .studio-shell {
     min-width: 0;
   }
@@ -8893,8 +8917,8 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
   .continuous-outline-properties,
   .continuous-outline-names,
   .continuous-outline-more { height: 44px; min-height: 44px; padding: 0; width: 44px; }
-  .continuous-outline-chat > span,
-  .continuous-outline-properties > span,
+  .continuous-outline-chat > span:not(.icon),
+  .continuous-outline-properties > span:not(.icon),
   .continuous-outline-properties > em { display: none; }
   .continuous-outline-insert { display: none; }
   .continuous-outline-properties-body { padding-bottom: calc(22px + env(safe-area-inset-bottom)); }
@@ -8924,6 +8948,12 @@ html[data-mantine-color-scheme="dark"] .outline-row.selected {
 .ai-section-heading h2 span { color: var(--text-secondary); font-size: 12px; font-weight: 400; margin-left: 6px; }
 .ai-section-heading p { color: var(--text-secondary); font-size: 12px; line-height: 1.6; margin: 0; }
 .ai-auto-save { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+@media (max-width: 480px) {
+  .continuous-outline-title-row { flex-wrap: wrap; }
+  .continuous-outline-title-row .continuous-outline-title-input { flex-basis: 100%; }
+  .continuous-outline-primary-actions { margin-left: auto; }
+}
+
 .ai-default-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px 24px; padding: 0 22px 22px; }
 .ai-default-grid .mantine-Input-input { font-size: 13px; }
 @media (max-width: 767px) {

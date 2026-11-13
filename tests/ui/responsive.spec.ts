@@ -196,14 +196,15 @@ test.beforeEach(async ({ request }) => {
 
 test("simplified story and character settings stay clear on desktop and mobile", async ({ page }) => {
   await page.goto("/articles/article-main/info/basic");
-  await expect(page.getByText("故事类型、时代背景、世界规则等内容都可以写在这里。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "简介", exact: true })).toBeVisible();
+  await expect(page.getByText("故事类型、时代背景、世界规则等内容都可以写在这里。", { exact: true })).toHaveCount(0);
   for (const label of ["故事发生地点", "写作风格", "负面约束"]) await expect(page.getByLabel(label, { exact: true })).toBeVisible();
   for (const removed of ["类型", "时代背景", "整体基调", "世界规则"]) await expect(page.getByLabel(removed, { exact: true })).toHaveCount(0);
 
   await page.goto("/articles/article-main/info/characters");
   await page.locator(".character-card").first().getByRole("button", { name: "编辑", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "编辑人物" });
-  await expect(dialog.getByText("身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("身份、性格、说话方式、能力、当前心理状态和当前已知信息都可以写在这里。", { exact: true })).toHaveCount(0);
   for (const label of ["年龄", "外貌", "人物说明", "人物底线"]) await expect(dialog.getByLabel(label, { exact: false })).toBeVisible();
   for (const removed of ["身份", "性格", "说话方式", "能力", "当前心理状态", "当前已知信息", "行为底线", "绝对不能写崩的特点"]) {
     await expect(dialog.getByLabel(removed, { exact: true })).toHaveCount(0);
@@ -518,7 +519,8 @@ test("secondary list actions stay behind a consistent More menu", async ({ page 
   await expect(page.getByRole("menuitem", { name: "归档" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "删除" })).toBeVisible();
 
-  await page.goto("/articles/article-main/info/review-rules");
+  await page.goto("/settings/tasks");
+  await page.getByRole("tab", { name: "自动审校", exact: true }).click();
   const rule = page.locator(".review-rule-card").first();
   await expect(rule.getByRole("button")).toHaveCount(2);
   await rule.getByRole("button", { name: /更多操作/ }).click();
@@ -942,7 +944,7 @@ test("AI Generate reuses supplementary instructions only within the same outline
   }).toBe("当前码头下一次仍要沿用");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await page.getByRole("tab", { name: "聊天" }).click();
-  await page.getByRole("tab", { name: "正文生成" }).click();
+  await page.getByRole("tab", { name: "生成", exact: true }).click();
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await instruction.fill("");
   await page.getByRole("button", { name: "保存指令" }).click();
@@ -1079,7 +1081,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     if (route.request().method() === "POST") await saveGate;
     await route.continue();
   });
-  await page.getByRole("tab", { name: "正文生成" }).click();
+  await page.getByRole("tab", { name: "生成", exact: true }).click();
   const model = page.getByRole("combobox", { name: "本次模型" });
   await model.click();
   await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
@@ -1091,7 +1093,7 @@ test("workspace AI tabs render before a background save finishes and reuse the p
   } finally {
     releaseSave();
   }
-  await page.getByRole("tab", { name: "正文生成" }).click();
+  await page.getByRole("tab", { name: "生成", exact: true }).click();
   await expect(page.locator(".generate-view")).toBeVisible();
   expect(modelRequests).toBe(1);
 });
@@ -1298,9 +1300,8 @@ test("editing a previewed body inherits that version's outline snapshot", async 
 
 test("Generate outline editing stays local until saving after default conversion", async ({ page, request }, testInfo) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await page.getByRole("button", { name: "保存大纲", exact: true }).click();
+  await showTotalWordMode(page);
   await expect(page.getByRole("button", { name: "保存大纲", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const editor = page.getByLabel("生成使用的大纲内容");
   const save = page.getByRole("button", { name: "保存大纲", exact: true });
   const original = await editor.inputValue();
@@ -1633,7 +1634,7 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await page.getByRole("button", { name: "版本" }).click();
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
-  await page.getByRole("tab", { name: "正文生成" }).click();
+  await page.getByRole("tab", { name: "生成", exact: true }).click();
   await expect(page.locator(".generate-excellent-fragments-toggle input")).not.toBeChecked();
   await page.locator(".generate-context-summary").click();
   const excellentOption = page.locator(".generate-context-panel").getByLabel("参考优秀片段");
@@ -2185,7 +2186,6 @@ test("full outline editor shows every plan in one auto-growing document", async 
   await expect(editor).toHaveCSS("outline-style", "none");
   await expect(editor.getByLabel("第 1 章标题")).toHaveValue("第一章");
 
-  await page.locator('[data-continuous-outline-id="outline-current"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const plan = editor.getByLabel("大纲内容：当前码头");
   const nextPlan = "潮位正在快速回落。\n\n林澈必须在巡逻队抵达前找到暗门。\n\n远处灯塔给出新的信号。";
   await plan.fill(nextPlan);
@@ -2290,7 +2290,6 @@ test("mobile full outline editor keeps the caret above a visual-viewport keyboar
 
   await page.goto("/articles/article-main/outlines/edit-all");
   const scroll = page.locator(".keyboard-aware-page-scroll");
-  await page.locator('[data-continuous-outline-id="outline-after"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const plan = page.getByLabel("大纲内容：绝密后续大纲");
   await plan.focus();
   await plan.evaluate((element) => {
@@ -2369,7 +2368,7 @@ test("mobile body editor keeps the caret above a visual-viewport keyboard", asyn
   await page.getByRole("button", { name: "更多编辑操作" }).click();
   const menu = page.getByRole("menu", { name: "编辑操作" });
   await expect(menu).toBeVisible();
-  await expect(menu.getByRole("menuitem")).toHaveCount(5);
+  await expect(menu.getByRole("menuitem")).toHaveText(["查找与替换", "复制全文", "粘贴", "保存并结束", "另存为正文", "删除正文"]);
   await expectInsideViewport(page, menu);
   await page.getByRole("button", { name: "更多编辑操作" }).click();
 
@@ -2525,7 +2524,7 @@ test("unified editor moves an outline through the contextual move drawer", async
   await page.locator(".continuous-outline-action-menu").getByRole("menuitem", { name: "移动到章节…", exact: true }).click();
   const picker = page.locator(".continuous-outline-properties-drawer");
   await expect(picker).toBeVisible();
-  await expect(picker.getByText("选择目标章节；大纲内容、正文版本和聊天会一起保留。")).toBeVisible();
+  await expect(picker.getByText("选择目标章节；大纲内容、正文版本和聊天会一起保留。")).toHaveCount(0);
   await picker.getByRole("button", { name: /第二章/ }).click();
 
   await expect.poll(async () => {
@@ -2554,7 +2553,6 @@ test("full outline editor keeps the active outline anchored when leaving and ret
   await page.getByRole("button", { name: "章节与大纲", exact: true }).click();
   const editor = page.locator(".continuous-document-editor.mode-outline");
   const target = editor.locator('[data-continuous-outline-id="outline-after"]');
-  await page.locator('[data-continuous-outline-id="outline-after"]').getByRole("button", { name: "编辑大纲文字", exact: true }).click();
   const targetPlan = editor.getByLabel("大纲内容：绝密后续大纲");
   await targetPlan.scrollIntoViewIfNeeded();
   await targetPlan.focus();

@@ -119,7 +119,7 @@ test("illustration tab has its own route, preserves drafts between modes and lin
   const workspace = page.getByRole("region", { name: "插图工作区" });
   await workspace.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("切换页签后保留的画面构图");
   await modes.getByRole("tab", { name: "聊天", exact: true }).click();
-  await modes.getByRole("tab", { name: "正文生成", exact: true }).click();
+  await modes.getByRole("tab", { name: "生成", exact: true }).click();
   await modes.getByRole("tab", { name: "插图", exact: true }).click();
   await expect(workspace.getByRole("textbox", { name: "图片 prompt", exact: true })).toHaveValue("切换页签后保留的画面构图");
   await workspace.getByRole("button", { name: "查看历史", exact: true }).click();
