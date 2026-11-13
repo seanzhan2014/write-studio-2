@@ -6344,8 +6344,10 @@ kbd {
     border-radius: 10px;
     box-shadow: 0 12px 32px rgba(20, 18, 14, 0.18);
     display: grid;
+    max-height: min(352px, calc(var(--writing-visible-height, 100dvh) - 72px));
     min-width: 190px;
-    overflow: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 5px;
     position: absolute;
     right: 0;

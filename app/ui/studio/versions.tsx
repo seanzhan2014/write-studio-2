@@ -13,6 +13,7 @@ import { outlineDisplayTitle } from "@/lib/outline-title";
 import { formatTime, useStudio, wordCount, type Version } from "@/app/studio-state";
 
 import { ScrollableDrawer } from "@/app/ui/overlays";
+import { BodyDeleteDialog, type BodyDeleteTarget } from "@/app/ui/studio/body-delete-dialog";
 
 import { resolvedExcellentFragments, directContentId, Icon, ExcellentText } from "@/app/ui/studio/shared";
 
@@ -22,6 +23,8 @@ export function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPr
   const studio = useStudio();
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BodyDeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const versions = studio.currentOutline.versions;
   const compareVersion = versions.find((version) => version.id === compareVersionId);
   const currentContent = resolvedOutlineContent(studio.currentOutline);
@@ -57,14 +60,21 @@ export function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPr
     const saved = await studio.saveNow();
     onNotice(saved ? `已另存为「${versionName}」` : "另存为未完成，请查看保存状态");
   }
-  async function deleteVersion(versionId: string | null, isCurrent: boolean) {
-    if (!window.confirm(isCurrent ? "删除当前正文？删除后将按版本列表顺序切换到下一版。" : "删除这个正文版本？")) return;
-    studio.deleteVersion(studio.currentOutline.id, versionId);
+  function requestDeleteVersion(versionId: string | null, name: string, isCurrent: boolean) {
+    setDeleteTarget({ outlineId: studio.currentOutline.id, versionId, name, isCurrent });
+  }
+  async function deleteVersion() {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    const { outlineId, versionId, isCurrent } = deleteTarget;
+    studio.deleteVersion(outlineId, versionId);
     if (isCurrent || selectedVersionId === (versionId ?? directContentId(studio.currentOutline.id))) onClearPreview();
     const saved = await studio.saveNow();
+    setDeleting(false);
+    setDeleteTarget(null);
     onNotice(saved ? "正文已删除" : "删除未完成，请查看保存状态");
   }
-  return <ScrollableDrawer
+  return <><ScrollableDrawer
     scrollMode="content"
     opened
     onClose={onClose}
@@ -90,7 +100,7 @@ export function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPr
         {showStandaloneCurrent && <article className={`${directPreviewSelected || !selectedVersionId ? "active" : ""} ${!currentVersion ? "current" : ""}`}>
           <button className="version-preview-main" type="button" onClick={onClearPreview}><div><span className="ui-title" title={standaloneContentName}>{standaloneContentName}</span>{(studio.currentOutline.manualExcellent || standaloneExcellentFragments.length > 0) && <i className="excellent-fragment-dot" title={studio.currentOutline.manualExcellent ? "优秀正文" : "含优秀片段，已自动设为优秀"} />}{!currentVersion && <em>当前 · 已直接保存</em>}</div><p>{formatTime(studio.currentOutline.updatedAt)} · {wordCount(standaloneContent)} 字</p><span>正文</span></button>
           {(directPreviewSelected || !selectedVersionId) && <div className="version-content-preview" aria-label="直接保存正文内容">{standaloneContent ? <ExcellentText text={standaloneContent} fragments={standaloneExcellentFragments} /> : "（正文为空）"}</div>}
-          <div className="version-actions"><button className="danger-text" type="button" onClick={() => void deleteVersion(null, !currentVersion)}>删除</button></div>
+          <div className="version-actions"><button className="danger-text" type="button" disabled={deleting} onClick={() => requestDeleteVersion(null, standaloneContentName, !currentVersion)}>删除</button></div>
         </article>}
         {versions.map((version) => {
           const isDefault = studio.currentOutline.defaultVersionId === version.id;
@@ -109,12 +119,12 @@ export function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPr
               <button type="button" disabled={isDefault} onClick={() => { studio.setDefaultVersion(studio.currentOutline.id, version.id); onNotice("已设为默认正文"); }}>{isDefault ? "已默认" : "设为默认"}</button>
               <button type="button" onClick={() => void saveVersionAs(version)}>另存</button>
               <button type="button" onClick={() => { const name = window.prompt("重命名版本", version.name); if (name?.trim()) studio.renameVersion(studio.currentOutline.id, version.id, name.trim()); }}>重命名</button>
-              <button className="danger-text" type="button" onClick={() => void deleteVersion(version.id, isCurrent)}>删除</button>
+              <button className="danger-text" type="button" disabled={deleting} onClick={() => requestDeleteVersion(version.id, version.name, isCurrent)}>删除</button>
             </div>
           </article>;
         })}
         {!versions.length && <div className="empty-inline">尚未保存正文版本</div>}
       </div>}
     </div>
-  </ScrollableDrawer>;
+  </ScrollableDrawer><BodyDeleteDialog target={deleteTarget} deleting={deleting} onClose={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => void deleteVersion()} /></>;
 }

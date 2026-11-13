@@ -15,6 +15,7 @@ import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-con
 import { useStudio, wordCount, type Version } from "@/app/studio-state";
 
 import { ResponsiveModal, ScrollableDrawer } from "@/app/ui/overlays";
+import { BodyDeleteDialog, type BodyDeleteTarget } from "@/app/ui/studio/body-delete-dialog";
 
 import { directContentId, useDismissOnOutside, useWritingEditorViewport, selectedRangeWithin, copyTextToClipboard, Icon, IconButton, ExcellentText } from "@/app/ui/studio/shared";
 
@@ -34,6 +35,8 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const [savingEdit, setSavingEdit] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
   const [settingExcellent, setSettingExcellent] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<BodyDeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null);
   const writingScrollRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -351,12 +354,25 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     onNotice(saved ? "已设为默认正文" : "设置默认正文未完成，请查看保存状态");
   }
 
+  function requestDeleteDisplayedContent() {
+    setEditToolsOpen(false);
+    setDeleteTarget({
+      outlineId: studio.currentOutline.id,
+      versionId: displayedIsDirectContent ? null : displayedVersion?.id ?? null,
+      name: displayedContentName,
+      isCurrent: displayedIsCurrent,
+    });
+  }
+
   async function deleteDisplayedContent() {
-    if (!window.confirm(displayedIsCurrent ? "删除当前正文？删除后将按版本列表顺序切换到下一版。" : "删除这个正文版本？")) return;
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
     if (editing) finishWithoutChanges();
-    studio.deleteVersion(studio.currentOutline.id, displayedIsDirectContent ? null : displayedVersion?.id ?? null);
+    studio.deleteVersion(deleteTarget.outlineId, deleteTarget.versionId);
     onClearPreview();
     const saved = await studio.saveNow();
+    setDeleting(false);
+    setDeleteTarget(null);
     onNotice(saved ? "正文已删除" : "删除未完成，请查看保存状态");
   }
 
@@ -458,12 +474,12 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
               </Menu>
               <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><span aria-hidden="true">P</span></button>
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
-              <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent} onClick={() => void deleteDisplayedContent()}><Icon name="trash" /></button>
+              <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent || deleting} onClick={requestDeleteDisplayedContent}><Icon name="trash" /></button>
               {editing && <span className={`mobile-edit-save-state ${draftContent === baselineRef.current ? "saved" : "unsaved"}`}>{savingEdit ? "正在保存…" : draftContent === baselineRef.current ? "未修改" : "未保存"}</span>}
             </div>
             <div className="editor-tools">{editing ? <>
               <div className="desktop-edit-tools"><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></div>
-              <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button></div>}</div>
+              <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button><button className="danger-text" type="button" role="menuitem" disabled={savingEdit || settingDefault || settingExcellent || deleting} onClick={requestDeleteDisplayedContent}><Icon name="trash" />删除正文</button></div>}</div>
             </> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
           </div>
           {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
@@ -490,6 +506,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
         <p aria-label="此正文大纲内容">{plan || "此版本未保存生成时的大纲内容"}</p>
         <Button type="button" onClick={() => setPlanPeek(false)}>返回正文</Button>
       </ScrollableDrawer>}
+      <BodyDeleteDialog target={deleteTarget} hasUnsavedChanges={editing && draftContent !== baselineRef.current} deleting={deleting} onClose={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => void deleteDisplayedContent()} />
       <ResponsiveModal opened={exitPromptOpen} onClose={() => setExitPromptOpen(false)} closeButtonProps={{ "aria-label": "继续编辑正文" }} title="保存正文修改？" size="sm">
         <Group justify="flex-end" gap="sm"><Button variant="default" type="button" onClick={() => setExitPromptOpen(false)}>继续编辑</Button><Button variant="default" color="red" type="button" onClick={discardEditing}>放弃修改</Button><Button type="button" loading={savingEdit} onClick={() => void saveEditing()}>保存修改</Button></Group>
       </ResponsiveModal>
