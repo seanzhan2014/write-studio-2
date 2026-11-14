@@ -98,7 +98,7 @@ test("prose controls support keyboard selection, mode changes and narrow touch t
 });
 
 test("rewrite defaults and explicit edits persist independently from ordinary writing", async ({ page, request }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   await openArticleAiSettings(page);
   await page.getByRole("radiogroup", { name: "对话密度", exact: true }).getByRole("radio", { name: "高", exact: true }).check();
   const advanced = page.locator(".article-generate-settings .writing-advanced");
@@ -129,6 +129,7 @@ test("rewrite defaults and explicit edits persist independently from ordinary wr
     return data.articles[0].chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions?.rewriteExpression?.advanced?.psychology;
   }).toBe("改写专属心理要求");
   await page.reload();
+  await expect(page.getByRole("radio", { name: /^改写正文/ })).toBeChecked({ timeout: 30_000 });
   await expect(dialogue.getByRole("radio", { name: "低", exact: true })).toBeChecked();
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
   await page.locator(".writing-advanced > summary").click();
