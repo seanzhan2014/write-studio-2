@@ -4,7 +4,7 @@ import { ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 
 import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button, Group, Menu } from "@mantine/core";
 
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
@@ -16,6 +16,7 @@ import { useStudio, wordCount, type Version } from "@/app/studio-state";
 
 import { ResponsiveModal, ScrollableDrawer } from "@/app/ui/overlays";
 import { BodyDeleteDialog, type BodyDeleteTarget } from "@/app/ui/studio/body-delete-dialog";
+import { captureContentPosition, readerOffsetAtPoint, restoreContentPosition, revealContentSelection, type ContentScrollPosition } from "@/app/ui/studio/content-position";
 
 import { directContentId, useDismissOnOutside, useWritingEditorViewport, selectedRangeWithin, copyTextToClipboard, Icon, IconButton, ExcellentText } from "@/app/ui/studio/shared";
 
@@ -41,7 +42,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const writingScrollRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
-  const pendingContentScrollRef = useRef<{ top: number; max: number; ratio: number } | null>(null);
+  const pendingContentScrollRef = useRef<ContentScrollPosition | null>(null);
   const pendingEditorCaretRef = useRef<number | null>(null);
   const selectionPointerActiveRef = useRef(false);
   const selectionMenuTimerRef = useRef<number | null>(null);
@@ -139,11 +140,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
       pendingEditorCaretRef.current = null;
       if (caret !== null) editor?.setSelectionRange(caret, caret);
     }
-    const restore = () => {
-      const max = Math.max(0, target.scrollHeight - target.clientHeight);
-      const top = Math.abs(max - snapshot.max) <= 2 ? snapshot.top : snapshot.ratio * max;
-      target.scrollTop = Math.max(0, Math.min(top, max));
-    };
+    const restore = () => restoreContentPosition(target, snapshot);
     restore();
     const frame = window.requestAnimationFrame(restore);
     return () => window.cancelAnimationFrame(frame);
@@ -186,8 +183,12 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     const normalized = (index + matches.length) % matches.length;
     setMatchIndex(normalized);
     const match = matches[normalized];
-    editorRef.current?.focus();
-    editorRef.current?.setSelectionRange(match.start, match.end);
+    const editor = editorRef.current;
+    if (editor) {
+      editor.focus({ preventScroll: true });
+      editor.setSelectionRange(match.start, match.end);
+      revealContentSelection(editor);
+    }
   }
 
   function replaceCurrent() {
@@ -198,18 +199,21 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
 
   function replaceAll() {
     if (!findQuery) return;
-    const next = caseSensitive ? content.split(findQuery).join(replacement) : content.replace(new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), replacement);
+    const next = caseSensitive ? content.split(findQuery).join(replacement) : content.replace(new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), () => replacement);
     changeDraft(next);
   }
 
-  function beginEditing() {
+  function beginEditing(point?: { x: number; y: number }) {
     if (editingRef.current) return;
     const reader = readerRef.current;
     if (reader) {
-      const max = Math.max(0, reader.scrollHeight - reader.clientHeight);
-      const ratio = max > 0 ? reader.scrollTop / max : 0;
-      pendingContentScrollRef.current = { top: reader.scrollTop, max, ratio };
-      pendingEditorCaretRef.current = selectedRangeWithin(reader)?.end ?? Math.round(displayedContent.length * ratio);
+      pendingContentScrollRef.current = captureContentPosition(reader);
+      const bounds = reader.getBoundingClientRect();
+      const style = getComputedStyle(reader);
+      pendingEditorCaretRef.current = Math.min(displayedContent.length,
+        (point ? readerOffsetAtPoint(reader, point.x, point.y) : selectedRangeWithin(reader)?.end)
+        ?? readerOffsetAtPoint(reader, bounds.left + parseFloat(style.paddingLeft) + 2, bounds.top + parseFloat(style.paddingTop) + parseFloat(style.lineHeight) * 2.5)
+        ?? pendingContentScrollRef.current.offset);
     }
     setSelectionMenu(null);
     baselineRef.current = displayedContent;
@@ -235,8 +239,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   function finishWithoutChanges() {
     const editor = editorRef.current;
     if (editor) {
-      const max = Math.max(0, editor.scrollHeight - editor.clientHeight);
-      pendingContentScrollRef.current = { top: editor.scrollTop, max, ratio: max > 0 ? editor.scrollTop / max : 0 };
+      pendingContentScrollRef.current = captureContentPosition(editor);
     }
     editingRef.current = false;
     preservingRef.current = false;
@@ -266,8 +269,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     if (!saved) return;
     const editor = editorRef.current;
     if (editor) {
-      const max = Math.max(0, editor.scrollHeight - editor.clientHeight);
-      pendingContentScrollRef.current = { top: editor.scrollTop, max, ratio: max > 0 ? editor.scrollTop / max : 0 };
+      pendingContentScrollRef.current = captureContentPosition(editor);
     }
     editingRef.current = false;
     preservingRef.current = false;
@@ -443,7 +445,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   }
 
   return (
-    <div ref={writingScrollRef} className={`writing-scroll ${editing ? "editing" : ""}`}>
+    <div ref={writingScrollRef} className={`writing-scroll ${editing ? "editing" : ""}`} style={{ "--editor-font-size": `${studio.data.settings.fontSize}px` } as CSSProperties}>
       <div className="writing-canvas">
         {!focusMode && <button className="mobile-plan-peek" type="button" onClick={() => setPlanPeek(true)}>此正文大纲 <span><Icon name="chevron" /></span></button>}
         {!focusMode && (
@@ -484,14 +486,14 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
           </div>
           {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
-          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing(); else queueSelectionMenu(); }} style={{ fontSize: studio.data.settings.fontSize, lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
+          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing({ x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing({ x: event.clientX, y: event.clientY }); else queueSelectionMenu(); }} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
       </div>
       {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" onMouseDown={(event) => event.preventDefault()} style={{ left: selectionMenu.left, top: selectionMenu.top }}>
         <button type="button" role="menuitem" disabled={!hasSelectedContent} onClick={() => void copyReaderContent(true)}>复制</button>
         <button type="button" role="menuitem" disabled={!displayedContent} onClick={() => void copyReaderContent(false)}>复制全文</button>
         <button type="button" role="menuitem" disabled={!displayedContent} onClick={selectAllReaderContent}>全选</button>
-        <button type="button" role="menuitem" onClick={beginEditing}>编辑正文</button>
+        <button type="button" role="menuitem" onClick={() => beginEditing()}>编辑正文</button>
         {hasSelectedContent && <><div className="content-menu-separator" role="separator" /><button className={selectedFragmentIsExcellent ? "active" : ""} type="button" role="menuitemcheckbox" aria-checked={selectedFragmentIsExcellent} onClick={() => applyAppreciationRange(selectionMenu)}><span>欣赏</span>{selectedFragmentIsExcellent && <Icon name="check" />}</button><button type="button" role="menuitem" onClick={() => { onIllustration(displayedContent, displayedContent.slice(selectionMenu.start, selectionMenu.end)); setSelectionMenu(null); window.getSelection()?.removeAllRanges(); }}>生成插图</button></>}
       </div>}
       {planPeek && <ScrollableDrawer

@@ -62,6 +62,17 @@ export default defineConfig({
       },
     },
     {
+      name: "mobile-webkit-editing",
+      testMatch: /editing-layout\.spec\.ts/,
+      use: {
+        browserName: "webkit",
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 1,
+        hasTouch: true,
+        isMobile: true,
+      },
+    },
+    {
       name: "mobile-webkit-keyboard",
       grep: /mobile (?:full outline|body) editor keeps the caret above a visual-viewport keyboard/,
       use: {

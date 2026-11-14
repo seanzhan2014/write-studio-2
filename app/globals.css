@@ -1452,7 +1452,8 @@ button:disabled {
 
 .editor-heading {
   gap: 8px;
-  min-height: 29px;
+  flex-shrink: 0;
+  min-height: 32px;
   margin-bottom: 6px;
 }
 
@@ -1644,7 +1645,7 @@ button:disabled {
   border-radius: 10px;
   display: block;
   font-family: var(--font-editor);
-  font-size: 17px;
+  font-size: var(--editor-font-size, 17px);
   line-height: 1.9;
   flex: 1 1 auto;
   min-height: 0;
@@ -1656,12 +1657,14 @@ button:disabled {
 }
 
 .content-reader {
+  border: 1px solid transparent;
   color: var(--text-primary);
   flex: 1 1 auto;
   font-family: var(--font-editor);
+  font-size: var(--editor-font-size, 17px);
   min-height: 0;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-x: none;
@@ -1786,15 +1789,18 @@ button:disabled {
   border-radius: 9px;
   box-shadow: 0 4px 14px rgba(30, 30, 25, 0.06);
   display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
   gap: 7px;
   margin-bottom: 8px;
   padding: 6px;
 }
 
-.find-bar input {
+.find-bar > input {
   background: var(--app-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
+  flex: 1 1 140px;
   height: 30px;
   min-width: 140px;
   padding: 0 9px;
@@ -1811,6 +1817,7 @@ button:disabled {
   display: flex;
   font-size: 10px;
   gap: 2px;
+  white-space: nowrap;
 }
 
 .find-bar > label input { height: auto; min-width: 0; width: auto; }
@@ -1863,6 +1870,7 @@ button:disabled {
   border: 0;
   border-radius: 5px;
   padding: 5px 7px;
+  white-space: nowrap;
 }
 
 .find-bar > button:hover {
@@ -2041,7 +2049,7 @@ button:disabled {
 }
 
 .focus-mode .content-editor {
-  min-height: calc(100vh - 150px);
+  min-height: 0;
 }
 
 .chat-view {
@@ -6316,8 +6324,7 @@ kbd {
     max-height: 100dvh;
   }
   .mobile-writing-editing .writing-canvas {
-    max-width: none;
-    padding: max(6px, env(safe-area-inset-top)) 12px calc(8px + env(safe-area-inset-bottom));
+    padding: max(6px, env(safe-area-inset-top)) 16px calc(8px + env(safe-area-inset-bottom));
   }
   .mobile-writing-editing .content-editor-section { position: relative; }
   .mobile-writing-editing .editor-heading {
@@ -6383,24 +6390,25 @@ kbd {
     width: 100%;
   }
   .mobile-edit-overflow-menu button:disabled { color: var(--text-disabled); }
-  .mobile-writing-editing .content-editor { border-radius: 7px; padding: 8px 4px 40px; }
+  .mobile-writing-editing .content-editor { border-radius: 7px; }
   .mobile-writing-editing .find-bar {
-    flex-wrap: nowrap;
-    left: 0;
-    margin: 0;
-    overflow-x: auto;
-    position: absolute;
-    right: 0;
-    top: 47px;
-    z-index: 3;
+    align-items: center;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 6px;
   }
-  .mobile-writing-editing .find-bar input { flex: 0 0 132px; min-width: 132px; }
+  .mobile-writing-editing .find-bar > input { grid-column: span 2; font-size: 16px; height: 38px; min-width: 0; width: 100%; }
+  .mobile-writing-editing .find-bar > label,
+  .mobile-writing-editing .find-bar > button { justify-content: center; min-height: 44px; }
+  .mobile-writing-editing .find-bar > label input { flex: none; min-width: 0; }
+  .mobile-writing-editing .find-bar > button { padding-inline: 2px; }
+  .mobile-writing-editing .find-bar > .icon-button { grid-column: span 2; width: 100%; }
   .content-editor,
-  .content-reader { font-size: 16px; min-height: 0; padding: 8px 4px 60px; }
+  .content-reader { font-size: max(16px, var(--editor-font-size, 16px)); min-height: 0; padding: 8px 4px 60px; }
   .content-reader { -webkit-touch-callout: none; }
   .content-selection-menu button { min-height: 44px; }
   .find-bar { align-items: stretch; flex-wrap: wrap; }
-  .find-bar input { flex: 1; }
   .generate-wrap { padding: 0 10px 10px; }
   .generate-composer { border-radius: 11px; }
   .generate-topline { align-items: flex-start; gap: 8px; }

@@ -739,10 +739,10 @@ test("version selection previews immediately and writing uses explicit draft com
   assert.match(app, /role="menuitemcheckbox"/);
   assert.match(app, /document\.addEventListener\("selectionchange", onSelectionChange\)/);
   assert.match(app, /else queueSelectionMenu\(\)/);
-  assert.match(app, /onDoubleClick=\{\(event\) => \{ event\.preventDefault\(\); beginEditing\(\); \}\}/);
+  // Click/caret coordinates and scroll restoration are verified by the
+  // browser tests in editing-layout.spec.ts rather than source formatting.
   assert.match(app, /isTouchDoubleTap\(event, lastReaderTouchRef\)/);
   assert.match(app, /pendingContentScrollRef/);
-  assert.match(app, /useLayoutEffect\(\(\) => \{[\s\S]*snapshot\.ratio \* max[\s\S]*\}, \[editing\]\)/);
   assert.match(state, /setDefaultVersion/);
   assert.match(selector, /resolvedOutlineContent\(outline\)/);
   assert.match(resolver, /currentOutlineVersion\(outline\)\?\.content \?\? outline\.content/);
