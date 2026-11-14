@@ -4,13 +4,15 @@ import { ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 
 import { GenerateReviewReportView } from "@/app/ui/generate-review-report";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Button, Group, Menu } from "@mantine/core";
 
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
 
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
+
+import { readPaneContentDraft, writePaneContentDraft, deletePaneContentDraft } from "@/lib/offline-store";
 
 import { useStudio, wordCount, type Version } from "@/app/studio-state";
 
@@ -20,8 +22,13 @@ import { captureContentPosition, readerOffsetAtPoint, restoreContentPosition, re
 
 import { directContentId, useDismissOnOutside, useWritingEditorViewport, selectedRangeWithin, copyTextToClipboard, Icon, IconButton, ExcellentText } from "@/app/ui/studio/shared";
 
-export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPreview, onNotice, onEditingChange, onIllustration }: { focusMode: boolean; previewVersion?: Version; onOpenRewriteSource: (sourceId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void; onIllustration: (content: string, excerpt: string) => void }) {
+export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPreview, onNotice, onEditingChange, onIllustration, onSelectVersion, draftStorageKey, onDraftChange, onRequestEditing, sharedContent }: { focusMode: boolean; previewVersion?: Version; onOpenRewriteSource: (sourceId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void; onIllustration: (content: string, excerpt: string) => void; onSelectVersion?: (versionId: string) => void; draftStorageKey?: string; onDraftChange?: (content: string | null) => void; onRequestEditing?: () => boolean; sharedContent?: string }) {
   const studio = useStudio();
+  const readerDescriptionId = useId();
+  const [restoredDraft] = useState<{ text: string; baseline: string } | null>(() => {
+    if (!draftStorageKey || typeof window === "undefined") return null;
+    try { const value = JSON.parse(sessionStorage.getItem(draftStorageKey) ?? "null"); return typeof value?.text === "string" && typeof value?.baseline === "string" ? value : null; } catch { return null; }
+  });
   const [planOpen, setPlanOpen] = useState(studio.data.settings.outlineExpanded);
   const [planPeek, setPlanPeek] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -29,9 +36,9 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const [replacement, setReplacement] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [matchIndex, setMatchIndex] = useState(0);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(Boolean(restoredDraft));
   const [editToolsOpen, setEditToolsOpen] = useState(false);
-  const [draftContent, setDraftContent] = useState("");
+  const [draftContent, setDraftContent] = useState(restoredDraft?.text ?? "");
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
@@ -49,11 +56,27 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const lastReaderTouchRef = useRef<{ at: number; x: number; y: number } | null>(null);
   const settingDefaultRef = useRef(false);
   const settingExcellentRef = useRef(false);
-  const editingRef = useRef(false);
-  const draftRef = useRef("");
-  const baselineRef = useRef("");
+  const editingRef = useRef(Boolean(restoredDraft));
+  const draftRef = useRef(restoredDraft?.text ?? "");
+  const baselineRef = useRef(restoredDraft?.baseline ?? "");
   const draftSavedAtRef = useRef("");
   const preservingRef = useRef(false);
+  const restoreGuard = useRef({ onRequestEditing, onEditingChange });
+  useEffect(() => { restoreGuard.current = { onRequestEditing, onEditingChange }; }, [onRequestEditing, onEditingChange]);
+  useEffect(() => {
+    if (!draftStorageKey || restoredDraft) return;
+    let cancelled = false;
+    void readPaneContentDraft(draftStorageKey).then(draft => {
+      if (!draft || cancelled || editingRef.current || restoreGuard.current.onRequestEditing && !restoreGuard.current.onRequestEditing()) return;
+      baselineRef.current = draft.baseline;
+      draftRef.current = draft.text;
+      editingRef.current = true;
+      setDraftContent(draft.text);
+      setEditing(true);
+      restoreGuard.current.onEditingChange(true);
+    });
+    return () => { cancelled = true; };
+  }, [draftStorageKey, restoredDraft]);
   const studioRef = useRef(studio);
   studioRef.current = studio;
   const editingOutlineId = studio.currentOutline.id;
@@ -65,11 +88,12 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   const displayedIsDefault = Boolean(displayedVersion && displayedVersion.id === studio.currentOutline.defaultVersionId);
   const planSnapshot = displayedVersion?.outlineSnapshot ?? studio.currentOutline.contentOutlineSnapshot;
   const plan = planSnapshot?.plan ?? "";
-  const displayedContent = previewVersion?.content ?? resolvedOutlineContent(studio.currentOutline);
+  const displayedContent = sharedContent ?? previewVersion?.content ?? resolvedOutlineContent(studio.currentOutline);
   const displayedContentName = displayedVersion?.name ?? resolvedOutlineContentName(studio.currentOutline);
   const directContentName = studio.currentOutline.contentName?.trim() || timestampContentName(studio.currentOutline.updatedAt);
   const showDirectContent = !currentVersion || Boolean(studio.currentOutline.content.trim() || studio.currentOutline.contentName?.trim());
   const content = editing ? draftContent : displayedContent;
+  useEffect(() => { onDraftChange?.(editing ? draftContent : null); }, [editing, draftContent, onDraftChange]);
   const displayedFragments = displayedVersion
     ? normalizeExcellentFragments(displayedVersion.content, displayedVersion.excellentFragments)
     : normalizeExcellentFragments(displayedContent, studio.currentOutline.excellentFragments);
@@ -149,12 +173,16 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   useEffect(() => () => {
     if (!editingRef.current || draftRef.current === baselineRef.current || preservingRef.current) return;
     preservingRef.current = true;
-    void studioRef.current.preserveContentDraft(editingOutlineId, draftRef.current, draftSavedAtRef.current || new Date().toISOString());
-  }, [editingOutlineId]);
+    if (draftStorageKey) {
+      const current = studioRef.current;
+      current.saveVersion(editingOutlineId, "未保存内容 · " + new Date().toLocaleString("zh-CN"), "未保存内容", draftRef.current);
+      void current.saveNow().then(saved => { if (saved) { sessionStorage.removeItem(draftStorageKey); void deletePaneContentDraft(draftStorageKey); } });
+    } else void studioRef.current.preserveContentDraft(editingOutlineId, draftRef.current, draftSavedAtRef.current || new Date().toISOString());
+  }, [editingOutlineId, draftStorageKey]);
 
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
-      if (editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      if (editing && writingScrollRef.current?.contains(document.activeElement) && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setFindOpen(true);
       }
@@ -204,7 +232,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   }
 
   function beginEditing(point?: { x: number; y: number }) {
-    if (editingRef.current) return;
+    if (editingRef.current || onRequestEditing && !onRequestEditing()) return;
     const reader = readerRef.current;
     if (reader) {
       pendingContentScrollRef.current = captureContentPosition(reader);
@@ -229,6 +257,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   function changeDraft(next: string) {
     draftRef.current = next;
     setDraftContent(next);
+    if (draftStorageKey) { sessionStorage.setItem(draftStorageKey, JSON.stringify({ text: next, baseline: baselineRef.current })); void writePaneContentDraft(draftStorageKey, next, baselineRef.current); return; }
     if (next === baselineRef.current) studio.clearContentDraft(studio.currentOutline.id);
     else {
       draftSavedAtRef.current = new Date().toISOString();
@@ -243,7 +272,8 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     }
     editingRef.current = false;
     preservingRef.current = false;
-    studio.clearContentDraft(studio.currentOutline.id);
+    if (draftStorageKey) { sessionStorage.removeItem(draftStorageKey); void deletePaneContentDraft(draftStorageKey); }
+    else studio.clearContentDraft(studio.currentOutline.id);
     setFindOpen(false);
     setEditToolsOpen(false);
     setExitPromptOpen(false);
@@ -264,7 +294,9 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
 
   async function saveEditing() {
     setSavingEdit(true);
-    const saved = await studio.saveCurrentContent(studio.currentOutline.id, draftRef.current, displayedVersion?.id);
+    const saveAsVersion = Boolean(onSelectVersion && (previewVersion && !displayedIsDirectContent || displayedContent !== baselineRef.current));
+    const versionId = saveAsVersion ? studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", draftRef.current, { outlineSnapshot: displayedVersion?.outlineSnapshot ?? studio.currentOutline.contentOutlineSnapshot }) : undefined;
+    const saved = versionId ? await studio.saveNow() : await studio.saveCurrentContent(studio.currentOutline.id, draftRef.current, displayedVersion?.id);
     setSavingEdit(false);
     if (!saved) return;
     const editor = editorRef.current;
@@ -273,13 +305,15 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     }
     editingRef.current = false;
     preservingRef.current = false;
-    studio.clearContentDraft(studio.currentOutline.id);
+    if (draftStorageKey) { sessionStorage.removeItem(draftStorageKey); void deletePaneContentDraft(draftStorageKey); }
+    else studio.clearContentDraft(studio.currentOutline.id);
     setFindOpen(false);
     setEditToolsOpen(false);
     setExitPromptOpen(false);
     onEditingChange(false);
     setEditing(false);
-    onClearPreview();
+    if (versionId) onSelectVersion?.(versionId);
+    else onClearPreview();
     onNotice("正文已保存");
   }
 
@@ -322,6 +356,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   }
 
   async function selectContent(versionId?: string) {
+    if (onSelectVersion) { onSelectVersion(versionId ?? directContentId(studio.currentOutline.id)); return; }
     studio.setCurrentVersion(studio.currentOutline.id, versionId);
     onClearPreview();
     const saved = await studio.saveNow();
@@ -486,7 +521,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
           </div>
           {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
-          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id="content-reader-description" hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby="content-reader-description" aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing({ x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing({ x: event.clientX, y: event.clientY }); else queueSelectionMenu(); }} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
+          {editing ? <textarea ref={editorRef} className="content-editor" value={draftContent} onChange={(event) => changeDraft(event.target.value)} aria-label="正文编辑器" placeholder="从这里开始写作…" spellCheck={false} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }} /> : <><span id={readerDescriptionId} hidden>选中文字可欣赏；双击或按 Enter 进入编辑</span><div ref={readerRef} className="content-reader" role="region" tabIndex={0} aria-label="正文内容" aria-describedby={readerDescriptionId} aria-keyshortcuts="Enter" onContextMenu={openSelectionMenu} onDoubleClick={(event) => { event.preventDefault(); beginEditing({ x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); beginEditing(); } }} onPointerDown={() => { selectionPointerActiveRef.current = true; }} onPointerCancel={() => { selectionPointerActiveRef.current = false; }} onPointerUp={(event) => { selectionPointerActiveRef.current = false; if (isTouchDoubleTap(event, lastReaderTouchRef)) beginEditing({ x: event.clientX, y: event.clientY }); else queueSelectionMenu(); }} style={{ lineHeight: studio.data.settings.lineHeight, fontFamily: "var(--font-editor)", maxWidth: studio.data.settings.contentWidth }}>{content ? <ExcellentText text={content} fragments={displayedFragments} /> : "（正文为空）"}</div></>}
         </section>
       </div>
       {selectionMenu && <div className="content-selection-menu" role="menu" aria-label="正文选择菜单" onMouseDown={(event) => event.preventDefault()} style={{ left: selectionMenu.left, top: selectionMenu.top }}>

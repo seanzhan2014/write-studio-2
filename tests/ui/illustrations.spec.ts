@@ -443,7 +443,7 @@ test("background results survive tab switches and reload, and history manages pr
   await dialog.getByRole("tab", { name: "Prompt 历史", exact: true }).click();
   await expect(dialog.getByRole("region", { name: "生成内容管理" }).getByText("码头上两人相望，水彩插图，无文字。", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "归档", exact: true }).click();
-  await expect(dialog.getByText("暂无记录。生成结果会自动出现在这里。", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("暂无记录", { exact: true })).toBeVisible();
   await dialog.getByRole("combobox", { name: "Prompt 状态", exact: true }).click();
   await page.getByRole("option", { name: "已归档", exact: true }).click();
   await dialog.getByRole("button", { name: "恢复", exact: true }).click();

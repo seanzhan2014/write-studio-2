@@ -639,9 +639,9 @@ deleteChatSession(outlineId, sessionId) {
         return { ...item, chat: { sessions, activeSessionId: item.chat.activeSessionId === sessionId ? sessions[0].id : item.chat.activeSessionId } };
       }) })) })) }));
     },
-branchChatSession(outlineId, messageId) {
+branchChatSession(outlineId, messageId, sessionId) {
       const target = dataRef.current.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
-      const active = target?.chat.sessions.find((session) => session.id === target.chat.activeSessionId);
+      const active = target?.chat.sessions.find((session) => session.id === (sessionId ?? target.chat.activeSessionId));
       const index = active?.messages.findIndex((message) => message.id === messageId) ?? -1;
       if (!target || !active || index < 0) return null;
       const id = makeId("chat");
@@ -654,8 +654,8 @@ branchChatSession(outlineId, messageId) {
 setChatDraft(outlineId, draft, sessionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, draft } : session) } } : item) })) })) }));
     },
-setChatSetting(outlineId, key, settingValue) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, [key]: settingValue, updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
+setChatSetting(outlineId, key, settingValue, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, [key]: settingValue, updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
     },
 addChatMessage(outlineId, message, sessionId) {
       setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, messages: [...session.messages, message], updatedAt: message.createdAt } : session) } } : item) })) })) }));
@@ -674,8 +674,8 @@ markChatSessionRead(outlineId, sessionId) {
         return { ...item, chat: { ...item.chat, sessions } };
       }) })) })) }));
     },
-clearChat(outlineId) {
-      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === item.chat.activeSessionId ? { ...session, messages: [], draft: "", updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
+clearChat(outlineId, sessionId) {
+      setData((current) => ({ ...current, articles: current.articles.map((article) => ({ ...article, chapters: article.chapters.map((chapter) => ({ ...chapter, outlines: chapter.outlines.map((item) => item.id === outlineId ? { ...item, chat: { ...item.chat, sessions: item.chat.sessions.map((session) => session.id === (sessionId ?? item.chat.activeSessionId) ? { ...session, messages: [], draft: "", updatedAt: new Date().toISOString() } : session) } } : item) })) })) }));
     },
 addTask(task) {
       if (dataRef.current.tasks.length >= 20 && !dataRef.current.tasks.some((item) => ["success", "failed", "cancelled"].includes(item.state))) return null;

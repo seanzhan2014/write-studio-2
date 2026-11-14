@@ -13,6 +13,8 @@ export type OfflineContentDraft = {
   savedAt: string;
 };
 
+type PaneContentDraft = { version: 1; key: string; text: string; baseline: string; savedAt: string };
+
 export type OfflineStudioSnapshot = StudioStateIdentity & {
   version: 1;
   key: typeof primaryKey;
@@ -116,7 +118,7 @@ async function readAllRecords() {
   });
 }
 
-async function putRecord(record: OfflineContentDraft) {
+async function putRecord(record: OfflineContentDraft | PaneContentDraft) {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(storeName, "readwrite");
@@ -180,6 +182,29 @@ export function writeOfflineContentDraft(outlineId: string, text: string, savedA
 
 export function deleteOfflineContentDraft(outlineId: string) {
   const pending = writeQueue.then(() => deleteRecord(`draft:${outlineId}`));
+  writeQueue = pending.catch(() => undefined);
+  return pending.then(() => true, () => false);
+}
+
+export async function readPaneContentDraft(scope: string) {
+  try {
+    const records = await readAllRecords();
+    return records.find((value): value is PaneContentDraft => {
+      const draft = value as Partial<PaneContentDraft> | null;
+      return draft?.version === 1 && draft.key === `pane-draft:${scope}` && typeof draft.text === "string" && typeof draft.baseline === "string";
+    }) ?? null;
+  } catch { return null; }
+}
+
+export function writePaneContentDraft(scope: string, text: string, baseline: string) {
+  const record: PaneContentDraft = { version: 1, key: `pane-draft:${scope}`, text, baseline, savedAt: new Date().toISOString() };
+  const pending = writeQueue.then(() => putRecord(record));
+  writeQueue = pending.catch(() => undefined);
+  return pending.then(() => true, () => false);
+}
+
+export function deletePaneContentDraft(scope: string) {
+  const pending = writeQueue.then(() => deleteRecord(`pane-draft:${scope}`));
   writeQueue = pending.catch(() => undefined);
   return pending.then(() => true, () => false);
 }

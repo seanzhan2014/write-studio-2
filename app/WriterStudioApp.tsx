@@ -31,6 +31,7 @@ import { NewArticleDialog } from "@/app/ui/studio/article-dialogs";
 import { TaskPanel } from "@/app/ui/studio/tasks";
 
 import { MobileHeader, OutlineWorkspace } from "@/app/ui/studio/workspace";
+import { MultiWorkspace } from "@/app/ui/studio/multi-workspace";
 
 import { ChapterReader, ContinuousDocumentEditor } from "@/app/ui/studio/continuous";
 
@@ -67,6 +68,7 @@ export function WriterStudioInner() {
   const [previewSelection, setPreviewSelection] = useState<{ outlineId: string; versionId: string } | null>(null);
   const [newArticle, setNewArticle] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [workspaceNavigationId, setWorkspaceNavigationId] = useState(0);
   const [mobileWritingEditing, setMobileWritingEditing] = useState(false);
   const [toast, setToast] = useState("");
   useEffect(() => { const complete = (event: Event) => setToast((event as CustomEvent<string>).detail); window.addEventListener("writer-studio-style-completed", complete); return () => window.removeEventListener("writer-studio-style-completed", complete); }, []);
@@ -219,6 +221,7 @@ export function WriterStudioInner() {
     // an explicitly selected historical version needs a pinned preview.
     setPreviewSelection(previewVersionId && previewVersionId !== targetOutline?.currentVersionId ? { outlineId, versionId: previewVersionId } : null);
     studioRef.current.setCurrentOutline(outlineId);
+    setWorkspaceNavigationId(value => value + 1);
     await go(next, outlineId, true);
     if (targetOutline) markOutlineTaskNotificationsRead(studioRef.current.executionOrigin, targetOutline, studioRef.current.data.tasks);
     return true;
@@ -303,7 +306,7 @@ export function WriterStudioInner() {
 
         {view === "outline-home" && (hasOutlines ? <MobileOutlineHome key={`mobile-outline:${activeArticle.id}`} articleTitle={articleTitle} currentOutline={currentOutline} articleMenuOpen={articleMenu} onArticleMenu={() => setArticleMenu(true)} onOutline={openOutline} onChapter={() => go("chapter")} onTask={() => setTaskPanel(true)} onSettings={() => go("settings-general")} onNotice={setToast} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
         {isOutlineWorkspaceView && (
-          hasOutlines ? <OutlineWorkspace
+          hasOutlines ? (mobileLayout ? <OutlineWorkspace
             key={currentOutline}
             mode={view as "write" | "chat" | "generate" | "illustrations"}
             illustrationHistoryTab={illustrationHistoryTab}
@@ -319,7 +322,24 @@ export function WriterStudioInner() {
             onOpenRewriteSource={openRewriteSource}
             onClearPreview={() => setPreviewSelection(null)}
             onWritingEditingChange={setMobileWritingEditing}
-          /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />
+          /> :           <MultiWorkspace
+            key={currentOutline}
+            navigationId={workspaceNavigationId}
+            mode={view as "write" | "chat" | "generate" | "illustrations"}
+            illustrationHistoryTab={illustrationHistoryTab}
+            outline={selectedOutline}
+            focusMode={focusMode}
+            onMode={go}
+            onVersions={() => setVersions(true)}
+            onFocus={() => setFocusMode((value) => !value)}
+            onTaskCreated={() => { setPreviewSelection(null); setToast("生成任务已加入队列"); }}
+            onOpenTasks={() => setTaskPanel(true)}
+            onNotice={setToast}
+            previewVersion={previewVersion}
+            onOpenRewriteSource={openRewriteSource}
+            onClearPreview={() => setPreviewSelection(null)}
+            onWritingEditingChange={setMobileWritingEditing}
+          />) : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />
         )}
         {view === "chapter" && (studio.currentChapter.id ? <ChapterReader onOutline={openOutline} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
         {view === "outline-edit" && <ContinuousDocumentEditor key={`outline-edit:${activeArticle.id}`} mode="outline" positionMemory={continuousDocumentPositions} onNotice={setToast} onTaskCreated={() => setTaskPanel(true)} />}

@@ -22,7 +22,7 @@ import { isTaskAwaitingAuthor } from "@/lib/writing-preparation";
 
 import { taskPhaseLabels } from "@/lib/task-history";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, Checkbox, Group, NumberInput, Select, Slider, Text, Textarea, TextInput } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 
@@ -131,16 +131,19 @@ export function useRememberedGenerateTextareaHeight(outlineId: string, slot: Gen
   return [textareaRef, registerTextarea] as const;
 }
 
-export function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOpenTasks }: { models: ConfiguredModel[]; outline: { title: string; plan: string; content: string }; initialPrompt?: string; onTaskCreated: () => void; onOpenTasks: () => void }) {
+export function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOpenTasks, independent = false, instanceId }: { models: ConfiguredModel[]; outline: { title: string; plan: string; content: string }; initialPrompt?: string; onTaskCreated: () => void; onOpenTasks: () => void; independent?: boolean; instanceId?: string }) {
   const studio = useStudio();
   const [modelUsage, setModelUsage] = useState<GenerateModelUsage>({});
   useEffect(() => {
     try {
-      setModelUsage(normalizeGenerateModelUsage(JSON.parse(window.localStorage.getItem(generateModelUsageStorageKey) ?? "{}")));
+      const saved = normalizeGenerateModelUsage(JSON.parse(window.localStorage.getItem(generateModelUsageStorageKey) ?? "{}"));
+      const frame = requestAnimationFrame(() => setModelUsage(saved));
+      return () => cancelAnimationFrame(frame);
     } catch { /* Unavailable or invalid browser storage must not block generation. */ }
   }, []);
   useEffect(() => {
-    setModelUsage((previous) => rememberGenerateModelUsage(previous, studio.data.tasks, (reference) => configuredModelForReference(models, reference)?.id));
+    const frame = requestAnimationFrame(() => setModelUsage((previous) => rememberGenerateModelUsage(previous, studio.data.tasks, (reference) => configuredModelForReference(models, reference)?.id)));
+    return () => cancelAnimationFrame(frame);
   }, [models, studio.data.tasks]);
   useEffect(() => {
     if (!Object.keys(modelUsage).length) return;
@@ -148,6 +151,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
       window.localStorage.setItem(generateModelUsageStorageKey, JSON.stringify(modelUsage));
     } catch { /* Keep the in-memory order when browser storage is unavailable. */ }
   }, [modelUsage]);
+  const viewId = useId();
+  const generateViewRef = useRef<HTMLDivElement>(null);
   const displayTitle = outlineDisplayTitle(outline);
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
@@ -157,7 +162,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const initialGenerateOptions = resolvedGenerateSettings.value;
   if (!hasCurrentContent && initialGenerateOptions.contentMode !== "fresh") initialGenerateOptions.contentMode = "fresh";
   const [generateOptions, setGenerateOptions] = useState<AiGenerateOptions>(initialGenerateOptions);
-  const [settingsScope, setSettingsScope] = useState<"outline" | "task">("outline");
+  const [settingsScope, setSettingsScope] = useState<"outline" | "task">(independent ? "task" : "outline");
+  useEffect(() => { if (!independent) return; const frame = requestAnimationFrame(() => setSettingsScope("task")); return () => cancelAnimationFrame(frame); }, [independent]);
   const generateOptionsRef = useRef(initialGenerateOptions);
   const {
     includePrevious,
@@ -200,12 +206,12 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   function changeLengthMode(next: OutlineExpansion) {
     changeExpansion(next);
     // Store the mode immediately without committing unsaved outline text.
-    studio.updateOutline(studio.currentOutline.id, { expansion: rebaseOutlineExpansion(outlinePlanDraftRef.current, outline.plan, next) });
+    if (!independent) studio.updateOutline(studio.currentOutline.id, { expansion: rebaseOutlineExpansion(outlinePlanDraftRef.current, outline.plan, next) });
   }
   const lastSyncedOutlineRef = useRef({ id: studio.currentOutline.id, plan: outline.plan });
   const [outlineSaving, setOutlineSaving] = useState(false);
-  const [outlinePlanHeightRef, registerOutlinePlan] = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "outlinePlan");
-  const [, registerInstruction] = useRememberedGenerateTextareaHeight(studio.currentOutline.id, "instruction");
+  const [outlinePlanHeightRef, registerOutlinePlan] = useRememberedGenerateTextareaHeight(instanceId ? `${studio.currentOutline.id}:${instanceId}` : studio.currentOutline.id, "outlinePlan");
+  const [, registerInstruction] = useRememberedGenerateTextareaHeight(instanceId ? `${studio.currentOutline.id}:${instanceId}` : studio.currentOutline.id, "instruction");
   const outlineResizePointerRef = useRef<{ id: number; startY: number; startHeight: number } | null>(null);
   const resizeOutlinePlan = (height: number) => {
     const textarea = outlinePlanHeightRef.current;
@@ -426,18 +432,19 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === "Enter") { event.preventDefault(); void submit(); }
+      const owner = generateViewRef.current?.closest(".workspace-pane");
+      if (generateViewRef.current?.offsetParent !== null && (!owner || owner.getAttribute("data-active") === "true") && (event.ctrlKey || event.metaKey) && event.shiftKey && event.key === "Enter") { event.preventDefault(); void submit(); }
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, [submit]);
 
   return (
-    <div className="generate-view">
+    <div className="generate-view" ref={generateViewRef}>
       <div className="generate-page">
         <section className="generate-command-card">
-          <section className="generate-input-section" aria-labelledby="generate-input-heading">
-            <div className="generate-section-heading"><h3 id="generate-input-heading">本次写作</h3><span>当前大纲 · {displayTitle}</span></div>
+          <section className="generate-input-section" aria-labelledby={`${viewId}-input-heading`}>
+            <div className="generate-section-heading"><h3 id={`${viewId}-input-heading`}>本次写作</h3><span>当前大纲 · {displayTitle}</span></div>
           <section className="generate-outline-editor">
             <div className="generate-outline-editor-heading">
               <label htmlFor="generate-outline-plan">大纲内容</label>
@@ -489,12 +496,12 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
           </section>
           <section className="generate-settings-scope" aria-label="生成设置范围">
-            <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={[{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
+            <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={independent ? [{ value: "task", label: "仅本窗口" }] : [{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
             <div className="generate-scope-description">{studio.currentOutline.generateOptions ? <span className="generate-settings-source">正在使用此大纲最近的生成设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
           </section>
           <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid" data-expansion-mode={expansionDraft?.enabled || undefined}>
-          <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
-            <div className="generate-mode-heading"><span id="generate-mode-heading">生成方式</span></div>
+          <section className="generate-mode-section" aria-labelledby={`${viewId}-mode-heading`}>
+            <div className="generate-mode-heading"><span id={`${viewId}-mode-heading`}>生成方式</span></div>
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
               {contentGenerationModes.map((item) => {
                 const disabled = item.value !== "fresh" && !hasCurrentContent;
@@ -527,18 +534,18 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           <section className="prose-controls-section" aria-labelledby="prose-controls-heading">
             <div className="generate-section-heading"><span id="prose-controls-heading">表达偏好</span><strong>写作倾向</strong></div>
             <div className="prose-controls-grid">
-              <ProseControlRow id="dialogue-density" label="对话密度" value={proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, dialogueDensity } })} className="dialogue-density-control" />
-              <ProseControlRow id="introspection-density" label="内心活动" value={proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, introspectionDensity } })} />
-              <ProseControlRow id="description-detail" label="描写细度" value={proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => rememberGenerateOptions({ proseControls: { ...proseControls, descriptionDetail } })} />
-              <ProseControlRow id="narrative-pace" label="叙事节奏" value={proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => rememberGenerateOptions({ proseControls: { ...proseControls, narrativePace } })} />
-              <ProseControlRow id="paragraph-length" label="段落长度" value={proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => rememberGenerateOptions({ proseControls: { ...proseControls, paragraphLength } })} />
-              <ProseControlRow id="closing-summary" label="收尾总结" value={closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => rememberGenerateOptions({ closingSummaryLength })} className="closing-summary-control" />
+              <ProseControlRow id={`${viewId}-dialogue-density`} label="对话密度" value={proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, dialogueDensity } })} className="dialogue-density-control" />
+              <ProseControlRow id={`${viewId}-introspection-density`} label="内心活动" value={proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, introspectionDensity } })} />
+              <ProseControlRow id={`${viewId}-description-detail`} label="描写细度" value={proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => rememberGenerateOptions({ proseControls: { ...proseControls, descriptionDetail } })} />
+              <ProseControlRow id={`${viewId}-narrative-pace`} label="叙事节奏" value={proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => rememberGenerateOptions({ proseControls: { ...proseControls, narrativePace } })} />
+              <ProseControlRow id={`${viewId}-paragraph-length`} label="段落长度" value={proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => rememberGenerateOptions({ proseControls: { ...proseControls, paragraphLength } })} />
+              <ProseControlRow id={`${viewId}-closing-summary`} label="收尾总结" value={closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => rememberGenerateOptions({ closingSummaryLength })} className="closing-summary-control" />
             </div>
             {!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
           </section>
           <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "global", resolvedGenerateSettings.globalDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} />
-          <section className="generate-reference-section" aria-labelledby="generate-reference-heading">
-            <div className="generate-section-heading"><h3 id="generate-reference-heading">参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
+          <section className="generate-reference-section" aria-labelledby={`${viewId}-generate-reference-heading`}>
+            <div className="generate-section-heading"><h3 id={`${viewId}-generate-reference-heading`}>参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
           <div className="generate-reference-bar" aria-label="生成参考设置">
             <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</small></span><Icon name="chevron" /></button>
             <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>人物出场{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
@@ -549,13 +556,13 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
                 <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
               </label>
             </div>
-          <section className="generate-article-settings" aria-labelledby="generate-article-settings-heading">
-            <div className="generate-section-heading"><span id="generate-article-settings-heading">文章资料继承</span></div>
+          <section className="generate-article-settings" aria-labelledby={`${viewId}-generate-article-settings-heading`}>
+            <div className="generate-section-heading"><span id={`${viewId}-generate-article-settings-heading`}>文章资料继承</span></div>
             <ScopedSettingsInline level="outline" targetId={studio.currentOutline.id} includeTaskSettings={false} />
           </section>
           </section>
-          <section className="generate-workflow-section" aria-labelledby="generate-workflow-heading">
-            <div className="generate-section-heading"><h3 id="generate-workflow-heading">流程设置</h3><span>{preparationEnabled ? "准备 → " : ""}写作{reviewMaxRounds ? " → 审校" : ""}</span></div>
+          <section className="generate-workflow-section" aria-labelledby={`${viewId}-generate-workflow-heading`}>
+            <div className="generate-section-heading"><h3 id={`${viewId}-generate-workflow-heading`}>流程设置</h3><span>{preparationEnabled ? "准备 → " : ""}写作{reviewMaxRounds ? " → 审校" : ""}</span></div>
             <div className="generate-workflow-summary"><span>{preparationEnabled ? `写作准备 · 最多互动 ${Number(taskParameters.preparationMaxRounds)} 轮` : "写作准备已关闭 · 直接写作"}</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div>
               <label className="generate-outline-title-toggle">
                 <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => rememberGenerateOptions({ includeOutlineTitle: event.currentTarget.checked })} />
@@ -564,8 +571,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备", "自动审校", "命名"]} title="调整准备、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} />
           </section>
           <section className="generate-inheritance-section" aria-label="参数来源与继承"><AiSettingsInheritance taskGroups={["写作准备", "自动审校", "命名"]} kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} /></section>
-          <section className="generate-execution-section" aria-labelledby="generate-execution-heading">
-            <div className="generate-section-heading"><h3 id="generate-execution-heading">执行与结果</h3></div>
+          <section className="generate-execution-section" aria-labelledby={`${viewId}-generate-execution-heading`}>
+            <div className="generate-section-heading"><h3 id={`${viewId}-generate-execution-heading`}>执行与结果</h3></div>
               <div className="generate-reasoning-options"><ReasoningSettings value={reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(value) => rememberGenerateOptions({ reasoningEffort: value })} /></div>
           </section>
           <div className="generate-submit-zone">

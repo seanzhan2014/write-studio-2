@@ -20,24 +20,28 @@ import { overrideAiSettings, resolveAiSettings } from "@/lib/ai-settings-inherit
 import { TaskParameterSettings } from "./task-parameter-settings";
 
 type Model = { adapterKind?: string; baseUrl?: string; metadata?: ModelMetadata; id: string; name: string; modelId: string; providerId?: string; providerName: string; hasSecret: boolean };
-type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void };
+type Props = { outlineId: string; content: string; selectedExcerpt: string; defaultModel: string; defaultImageModel?: string; initialTab?: string; onClose: () => void; independent?: boolean };
 
 function createRequestId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose }: Props) {
+export function IllustrationGenerator({ outlineId, content, selectedExcerpt, defaultModel, defaultImageModel, initialTab = "generate", onClose, independent = false }: Props) {
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === outlineId);
   const inheritedOptions = normalizeIllustrationOptions(studio.currentArticle.illustrationSettings);
-  const illustrationOptions = resolveAiSettings(studio.currentArticle, outlineId, "illustration", "outline", studio.data.settings).value;
+  const resolvedOptions = resolveAiSettings(studio.currentArticle, outlineId, "illustration", "outline", studio.data.settings).value;
+  const [localOptions, setLocalOptions] = useState(resolvedOptions);
+  const illustrationOptions = independent ? localOptions : resolvedOptions;
   const styles = normalizeIllustrationStyles(studio.data.settings.illustrationStyles);
   const { promptLanguage, additionalPrompt } = illustrationOptions;
   const stylePreset = resolveIllustrationStyle(illustrationOptions.stylePreset, styles).value;
   function rememberOptions(patch: Partial<IllustrationOptions>) {
+    if (independent) { setLocalOptions(current => normalizeIllustrationOptions(overrideAiSettings(current, patch), inheritedOptions)); return; }
     studio.updateOutline(outlineId, { illustrationOptions: normalizeIllustrationOptions(overrideAiSettings(illustrationOptions, patch), inheritedOptions) });
   }
   function rememberModel(key: "illustrationPromptModel" | "illustrationImageModel", model: string) {
+    if (independent) return;
     const current = resolveAiSettings(studio.currentArticle, outlineId, "generate", "outline", studio.data.settings).value;
     studio.updateOutline(outlineId, { generateOptions: overrideAiSettings(current, { tasks: { ...current.tasks, [key]: model } }) });
   }
@@ -269,7 +273,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {error && <Alert color="red" role="alert">{error}</Alert>}
       {notice && <Text size="sm" role="status">{notice}</Text>}
       {historyError && <Alert color="red">{historyError}<Button variant="subtle" onClick={() => void loadHistory()}>重新读取历史</Button></Alert>}
-      <Group justify="space-between"><Text size="sm" role="status">{activeTasks.length ? `${activeTasks.length} 个插图任务正在处理` : "生成任务统一在 AI 任务中管理"}</Text><Button variant="subtle" onClick={openAiTasks}>查看 AI 任务</Button></Group>
+      <Group justify="space-between">{activeTasks.length > 0 && <Text size="sm" role="status">{activeTasks.length} 个插图任务正在处理</Text>}<Button variant="subtle" onClick={openAiTasks}>查看 AI 任务</Button></Group>
       <section ref={formRef} className="generate-command-card illustration-command-card" aria-label="插图生成设置"><Stack gap="md">
       <div className="illustration-source-summary"><Text size="sm" fw={600}>{outline?.title || "当前大纲"}</Text><Text size="xs" c="dimmed">当前正文 · {content.length.toLocaleString("zh-CN")} 字符</Text></div>
       {!content.trim() && <Alert color="yellow">当前大纲暂无正文。你仍可直接输入图片 Prompt 生成插图，或复用历史 Prompt。</Alert>}
@@ -282,8 +286,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       {referenceIssue && <Alert color="yellow">{referenceIssue}</Alert>}
       {(selectedCharacter?.visual || imageRecord && isSpicyApi(imageRecord)) && <Button size="xs" variant="subtle" loading={refreshingCapabilities} disabled={Boolean(busy)} onClick={() => void refreshCapabilities()}>刷新参考图模型能力</Button>}
       <Text size="xs" c="dimmed">{outline?.illustrationOptions == null ? "当前使用继承的图片设置" : "图片设置已保存；继承项会随来源更新"}</Text>
-      <AiSettingsInheritance kind="illustration" targetId={outlineId} value={illustrationOptions} disabled={Boolean(busy)} onChange={next => studio.updateOutline(outlineId, { illustrationOptions: next })} />
-      <TaskParameterSettings level="outline" targetId={outlineId} groups={["插图模型"]} />
+      {!independent && <AiSettingsInheritance kind="illustration" targetId={outlineId} value={illustrationOptions} disabled={Boolean(busy)} onChange={next => studio.updateOutline(outlineId, { illustrationOptions: next })} />}
+      {!independent && <TaskParameterSettings level="outline" targetId={outlineId} groups={["插图模型"]} />}
       <Select label="生成 Prompt 的语言" data={[...PROMPT_LANGUAGE_OPTIONS]} value="en" allowDeselect={false} disabled />
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
@@ -318,11 +322,10 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="images">插图历史</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab></Tabs.List>
       {(["prompts", "images"] as const).map(panel => <Tabs.Panel key={panel} value={panel} pt="md"><Stack gap="md">
-        <Text size="sm" c="dimmed">{panel === "prompts" ? "保存和管理当前文章的 prompt，选择一条即可继续生成。" : "当前文章生成的插图会自动保存在这里，可复用 Prompt 或下载图片。"}</Text>
         <TextInput label="搜索历史" placeholder="搜索 prompt、正文片段、来源大纲或模型" value={search} onChange={event => setSearch(event.currentTarget.value)} />
         {panel === "prompts" && <Select label="Prompt 状态" value={archiveFilter} onChange={value => setArchiveFilter(value ?? "active")} allowDeselect={false} data={[{ value: "active", label: "未归档" }, { value: "archived", label: "已归档" }, { value: "all", label: "全部" }]} />}
         <Text size="sm">{historyLoading ? "正在读取历史…" : `${visibleRecords.length} 条记录${hasMore ? "（还有更多）" : ""}`}</Text>
-        {!historyLoading && !visibleRecords.length && <Text c="dimmed" size="sm">{search.trim() ? "没有匹配的历史记录。" : "暂无记录。生成结果会自动出现在这里。"}</Text>}
+        {!historyLoading && !visibleRecords.length && <Text c="dimmed" size="sm">{search.trim() ? "没有匹配的历史记录。" : "暂无记录"}</Text>}
         {visibleRecords.map(record => <Card key={record.id} withBorder padding="md" className="illustration-history-card"><Stack gap="sm">
           <Group justify="space-between"><Text size="sm" fw={600}>{record.kind === "prompt" ? "Prompt" : "插图"} · {record.outlineTitle}</Text><Group gap="xs"><Badge color={record.status === "error" ? "red" : illustrationIsActive(record) ? "blue" : "gray"}>{illustrationStatusLabels[record.status]}</Badge>{record.archived && <Badge color="gray">已归档</Badge>}</Group></Group>
           <Text size="xs" c="dimmed">{new Date(record.createdAt).toLocaleString()} · {record.modelName || "手动添加"}</Text>
