@@ -15,6 +15,7 @@ import { outlineDisplayTitle } from "@/lib/outline-title";
 
 import { browserIsOffline, fetchFromServer } from "@/lib/browser-network";
 import { StudioProvider, useStudio, type AiTask } from "@/app/studio-state";
+import { markOutlineTaskNotificationsRead } from "@/app/outline-task-notifications";
 import { DataTransferProvider, useDataTransfer } from "@/app/data-transfer";
 
 import { type View, type ContinuousDocumentPosition } from "@/app/ui/studio/types";
@@ -219,6 +220,7 @@ export function WriterStudioInner() {
     setPreviewSelection(previewVersionId && previewVersionId !== targetOutline?.currentVersionId ? { outlineId, versionId: previewVersionId } : null);
     studioRef.current.setCurrentOutline(outlineId);
     await go(next, outlineId, true);
+    if (targetOutline) markOutlineTaskNotificationsRead(studioRef.current.executionOrigin, targetOutline, studioRef.current.data.tasks);
     return true;
   }
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useStudio, type AiTask } from "@/app/studio-state";
+import { useOutlineTaskNotificationRead } from "@/app/outline-task-notifications";
 import { fetchServerAction } from "@/lib/browser-network";
 import { isTaskAwaitingAuthor, normalizePreparationStrategy, PREPARATION_STRATEGY_LABELS, preparationNeedsConfirmation, type PreparationReply } from "@/lib/writing-preparation";
 import { TaskHistory } from "./task-history";
@@ -49,6 +50,9 @@ export function OutlineTaskIndicator({ outlineId, fallback }: { outlineId: strin
   const studio = useStudio();
   const tasks = studio.data.tasks.filter((task) => task.outlineId === outlineId && task.target === "正文").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const task = tasks.find(isTaskAwaitingAuthor) ?? tasks.find((item) => item.state === "running") ?? tasks[0];
+  const outline = studio.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId);
+  const read = useOutlineTaskNotificationRead(studio.executionOrigin, outlineId, task, outline);
+  if (read) return null;
   if (!task && fallback !== "running" && fallback !== "failed") return null;
   const state = task ? isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state : fallback;
   if (state === "cancelled") return null;
