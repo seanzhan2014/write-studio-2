@@ -11,6 +11,7 @@ import { globalAiSettings, resolveAiSettings, inheritAiSettings, overrideGenerat
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { resolveReasoningEffort } from "@/lib/reasoning-options";
+import { generateModelUsageStorageKey, normalizeGenerateModelUsage, rememberGenerateModelUsage, sortGenerateModelOptions, type GenerateModelUsage } from "@/lib/generate-model-usage";
 import { normalizeReviewRounds, normalizeReviewRules, normalizeReviewStrategy } from "@/lib/generate-review.mjs";
 
 import { hasReviewRules } from "@/lib/review-rules.mjs";
@@ -132,6 +133,21 @@ export function useRememberedGenerateTextareaHeight(outlineId: string, slot: Gen
 
 export function GenerateView({ models, outline, initialPrompt = "", onTaskCreated, onOpenTasks }: { models: ConfiguredModel[]; outline: { title: string; plan: string; content: string }; initialPrompt?: string; onTaskCreated: () => void; onOpenTasks: () => void }) {
   const studio = useStudio();
+  const [modelUsage, setModelUsage] = useState<GenerateModelUsage>({});
+  useEffect(() => {
+    try {
+      setModelUsage(normalizeGenerateModelUsage(JSON.parse(window.localStorage.getItem(generateModelUsageStorageKey) ?? "{}")));
+    } catch { /* Unavailable or invalid browser storage must not block generation. */ }
+  }, []);
+  useEffect(() => {
+    setModelUsage((previous) => rememberGenerateModelUsage(previous, studio.data.tasks, (reference) => configuredModelForReference(models, reference)?.id));
+  }, [models, studio.data.tasks]);
+  useEffect(() => {
+    if (!Object.keys(modelUsage).length) return;
+    try {
+      window.localStorage.setItem(generateModelUsageStorageKey, JSON.stringify(modelUsage));
+    } catch { /* Keep the in-memory order when browser storage is unavailable. */ }
+  }, [modelUsage]);
   const displayTitle = outlineDisplayTitle(outline);
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
@@ -295,11 +311,11 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const interactiveTask = outlineTasks.find(isTaskAwaitingAuthor) ?? [...outlineTasks].filter((task) => task.contextOptions?.writingPreparation).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const selectedRecord = configuredModelForReference(models, selectedModel);
   const selectedModelReference = selectedRecord?.id ?? selectedModel.trim();
-  const modelOptions = [
+  const modelOptions = sortGenerateModelOptions([
     { value: "", label: "本地演示引擎" },
     ...(selectedModelReference && !selectedRecord ? [{ value: selectedModelReference, label: selectedModelReference }] : []),
     ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
-  ];
+  ], modelUsage);
 
   function selectGenerateModel(model: string) {
     rememberGenerateOptions({ model });
