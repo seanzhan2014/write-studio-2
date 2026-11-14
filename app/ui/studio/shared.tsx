@@ -136,7 +136,7 @@ export async function createServerTask(studio: ReturnType<typeof useStudio>, inp
 }
 
 export function namingArticleContext(article: Article, globalSettings: object = {}): NamingArticleContext {
-  const defaults = resolveAiSettings(article, article.id, "generate", "outline", globalSettings).articleDefaults;
+  const defaults = resolveAiSettings(article, article.id, "generate", "outline", globalSettings).globalDefaults;
   const namingFor = (id: string, level: "chapter" | "outline") => {
     const options = resolveAiSettings(article, id, "generate", level, globalSettings).value;
     const build = (value: AiGenerateOptions) => ({ model: String(value.tasks!.namingModelMode === "fixed" ? value.tasks!.namingModel : value.model), reasoningEffort: taskReasoningEffort(value.tasks!.namingReasoningEffort), chapterNaming: taskNamingProfile(value.tasks!, "chapterNaming"), outlineNaming: taskNamingProfile(value.tasks!, "outlineNaming") });

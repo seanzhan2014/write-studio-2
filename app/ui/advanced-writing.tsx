@@ -9,7 +9,7 @@ export function AdvancedWritingFields({ fields, value, onChange, title = "高级
     const [label] = fields[key];
     return <div className="writing-advanced-field" key={key}>
       <Textarea label={label} placeholder={inherited?.[key] || "自动"} value={value[key] ?? ""} onChange={event => onChange({ ...normalizeAdvanced(value, fields), [key]: event.currentTarget.value })} autosize minRows={2} maxRows={6} maxLength={3000} />
-      {onRestore && onPrevious ? <AiSettingActions label={label} onArticle={() => onRestore(key)} onPrevious={() => onPrevious(key)} /> : onRestore && Object.hasOwn(value, key) && <Button size="compact-xs" variant="subtle" onClick={() => onRestore(key)}>退回文章默认</Button>}
+      {onRestore && onPrevious ? <AiSettingActions label={label} onGlobal={() => onRestore(key)} onPrevious={() => onPrevious(key)} /> : onRestore && Object.hasOwn(value, key) && <Button size="compact-xs" variant="subtle" onClick={() => onRestore(key)}>恢复全局默认</Button>}
     </div>;
   };
   return <details className="writing-advanced"><summary>{title}<span>{count ? `已设定 ${count} 项` : "自动"}</span></summary><Stack gap="md" className="writing-advanced-body">

@@ -1,5 +1,5 @@
 "use client";
-import { articleAiSettings } from "@/lib/ai-settings-inheritance";
+import { globalAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
@@ -245,7 +245,7 @@ export function CharacterPhotoWorkspace({ characterId }: { characterId: string }
     }).catch(e => { if (!controller.signal.aborted) setModelCheck({ key, error: e instanceof Error ? e.message : "无法检测图像模型" }); });
     return () => controller.abort();
   }, [draft.modelId, chosenModel, hasReferences, modelCheckAttempt]);
-  const currentStyle = photoStyle(draft, gallery, article ? articleAiSettings(article, "illustration", studio.data.settings).stylePreset : "auto");
+  const currentStyle = photoStyle(draft, gallery, article ? globalAiSettings("illustration", studio.data.settings).stylePreset : "auto");
   const referenceIssue = checkingModel ? "" : checkedModel?.error || (referenceCount && !referenceCapability ? "此模型没有可用的参考图或 edit 版本，请选择其他图像模型。" : referenceCapability?.maxImages && referenceCount > referenceCapability.maxImages ? `此模型最多支持 ${referenceCapability.maxImages} 张参考图，包括修改底图。` : referenceCapability?.required && !referenceCount ? "此模型需要参考照片。" : "");
   const selected = gallery.photos.find(p => p.id === selectedId);
   const formal = gallery.photos.filter(p => p.status === "approved");

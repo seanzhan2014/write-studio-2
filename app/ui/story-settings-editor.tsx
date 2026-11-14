@@ -8,7 +8,7 @@ import { useStudio, type Article, type Character } from "@/app/studio-state";
 import { CHARACTER_PROFILE_KEYS, EMPTY_CHARACTER_PROFILE, STORY_FIELD_KEYS, countChapterSettingChanges, countOutlineSettingChanges, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings, resolveChapterSettings, resolveOutlineSettings, type CharacterProfileKey, type ChapterSettings, type OverrideScope, type SettingSource, type StoryFieldKey } from "@/lib/story-settings";
 import { CharacterPhotoEntry } from "./character-photos";
 import { AdvancedWritingFields } from "./advanced-writing";
-import { ArticleAiSettings, ChapterAiSettings } from "./ai-settings-inheritance";
+import { ChapterAiSettings } from "./ai-settings-inheritance";
 import { TaskParameterSettings } from "./task-parameter-settings";
 import { STYLE_FIELDS } from "@/lib/advanced-writing";
 import { ScrollableDrawer } from "./overlays";
@@ -122,7 +122,7 @@ function ArticleSettingsBody({ article }: { article: Article }) {
 
 export function ArticleSettingsInline() {
   const studio = useStudio();
-  return <div className="inline-story-settings"><ArticleSettingsBody article={studio.currentArticle} /><ArticleAiSettings /></div>;
+  return <div className="inline-story-settings"><ArticleSettingsBody article={studio.currentArticle} /></div>;
 }
 
 type ScopedSettingsLevel = "chapter" | "outline";

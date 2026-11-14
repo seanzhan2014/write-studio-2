@@ -4,7 +4,7 @@ import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
 import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion } from "@/lib/outline-expansion";
 import { taskReasoningEffort, taskNamingProfile } from "@/lib/task-parameters";
-import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
+import { articleAiSettings, resolveAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 
@@ -173,7 +173,7 @@ export function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTask
   const article = studio.currentArticle;
   const scopeId = target === "outline" ? outline?.id ?? "" : chapter?.id ?? article.id;
   const scopedOptions = resolveAiSettings(article, scopeId, "generate", target === "chapter" ? "chapter" : "outline", studio.data.settings).value;
-  const scopedParameters = target === "article" ? resolveAiSettings(article, article.id, "generate", "outline", studio.data.settings).articleDefaults.tasks! : scopedOptions.tasks!;
+  const scopedParameters = target === "article" ? articleAiSettings(article, "generate", studio.data.settings).tasks! : scopedOptions.tasks!;
   const settings = { ...studio.data.settings, generateModel: scopedOptions.model, namingModelMode: scopedParameters.namingModelMode === "fixed" ? "fixed" as const : "inherit" as const, namingModel: String(scopedParameters.namingModel), namingReasoningEffort: taskReasoningEffort(scopedParameters.namingReasoningEffort) };
   const visibleChapters = article.chapters.filter((item) => studio.data.settings.showArchived || !item.archived);
   const eligibleOutlines = (item: Chapter) => item.outlines.filter((candidate) => !candidate.archived && candidate.plan.trim());

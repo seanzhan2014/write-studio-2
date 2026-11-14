@@ -6,8 +6,8 @@ import { AiSettingsInheritance } from "@/app/ui/ai-settings-inheritance";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
 import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
-import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
-import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideGenerateSettings } from "@/lib/ai-settings-inheritance";
+import { taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
+import { globalAiSettings, resolveAiSettings, inheritAiSettings, overrideGenerateSettings } from "@/lib/ai-settings-inheritance";
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { resolveReasoningEffort } from "@/lib/reasoning-options";
@@ -136,8 +136,8 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const compact = useMediaQuery("(max-width: 767px)") ?? false;
   const storedPromptAtOpen = studio.currentOutline.generateInstruction;
   const hasCurrentContent = Boolean(resolvedOutlineContent(studio.currentOutline).trim());
-  const inheritedGenerateOptions = articleAiSettings(studio.currentArticle, "generate", studio.data.settings);
   const resolvedGenerateSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings);
+  const inheritedGenerateOptions = resolvedGenerateSettings.previous;
   const initialGenerateOptions = resolvedGenerateSettings.value;
   if (!hasCurrentContent && initialGenerateOptions.contentMode !== "fresh") initialGenerateOptions.contentMode = "fresh";
   const [generateOptions, setGenerateOptions] = useState<AiGenerateOptions>(initialGenerateOptions);
@@ -225,7 +225,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const promptDirty = normalizedPrompt !== savedPrompt;
 
   const rememberGenerateOptions = useCallback((patch: Partial<AiGenerateOptions>) => {
-    const next = normalizeAiGenerateOptions(overrideGenerateSettings(generateOptionsRef.current, patch), studio.currentArticle.aiGenerateSettings);
+    const next = normalizeAiGenerateOptions(overrideGenerateSettings(generateOptionsRef.current, patch), globalAiSettings("generate", studio.data.settings));
     if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
     generateOptionsRef.current = next;
     setGenerateOptions(next);
@@ -248,16 +248,6 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     generateOptionsRef.current = next;
     setGenerateOptions(next);
   }, [studio.currentArticle, studio.currentOutline.id, studio.data.settings, hasCurrentContent, settingsScope]);
-
-  function saveAsArticleDefaults() {
-    const next = normalizeAiGenerateOptions(generateOptions);
-    delete next.inheritance;
-    next.firstAppearanceOverrides = {};
-    const workflowKeys = new Set(TASK_PARAMETER_FIELDS.filter(field => ["写作准备", "自动审校", "命名"].includes(field.group)).map(field => field.key));
-    next.tasks = { ...studio.currentArticle.aiGenerateSettings.tasks, ...Object.fromEntries(Object.entries(taskParameters).filter(([key]) => workflowKeys.has(key))) };
-    studio.updateArticle({ aiGenerateSettings: next });
-    setNotice("已设为文章默认，未单独设置的章节和大纲将沿用这些选项。");
-  }
 
   useEffect(() => {
     const previous = lastSyncedOutlineRef.current;
@@ -485,7 +475,6 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           <section className="generate-settings-scope" aria-label="生成设置范围">
             <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={[{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
             <div className="generate-scope-description">{studio.currentOutline.generateOptions ? <span className="generate-settings-source">正在使用此大纲最近的生成设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
-            <Button variant="subtle" size="compact-sm" disabled={!targetWordsValid} onClick={saveAsArticleDefaults}>设为文章默认</Button>
           </section>
           <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid" data-expansion-mode={expansionDraft?.enabled || undefined}>
           <section className="generate-mode-section" aria-labelledby="generate-mode-heading">
@@ -531,7 +520,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             </div>
             {!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
           </section>
-          <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} />
+          <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "global", resolvedGenerateSettings.globalDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} />
           <section className="generate-reference-section" aria-labelledby="generate-reference-heading">
             <div className="generate-section-heading"><h3 id="generate-reference-heading">参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
           <div className="generate-reference-bar" aria-label="生成参考设置">

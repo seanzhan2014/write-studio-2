@@ -54,7 +54,7 @@ function resolve(kind: AiSettingsKind, raw: TaskOptions | null | undefined, arti
   if (kind === "generate" && missingFieldMode) {
     const stored = raw as AiGenerateOptions;
     for (const key of aiSettingKeys(kind)) {
-      if ((!key.startsWith("tasks.") && !key.startsWith("advanced.") && !key.startsWith("rewriteExpression.")) || readAiSetting(stored, key) !== undefined) continue;
+      if (readAiSetting(stored, key) !== undefined) continue;
       inheritance[key] ??= missingFieldMode;
     }
   }
@@ -102,42 +102,34 @@ export function articleAiSettings<K extends AiSettingsKind>(article: SettingsArt
   return resolve(kind, baseline, global, global, global, global) as K extends "generate" ? AiGenerateOptions : IllustrationOptions;
 }
 
-/** Previous outlines are scoped to the current chapter; its first outline falls back to the previous active chapter. */
+/** Outline defaults follow the preceding active outline across chapter boundaries. */
 export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArticle, targetId: string, kind: K, level: "outline" | "chapter" = "outline", globalSettings: object = {}) {
-  const defaults = articleAiSettings(article, kind, globalSettings);
   const global = globalAiSettings(kind, globalSettings);
-  let previousChapter: TaskOptions = defaults;
-  let previousChapterSource = "文章默认";
-  let chapterLabel = "文章默认";
+  let previous: TaskOptions = global;
+  let previousLabel = "全局默认";
   for (const chapter of article.chapters) {
     if (chapter.archived && chapter.id !== targetId && !chapter.outlines.some(outline => outline.id === targetId)) continue;
-    const chapterRaw = chapter.settings?.aiTasks?.[kind];
-    // Legacy chapter records used the article as fallback. New parent markers
-    // explicitly keep untouched fields attached to the preceding chapter.
-    const chapterBaseline = chapterRaw && !Object.values(chapterRaw.inheritance ?? {}).includes("parent") ? defaults : previousChapter;
-    const chapterValue = resolve(kind, chapterRaw, defaults, previousChapter, chapterBaseline, global, chapterBaseline === defaults ? "article" : "parent");
-    const chapterSource = chapterRaw ? `章节：${chapter.title}` : previousChapterSource;
-    if (level === "chapter" && chapter.id === targetId) return result(chapterValue, previousChapter, chapterLabel, chapterSource, previousChapterSource);
-    let previous = previousChapter;
-    let previousLabel = chapterLabel;
+    if (level === "chapter" && chapter.id === targetId) {
+      return result(resolve(kind, chapter.settings?.aiTasks?.[kind], global, previous, previous, global, "parent"), previous, previousLabel);
+    }
     for (const outline of chapter.outlines) {
       if (outline.archived && outline.id !== targetId) continue;
       const raw = kind === "generate" ? outline.generateOptions : outline.illustrationOptions;
-      const value = resolve(kind, raw, defaults, previous, chapterValue, global, "parent");
-      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel, raw ? "当前大纲设置" : chapterSource, chapterSource);
-      previous = value;
-      previousLabel = `上一大纲点：${outline.title || "未命名大纲"}`;
+      const value = resolve(kind, raw, global, previous, previous, global, "parent");
+      // Retire article/chapter markers while preserving explicit outline overrides.
+      for (const [key, mode] of Object.entries(value.inheritance ?? {})) value.inheritance![key] = mode === "article" ? "global" : mode === "parent" ? "previous" : mode;
+      if (level === "outline" && outline.id === targetId) return result(value, previous, previousLabel, raw ? "当前大纲设置" : previousLabel);
+      if (!chapter.archived && !outline.archived) {
+        previous = value;
+        previousLabel = `上一大纲：${outline.title || "未命名大纲"}`;
+      }
     }
-    // Chapter settings are explicit, independent of an outline's temporary task choices.
-    previousChapter = chapterValue;
-    previousChapterSource = chapterSource;
-    chapterLabel = `上一章节：${chapter.title}`;
   }
-  return result(defaults, defaults, "文章默认");
+  return result(global, global, "全局默认");
 
-  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = "文章默认", parentLabel = baselineLabel) {
+  function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = previousLabel) {
     type Options = K extends "generate" ? AiGenerateOptions : IllustrationOptions;
-    return { value: value as Options, articleDefaults: defaults as Options, previous: previous as Options, previousLabel, baselineLabel, parentLabel };
+    return { value: value as Options, globalDefaults: global as Options, previous: previous as Options, previousLabel, baselineLabel, parentLabel: previousLabel };
   }
 }
 
