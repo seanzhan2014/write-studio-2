@@ -83,6 +83,9 @@ test("prose controls support keyboard selection, mode changes and narrow touch t
     }
   }
   await page.getByRole("radio", { name: /^改写正文/ }).click();
+  for (const controls of [group, introspection, description, pace, paragraph, summary]) {
+    await expect(controls.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
+  }
   await page.getByRole("slider", { name: "原文保留度" }).focus();
   await page.keyboard.press("End");
   await expect(page.locator(".rewrite-retention-heading strong")).toContainText("高保留");
@@ -92,6 +95,49 @@ test("prose controls support keyboard selection, mode changes and narrow touch t
   await expect(paragraph.getByRole("radio", { name: "长", exact: true })).toBeChecked();
   await expect(page.getByRole("slider", { name: "原文保留度" })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+});
+
+test("rewrite defaults and explicit edits persist independently from ordinary writing", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  await openArticleAiSettings(page);
+  await page.getByRole("radiogroup", { name: "对话密度", exact: true }).getByRole("radio", { name: "高", exact: true }).check();
+  const advanced = page.locator(".article-generate-settings .writing-advanced");
+  await advanced.locator("summary").click();
+  await advanced.getByLabel("心理展开方式", { exact: true }).fill("普通写作的心理要求");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const dialogue = page.getByRole("radiogroup", { name: "对话密度", exact: true });
+  const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
+  await expect(dialogue.getByRole("radio", { name: "高", exact: true })).toBeChecked();
+  await page.getByRole("radio", { name: /^改写正文/ }).click();
+  await expect(dialogue.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
+  await page.locator(".writing-advanced > summary").click();
+  await expect(page.getByLabel("心理展开方式", { exact: true })).toHaveValue("");
+  const pending = page.waitForResponse(response => response.url().endsWith("/api/ai/tasks") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "开始生成", exact: true }).click();
+  const response = await pending;
+  expect(response.ok()).toBeTruthy();
+  const task = (await response.json()).data as AiTask;
+  expect(task.contextOptions?.advanced).toEqual({});
+  expect(Object.values(task.contextOptions!.proseControls!)).toEqual(["auto", "auto", "auto", "auto", "auto"]);
+  expect(task.contextOptions?.closingSummaryLength).toBe("auto");
+  await dialogue.getByRole("radio", { name: "低", exact: true }).check();
+  await summary.getByRole("radio", { name: "1句", exact: true }).check();
+  await page.getByLabel("心理展开方式", { exact: true }).fill("改写专属心理要求");
+  await expect.poll(async () => {
+    const data = (await (await request.get("/api/state")).json()).data;
+    return data.articles[0].chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions?.rewriteExpression?.advanced?.psychology;
+  }).toBe("改写专属心理要求");
+  await page.reload();
+  await expect(dialogue.getByRole("radio", { name: "低", exact: true })).toBeChecked();
+  await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
+  await page.locator(".writing-advanced > summary").click();
+  await expect(page.getByLabel("心理展开方式", { exact: true })).toHaveValue("改写专属心理要求");
+  await page.getByRole("radio", { name: /^全新生成/ }).click();
+  await expect(dialogue.getByRole("radio", { name: "高", exact: true })).toBeChecked();
+  await expect(page.getByLabel("心理展开方式", { exact: true })).toHaveValue("普通写作的心理要求");
+  await page.getByRole("radio", { name: /^改写正文/ }).click();
+  await expect(dialogue.getByRole("radio", { name: "低", exact: true })).toBeChecked();
 });
 
 test("prose controls are submitted, distinguish recent requests and remain visible in task details", async ({ page, request }) => {

@@ -29,6 +29,15 @@ test("generation normalizes legacy controls, explicit opt-outs and optional word
   assert.throws(() => parseGenerateFields({ proseControls: { dialogueDensity: "invalid" } }, "content"), RequestInputError);
 });
 
+test("rewrite requests default to automatic expression and respect explicit choices", () => {
+  const automatic = parseGenerateFields({ contentMode: "rewrite" }, "content");
+  assert.ok(Object.values(automatic.proseControls).every(value => value === "auto"));
+  assert.equal(automatic.closingSummaryLength, "auto");
+  assert.equal(parseGenerateFields({ contentMode: "rewrite", includeClosingSummary: false }, "content").closingSummaryLength, "none");
+  assert.equal(parseGenerateFields({ contentMode: "rewrite", closingSummaryLength: "medium" }, "content").closingSummaryLength, "medium");
+  assert.equal(parseGenerateFields({ contentMode: "fresh" }, "content").closingSummaryLength, "none");
+});
+
 test("all settings boundaries permit five concurrent tasks and normalize invalid values", () => {
   for (const value of [1, 2, 3, 4, 5]) {
     assert.equal(normalizeTaskConcurrency(value), value);

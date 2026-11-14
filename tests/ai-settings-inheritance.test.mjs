@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { articleAiSettings, createInheritedAiSettings, globalAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings, aiSettingKeys } from "../lib/ai-settings-inheritance.ts";
+import { articleAiSettings, createInheritedAiSettings, globalAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings, overrideGenerateSettings, aiSettingKeys } from "../lib/ai-settings-inheritance.ts";
 import { normalizeStudioSettings } from "../lib/studio-settings.ts";
 import { serializeArticleSettings } from "../db/studio-serialization.ts";
-import { normalizeAiGenerateOptions } from "../lib/generate-options.ts";
+import { DEFAULT_REWRITE_EXPRESSION, generateExpressionSettings, normalizeAiGenerateOptions } from "../lib/generate-options.ts";
 import { normalizeIllustrationOptions } from "../lib/illustration-options.ts";
 import { normalizeChapterSettings } from "../lib/story-settings.ts";
 import { taskNamingProfile, taskReviewSnapshot } from "../lib/task-parameters.ts";
@@ -15,6 +15,28 @@ function fixture() {
     { id: "c2", title: "第二章", archived: false, outlines: [{ id: "c", title: "首项", archived: false, generateOptions: null }] },
   ] };
 }
+
+test("rewrite preferences inherit independently and mode switches retain both choices", () => {
+  const article = fixture();
+  article.chapters[0].settings = undefined;
+  article.aiGenerateSettings = normalizeAiGenerateOptions({ proseControls: { dialogueDensity: "high" }, advanced: { psychology: "普通写作" }, closingSummaryLength: "medium" });
+  let options = overrideGenerateSettings(resolveAiSettings(article, "b", "generate").value, { contentMode: "rewrite" });
+  assert.deepEqual(generateExpressionSettings(options), DEFAULT_REWRITE_EXPRESSION);
+  options = normalizeAiGenerateOptions(overrideGenerateSettings(options, { proseControls: { ...generateExpressionSettings(options).proseControls, dialogueDensity: "low" }, advanced: { dialogue: "改写专属" }, closingSummaryLength: "short" }));
+  article.chapters[0].outlines[1].generateOptions = options;
+  let resolved = resolveAiSettings(article, "b", "generate").value;
+  assert.equal(generateExpressionSettings(resolved).proseControls.dialogueDensity, "low");
+  assert.equal(generateExpressionSettings(resolved).closingSummaryLength, "short");
+  assert.deepEqual(generateExpressionSettings(resolved).advanced, { dialogue: "改写专属" });
+  const writing = overrideGenerateSettings(resolved, { contentMode: "fresh" });
+  assert.equal(generateExpressionSettings(writing).proseControls.dialogueDensity, "high");
+  assert.equal(generateExpressionSettings(writing).closingSummaryLength, "medium");
+  assert.equal(generateExpressionSettings(writing).advanced.psychology, "普通写作");
+  article.aiGenerateSettings.rewriteExpression.proseControls.narrativePace = "slow";
+  resolved = resolveAiSettings(article, "b", "generate").value;
+  assert.equal(generateExpressionSettings(resolved).proseControls.narrativePace, "slow");
+  assert.equal(generateExpressionSettings(resolved).proseControls.dialogueDensity, "low");
+});
 
 test("closing length inheritance migrates legacy switches and follows later article changes", () => {
   const article = fixture();

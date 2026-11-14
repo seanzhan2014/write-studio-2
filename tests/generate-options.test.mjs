@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_AI_GENERATE_OPTIONS, normalizeAiGenerateOptions } from "../lib/generate-options.ts";
+import { DEFAULT_AI_GENERATE_OPTIONS, DEFAULT_REWRITE_EXPRESSION, generateExpressionSettings, normalizeAiGenerateOptions } from "../lib/generate-options.ts";
+
+test("legacy writing preferences do not become rewrite defaults", () => {
+  const options = normalizeAiGenerateOptions({
+    contentMode: "rewrite",
+    proseControls: { dialogueDensity: "high", narrativePace: "fast", paragraphLength: "long" },
+    advanced: { psychology: "充分展开内心活动" },
+    closingSummaryLength: "medium",
+  });
+  assert.deepEqual(generateExpressionSettings(options), DEFAULT_REWRITE_EXPRESSION);
+  assert.equal(options.proseControls.dialogueDensity, "high");
+  assert.equal(options.closingSummaryLength, "medium");
+  const custom = normalizeAiGenerateOptions({ rewriteExpression: { proseControls: { dialogueDensity: "low" }, closingSummaryLength: "none", advanced: { dialogue: "保留原对白" } } }, options);
+  assert.equal(generateExpressionSettings(custom).proseControls.dialogueDensity, "low");
+  assert.equal(generateExpressionSettings(custom).proseControls.narrativePace, "auto");
+  assert.equal(generateExpressionSettings(custom).closingSummaryLength, "none");
+  assert.deepEqual(generateExpressionSettings(custom).advanced, { dialogue: "保留原对白" });
+});
 
 test("closing summaries default off, inherit defaults and allow an explicit opt-out", () => {
   assert.equal(DEFAULT_AI_GENERATE_OPTIONS.includeClosingSummary, false);

@@ -2,7 +2,7 @@ import { type ReasoningOptions } from "@/lib/reasoning-options";
 import { readStudioState } from "@/db/studio-state";
 import { type SelectedAiContext } from "@/lib/ai-context";
 
-import { normalizeClosingSummaryLength, type ClosingSummaryLength, DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeOptionalGenerateTargetWords, normalizeRewriteRetentionLevel, normalizeProseControls, type ContentGenerationMode, type RewriteRetentionLevel, type DialogueDensityLevel, type ProseControls } from "@/lib/generate-options";
+import { normalizeClosingSummaryLength, type ClosingSummaryLength, DEFAULT_GENERATE_TARGET_WORDS, normalizeContentGenerationMode, normalizeOptionalGenerateTargetWords, normalizeRewriteRetentionLevel, normalizeProseControls, generateExpressionSettings, type ContentGenerationMode, type RewriteRetentionLevel, type DialogueDensityLevel, type ProseControls } from "@/lib/generate-options";
 
 import { DEFAULT_OUTLINE_NAMING_PROFILE, normalizeNamingProfile } from "@/lib/naming-options";
 
@@ -33,14 +33,14 @@ export async function generateText(input: { outlineId: string; instruction?: str
     throw new AiInputError(contentMode === "rewrite" ? "当前正文为空，无法改写" : "当前正文为空，无法续写");
   }
   const includeOutlineTitle = input.target === "content" && input.includeOutlineTitle === true;
-  const resolved = await resolveWritingSettings(source, input.model ?? "", input.advanced, input.proseControls);
+  const resolved = await resolveWritingSettings(source, input.model ?? "", input.advanced, input.proseControls, normalizeContentGenerationMode(input.contentMode));
   input = { ...input, advanced: resolved.advanced, proseControls: resolved.proseControls };
   const model = await findModel(input.model);
   if (input.model && !model) throw new AiInputError("所选模型不存在，请重新选择");
   const outlineNaming = normalizeNamingProfile(source.article.outlineNaming, DEFAULT_OUTLINE_NAMING_PROFILE);
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, source.currentOutline.expansion?.estimatedCharacters || targetWords || DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
-  const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循作者已确认的写作准备稿；原始资料中的事实与约束仍有效。未決项不得擅自写成事实。` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary));
+  const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循作者已确认的写作准备稿；原始资料中的事实与约束仍有效。未決项不得擅自写成事实。` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary, normalizeContentGenerationMode(input.contentMode)));
   const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target) }, input.reasoningEffort);
   const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
   const completion = completionResult(payload, handle, "模型生成");
@@ -63,7 +63,7 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   const model = await findModel(input.model);
   if (!model) throw new AiInputError("请选择可用模型后重新执行写作准备任务");
   const source = suppliedPromptContext(input.context, input.outlineId, "content") ?? await selectPromptContext(input.outlineId, "content", input);
-  const resolved = await resolveWritingSettings(source, input.model ?? "", input.advanced, input.proseControls);
+  const resolved = await resolveWritingSettings(source, input.model ?? "", input.advanced, input.proseControls, normalizeContentGenerationMode(input.contentMode));
   input = { ...input, advanced: resolved.advanced, proseControls: resolved.proseControls };
   const strategy = normalizePreparationStrategy(preparation.strategy);
   const strategyRules = strategy === "minimal"
@@ -77,7 +77,7 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   let feedback = "", inputTokens = 0, outputTokens = 0;
   const diagnostics: PreparationResponseDiagnostic[] = [];
   for (let attempt = 0; ; attempt++) {
-    const prompt = generatePrompt(source, instruction + feedback, "content", `${system}\n${NARRATIVE_CRAFT_RULES}\n${PREPARATION_NARRATIVE_RULES}`, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, undefined, input.advanced, "preparation", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary));
+    const prompt = generatePrompt(source, instruction + feedback, "content", `${system}\n${NARRATIVE_CRAFT_RULES}\n${PREPARATION_NARRATIVE_RULES}`, input.targetWords, normalizeContentGenerationMode(input.contentMode), input.rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, undefined, input.advanced, "preparation", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary, normalizeContentGenerationMode(input.contentMode)));
     const request = () => upstream(model, prompt.messages, signal, false, { max_tokens: model.maxOutput ?? 16384, ...(responseFormat ? { response_format: responseFormat } : {}) }, input.reasoningEffort);
     let handle;
     try { handle = await request(); }
@@ -104,7 +104,7 @@ export async function generateWritingPreparation(input: Parameters<typeof genera
   }
 }
 
-export async function resolveWritingSettings(source: SelectedAiContext, modelId: string, advanced: GenerateAdvanced = {}, proseControls?: ProseControls) {
+export async function resolveWritingSettings(source: SelectedAiContext, modelId: string, advanced: GenerateAdvanced = {}, proseControls?: ProseControls, contentMode: ContentGenerationMode = "fresh") {
   advanced = normalizeAdvanced(advanced, GENERATE_FIELDS);
   if (source.article.calibrationHandled || source.article.id === "style-trial") return { source, advanced, proseControls };
   const state = (await readStudioState()).data;
@@ -116,11 +116,13 @@ export async function resolveWritingSettings(source: SelectedAiContext, modelId:
   // A chapter/outline's explicit style remains authoritative.
   if (source.article.style === compiledStyle(base)) source.article.style = compiledStyle(config);
   source.article.calibrationHandled = true;
-  const controls = normalizeProseControls(proseControls ?? base.generate.proseControls);
+  const baseExpression = generateExpressionSettings({ ...base.generate, contentMode });
+  const expression = contentMode === "rewrite" ? baseExpression : config.generate;
+  const controls = normalizeProseControls(proseControls ?? baseExpression.proseControls);
   for (const key of Object.keys(controls) as Array<keyof ProseControls>) {
-    if (controls[key] === base.generate.proseControls[key]) Object.assign(controls, { [key]: config.generate.proseControls[key] });
+    if (controls[key] === baseExpression.proseControls[key]) Object.assign(controls, { [key]: expression.proseControls[key] });
   }
-  return { source, advanced: { ...config.generate.advanced, ...advanced }, proseControls: controls };
+  return { source, advanced: { ...expression.advanced, ...advanced }, proseControls: controls };
 }
 
 export async function styleLabCompletion(modelId: string, system: string, data: unknown, signal?: AbortSignal) {

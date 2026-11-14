@@ -39,6 +39,12 @@ export type ProseControls = {
   paragraphLength: ParagraphLengthLevel;
 };
 
+export type GenerateExpression = {
+  advanced: GenerateAdvanced;
+  proseControls: ProseControls;
+  closingSummaryLength: ClosingSummaryLength;
+};
+
 export type AiGenerateOptions = {
   tasks?: TaskParameters;
   inheritance?: SettingInheritance;
@@ -50,6 +56,7 @@ export type AiGenerateOptions = {
   contentMode: ContentGenerationMode;
   rewriteRetention: RewriteRetentionLevel;
   proseControls: ProseControls;
+  rewriteExpression?: GenerateExpression;
   includePrevious: boolean;
   includeCharacters: boolean;
   includeExcellentFragments: boolean;
@@ -70,6 +77,12 @@ export const DEFAULT_PROSE_CONTROLS: ProseControls = {
   paragraphLength: "auto",
 };
 
+export const DEFAULT_REWRITE_EXPRESSION: GenerateExpression = {
+  advanced: {},
+  proseControls: DEFAULT_PROSE_CONTROLS,
+  closingSummaryLength: "auto",
+};
+
 export const DEFAULT_AI_GENERATE_OPTIONS: AiGenerateOptions = {
   advanced: {},
   model: "",
@@ -78,6 +91,7 @@ export const DEFAULT_AI_GENERATE_OPTIONS: AiGenerateOptions = {
   contentMode: "fresh",
   rewriteRetention: DEFAULT_REWRITE_RETENTION_LEVEL,
   proseControls: DEFAULT_PROSE_CONTROLS,
+  rewriteExpression: DEFAULT_REWRITE_EXPRESSION,
   includePrevious: true,
   includeCharacters: true,
   includeExcellentFragments: false,
@@ -139,8 +153,8 @@ export function isClosingSummaryLengthInput(value: unknown): value is ClosingSum
   return isClosingSummaryLength(value) || value === "long";
 }
 
-export function normalizeClosingSummaryLength(value: unknown, legacyInclude?: unknown): ClosingSummaryLength {
-  return value === "long" ? "auto" : isClosingSummaryLength(value) ? value : legacyInclude === true ? "short" : "none";
+export function normalizeClosingSummaryLength(value: unknown, legacyInclude?: unknown, contentMode?: ContentGenerationMode): ClosingSummaryLength {
+  return value === "long" ? "auto" : isClosingSummaryLength(value) ? value : legacyInclude === true ? "short" : legacyInclude !== false && contentMode === "rewrite" ? "auto" : "none";
 }
 
 export function closingSummaryLengthLabel(value: unknown, legacyInclude?: unknown): string {
@@ -243,6 +257,23 @@ function optionRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+export function normalizeRewriteExpression(value: unknown, fallback: GenerateExpression = DEFAULT_REWRITE_EXPRESSION): GenerateExpression {
+  const source = optionRecord(value);
+  return {
+    advanced: { ...normalizeAdvanced(fallback.advanced, GENERATE_FIELDS), ...normalizeAdvanced(source.advanced, GENERATE_FIELDS) },
+    proseControls: normalizeProseControls({ ...fallback.proseControls, ...optionRecord(source.proseControls) }),
+    closingSummaryLength: isClosingSummaryLengthInput(source.closingSummaryLength) ? normalizeClosingSummaryLength(source.closingSummaryLength) : fallback.closingSummaryLength,
+  };
+}
+
+export function generateExpressionSettings(options: AiGenerateOptions): GenerateExpression {
+  return options.contentMode === "rewrite" ? normalizeRewriteExpression(options.rewriteExpression) : options;
+}
+
+export function generateExpressionKey(options: AiGenerateOptions, key: string) {
+  return options.contentMode === "rewrite" ? `rewriteExpression.${key}` : key;
+}
+
 function normalizeFirstAppearanceOverrides(value: unknown): Record<string, boolean> {
   const source = optionRecord(value);
   const normalized: Record<string, boolean> = {};
@@ -287,6 +318,7 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
     contentMode: isContentGenerationMode(source.contentMode) ? source.contentMode : base.contentMode,
     rewriteRetention: isRewriteRetentionLevel(source.rewriteRetention) ? source.rewriteRetention : base.rewriteRetention,
     proseControls: normalizeProseControls(source.proseControls ?? base.proseControls),
+    rewriteExpression: normalizeRewriteExpression(source.rewriteExpression, base.rewriteExpression),
     includePrevious: typeof source.includePrevious === "boolean" ? source.includePrevious : base.includePrevious,
     includeCharacters: typeof source.includeCharacters === "boolean" ? source.includeCharacters : base.includeCharacters,
     includeExcellentFragments: typeof source.includeExcellentFragments === "boolean" ? source.includeExcellentFragments : base.includeExcellentFragments,
@@ -301,10 +333,16 @@ export function normalizeAiGenerateOptions(value: unknown, fallback: AiGenerateO
   };
 }
 
-export const GENERATE_SETTING_KEYS = [
-  ...Object.keys(DEFAULT_AI_GENERATE_OPTIONS).filter(key => key !== "advanced" && key !== "proseControls" && key !== "includeClosingSummary"),
+export const GENERATE_EXPRESSION_KEYS = [
+  "closingSummaryLength",
   ...Object.keys(GENERATE_FIELDS).map(key => `advanced.${key}`),
   ...Object.keys(DEFAULT_PROSE_CONTROLS).map(key => `proseControls.${key}`),
+];
+
+export const GENERATE_SETTING_KEYS = [
+  ...Object.keys(DEFAULT_AI_GENERATE_OPTIONS).filter(key => !["advanced", "proseControls", "rewriteExpression", "includeClosingSummary", "closingSummaryLength"].includes(key)),
+  ...GENERATE_EXPRESSION_KEYS,
+  ...GENERATE_EXPRESSION_KEYS.map(key => `rewriteExpression.${key}`),
   ...TASK_PARAMETER_FIELDS.map(field => `tasks.${field.key}`),
 ];
 

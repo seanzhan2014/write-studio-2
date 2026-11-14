@@ -1,4 +1,4 @@
-import { GENERATE_SETTING_KEYS, normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
+import { GENERATE_EXPRESSION_KEYS, GENERATE_SETTING_KEYS, normalizeAiGenerateOptions, generateExpressionSettings, type AiGenerateOptions } from "./generate-options.ts";
 import { ILLUSTRATION_SETTING_KEYS, normalizeIllustrationOptions, type IllustrationOptions } from "./illustration-options.ts";
 import type { ChapterSettings } from "./story-settings.ts";
 import { TASK_PARAMETER_FIELDS, taskParameterDefaults } from "./task-parameters.ts";
@@ -26,6 +26,9 @@ export const AI_SETTING_LABELS: Record<string, string> = {
 export function aiSettingKeys(kind: AiSettingsKind) {
   return kind === "generate" ? GENERATE_SETTING_KEYS : ILLUSTRATION_SETTING_KEYS;
 }
+export function visibleAiSettingKeys(kind: AiSettingsKind, value: TaskOptions) {
+  return aiSettingKeys(kind).filter(key => kind !== "generate" || ((value as AiGenerateOptions).contentMode === "rewrite" ? !GENERATE_EXPRESSION_KEYS.includes(key) : !key.startsWith("rewriteExpression.")));
+}
 export function readAiSetting(value: TaskOptions, key: string): unknown {
   return key.split(".").reduce<unknown>((current, part) => (current as Record<string, unknown> | undefined)?.[part], value);
 }
@@ -34,6 +37,12 @@ function writeAiSetting(value: TaskOptions, key: string, setting: unknown) {
   let current = value as unknown as Record<string, unknown>;
   for (const part of parts.slice(0, -1)) { current[part] ??= {}; current = current[part] as Record<string, unknown>; }
   current[parts.at(-1)!] = structuredClone(setting);
+}
+export function overrideAiSetting<T extends TaskOptions>(current: T, key: string, setting: unknown): T {
+  const next = structuredClone(current);
+  writeAiSetting(next, key, setting);
+  if (next.inheritance) delete next.inheritance[key];
+  return next;
 }
 function normalize(kind: AiSettingsKind, value: unknown, fallback?: TaskOptions): TaskOptions {
   return kind === "generate" ? normalizeAiGenerateOptions(value, fallback as AiGenerateOptions | undefined) : normalizeIllustrationOptions(value, fallback as IllustrationOptions | undefined);
@@ -45,7 +54,7 @@ function resolve(kind: AiSettingsKind, raw: TaskOptions | null | undefined, arti
   if (kind === "generate" && missingFieldMode) {
     const stored = raw as AiGenerateOptions;
     for (const key of aiSettingKeys(kind)) {
-      if ((!key.startsWith("tasks.") && !key.startsWith("advanced.")) || readAiSetting(stored, key) !== undefined) continue;
+      if ((!key.startsWith("tasks.") && !key.startsWith("advanced.") && !key.startsWith("rewriteExpression.")) || readAiSetting(stored, key) !== undefined) continue;
       inheritance[key] ??= missingFieldMode;
     }
   }
@@ -143,11 +152,32 @@ export function overrideAiSettings<T extends TaskOptions>(current: T, patch: Par
   const inheritance = { ...current.inheritance };
   for (const [key, value] of Object.entries(patch)) {
     if (key === "inheritance") continue;
-    if (key === "advanced" || key === "proseControls" || key === "tasks") {
-      for (const child of Object.keys(value as object)) if (readAiSetting(current, `${key}.${child}`) !== (value as Record<string, unknown>)[child]) delete inheritance[`${key}.${child}`];
+    if (key === "advanced" || key === "proseControls" || key === "tasks" || key === "rewriteExpression") {
+      clearChanged(value, key);
     } else delete inheritance[key];
   }
   return { ...current, ...patch, inheritance: Object.keys(inheritance).length ? inheritance : undefined } as T;
+
+  function clearChanged(value: unknown, path: string) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [key, child] of Object.entries(value)) clearChanged(child, `${path}.${key}`);
+    } else if (readAiSetting(current, path) !== value) delete inheritance[path];
+  }
+}
+
+/** Expression edits target the active mode; ordinary writing keeps its own values. */
+export function overrideGenerateSettings(current: AiGenerateOptions, patch: Partial<AiGenerateOptions>): AiGenerateOptions {
+  if ((patch.contentMode ?? current.contentMode) !== "rewrite") return overrideAiSettings(current, patch);
+  const rest = { ...patch };
+  const expression = { ...generateExpressionSettings({ ...current, contentMode: "rewrite" }) };
+  let changed = false;
+  for (const key of ["advanced", "proseControls", "closingSummaryLength"] as const) {
+    if (!Object.hasOwn(patch, key)) continue;
+    Object.assign(expression, { [key]: patch[key] });
+    delete rest[key];
+    changed = true;
+  }
+  return overrideAiSettings(current, { ...rest, ...(changed ? { rewriteExpression: expression } : {}) });
 }
 
 /** REST patches inherit untouched fields just like edits in the settings forms. */

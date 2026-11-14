@@ -24,7 +24,7 @@ export function parseGenerateFields(body: Record<string, unknown>, target: strin
     contentMode,
     rewriteRetention: content && contentMode === "rewrite" ? normalizeRewriteRetentionLevel(body.rewriteRetention) : undefined,
     proseControls: normalizeProseControls(body.proseControls, body.dialogueDensity),
-    closingSummaryLength: normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary),
+    closingSummaryLength: normalizeClosingSummaryLength(body.closingSummaryLength, body.includeClosingSummary, contentMode),
     targetWords,
   };
 }

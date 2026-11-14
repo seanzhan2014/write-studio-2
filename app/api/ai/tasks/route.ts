@@ -172,7 +172,7 @@ export async function POST(request: Request) {
       promptContext ??= selectAiContext(snapshot.data, outlineId, "content", { includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, includeExcellentFragments: body.includeExcellentFragments === true, excellentFragmentIds: uniqueStrings(body.excellentFragmentIds), contentMode, instruction, currentPlan: submittedPlan, firstAppearanceCharacterIds });
       promptContext.currentOutline.plan = expansionPlan;
       promptContext.currentOutline.expansion = resolveOutlineExpansion(expansionPlan, submittedExpansion, snapshot.data.settings.outlineExpansionMultiplier);
-      const resolved = await resolveWritingSettings(promptContext, configuredModel?.id ?? "", normalizeAdvanced(body.advanced, GENERATE_FIELDS), proseControls);
+      const resolved = await resolveWritingSettings(promptContext, configuredModel?.id ?? "", normalizeAdvanced(body.advanced, GENERATE_FIELDS), proseControls, contentMode);
       body.advanced = resolved.advanced; proseControls = resolved.proseControls ?? proseControls;
     }
     if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(reviewRuleSnapshot) && !hasActiveProseControls(proseControls) && !advancedText(body.advanced, GENERATE_FIELDS)) return json({ error: "没有有效审校规则或表达要求" }, 422);

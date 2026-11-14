@@ -91,6 +91,36 @@ test("prose controls reach generation, frozen task retries and review revisions"
     assert.doesNotMatch(prompt(), /<prose_controls>/);
   });
 
+  await t.test("rewrite automatic settings bypass ordinary article expression in prompts and queued tasks", async () => {
+    const current = await api("/api/state");
+    const changed = structuredClone(current.data);
+    changed.articles[0].aiGenerateSettings.advanced = { psychology: "普通写作专属的心理展开要求" };
+    changed.articles[0].aiGenerateSettings.proseControls = { dialogueDensity: "high", introspectionDensity: "high", descriptionDetail: "high", narrativePace: "slow", paragraphLength: "long" };
+    await api("/api/state", { data: changed }, "PUT", { "If-Match": String(current.revision) });
+    try {
+      for (const path of ["/api/ai/generate", "/api/ai/generate-stream"]) {
+        await api(path, { ...generation, contentMode: "rewrite" });
+        assert.doesNotMatch(prompt(), /<prose_controls>|<advanced_expression>|普通写作专属/);
+        assert.match(prompt(), /<closing_summary enabled="true" length="auto">/);
+      }
+      await api("/api/ai/generate", { ...generation, contentMode: "fresh" });
+      assert.match(prompt(), /普通写作专属的心理展开要求/);
+      const id = `rewrite-automatic-${crypto.randomUUID()}`;
+      const created = await api("/api/ai/tasks", { ...taskInput, contentMode: "rewrite" }, "POST", { "Idempotency-Key": id });
+      assert.deepEqual(created.data.contextOptions.advanced, {});
+      assert.ok(Object.values(created.data.contextOptions.proseControls ?? { dialogueDensity: created.data.contextOptions.dialogueDensity }).every(value => value === "auto"));
+      assert.equal(created.data.contextOptions.closingSummaryLength, "auto");
+      await api(`/api/ai/tasks/${id}/state`, { action: "cancel" });
+      await api("/api/ai/generate", { ...generation, contentMode: "rewrite", proseControls: { dialogueDensity: "low" }, advanced: { dialogue: "改写专属对白要求" } });
+      assert.match(prompt(), /<dialogue_density level="low">/);
+      assert.match(prompt(), /改写专属对白要求/);
+      assert.doesNotMatch(prompt(), /普通写作专属/);
+    } finally {
+      const latest = await api("/api/state");
+      await api("/api/state", { data: current.data }, "PUT", { "If-Match": String(latest.revision) });
+    }
+  });
+
   await t.test("invalid density is rejected before model calls and structure generation ignores it", async () => {
     const before = fake.control.calls.length;
     for (const path of ["/api/ai/generate", "/api/ai/generate-stream", "/api/ai/tasks"]) {

@@ -7,7 +7,7 @@ import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
 import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion, resolveOutlineExpansion, type OutlineExpansion } from "@/lib/outline-expansion";
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { TASK_PARAMETER_FIELDS, taskNamingProfile, taskReviewSnapshot } from "@/lib/task-parameters";
-import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { articleAiSettings, resolveAiSettings, inheritAiSettings, overrideGenerateSettings } from "@/lib/ai-settings-inheritance";
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 import { resolveReasoningEffort } from "@/lib/reasoning-options";
@@ -29,7 +29,7 @@ import { detectFirstAppearanceCharacters, selectAiContext, type FirstAppearanceS
 
 import { resolvedOutlineContentName } from "@/lib/content-name.mjs";
 
-import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
+import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, generateExpressionSettings, generateExpressionKey, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 
@@ -148,14 +148,14 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     includeCharacters,
     includeExcellentFragments,
     includeOutlineTitle,
-    closingSummaryLength,
     contentMode: generationMode,
     rewriteRetention,
-    proseControls,
     model: selectedModel,
     reasoningEffort,
     firstAppearanceOverrides: appearanceOverrides,
   } = generateOptions;
+  const { advanced, proseControls, closingSummaryLength } = generateExpressionSettings(generateOptions);
+  const inheritedExpression = generateExpressionSettings({ ...inheritedGenerateOptions, contentMode: generationMode });
   const taskParameters = useMemo(() => ({ ...resolvedGenerateSettings.value.tasks!, ...generateOptions.tasks }), [resolvedGenerateSettings.value.tasks, generateOptions.tasks]);
   const preparationEnabled = taskParameters.preparationEnabled !== false;
   const reviewMaxRounds = normalizeReviewRounds(taskParameters.reviewMaxRounds);
@@ -225,7 +225,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const promptDirty = normalizedPrompt !== savedPrompt;
 
   const rememberGenerateOptions = useCallback((patch: Partial<AiGenerateOptions>) => {
-    const next = normalizeAiGenerateOptions(overrideAiSettings(generateOptionsRef.current, patch), studio.currentArticle.aiGenerateSettings);
+    const next = normalizeAiGenerateOptions(overrideGenerateSettings(generateOptionsRef.current, patch), studio.currentArticle.aiGenerateSettings);
     if (!hasCurrentContent && next.contentMode !== "fresh") next.contentMode = "fresh";
     generateOptionsRef.current = next;
     setGenerateOptions(next);
@@ -353,11 +353,11 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const submit = useCallback(async () => {
     if (generationMode !== "fresh" && !hasCurrentContent) { setNotice("当前正文为空，无法改写或续写。"); return; }
     if (!targetWordsValid) { setNotice(`目标字数请输入 ${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数，或留空表示不限字数。`); return; }
-    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings)) && !hasActiveProseControls(proseControls) && !advancedText({ ...inheritedGenerateOptions.advanced, ...generateOptions.advanced }, GENERATE_FIELDS)) { setNotice("请添加本文章生效的审校规则或补充指令，也可将修正次数设为 0。"); return; }
+    if (reviewMaxRounds > 0 && reviewStrategy === "minimal" && !hasReviewRules(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings)) && !hasActiveProseControls(proseControls) && !advancedText(advanced, GENERATE_FIELDS)) { setNotice("请添加本文章生效的审校规则或补充指令，也可将修正次数设为 0。"); return; }
     const effectiveFirstAppearanceIds = includeCharacters ? firstAppearanceCharacterIds : [];
     const appearanceSnapshot = JSON.stringify([...effectiveFirstAppearanceIds].sort());
     const excellentSnapshot = JSON.stringify([...excellentFragmentIds].sort());
-    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(generateOptions.advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && JSON.stringify(task.contextOptions?.promptContext?.currentOutline.expansion) === JSON.stringify(expansionSnapshot) && task.contextOptions?.outlinePlanSnapshot === outlinePlanDraft && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
+    const duplicate = studio.data.tasks.find((task) => task.outlineId === studio.currentOutline.id && task.target === "正文" && (task.contextOptions?.configuredModelId ?? "") === selectedModelReference && task.contextOptions?.resolvedReasoningEffort === resolveReasoningEffort(selectedRecord, reasoningEffort) && task.prompt === prompt.trim() && normalizeReviewRounds(task.contextOptions?.reviewMaxRounds) === reviewMaxRounds && normalizeReviewStrategy(task.contextOptions?.reviewStrategy) === reviewStrategy && (studio.data.settings.reviewModelMode !== "fixed" || task.contextOptions?.reviewConfiguredModelId === studio.data.settings.reviewModel) && (task.contextOptions?.reviewInstruction ?? "") === normalizeReviewRules(reviewInstruction) && (reviewMaxRounds === 0 || JSON.stringify(task.contextOptions?.reviewRuleSnapshot) === JSON.stringify(taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings))) && JSON.stringify(task.contextOptions?.advanced ?? {}) === JSON.stringify(advanced) && JSON.stringify(resolvedProseControls(task.contextOptions)) === JSON.stringify(proseControls) && task.contextOptions?.targetWords === targetWords && JSON.stringify(task.contextOptions?.promptContext?.currentOutline.expansion) === JSON.stringify(expansionSnapshot) && task.contextOptions?.outlinePlanSnapshot === outlinePlanDraft && (task.contextOptions?.contentMode ?? "fresh") === generationMode && (generationMode !== "rewrite" || normalizeRewriteRetentionLevel(task.contextOptions?.rewriteRetention) === rewriteRetention) && JSON.stringify([...(task.contextOptions?.firstAppearanceCharacterIds ?? [])].sort()) === appearanceSnapshot && (task.contextOptions?.includeExcellentFragments === true) === includeExcellentFragments && (task.contextOptions?.includeOutlineTitle === true) === includeOutlineTitle && normalizeClosingSummaryLength(task.contextOptions?.closingSummaryLength, task.contextOptions?.includeClosingSummary) === closingSummaryLength && JSON.stringify([...(task.contextOptions?.excellentFragmentIds ?? [])].sort()) === excellentSnapshot && Date.now() - new Date(task.createdAt).getTime() < 3000);
     if (duplicate) { setNotice("相同生成请求已在队列中。"); return; }
     try {
       const promptContext = selectAiContext({ articles: [studio.currentArticle], settings: studio.data.settings }, studio.currentOutline.id, "content", {
@@ -392,7 +392,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
         targetWords,
         contentMode: generationMode,
         rewriteRetention: generationMode === "rewrite" ? rewriteRetention : undefined,
-        advanced: generateOptions.advanced,
+        advanced,
         proseControls,
         dialogueDensity: proseControls.dialogueDensity,
         reviewRuleSnapshot: taskReviewSnapshot(studio.currentArticle, taskParameters, normalizeReviewRules(reviewInstruction), studio.data.settings),
@@ -416,7 +416,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
     } catch (reason) {
       setNotice(reason instanceof Error ? reason.message : "AI 任务创建失败");
     }
-  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, expansionDraft, expansionSnapshot, generateOptions, inheritedGenerateOptions.advanced, settingsScope, taskParameters, onTaskCreated]);
+  }, [prompt, normalizedPrompt, studio, reasoningEffort, selectedModelReference, selectedRecord, includePrevious, includeCharacters, includeExcellentFragments, includeOutlineTitle, closingSummaryLength, excellentFragmentIds, firstAppearanceCharacterIds, summary.total, targetWords, targetWordsValid, generationMode, rewriteRetention, proseControls, reviewMaxRounds, reviewInstruction, reviewStrategy, hasCurrentContent, outlinePlanDraft, expansionDraft, expansionSnapshot, generateOptions, advanced, settingsScope, taskParameters, onTaskCreated]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -531,7 +531,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             </div>
             {!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
           </section>
-          <GenerateAdvancedFields value={generateOptions.advanced} inherited={inheritedGenerateOptions.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [`advanced.${key}`]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [`advanced.${key}`]))} />
+          <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "article", resolvedGenerateSettings.articleDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} />
           <section className="generate-reference-section" aria-labelledby="generate-reference-heading">
             <div className="generate-section-heading"><h3 id="generate-reference-heading">参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
           <div className="generate-reference-bar" aria-label="生成参考设置">

@@ -4,8 +4,8 @@ import { Checkbox, NumberInput, Select, Slider } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GenerateAdvancedFields } from "./advanced-writing";
 import { ReasoningSettings } from "./reasoning-settings";
-import { articleAiSettings, globalAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
-import { CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, normalizeAiGenerateOptions, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
+import { articleAiSettings, globalAiSettings, overrideGenerateSettings } from "@/lib/ai-settings-inheritance";
+import { CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, normalizeAiGenerateOptions, generateExpressionSettings, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
 import { useConfiguredModels, configuredModelForReference, rewriteRetentionOptions, modelDisplayLabel, contentGenerationModeLabel, contentGenerationModes, ProseControlRow } from "./studio/shared";
 
 export function ArticleGenerateSettings({ global = false }: { global?: boolean } = {}) {
@@ -13,6 +13,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
   const models = useConfiguredModels();
   const article = studio.currentArticle;
   const settings = global ? globalAiSettings("generate", studio.data.settings) : articleAiSettings(article, "generate", studio.data.settings);
+  const expression = generateExpressionSettings(settings);
   const selectedRecord = configuredModelForReference(models, settings.model);
   const selectedModelReference = selectedRecord?.id ?? settings.model;
   const rewriteRetentionIndex = rewriteRetentionOptions.findIndex((item) => item.value === settings.rewriteRetention);
@@ -24,7 +25,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
     ...models.map((model) => ({ value: model.id, label: `${modelDisplayLabel(models, model.id)}${model.hasSecret ? "" : "（需密钥）"}` })),
   ];
   const patchSettings = (patch: Partial<AiGenerateOptions>) => {
-    const next = normalizeAiGenerateOptions(overrideAiSettings(settings, patch));
+    const next = normalizeAiGenerateOptions(overrideGenerateSettings(settings, patch));
     if (!global) { studio.updateArticle({ aiGenerateSettings: next }); return; }
     delete next.tasks;
     studio.updateSettings({ aiGenerateSettings: next, ...(patch.model !== undefined ? { generateModel: patch.model } : {}), ...(patch.targetWords !== undefined ? { generateTargetWords: patch.targetWords } : {}), ...(Object.hasOwn(patch, "reasoningEffort") ? { generateReasoningEffort: patch.reasoningEffort } : {}) });
@@ -50,15 +51,15 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
     <section className="article-generate-block prose-controls-section" aria-labelledby="article-prose-controls-title">
             <div className="generate-section-heading"><span id="article-prose-controls-title">表达偏好</span><strong>{global ? "全局默认" : "文章默认"}</strong></div>
       <div className="prose-controls-grid">
-        <ProseControlRow id="article-dialogue-density" label="对话密度" value={settings.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...settings.proseControls, dialogueDensity } })} className="dialogue-density-control" />
-        <ProseControlRow id="article-introspection-density" label="内心活动" value={settings.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...settings.proseControls, introspectionDensity } })} />
-        <ProseControlRow id="article-description-detail" label="描写细度" value={settings.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...settings.proseControls, descriptionDetail } })} />
-        <ProseControlRow id="article-narrative-pace" label="叙事节奏" value={settings.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...settings.proseControls, narrativePace } })} />
-        <ProseControlRow id="article-paragraph-length" label="段落长度" value={settings.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...settings.proseControls, paragraphLength } })} />
-        <ProseControlRow id="article-closing-summary" label="收尾总结" value={settings.closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => patchSettings({ closingSummaryLength })} className="closing-summary-control" />
+        <ProseControlRow id="article-dialogue-density" label="对话密度" value={expression.proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => patchSettings({ proseControls: { ...expression.proseControls, dialogueDensity } })} className="dialogue-density-control" />
+        <ProseControlRow id="article-introspection-density" label="内心活动" value={expression.proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => patchSettings({ proseControls: { ...expression.proseControls, introspectionDensity } })} />
+        <ProseControlRow id="article-description-detail" label="描写细度" value={expression.proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => patchSettings({ proseControls: { ...expression.proseControls, descriptionDetail } })} />
+        <ProseControlRow id="article-narrative-pace" label="叙事节奏" value={expression.proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => patchSettings({ proseControls: { ...expression.proseControls, narrativePace } })} />
+        <ProseControlRow id="article-paragraph-length" label="段落长度" value={expression.proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => patchSettings({ proseControls: { ...expression.proseControls, paragraphLength } })} />
+        <ProseControlRow id="article-closing-summary" label="收尾总结" value={expression.closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => patchSettings({ closingSummaryLength })} className="closing-summary-control" />
       </div>
     </section>
-    {!global && <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} />}
+    {!global && <GenerateAdvancedFields value={expression.advanced} onChange={advanced => patchSettings({ advanced })} />}
     <section className="article-generate-block article-generate-references" aria-labelledby="article-generate-reference-title">
       <div className="generate-section-heading"><span id="article-generate-reference-title">参考内容</span></div>
       <div className="article-generate-toggle-grid">
@@ -69,7 +70,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
       </div>
     </section>
     {!global && <section className="article-generate-block" aria-label="生成附加项"><div className="generate-section-heading"><span>生成附加项</span></div><Checkbox label="同时生成大纲名" checked={settings.includeOutlineTitle} onChange={event => patchSettings({ includeOutlineTitle: event.currentTarget.checked })} /></section>}
-    {global ? <GenerateAdvancedFields value={settings.advanced} onChange={advanced => patchSettings({ advanced })} /> : <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>}
+    {global ? <GenerateAdvancedFields value={expression.advanced} onChange={advanced => patchSettings({ advanced })} /> : <section className="article-generate-block article-generate-reasoning" aria-label="文章生成推理设置"><ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} /></section>}
     {!global && <div className="form-foot"><span>{overriddenOutlines ? `${overriddenOutlines} 条大纲已保存自己的最近设置` : "全部大纲均跟随此预设"}</span><span className="save-state"><i /> 已自动保存</span></div>}
   </section>;
 }
