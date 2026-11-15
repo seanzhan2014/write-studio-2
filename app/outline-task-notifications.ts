@@ -49,9 +49,10 @@ function fallbackSignature(outline?: Pick<Outline, "state" | "updatedAt">) {
 
 export function markOutlineTaskNotificationsRead(origin: TaskExecutionOrigin, outline: Outline, tasks: AiTask[]) {
   const key = storageKey(origin, outline.id);
-  const entries: Record<string, string> = { fallback: fallbackSignature(outline) };
+  const entries: Record<string, string> = {};
+  if (outline.state !== "running") entries.fallback = fallbackSignature(outline);
   for (const task of tasks) {
-    if (task.outlineId === outline.id && task.target === "正文") entries[`task:${task.id}`] = taskSignature(task);
+    if (task.outlineId === outline.id && task.target === "正文" && task.state !== "running" && task.state !== "waiting") entries[`task:${task.id}`] = taskSignature(task);
   }
   const snapshot = JSON.stringify(entries);
   snapshots.set(key, snapshot);
@@ -62,6 +63,8 @@ export function markOutlineTaskNotificationsRead(origin: TaskExecutionOrigin, ou
 export function useOutlineTaskNotificationRead(origin: TaskExecutionOrigin, outlineId: string, task: AiTask | undefined, outline: Pick<Outline, "state" | "updatedAt"> | undefined) {
   const key = storageKey(origin, outlineId);
   const snapshot = useSyncExternalStore(subscribe, () => readSnapshot(key), () => null);
+  // Active status stays visible, including notices marked read by older releases.
+  if (task ? task.state === "running" || task.state === "waiting" : outline?.state === "running") return false;
   const entries = readEntries(snapshot);
   return task ? entries[`task:${task.id}`] === taskSignature(task) : entries.fallback === fallbackSignature(outline);
 }
