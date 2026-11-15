@@ -1,3 +1,4 @@
+import { selectDefaultCategory } from "./workspace-controls";
 import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -14,7 +15,7 @@ test("global learning defaults are separate from article references and one-time
   data.articles.push({ ...structuredClone(data.articles[0]), id: "article-other", title: "另一篇文章", chapters: [], characters: [], relationships: [], storySettings: normalizeArticleStorySettings({}) });
   expect((await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data } })).ok()).toBeTruthy();
   await page.goto("/settings/tasks");
-  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await selectDefaultCategory(page,"学习与微调");
   await expect(page.getByRole("button", { name: "学习并设定", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "粘贴参考文章", exact: true })).toHaveCount(0);
   await page.getByRole("combobox", { name: "默认学习 / 生成模型", exact: true }).click();
@@ -23,13 +24,14 @@ test("global learning defaults are separate from article references and one-time
   await page.getByRole("checkbox", { name: "完成后默认自动应用", exact: true }).uncheck();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.styleLearningSettings).toEqual({ model: "style-default", maxRounds: 5, autoApply: false });
   await page.reload();
-  await page.getByRole("tab", { name: "学习与微调", exact: true }).click();
+  await selectDefaultCategory(page,"学习与微调");
   await expect(page.getByRole("combobox", { name: "默认学习 / 生成模型", exact: true })).toHaveValue("测试 · 默认学习模型");
   await page.screenshot({ path: info.outputPath("learning-defaults.png"), fullPage: true });
   await page.goto("/articles/article-main/info/basic");
   await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   await expect(page).toHaveURL(/\/info\/references$/);
   const lab = page.getByRole("region", { name: "风格学习与微调", exact: true });
+  await lab.locator(".style-reference > summary").first().click();
   await expect(lab.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveValue("已有参考文章");
   await expect(lab.getByRole("combobox", { name: "学习 / 生成模型", exact: true })).toHaveValue("测试 · 默认学习模型");
   await expect(lab.getByLabel("微调轮次", { exact: true })).toHaveValue("5");
@@ -49,6 +51,7 @@ test("global learning defaults are separate from article references and one-time
   await page.goto("/articles/article-other/info/references");
   await expect(page.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveCount(0);
   await page.goto("/articles/article-main/info/references");
+  await page.locator(".style-reference > summary").first().click();
   await expect(page.getByRole("textbox", { name: "参考文章 1 名称", exact: true })).toHaveValue("已有参考文章");
   await expect(page.getByLabel("微调轮次", { exact: true })).toHaveValue("5");
 });
@@ -121,7 +124,7 @@ test("learning history is available from the task workspace with pagination, evi
   await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   await expect(page.getByText("由本机服务在后台执行", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
-  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  const workspace = page.getByRole("region", { name: "任务工作区", exact: true });
   await expect(workspace.getByRole("button", { name: "学习与微调", exact: true })).toHaveAttribute("aria-pressed", "true");
   const history = workspace.getByRole("region", { name: "学习历史", exact: true });
   await expect(history.getByText("21 条记录", { exact: false })).toBeVisible();
@@ -152,8 +155,8 @@ test("the ordinary task entry shows failed calibrations in all tasks by default"
     return route.fulfill({ json: { jobs: history ? jobs : [], active: 0, failed: 3, total: 3, pages: 1, page: 1, executionMode: "server" } });
   });
   await page.goto("/articles/article-main/outlines");
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
-  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "任务工作区", exact: true });
   await expect(workspace.getByRole("button", { name: "全部任务", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(workspace.getByText("风格微调", { exact: true })).toHaveCount(3);
   await expect(workspace.getByText("模拟上游失败，等待处理", { exact: true })).toHaveCount(3);
@@ -179,7 +182,7 @@ test("unqualified calibration keeps diagnostics visible and offers no configurat
   await page.goto("/articles/article-main/info/basic");
   await page.getByRole("tab", { name: "参考文章", exact: true }).click();
   await page.getByRole("button", { name: "在 AI 任务中查看学习与微调", exact: true }).click();
-  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  const workspace = page.getByRole("region", { name: "任务工作区", exact: true });
   const history = workspace.getByRole("region", { name: "学习历史", exact: true });
   await expect(history.getByText("未达标", { exact: true })).toBeVisible();
   await expect(history.getByRole("button", { name: "应用结果", exact: true })).toHaveCount(0);

@@ -1,3 +1,4 @@
+import { selectWorkspaceMode } from "./workspace-controls";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -132,7 +133,7 @@ test("new chapter can chat immediately without hydrating from the database", asy
   expect(match).not.toBeNull();
   const outlineId = match![1];
   expect(outlineId).not.toBe("outline-current");
-  await page.getByRole("tab", { name: "聊天", exact: true }).click();
+  await selectWorkspaceMode(page,"聊天");
   await chat(page, request, outlineId, "刚新建章节就聊天");
   await chat(page, request, outlineId, "继续第二轮");
   const chapter = (await readState(request)).data.articles[0].chapters.find((item) => item.outlines.some((outline) => outline.id === outlineId))!;

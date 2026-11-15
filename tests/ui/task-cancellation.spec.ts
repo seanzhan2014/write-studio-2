@@ -16,7 +16,7 @@ test("task cancellation explains a non-JSON server error and can be retried succ
   const alerts: string[] = [];
   page.on("dialog", async dialog => { alerts.push(dialog.message()); await dialog.dismiss(); });
   await page.goto("/articles/article-main/outlines");
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  await page.getByRole("button", { name: "任务", exact: true }).click();
   const card = page.locator(".task-card").filter({ hasText: "取消任务回归检查" });
   await card.getByRole("button", { name: "取消", exact: true }).click();
   await expect.poll(() => alerts).toEqual(["任务状态更新失败（HTTP 500），请稍后重试。"]);

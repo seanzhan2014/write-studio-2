@@ -11,7 +11,7 @@ import { PageHeader, Icon, SearchGroup, SearchResult } from "@/app/ui/studio/sha
 
 export function SearchPage({ onOutline, onCharacter }: { onOutline: (id: string) => void; onCharacter: () => void }) {
   const studio = useStudio();
-  const [query, setQuery] = useState("潮汐");
+  const [query, setQuery] = useState("");
   const normalized = query.trim().toLocaleLowerCase();
   const outlineResults = normalized ? studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines.map((item) => ({ chapter, item, content: resolvedOutlineContent(item) }))).filter(({ chapter, item, content }) => `${chapter.title}\n${outlineDisplayTitle(item)}\n${item.plan}\n${content}`.toLocaleLowerCase().includes(normalized)) : [];
   const characterResults = normalized ? studio.currentArticle.characters.filter((character) => `${character.name}\n${character.aliases.join(" ")}\n${character.description}`.toLocaleLowerCase().includes(normalized)) : [];

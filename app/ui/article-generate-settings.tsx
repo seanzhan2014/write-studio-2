@@ -1,11 +1,12 @@
 "use client";
+import { configuredModelFilter } from "@/app/ui/model-options";
 import { EXPANSION_DECIMALS, isExpansionMultiplier, isSentenceTargetWords, MIN_EXPANSION_MULTIPLIER, MAX_EXPANSION_MULTIPLIER, MAX_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode } from "@/lib/outline-expansion";
-import { Checkbox, NumberInput, Select, Slider } from "@mantine/core";
+import { Checkbox, NumberInput, Select } from "@mantine/core";
 import { useStudio } from "@/app/studio-state";
 import { GenerateAdvancedFields } from "./advanced-writing";
 import { ReasoningSettings } from "./reasoning-settings";
 import { articleAiSettings, globalAiSettings, overrideGenerateSettings } from "@/lib/ai-settings-inheritance";
-import { CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, normalizeAiGenerateOptions, generateExpressionSettings, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
+import { CLOSING_SUMMARY_OPTIONS, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, normalizeAiGenerateOptions, generateExpressionSettings, type AiGenerateOptions, MAX_GENERATE_TARGET_WORDS } from "@/lib/generate-options";
 import { useConfiguredModels, configuredModelForReference, rewriteRetentionOptions, modelDisplayLabel, contentGenerationModeLabel, contentGenerationModes, ProseControlRow } from "./studio/shared";
 
 export function ArticleGenerateSettings({ global = false }: { global?: boolean } = {}) {
@@ -16,8 +17,6 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
   const expression = generateExpressionSettings(settings);
   const selectedRecord = configuredModelForReference(models, settings.model);
   const selectedModelReference = selectedRecord?.id ?? settings.model;
-  const rewriteRetentionIndex = rewriteRetentionOptions.findIndex((item) => item.value === settings.rewriteRetention);
-  const rewriteRetentionOption = rewriteRetentionOptions[rewriteRetentionIndex] ?? rewriteRetentionOptions[1];
   const overriddenOutlines = article.chapters.reduce((count, chapter) => count + chapter.outlines.filter((outline) => outline.generateOptions !== null).length, 0);
   const modelOptions = [
     { value: "", label: "本地演示引擎" },
@@ -34,7 +33,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
   return <section className={`${global ? "ai-task-generation" : "form-card"} article-ai-task-section article-generate-settings`} aria-labelledby="article-generate-title">
     <header className="article-ai-task-section-heading"><h2 id="article-generate-title">{global ? "模型与篇幅" : "正文生成"}</h2></header>
     <div className="article-generate-basics">
-      <Select label="默认模型" aria-label="文章生成默认模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => patchSettings({ model: value ?? "" })} />
+      <Select label="默认模型" aria-label="文章生成默认模型" filter={configuredModelFilter(models)} data={modelOptions} searchable nothingFoundMessage="没有匹配的模型" value={selectedModelReference} allowDeselect={false} onChange={(value) => patchSettings({ model: value ?? "" })} />
       {global && <ReasoningSettings value={settings.reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(reasoningEffort) => patchSettings({ reasoningEffort })} />}
       <NumberInput label="默认目标字数" aria-label="文章生成默认目标字数" min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" value={settings.targetWords || ""} onChange={(value) => patchSettings({ targetWords: value === "" ? 0 : Number(value) })} />
     </div>
@@ -46,7 +45,7 @@ export function ArticleGenerateSettings({ global = false }: { global?: boolean }
     <section className="article-generate-block" aria-labelledby="article-generate-mode-title">
       <div className="generate-section-heading"><span id="article-generate-mode-title">生成方式</span><strong>{contentGenerationModeLabel(settings.contentMode)}</strong></div>
       <div className="generate-mode-options" role="radiogroup" aria-label="文章默认正文生成方式">{contentGenerationModes.map((item) => <button className={settings.contentMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={settings.contentMode === item.value} key={item.value} onClick={() => patchSettings({ contentMode: item.value })}><span className="ui-title">{item.label}</span></button>)}</div>
-      {settings.contentMode === "rewrite" && <div className="rewrite-retention-control article-rewrite-retention"><div className="rewrite-retention-heading"><div><span>默认原文保留度</span></div><strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong></div><Slider thumbLabel="默认原文保留度" min={0} max={rewriteRetentionOptions.length - 1} step={1} marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))} value={rewriteRetentionIndex} label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"} onChange={(value) => patchSettings({ rewriteRetention: rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL })} /></div>}
+      {settings.contentMode === "rewrite" && <div className="rewrite-retention-control article-rewrite-retention"><ProseControlRow id="article-retention" label="默认原文保留度" value={settings.rewriteRetention} options={rewriteRetentionOptions} onChange={rewriteRetention=>patchSettings({rewriteRetention})} /></div>}
     </section>
     <section className="article-generate-block prose-controls-section" aria-labelledby="article-prose-controls-title">
             <div className="generate-section-heading"><span id="article-prose-controls-title">表达偏好</span><strong>{global ? "全局默认" : "文章默认"}</strong></div>

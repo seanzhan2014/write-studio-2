@@ -68,6 +68,7 @@ export function StyleLabPanel() {
 function ArticleStyleLabPanel() {
   const studio = useStudio(); const article = studio.currentArticle;
   const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
+  const [openReferenceId,setOpenReferenceId]=useState<string|null>(null);
   const [references, setReferences] = useState<ReferenceDocument[]>(library.references);
   const [dirty, setDirty] = useState(false);
   const [models, setModels] = useState<Array<{ id: string; name: string; providerName: string; hasSecret: boolean }>>([]);
@@ -109,7 +110,7 @@ function ArticleStyleLabPanel() {
   async function start(kind: "learn" | "tune") {
     await saveReferences();
     const result = await api("/api/style-lab", { articleId: article.id, kind, model, maxRounds: Number(rounds), autoApply });
-    setSelectedJobId(result.job.id); setActive(true); setNotice("任务已提交，可继续写作；过程和成果保存在学习历史中。"); window.dispatchEvent(new CustomEvent("style-lab-progress"));
+    setSelectedJobId(result.job.id); setActive(true); setNotice("任务已提交"); window.dispatchEvent(new CustomEvent("style-lab-progress"));
   }
   function restore(version: ConfigurationVersion, asBase = false) {
     const current = configurationOf(article, studio.data.settings); const next = normalizeStyleLibrary(library);
@@ -123,19 +124,19 @@ function ArticleStyleLabPanel() {
       next.activeVersionId = version.id;
       studio.updateArticle({ style: version.configuration.style, storySettings: { ...article.storySettings!, advancedStyle: version.configuration.advancedStyle, styleLibrary: normalizeStyleLibrary(next) } });
     }
-    setNotice("已应用配置，可在版本记录中恢复。");
+    setNotice("已应用配置");
   }
   const total = references.reduce((n,r) => n+r.text.length, 0);
   const lockOptions = [{ value: "style", label: "写作风格" }, { value: "proseControls", label: "全部正文表达选项" }, { value: "scenes", label: "场景偏好" }, ...Object.entries(STYLE_FIELDS).map(([k,[label]]) => ({ value: `style.${k}`, label: `风格 · ${label}` })), ...Object.entries(GENERATE_FIELDS).map(([k,[label]]) => ({ value: `generate.${k}`, label: `生成 · ${label}` }))];
   return <section className="article-ai-task-section style-lab ai-task-sections" aria-label="风格学习与微调">
     <section className="ai-task-section" aria-label="参考文章"><div className="ai-task-section-heading"><h2>参考文章</h2><Text size="sm" c="dimmed">{references.length} 篇 · {total.toLocaleString()} 字符{dirty ? " · 未保存" : ""}</Text></div><Stack gap="md">
-      {references.map((ref,index) => <div className="style-reference" key={ref.id}><TextInput label={`参考文章 ${index+1} 名称`} value={ref.title} onChange={event => { const title = event.currentTarget.value; setReferences(current => current.map(r => r.id === ref.id ? { ...r, title } : r)); setDirty(true); }} /><Textarea label={`参考文章 ${index+1} 正文`} autosize minRows={5} maxRows={14} value={ref.text} maxLength={100000} onChange={event => { const text = event.currentTarget.value; setReferences(current => current.map(r => r.id === ref.id ? { ...r, text } : r)); setDirty(true); }} /><Button color="red" variant="subtle" size="compact-sm" onClick={() => { setReferences(current => current.filter(r => r.id !== ref.id)); setDirty(true); }}>移除参考文章 {index+1}</Button></div>)}
-      <Group><Button variant="default" disabled={references.length >= 8} onClick={() => { setReferences(current => [...current, { id: crypto.randomUUID(), title: `参考文章 ${current.length+1}`, text: "" }]); setDirty(true); }}>粘贴参考文章</Button><Button variant="default" onClick={() => fileRef.current?.click()}>上传 TXT / Markdown</Button><Button variant="light" loading={busy} onClick={() => void perform(async () => { await saveReferences(); setNotice("参考文章已保存。"); })}>保存参考文章</Button></Group>
+      {references.map((ref,index) => <details className="style-reference" key={ref.id} open={openReferenceId===ref.id}><summary onClick={event=>{event.preventDefault();setOpenReferenceId(current=>current===ref.id?null:ref.id);}}><strong>{ref.title || `参考文章 ${index+1}`}</strong><span>{ref.text.length.toLocaleString()} 字符</span></summary><TextInput label={`参考文章 ${index+1} 名称`} value={ref.title} onChange={event => { const title = event.currentTarget.value; setReferences(current => current.map(r => r.id === ref.id ? { ...r, title } : r)); setDirty(true); }} /><Textarea label={`参考文章 ${index+1} 正文`} autosize minRows={5} maxRows={14} value={ref.text} maxLength={100000} onChange={event => { const text = event.currentTarget.value; setReferences(current => current.map(r => r.id === ref.id ? { ...r, text } : r)); setDirty(true); }} /><Button color="red" variant="subtle" size="compact-sm" onClick={() => { setReferences(current => current.filter(r => r.id !== ref.id)); setDirty(true); }}>移除参考文章 {index+1}</Button></details>)}
+      <Group><Button variant="default" disabled={references.length >= 8} onClick={() => { const id=crypto.randomUUID();setReferences(current => [...current, { id, title: `参考文章 ${current.length+1}`, text: "" }]);setOpenReferenceId(id);setDirty(true); }}>粘贴参考文章</Button><Button variant="default" onClick={() => fileRef.current?.click()}>上传 TXT / Markdown</Button><Button variant="light" loading={busy} onClick={() => void perform(async () => { await saveReferences(); setNotice("参考文章已保存。"); })}>保存参考文章</Button></Group>
       <input ref={fileRef} type="file" hidden multiple accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={event => { const files=Array.from(event.currentTarget.files ?? []); event.currentTarget.value=""; void perform(async () => { if (files.length+references.length>8) throw new Error("最多添加8篇参考文章"); const additions=await Promise.all(files.map(async file => { const text=await file.text(); if(text.length>100000) throw new Error(`${file.name} 超过100,000字符`); return { id:crypto.randomUUID(), title:file.name, text }; })); if(total+additions.reduce((n,r)=>n+r.text.length,0)>MAX_REFERENCE_TOTAL) throw new Error("参考材料总长度超过240,000字符"); setReferences(current=>[...current,...additions]);setDirty(true); }); }} />
       <Text size="xs" c="dimmed">最多8篇，每篇100,000字符，总计240,000字符。模型输入不足时会明确提示。</Text>
     </Stack></section>
     <section className="ai-task-section ai-task-learning-options" aria-label="学习与微调"><h2>学习与微调</h2>
-    <div className="style-lab-controls"><Select label="学习 / 生成模型" placeholder="选择文本模型" data={models.map(m => ({ value:m.id,label:`${m.providerName} · ${m.name}${m.hasSecret?"":"（需密钥）"}`,disabled:!m.hasSecret }))} value={model} onChange={value=>setTaskOptions(current => ({ ...current, model: value ?? "" }))} /><NumberInput label="微调轮次" description={`基线1次＋最多${Number(rounds)||0}次调整，另含准备与评估请求。`} min={1} max={10} allowDecimal={false} value={rounds} onChange={maxRounds => setTaskOptions(current => ({ ...current, maxRounds }))} /></div>
+    <div className="style-lab-controls"><Select searchable nothingFoundMessage="没有匹配的模型" label="学习 / 生成模型" placeholder="选择文本模型" data={models.map(m => ({ value:m.id,label:`${m.providerName} · ${m.name}${m.hasSecret?"":"（需密钥）"}`,disabled:!m.hasSecret }))} value={model} onChange={value=>setTaskOptions(current => ({ ...current, model: value ?? "" }))} /><NumberInput label="微调轮次" description={`基线1次＋最多${Number(rounds)||0}次调整，另含准备与评估请求。`} min={1} max={10} allowDecimal={false} value={rounds} onChange={maxRounds => setTaskOptions(current => ({ ...current, maxRounds }))} /></div>
     <Checkbox label="完成后自动应用" description="文章配置或参考资料有变化时，成果会保留为待应用。" checked={autoApply} onChange={event => { const autoApply = event.currentTarget.checked; setTaskOptions(current => ({ ...current, autoApply })); }} />
     {Object.keys(taskOptions).length > 0 && <Button variant="subtle" size="compact-sm" onClick={() => setTaskOptions({})}>恢复全局任务默认</Button>}
     <Group><Button loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("learn"))}>学习并设定</Button><Button variant="light" loading={busy} disabled={!model || !references.length || active} onClick={()=>void perform(()=>start("tune"))}>微调设定</Button></Group>

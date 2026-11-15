@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test } from '@playwright/test';
 import { fullStudioFixture } from '../fixtures.mjs';
 import type { StudioData } from '../../lib/studio-types';
@@ -19,6 +20,7 @@ test('sentence words and mixed controls persist with the selected mode on deskto
   const chooseMode = async (label: string) => { await mode.click(); await page.getByRole('option', { name: label, exact: true }).click(); };
   const sentence = (index: number) => page.getByRole('button', { name: new RegExp(`^第${index}句，`) });
   await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await openGenerationPanels(page);
   await expect(mode).toHaveValue('总体字数控制', { timeout: 20000 });
   await chooseMode('大纲句子字数');
   await expect.poll(async () => current(await read()).expansion?.mode).toBe('words');
@@ -79,15 +81,19 @@ test('sentence words and mixed controls persist with the selected mode on deskto
   const created = state.articles[0].chapters[0].outlines.find(item => !existingIds.has(item.id))!;
   expect(created.expansion).toMatchObject({ enabled: false });
   await page.goto(`/articles/article-main/outlines/${created.id}/generate`);
+  await openGenerationPanels(page);
   await expect(mode).toHaveValue('总体字数控制');
   await chooseMode('大纲句子倍率');
   expect((await read()).settings.outlineLengthMode).toBe('target');
   await page.goto('/articles/article-main/outlines/outline-after/generate');
+  await openGenerationPanels(page);
   await expect(mode).toHaveValue('大纲句子倍率');
   await expect(sentence(1)).toHaveAttribute('aria-label', /^第1句，12倍，大纲默认/);
   await page.goto('/articles/article-main/outlines/outline-previous/generate');
+  await openGenerationPanels(page);
   await expect(mode).toHaveValue('总体字数控制');
   await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await openGenerationPanels(page);
   await expect(mode).toHaveValue('大纲句子字数');
   await expect(sentence(2)).toHaveAttribute('aria-label', /^第2句，500字，本句设置/);
 });

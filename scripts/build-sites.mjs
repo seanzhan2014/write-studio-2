@@ -10,3 +10,4 @@ const child = spawn(process.execPath, [fileURLToPath(new URL("../node_modules/vi
 });
 const [code] = await once(child, "exit");
 process.exitCode = code ?? 1;
+if (code === 0) await import("./verify-sites-build.mjs");

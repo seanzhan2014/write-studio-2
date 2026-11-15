@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { normalizeAiGenerateOptions } from "../../lib/generate-options";
@@ -16,6 +17,7 @@ test("generation models follow actual usage and remember their order after histo
   ];
   expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const modelSelect = page.getByRole("combobox", { name: "本次模型", exact: true });
   await modelSelect.click();
   await expect(page.getByRole("option")).toHaveText(["Recent-C", "Recent-B", "本地演示引擎", "Recent-A"]);

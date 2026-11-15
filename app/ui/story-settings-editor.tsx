@@ -195,7 +195,6 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
     {lastChange && <div className="setting-undo" role="status"><span>已修改“{lastChange.label}”</span><button type="button" onClick={() => { if (level === "chapter") studio.updateChapter(target.id, { settings: lastChange.settings }); else studio.updateOutline(target.id, { settings: lastChange.settings }); setLastChange(null); }}>撤销</button></div>}
     {tab === "story" && <div className="chapter-setting-fields inline-setting-fields">
       {STORY_FIELD_KEYS.filter((key) => showInherited || Boolean(settings.story[key])).map((key) => <ScopedStorySettingField key={key} settingKey={key} level={level} value={resolved.story[key]} source={resolved.storySources[key]} override={settings.story[key]} onChange={(value) => patchStory(key, value)} onScope={(scope) => patchStory(key, settings.story[key]!.value, scope)} onRestore={() => restoreStory(key)} />)}
-      {!showInherited && !Object.keys(settings.story).length && <Text c="dimmed">故事设定全部继承，继承内容保持收起。</Text>}
     </div>}
     {tab === "characters" && <Stack gap="md">
       {showInherited && <TextInput label="查找人物" placeholder="姓名、别名或设定" value={query} onChange={(event) => setQuery(event.currentTarget.value)} />}
@@ -209,7 +208,6 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
           {(showInherited || Object.keys(own?.end ?? {}).length > 0) && <details className="ending-change-group" open={Object.keys(own?.end ?? {}).length > 0}><summary>{level === "chapter" ? "章末变化" : "大纲末变化"}<small>供下一{level === "chapter" ? "章" : "大纲"}继承</small></summary>{CHARACTER_PROFILE_KEYS.filter((key) => showInherited || Object.prototype.hasOwnProperty.call(own?.end ?? {}, key)).map((key) => <div className="ending-change-field" key={key}><StoryInput {...CHARACTER_LABELS[key]} label={`${level === "chapter" ? "章末" : "大纲末"}${CHARACTER_LABELS[key].label}`} value={own?.end[key] ?? person.endingChanges[key] ?? ""} onChange={(value) => patchEnding(person.id, key, value)} />{Object.prototype.hasOwnProperty.call(own?.end ?? {}, key) && <button type="button" onClick={() => patchEnding(person.id, key, undefined)}>移除变化</button>}</div>)}</details>}
         </Stack></details>;
       })}
-      {!visibleCharacters.length && <Text c="dimmed">人物设定没有本级变化，继承内容保持收起。</Text>}
     </Stack>}
     {tab === "relationships" && <Stack gap="md">
       {visibleRelationships.map((item) => {
@@ -224,7 +222,6 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
           {(showInherited || Object.prototype.hasOwnProperty.call(own ?? {}, "end")) && <div className="ending-change-field"><Textarea autosize minRows={2} label={`${level === "chapter" ? "章末" : "大纲末"}关系变化`} value={own?.end ?? item.endingDescription ?? ""} onChange={(event) => patchRelationship({ end: event.currentTarget.value }, "关系变化")} />{Object.prototype.hasOwnProperty.call(own ?? {}, "end") && <button type="button" onClick={() => { const next = cloneSettings(settings); const current = next.relationships[item.id]; if (!current) return; delete current.end; if (!current.start && !current.active) delete next.relationships[item.id]; commit(next, "关系变化"); }}>移除变化</button>}</div>}
         </Stack></details>;
       })}
-      {!visibleRelationships.length && <Text c="dimmed">关系设定没有本级变化，继承内容保持收起。</Text>}
     </Stack>}
   </div>;
 }

@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import type { StudioData } from "../../lib/studio-types";
@@ -15,6 +16,7 @@ test("sentence multipliers are independent of text, inherit live and survive edi
   outline.expansion = { enabled: true, marks: [] };
   expect((await request.put('/api/state', { headers: { 'If-Match': String(current.revision) }, data: { data } })).ok()).toBeTruthy();
   await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await openGenerationPanels(page);
   await expect(page.getByRole('textbox', { name: '正文目标字数', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^第1句，8倍/ })).toBeVisible({ timeout: 20000 });
   const sentence = (index: number) => page.getByRole('button', { name: new RegExp(`^第${index}句，`) });
@@ -88,6 +90,7 @@ test('an empty outline keeps normal typing when sentence mode is enabled', async
   outline.expansion = { enabled: true, marks: [] };
   expect((await request.put('/api/state', { headers: { 'If-Match': String(current.revision) }, data: { data } })).ok()).toBeTruthy();
   await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await openGenerationPanels(page);
   const input = page.getByRole('textbox', { name: '生成使用的大纲内容', exact: true });
   await input.pressSequentially('ABC. DEF.');
   await expect(input).toHaveValue('ABC. DEF.');
@@ -123,6 +126,7 @@ test('chapter and outline views retain total limits and show exact multipliers o
     return item.plan;
   }).toBe('甲乙丙。丁戊己！');
   await page.goto('/articles/article-main/outlines/outline-current/generate');
+  await openGenerationPanels(page);
   await expect(page.getByRole('combobox', { name: '篇幅控制', exact: true })).toHaveValue('总体字数控制');
   await expect(page.getByRole('textbox', { name: '正文目标字数', exact: true })).toHaveValue('600 字');
   // Switching control modes never converts the existing total.

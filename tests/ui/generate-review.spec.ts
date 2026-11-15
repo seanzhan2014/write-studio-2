@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
@@ -136,6 +137,7 @@ test("Generate review settings, server loop and durable report work together", a
     await expect(page.getByRole("combobox", { name: "审校类型", exact: true })).toHaveValue("最大探索型");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await expect(page.getByLabel("审校循环次数", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("本次 Review 指令", { exact: true })).toHaveCount(0);
     await expect(page.locator(".generate-review-settings")).toHaveCount(0);

@@ -1,3 +1,4 @@
+import { selectWorkspaceMode } from "./workspace-controls";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 
@@ -40,7 +41,7 @@ test("manage image styles, persist edits and copies, select them and delete safe
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("ai-prompts.png"), fullPage: true });
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const generator = page.getByRole("region", { name: "插图工作区" });
   const selector = generator.getByRole("combobox", { name: "插图风格", exact: true });
   await selector.click();
@@ -58,6 +59,6 @@ test("manage image styles, persist edits and copies, select them and delete safe
   await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /胶片夜景/ })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "图片风格列表" }).getByRole("button", { name: /复古胶片/ })).toHaveCount(1);
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await expect(selector).toHaveValue("跟随 Prompt");
 });

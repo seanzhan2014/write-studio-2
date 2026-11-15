@@ -20,7 +20,7 @@ import { TaskTimeline, type TaskTimelineEntry } from "@/app/ui/task-timeline";
 import { isIllustrationTarget, isNamingTarget, taskChangesOutline } from "@/lib/task-target";
 
 import { useEffect, useState } from "react";
-import { Alert } from "@mantine/core";
+import { Alert, Menu } from "@mantine/core";
 
 import { closingSummaryLengthLabel, descriptionDetailLabel, dialogueDensityLabel, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel } from "@/lib/generate-options";
 
@@ -148,32 +148,20 @@ export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId =
   function taskCard(task: AiTask) {
     const article = studio.data.articles.find((item) => item.id === task.articleId);
     const chapter = article?.chapters.find((item) => item.id === task.chapterId);
-    return <article className="task-card" key={task.id}>
-      <div className="task-state"><span className={`state-dot ${isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state}`} />{isTaskAwaitingAuthor(task) ? "等待作者" : labels[task.state]} · {phaseLabels[task.phase ?? "queued"]} · {formatTime(task.createdAt)}</div>
-      <button className="task-title" type="button" aria-label={`查看任务详情：${taskTitle(task)}`} onClick={() => setSelectedTaskId(task.id)}>{taskTitle(task)}</button>
-      <p>{article?.title ?? "未知文章"}{isNamingTarget(task.target) ? ` · ${task.contextOptions?.nameChapterCount ?? 0} 章 · ${task.contextOptions?.nameOutlineCount ?? 0} 个大纲` : ` · ${chapter?.title ?? "未知章节"}`} · 目标：{task.target === "AI Chat" ? "聊天" : task.target}{task.target === "正文" ? ` · ${contentGenerationModeLabel(task.contextOptions?.contentMode)}${task.contextOptions?.contentMode === "rewrite" ? ` · 原文保留 ${rewriteRetentionLabel(task.contextOptions.rewriteRetention)}` : ""} · ${proseControlsSummary(task.contextOptions)} · ${generateLengthLabel(task.contextOptions)}` : ""}</p>
-      <blockquote>{task.prompt || (task.target === "全部名称" ? "使用文章命名设置" : task.target === "整章名称" ? "使用本章命名设置" : "按大纲生成")}</blockquote>
-      {task.error && <p className="task-error">{task.error}</p>}
-      <TaskHistory task={task} collapsible />
-      <div><span>{modelDisplayLabel(models, task.model || "", task.contextOptions?.modelName)}</span><span className="task-buttons">
-        <button type="button" onClick={() => setSelectedTaskId(task.id)}>打开</button>
-        {(task.state === "waiting" || task.state === "running") && <button type="button" onClick={() => cancelTask(task)}>取消</button>}
-        {isForeign(task) && !isIllustrationTarget(task.target) && task.target !== "AI Chat" && (task.state === "waiting" || isStale(task)) && <button type="button" onClick={() => transferTask(task)}>{transferLabel}</button>}
-        {task.state === "success" && (task.target === "大纲" || task.target === "章节标题") && <button type="button" onClick={() => { applyResult(task); locate(task); }}>应用结果</button>}
-        {(task.state === "failed" || task.state === "cancelled" || isStale(task)) && (task.target === "AI Chat" ? <button type="button" onClick={() => { studio.setChatDraft(task.outlineId, task.prompt); locate(task); }}>再次发送</button> : <button type="button" onClick={() => retryTask(task)}>重新执行</button>)}
-        {["success", "failed", "cancelled"].includes(task.state) && <button type="button" onClick={() => studio.removeTask(task.id)}>移除</button>}
-      </span></div>
+    return <article className="task-card compact-task-row" key={task.id}>
+      <div className="task-row-main"><div className="task-state"><span className={"state-dot "+(isTaskAwaitingAuthor(task)?"awaiting-author":task.state)} />{isTaskAwaitingAuthor(task)?"等待作者":task.state==="running"?phaseLabels[task.phase??"generating"]:labels[task.state]}</div><button className="task-title" type="button" aria-label={"查看任务详情："+taskTitle(task)} onClick={()=>setSelectedTaskId(task.id)}>{task.prompt.trim().slice(0,80)||taskTitle(task)}</button><small>{task.target==="AI Chat"?"聊天":task.target} · {article?.title??"未知文章"} · {chapter?.title??""} · {taskTitle(task)} · {modelDisplayLabel(models,task.model||"",task.contextOptions?.modelName)} · {formatTime(task.createdAt)}</small>{task.error&&<p className="task-error">{task.error}</p>}</div>
+      <div className="task-buttons"><button type="button" onClick={()=>task.state==="success"?void locate(task):setSelectedTaskId(task.id)}>{task.state==="success"?"打开结果":isTaskAwaitingAuthor(task)?"继续处理":task.state==="failed"?"查看错误":"查看进度"}</button><Menu withinPortal position="bottom-end"><Menu.Target><button type="button" aria-label={taskTitle(task)+"的任务操作"}>•••</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={()=>setSelectedTaskId(task.id)}>任务详情</Menu.Item>{(task.state==="waiting"||task.state==="running")&&<Menu.Item onClick={()=>cancelTask(task)}>取消任务</Menu.Item>}{isForeign(task)&&!isIllustrationTarget(task.target)&&task.target!=="AI Chat"&&(task.state==="waiting"||isStale(task))&&<Menu.Item onClick={()=>transferTask(task)}>{transferLabel}</Menu.Item>}{task.state==="success"&&(task.target==="大纲"||task.target==="章节标题")&&<Menu.Item onClick={()=>{applyResult(task);void locate(task);}}>应用结果</Menu.Item>}{(task.state==="failed"||task.state==="cancelled"||isStale(task))&&<Menu.Item onClick={()=>task.target==="AI Chat"?(studio.setChatDraft(task.outlineId,task.prompt),void locate(task)):retryTask(task)}>重新执行</Menu.Item>}{["success","failed","cancelled"].includes(task.state)&&<Menu.Item color="red" onClick={()=>studio.removeTask(task.id)}>移除任务记录</Menu.Item>}</Menu.Dropdown></Menu></div>
     </article>;
   }
   const taskEntries: TaskTimelineEntry[] = tasks.map(task => ({ id: `task:${task.id}`, createdAt: task.createdAt, content: taskCard(task) }));
 
-  return <section className="workspace task-workspace" aria-label="AI 任务工作区">
-    <header className="workspace-header"><div className="task-drawer-title">{selectedTask && <IconButton name="back" label="返回任务列表" onClick={() => setSelectedTaskId("")} />}<div><strong>{selectedTask ? taskTitle(selectedTask) : "AI 任务"}</strong><span>{selectedTask ? taskPhaseLabels[selectedTask.phase ?? "queued"] : activeCount ? String(activeCount) + " 个待处理任务" : failedCount ? `${failedCount} 个任务需要处理` : "没有进行中的任务"}</span></div></div><IconButton name="close" label="关闭 AI 任务" onClick={onClose} /></header>
+  return <section className="workspace task-workspace" aria-label="任务工作区">
+    <header className="workspace-header"><div className="task-drawer-title">{selectedTask && <IconButton name="back" label="返回任务列表" onClick={() => setSelectedTaskId("")} />}<div><strong>{selectedTask ? taskTitle(selectedTask) : "任务"}</strong><span>{selectedTask ? taskPhaseLabels[selectedTask.phase ?? "queued"] : activeCount ? String(activeCount) + " 个待处理任务" : failedCount ? `${failedCount} 个任务需要处理` : "没有进行中的任务"}</span></div></div><IconButton name="close" label="关闭任务" onClick={onClose} /></header>
     {!selectedTask && <nav className="style-task-tabs" aria-label="任务类型"><button type="button" aria-pressed={taskKind === "all"} onClick={() => { setTaskKind("all"); setSelectedTaskId(""); }}>全部任务</button><button type="button" aria-pressed={taskKind === "generate"} onClick={() => { setTaskKind("generate"); setSelectedTaskId(""); }}>生成与对话</button><button type="button" aria-label="学习与微调" aria-pressed={taskKind === "style"} onClick={() => { setTaskKind("style"); setSelectedTaskId(""); }}>学习与微调{styleTaskTotal ? ` · ${styleTaskTotal}` : ""}</button></nav>}
     <div className="task-workspace-content">
       {taskKind === "style" ? <div className="task-panel style-task-panel" data-ui-overlay-scroll><StyleJobHistory onOpenArticle={onClose} initialJobId={initialTaskId.startsWith("style:") ? initialTaskId.slice(6) : ""} /></div> : <>
       {selectedTask && <nav className="task-workspace-rail" aria-label="任务列表">{tasks.map((task) => <button type="button" key={task.id} aria-current={selectedTaskId === task.id ? "true" : undefined} onClick={() => setSelectedTaskId(task.id)}><span className={"state-dot " + (isTaskAwaitingAuthor(task) ? "awaiting-author" : task.state)} /><span><strong>{taskTitle(task)}</strong><small>{taskPhaseLabels[task.phase ?? "queued"]}</small></span></button>)}</nav>}
-      <div className="task-panel" aria-label="AI 任务">
+      <div className="task-panel" aria-label="任务">
       {selectedTask?.contextOptions?.writingPreparation ? <section className="task-detail workflow-task-detail" aria-label="任务详情">
         <TaskInteraction key={selectedTask.id + ":" + selectedTask.contextOptions.writingPreparation.revision} task={selectedTask} full details={taskDetails} />
         <footer className="task-detail-actions"><button type="button" onClick={() => locate(selectedTask)}>{selectedTask.state === "success" ? "打开生成版本" : "打开对应内容"}</button>{(selectedTask.state === "waiting" || selectedTask.state === "running") && <button type="button" onClick={() => cancelTask(selectedTask)}>取消任务</button>}{isForeign(selectedTask) && (selectedTask.state === "waiting" || isStale(selectedTask)) && <button onClick={() => transferTask(selectedTask)}>{transferLabel}</button>}{(selectedTask.state === "failed" || selectedTask.state === "cancelled" || isStale(selectedTask)) && <button onClick={() => retryTask(selectedTask)}>重新执行</button>}{["success", "failed", "cancelled"].includes(selectedTask.state) && <button className="danger-text" type="button" onClick={() => { setSelectedTaskId(""); studio.removeTask(selectedTask.id); }}>移除</button>}</footer>
@@ -200,7 +188,7 @@ export function TaskPanel({ onClose, onOpen, onOpenIllustration, initialTaskId =
         ? <StyleJobHistory onOpenArticle={onClose} renderList={styleEntries => <CharacterPhotoTasks renderList={photoEntries => <TaskTimeline entries={[...taskEntries, ...styleEntries, ...photoEntries]} />} />} />
         : <CharacterPhotoTasks renderList={photoEntries => <TaskTimeline entries={[...taskEntries, ...photoEntries]} />} />
       }</div>
-      <footer><span>生成并发 {generateRunningCount} / {studio.data.settings.taskConcurrency}{chatRunningCount ? ` · Chat ${chatRunningCount}` : ""}</span><span className="task-footer-actions"><button type="button" disabled={!completedCount} onClick={() => studio.clearCompletedTasks()}>清空已完成{completedCount ? ` (${completedCount})` : ""}</button><button type="button" onClick={() => { onClose(); window.history.pushState({}, "", "/settings/tasks"); window.dispatchEvent(new PopStateEvent("popstate")); }}>任务设置 →</button></span></footer></>}
+      <footer><span>生成并发 {generateRunningCount} / {studio.data.settings.taskConcurrency}{chatRunningCount ? ` · Chat ${chatRunningCount}` : ""}</span><span className="task-footer-actions"><button type="button" disabled={!completedCount} onClick={() => studio.clearCompletedTasks()}>清空已完成{completedCount ? ` (${completedCount})` : ""}</button><button type="button" onClick={() => { onClose(); window.history.pushState({}, "", "/settings/tasks"); window.dispatchEvent(new PopStateEvent("popstate")); }}>AI 默认设置 →</button></span></footer></>}
     </div></>}
     </div>
   </section>;

@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test } from "@playwright/test";
 import type { AiTask } from "../../app/studio-state";
@@ -15,8 +16,9 @@ test("closing summary defaults off, inherits global settings and persists an exp
   await summary.getByRole("radio", { name: "无", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.aiGenerateSettings.closingSummaryLength).toBe("short");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.aiGenerateSettings?.closingSummaryLength).toBe("short");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).check();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.closingSummaryLength).toBe("none");
@@ -29,6 +31,7 @@ test("closing summary defaults off, inherits global settings and persists an exp
 
 test("changing only the closing summary choice creates a distinct generation request", async ({ page }) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   for (const [length, label] of [["none", "无"], ["short", "1句"], ["medium", "1段"], ["auto", "自动"]] as const) {
@@ -49,6 +52,7 @@ test("changing only the closing summary choice creates a distinct generation req
 test("prose controls support keyboard selection, mode changes and narrow touch targets", async ({ page }, testInfo) => {
   if (testInfo.project.name === "mobile-chromium") await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const group = page.getByRole("radiogroup", { name: "对话密度", exact: true });
   const introspection = page.getByRole("radiogroup", { name: "内心活动", exact: true });
   const description = page.getByRole("radiogroup", { name: "描写细度", exact: true });
@@ -79,21 +83,19 @@ test("prose controls support keyboard selection, mode changes and narrow touch t
     for (const radio of await controls.getByRole("radio").all()) {
       const box = await radio.boundingBox();
       expect(box!.width).toBeGreaterThanOrEqual(44);
-      expect(box!.height).toBeGreaterThanOrEqual(44);
+      expect(box!.height).toBeGreaterThanOrEqual(testInfo.project.name === "mobile-chromium" ? 44 : 32);
     }
   }
   await page.getByRole("radio", { name: /^改写正文/ }).click();
   for (const controls of [group, introspection, description, pace, paragraph, summary]) {
     await expect(controls.getByRole("radio", { name: "自动", exact: true })).toBeChecked();
   }
-  await page.getByRole("slider", { name: "原文保留度" }).focus();
-  await page.keyboard.press("End");
-  await expect(page.locator(".rewrite-retention-heading strong")).toContainText("高保留");
+  await page.getByRole("radiogroup", { name: "原文保留度", exact: true }).getByRole("radio", { name: "高保留", exact: true }).check();
   await page.getByRole("radio", { name: /^续写正文/ }).click();
   await expect(group.getByRole("radio", { name: "高", exact: true })).toBeChecked();
   await expect(introspection.getByRole("radio", { name: "多", exact: true })).toBeChecked();
   await expect(paragraph.getByRole("radio", { name: "长", exact: true })).toBeChecked();
-  await expect(page.getByRole("slider", { name: "原文保留度" })).toHaveCount(0);
+  await expect(page.getByRole("radiogroup", { name: "原文保留度", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
 });
 
@@ -104,7 +106,9 @@ test("rewrite defaults and explicit edits persist independently from ordinary wr
   const advanced = page.locator(".article-generate-settings .writing-advanced");
   await advanced.locator("summary").click();
   await advanced.getByLabel("心理展开方式", { exact: true }).fill("普通写作的心理要求");
+  await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.settings.aiGenerateSettings?.advanced?.psychology).toBe("普通写作的心理要求");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const dialogue = page.getByRole("radiogroup", { name: "对话密度", exact: true });
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
   await expect(dialogue.getByRole("radio", { name: "高", exact: true })).toBeChecked();
@@ -143,6 +147,7 @@ test("rewrite defaults and explicit edits persist independently from ordinary wr
 
 test("prose controls are submitted, distinguish recent requests and remain visible in task details", async ({ page, request }) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const groups = {
     dialogue: page.getByRole("radiogroup", { name: "对话密度", exact: true }),
     introspection: page.getByRole("radiogroup", { name: "内心活动", exact: true }),

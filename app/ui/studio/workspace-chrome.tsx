@@ -6,7 +6,7 @@ import { Popover } from "@mantine/core";
 export type WorkspaceMode = "write" | "chat" | "generate" | "illustrations";
 export type WorkspaceLayout = "single" | "columns" | "rows" | "grid";
 export const workspaceModes: { value: WorkspaceMode; label: string }[] = [{value:"write",label:"写作"},{value:"chat",label:"聊天"},{value:"generate",label:"生成"},{value:"illustrations",label:"插图"}];
-const layouts: { value: WorkspaceLayout; label: string }[] = [{value:"single",label:"单窗"},{value:"columns",label:"左右"},{value:"rows",label:"上下"},{value:"grid",label:"四宫格"}];
+export const workspaceLayouts: { value: WorkspaceLayout; label: string }[] = [{value:"single",label:"单窗"},{value:"columns",label:"左右"},{value:"rows",label:"上下"},{value:"grid",label:"四宫格"}];
 
 export function WorkspaceModeTabs({ value, onChange, unread = false }: { value: WorkspaceMode; onChange: (value: WorkspaceMode) => void; unread?: boolean }) {
   const id=useId();
@@ -27,13 +27,13 @@ function LayoutGlyph({ value }: { value: WorkspaceLayout }) {
 
 export function WorkspaceLayoutPicker({ value, onChange, disabled }: { value: WorkspaceLayout; onChange: (value: WorkspaceLayout) => void; disabled?: boolean }) {
   const [opened,setOpened]=useState(false);
-  const current=layouts.find(item=>item.value===value)!;
+  const current=workspaceLayouts.find(item=>item.value===value)!;
   return <Popover opened={opened} onChange={setOpened} position="bottom-end" offset={8} withinPortal trapFocus returnFocus closeOnEscape>
     <Popover.Target><button className="workspace-layout-trigger icon-button" type="button" aria-label="窗口布局" title={"窗口布局 · "+current.label} aria-haspopup="dialog" aria-expanded={opened} data-layout={value} disabled={disabled} onClick={()=>setOpened(!opened)}><LayoutGlyph value={value} /></button></Popover.Target>
     <Popover.Dropdown className="workspace-layout-popover"><div className="workspace-layout-options" role="toolbar" aria-label="窗口布局" onKeyDown={event=>{
       const buttons=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));const index=buttons.indexOf(document.activeElement as HTMLButtonElement);
       const delta=event.key==="ArrowRight"?1:event.key==="ArrowLeft"?-1:event.key==="ArrowDown"?2:event.key==="ArrowUp"?-2:0;
       if(delta){event.preventDefault();buttons[(index+delta+4)%4]?.focus();}
-    }}>{layouts.map(item=><button type="button" key={item.value} aria-pressed={value===item.value} data-autofocus={value===item.value||undefined} onClick={()=>{onChange(item.value);setOpened(false);}}><LayoutGlyph value={item.value} /><span>{item.label}</span></button>)}</div></Popover.Dropdown>
+    }}>{workspaceLayouts.map(item=><button type="button" key={item.value} aria-pressed={value===item.value} data-autofocus={value===item.value||undefined} onClick={()=>{onChange(item.value);setOpened(false);}}><LayoutGlyph value={item.value} /><span>{item.label}</span></button>)}</div></Popover.Dropdown>
   </Popover>;
 }

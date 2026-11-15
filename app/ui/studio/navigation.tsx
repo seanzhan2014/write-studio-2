@@ -1,4 +1,5 @@
 "use client";
+import { requestTextDialog, requestConfirmDialog } from "@/app/ui/operation-dialogs";
 
 import { useActiveStyleCount } from "@/app/ui/style-lab";
 
@@ -291,12 +292,12 @@ export function Sidebar({
           onDragEnd={finishOutlineDrag}
         >
           <div className={`chapter-scroll ${virtualizeTree ? "virtualized-tree" : ""}`}>
-            <div className="tree-title"><span>章节</span><IconButton name="plus" label="新建章节" onClick={() => { const answer = window.prompt("章节标题", "未命名章节"); if (answer === null) return; const title = answer.trim().slice(0, 120) || "未命名章节"; const chapterId = studio.createChapter(title); const outlineId = studio.createOutline(chapterId); setExpanded((state) => ({ ...state, [chapterId]: true })); onOutline(outlineId); onNotice(`已创建章节「${title}」和第一条大纲`); }} /></div>
+            <div className="tree-title"><span>章节</span><IconButton name="plus" label="新建章节" onClick={async () => { const answer = (await requestTextDialog("章节标题", "未命名章节")); if (answer === null) return; const title = answer.trim().slice(0, 120) || "未命名章节"; const chapterId = studio.createChapter(title); const outlineId = studio.createOutline(chapterId); setExpanded((state) => ({ ...state, [chapterId]: true })); onOutline(outlineId); onNotice(`已创建章节「${title}」和第一条大纲`); }} /></div>
             {groups.map((group) => (
               <div className="chapter-group" key={group.id}>
                 <DesktopChapterDropRow chapterId={group.id} className={`chapter-row ${view === "chapter" && group.id === studio.currentChapter.id ? "active" : ""}`}>
                   <button className={`disclosure ${expanded[group.id] ? "expanded" : ""}`} type="button" aria-label={`${expanded[group.id] ? "折叠" : "展开"}${group.title}`} onClick={() => setExpanded((state) => ({ ...state, [group.id]: !state[group.id] }))}><Icon name="chevron" /></button>
-                  <button className="chapter-link" type="button" onDoubleClick={() => { const title = window.prompt("章节标题", group.title); if (title?.trim()) studio.updateChapter(group.id, { title: title.trim() }); }} onClick={() => { if (group.items[0]) studio.setCurrentOutline(group.items[0].id); onGo("chapter"); }}>{group.title}</button>
+                  <button className="chapter-link" type="button" onDoubleClick={async () => { const title = (await requestTextDialog("章节标题", group.title)); if (title?.trim()) studio.updateChapter(group.id, { title: title.trim() }); }} onClick={() => { if (group.items[0]) studio.setCurrentOutline(group.items[0].id); onGo("chapter"); }}>{group.title}</button>
                   <IconButton name="plus" label={`在${group.title}中新建大纲`} className="chapter-outline-add" onClick={() => { const id = studio.createOutline(group.id); onOutline(id); }} />
                   <IconButton name="more" label={`${group.title}更多操作`} onClick={() => setChapterMenu(group)} />
                 </DesktopChapterDropRow>
@@ -332,7 +333,7 @@ export function Sidebar({
 
         <div className="sidebar-footer">
           <button className={view.startsWith("settings-") ? "active" : ""} type="button" aria-label="设置" title="设置" onClick={() => onGo("settings-general")}><Icon name="settings" /><span>设置</span></button>
-          <button type="button" aria-label="AI 任务" title="AI 任务" onClick={onTask}><Icon name="tasks" /><span>AI 任务</span>{(styleTaskCount > 0 || studio.data.tasks.some((task) => task.state === "waiting" || task.state === "running")) && <span className="task-count-badge ui-emphasis">{(studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length + styleTaskCount)}</span>}</button>
+          <button type="button" aria-label="任务" title="任务" onClick={onTask}><Icon name="tasks" /><span>任务</span>{(styleTaskCount > 0 || studio.data.tasks.some((task) => task.state === "waiting" || task.state === "running")) && <span className="task-count-badge ui-emphasis">{(studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length + styleTaskCount)}</span>}</button>
         </div>
         <div className="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整侧栏宽度" onPointerDown={startResize} />
       </aside>
@@ -512,7 +513,7 @@ export function MobileOutlineHome({
           <span><span className="ui-title">{articleTitle}</span></span>
           <Icon name="chevron" />
         </button>
-        <IconButton name="tasks" label="AI 任务" variant="glass" size="large" className="mobile-header-action" badge={(studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length + styleTaskCount) || undefined} onClick={onTask} />
+        <IconButton name="tasks" label="任务" variant="glass" size="large" className="mobile-header-action" badge={(studio.data.tasks.filter((task) => task.state === "waiting" || task.state === "running").length + styleTaskCount) || undefined} onClick={onTask} />
         <IconButton name="settings" label="设置" variant="glass" size="large" className="mobile-header-action" onClick={onSettings} />
       </header>
 
@@ -611,18 +612,18 @@ export function MobileOutlineHome({
           onOutline(actionTarget.id, "chat");
           setActionTarget(null);
         }}
-        onMove={() => {
+        onMove={async () => {
           const options = groups.map((group, index) => `${index + 1}. ${group.title}`).join("\n");
-          const answer = window.prompt(`移动到哪个章节？\n${options}`, "1");
+          const answer = (await requestTextDialog(`移动到哪个章节？\n${options}`, "1"));
           const target = groups[Number(answer) - 1];
           if (target) { studio.moveOutlineToChapter(actionTarget.id, target.id); act(`已移动到「${target.title}」`); }
         }}
         onMoveUp={previousActionOutline ? () => { studio.moveOutline(actionTarget.id, previousActionOutline.id, "before"); act(`已上移「${outlineDisplayTitle(actionTarget)}」`); } : undefined}
         onMoveDown={nextActionOutline ? () => { studio.moveOutline(actionTarget.id, nextActionOutline.id, "after"); act(`已下移「${outlineDisplayTitle(actionTarget)}」`); } : undefined}
         onArchive={() => { studio.updateOutline(actionTarget.id, { archived: !actionTarget.archived }); act(actionTarget.archived ? `已恢复「${outlineDisplayTitle(actionTarget)}」` : `已归档「${outlineDisplayTitle(actionTarget)}」`); }}
-        onDelete={() => {
+        onDelete={async () => {
           const displayTitle = outlineDisplayTitle(actionTarget);
-          if (window.confirm(`删除大纲「${displayTitle}」？对应正文、版本和聊天也会删除。`)) { studio.deleteOutline(actionTarget.id); act(`已删除「${displayTitle}」`); }
+          if ((await requestConfirmDialog(`删除大纲「${displayTitle}」？对应正文、版本和聊天也会删除。`))) { studio.deleteOutline(actionTarget.id); act(`已删除「${displayTitle}」`); }
         }}
         onCopy={() => {
           const source = actionTarget;
@@ -948,10 +949,10 @@ export function DesktopOutlineMenu({ outline, onClose, onSettings, onOpenChat, o
   const nextOutline = chapter && outlineIndex >= 0 && outlineIndex < chapter.outlines.length - 1 ? chapter.outlines[outlineIndex + 1] : undefined;
   const items: Array<[string, () => void]> = [
     [`大纲设定${countOutlineSettingChanges(outline.settings) ? ` · ${countOutlineSettingChanges(outline.settings)}` : ""}`, onSettings],
-    ["编辑大纲", () => {
-      const title = window.prompt("大纲标题", normalizeOutlineTitle(outline.title));
+    ["编辑大纲", async () => {
+      const title = (await requestTextDialog("大纲标题", normalizeOutlineTitle(outline.title)));
       if (title === null) return;
-      const plan = window.prompt("大纲内容", outline.plan);
+      const plan = (await requestTextDialog("大纲内容", outline.plan));
       if (plan === null) return;
       studio.updateOutline(outline.id, { title: normalizeOutlineTitle(title), plan });
       onNotice("大纲已更新");
@@ -963,8 +964,8 @@ export function DesktopOutlineMenu({ outline, onClose, onSettings, onOpenChat, o
     ["导出大纲", () => transfer.exportOutline(outline)],
     ...(previousOutline ? [["上移一位", () => { studio.moveOutline(outline.id, previousOutline.id, "before"); onNotice(`已上移「${displayTitle}」`); }] as [string, () => void]] : []),
     ...(nextOutline ? [["下移一位", () => { studio.moveOutline(outline.id, nextOutline.id, "after"); onNotice(`已下移「${displayTitle}」`); }] as [string, () => void]] : []),
-    ["移动到章节", () => {
-      const answer = window.prompt(studio.currentArticle.chapters.map((item, index) => `${index + 1}. ${item.title}`).join("\n"), "1");
+    ["移动到章节", async () => {
+      const answer = (await requestTextDialog(studio.currentArticle.chapters.map((item, index) => `${index + 1}. ${item.title}`).join("\n"), "1"));
       const target = studio.currentArticle.chapters[Number(answer) - 1];
       if (target) { studio.moveOutlineToChapter(outline.id, target.id); onNotice(`已移动到「${target.title}」`); }
     }],
@@ -972,7 +973,7 @@ export function DesktopOutlineMenu({ outline, onClose, onSettings, onOpenChat, o
   ];
   const actions: ActionSheetItem[] = [
     ...items.map(([label, action]) => ({ key: label, label, onSelect: action })),
-    { key: "delete", label: "删除大纲", danger: true, onSelect: () => { if (window.confirm(`删除「${displayTitle}」及其正文、版本和聊天？`)) { studio.deleteOutline(outline.id); onNotice("大纲已删除"); } } },
+    { key: "delete", label: "删除大纲", danger: true, onSelect: async () => { if ((await requestConfirmDialog(`删除「${displayTitle}」及其正文、版本和聊天？`))) { studio.deleteOutline(outline.id); onNotice("大纲已删除"); } } },
   ];
   return <MobileActionSheet actions={actions} ariaLabel={`大纲操作：${displayTitle}`} closeLabel="关闭大纲菜单" eyebrow="大纲操作" onClose={onClose} responsiveDesktopMenu title={displayTitle} />;
 }
@@ -982,7 +983,7 @@ export function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline, 
   const transfer = useDataTransfer();
   const models = useConfiguredModels();
   const items: Array<{ key: string; label: string; icon: IconName; className?: string; disabled?: boolean; onSelect: () => void }> = [
-    { key: "rename", label: "重命名", icon: "edit", onSelect: () => { const title = window.prompt("章节标题", chapter.title); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } } },
+    { key: "rename", label: "重命名", icon: "edit", onSelect: async () => { const title = (await requestTextDialog("章节标题", chapter.title)); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } } },
     { key: "settings", label: `章节设定${countChapterSettingChanges(chapter.settings) ? ` · ${countChapterSettingChanges(chapter.settings)}` : ""}`, icon: "info", onSelect: onSettings },
     { key: "generate-names", label: "生成整章名称（含大纲）", icon: "spark", disabled: chapter.archived || !chapter.outlines.some((item) => !item.archived && item.plan.trim()), onSelect: () => {
       void generateWholeChapterNameCandidates(studio, models, chapter)
@@ -997,7 +998,7 @@ export function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline, 
   ];
   const actions: ActionSheetItem[] = [
     ...items.map((item) => ({ ...item, icon: <Icon name={item.icon} /> })),
-    { key: "delete", label: "删除章节", icon: <Icon name="trash" />, danger: true, onSelect: () => { const settingCount = countChapterSettingChanges(chapter.settings); if (chapterIsEmpty(chapter) && settingCount === 0) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); return; } const typed = window.prompt(`章节包含 ${chapter.outlines.length} 条大纲和 ${settingCount} 项章节设定。删除后，后续章节的继承会重算。输入章节标题以确认删除：`, ""); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); } } },
+    { key: "delete", label: "删除章节", icon: <Icon name="trash" />, danger: true, onSelect: async () => { const settingCount = countChapterSettingChanges(chapter.settings); if (chapterIsEmpty(chapter) && settingCount === 0) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); return; } const typed = (await requestTextDialog(`章节包含 ${chapter.outlines.length} 条大纲和 ${settingCount} 项章节设定。删除后，后续章节的继承会重算。输入章节标题以确认删除：`, "")); if (typed === chapter.title) { studio.deleteChapter(chapter.id); onNotice("章节已删除，继承链已重算"); } } },
   ];
   return <MobileActionSheet actions={actions} ariaLabel={`章节操作：${chapter.title}`} classNames={{ content: "outline-action-drawer", body: "outline-action-drawer-body" }} closeLabel="关闭章节菜单" eyebrow="章节操作" onClose={onClose} responsiveDesktopMenu title={chapter.title} />;
 }

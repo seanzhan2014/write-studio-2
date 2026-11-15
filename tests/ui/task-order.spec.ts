@@ -32,8 +32,8 @@ test("all tasks and task categories keep submission order across generation, lea
     { ...photo, id: "photo-new", characterName: "较新照片", state: "error", createdAt: timestamp(10) },
   ] } }));
   await page.goto("/articles/article-main/outlines");
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
-  const workspace = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  const workspace = page.getByRole("region", { name: "任务工作区", exact: true });
   const allOrder = [/最新生成/, /最新学习/, /较新照片/, /中间生成/, /较早照片/, /最早学习/, /最早生成/];
   await expect(workspace.locator(".task-timeline > *")).toContainText(allOrder);
   expect(timelineQuery).toBeTruthy();

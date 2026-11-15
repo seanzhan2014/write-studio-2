@@ -333,11 +333,12 @@ export function rewriteRetentionLabel(level?: RewriteRetentionLevel) {
   return rewriteRetentionOptions.find((item) => item.value === normalized)?.label ?? "平衡";
 }
 
-export function resolvedProseControls(options?: AiTask["contextOptions"]) {
+type ProseOptions = Pick<NonNullable<AiTask["contextOptions"]>, "proseControls" | "dialogueDensity">;
+export function resolvedProseControls(options?: ProseOptions) {
   return normalizeProseControls(options?.proseControls, options?.dialogueDensity);
 }
 
-export function proseControlsSummary(options?: AiTask["contextOptions"]) {
+export function proseControlsSummary(options?: ProseOptions) {
   const controls = resolvedProseControls(options);
   return `对话 ${dialogueDensityLabel(controls.dialogueDensity)} · 心理 ${introspectionDensityLabel(controls.introspectionDensity)} · 描写 ${descriptionDetailLabel(controls.descriptionDetail)} · 节奏 ${narrativePaceLabel(controls.narrativePace)} · 段落 ${paragraphLengthLabel(controls.paragraphLength)}`;
 }

@@ -1,3 +1,5 @@
+import { openGenerationPanels } from "./workspace-controls";
+import { selectWorkspaceMode } from "./workspace-controls";
 import { showTotalWordMode } from "./outline-expansion-helper";
 import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
@@ -392,6 +394,7 @@ test("mobile overlays stay reachable across the supported viewport matrix", asyn
       await articleDrawer.getByRole("button", { name: "关闭文章菜单" }).click();
 
       await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
       await page.locator(".generate-context-summary").click();
       const contextDrawer = page.locator(".ws-scrollable-drawer").filter({ has: page.locator(".generate-context-panel") });
       await expectOverlayContract(page, contextDrawer);
@@ -567,20 +570,20 @@ test("generate controls and context drawer fit the desktop viewport", async ({ p
   test.setTimeout(60000);
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await showTotalWordMode(page);
   await expect(page.getByLabel("正文目标字数")).toHaveValue(/5,?000/);
   await expect(page.getByLabel("同时生成大纲名", { exact: true })).not.toBeChecked();
-  await expect(page.getByRole("radio", { name: /全新生成/ })).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByRole("radio", { name: /全新生成/ })).toBeChecked();
   await expect(page.getByRole("radio", { name: /改写正文/ })).toBeEnabled();
   await expect(page.getByRole("radio", { name: /续写正文/ })).toBeEnabled();
   await page.getByRole("radio", { name: /改写正文/ }).click();
-  const retention = page.getByRole("slider", { name: "原文保留度" });
+  const retention = page.getByRole("radiogroup", { name: "原文保留度", exact: true });
   await expect(retention).toBeVisible();
-  await expect(page.getByText("平衡 · 平衡改写", { exact: true })).toBeVisible();
-  await retention.focus();
-  await retention.press("End");
-  await expect(page.getByText("高保留 · 轻度润色", { exact: true })).toBeVisible();
+  await expect(retention.getByRole("radio", {name:"平衡",exact:true})).toBeChecked();
+  await retention.getByRole("radio", {name:"高保留",exact:true}).check();
+  await expect(retention.getByRole("radio", {name:"高保留",exact:true})).toBeChecked();
   await page.getByRole("radio", { name: /全新生成/ }).click();
   await expect(retention).toHaveCount(0);
   await expect(page.getByText("补充指令（可选）", { exact: false })).toBeVisible();
@@ -611,6 +614,7 @@ test("tablet layouts do not crop the workspace and keep primary AI actions reach
   test.skip(testInfo.project.name !== "desktop-chromium", "tablet breakpoint");
   await page.setViewportSize({ width: 820, height: 900 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
 
   const viewport = page.viewportSize()!;
   for (const selector of [".studio-shell", ".main-area", ".generate-command-card"]) {
@@ -641,8 +645,9 @@ test("tablet layouts do not crop the workspace and keep primary AI actions reach
 test("first appearance editor is usable on mobile", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await page.getByRole("radio", { name: /改写正文/ }).click();
-  const retention = page.getByRole("slider", { name: "原文保留度" });
+  const retention = page.getByRole("radiogroup", { name: "原文保留度", exact: true });
   await expect(retention).toBeVisible();
   const retentionBounds = await page.locator(".rewrite-retention-control").boundingBox();
   const mobileViewport = page.viewportSize()!;
@@ -670,6 +675,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await expect(page.getByText("正在使用文章生成预设", { exact: true })).toHaveCount(0);
   const outlinePlan = page.locator("#generate-outline-plan");
@@ -768,6 +774,7 @@ test("AI Generate controls keep mobile touch sizes and allow an unlimited word t
 test("mobile AI Generate replaces a stored old default but keeps a custom outline height", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   const outlinePlan = page.locator("#generate-outline-plan");
   const expandedHeight = Math.round((await outlinePlan.boundingBox())!.height);
@@ -800,6 +807,7 @@ test("mobile AI Generate replaces a stored old default but keeps a custom outlin
 test("mobile AI Generate divider resizes the outline by touch and remembers its height", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile touch layout");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   const outlinePlan = page.locator("#generate-outline-plan");
   const divider = page.locator(".generate-outline-resize-divider");
@@ -852,6 +860,7 @@ test("mobile AI Generate divider resizes the outline by touch and remembers its 
 test("AI Generate remembers both textarea heights locally for each outline", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop-chromium", "desktop resize behavior");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   const revisionBefore = (await (await request.get("/api/state")).json() as { revision: number }).revision;
   const outlinePlan = page.locator("#generate-outline-plan");
@@ -872,11 +881,13 @@ test("AI Generate remembers both textarea heights locally for each outline", asy
   await expect.poll(async () => Math.round((await instruction.boundingBox())?.height ?? 0)).toBe(276);
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).not.toBe(318);
   await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).not.toBe(276);
 
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await expect.poll(async () => Math.round((await page.locator("#generate-outline-plan").boundingBox())?.height ?? 0)).toBe(318);
   await expect.poll(async () => Math.round((await page.locator(".generate-prompt-label textarea").boundingBox())?.height ?? 0)).toBe(276);
@@ -885,6 +896,7 @@ test("AI Generate remembers both textarea heights locally for each outline", asy
 test("mobile supplementary instruction save sends one compact outline patch", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile save path");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await page.locator(".generate-prompt-label textarea").fill("手机端小型增量保存");
   const pendingRequest = page.waitForRequest((request) => request.url().endsWith("/api/state/mutations") && request.method() === "POST");
   await page.getByRole("button", { name: "保存指令" }).click();
@@ -916,6 +928,7 @@ test("AI Generate reuses supplementary instructions only within the same outline
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   const instruction = page.locator(".generate-prompt-label textarea");
   await expect(instruction).toHaveValue("当前码头沿用的补充指令");
@@ -943,8 +956,8 @@ test("AI Generate reuses supplementary instructions only within the same outline
     return state.data.articles.flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines).find((item) => item.id === "outline-current")?.generateInstruction;
   }).toBe("当前码头下一次仍要沿用");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
-  await page.getByRole("tab", { name: "聊天" }).click();
-  await page.getByRole("tab", { name: "生成", exact: true }).click();
+  await selectWorkspaceMode(page,"聊天");
+  await selectWorkspaceMode(page,"生成");
   await expect(instruction).toHaveValue("当前码头下一次仍要沿用");
   await instruction.fill("");
   await page.getByRole("button", { name: "保存指令" }).click();
@@ -953,6 +966,7 @@ test("AI Generate reuses supplementary instructions only within the same outline
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("");
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await expect(page.locator(".generate-prompt-label textarea")).toHaveValue("前序灯塔自己的补充指令");
 });
@@ -979,11 +993,13 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
 
   const numericValue = async (label: string) => Number((await page.getByRole("textbox", { name: label }).inputValue()).replace(/[^\d-]/g, ""));
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await expect(page.locator(".generate-settings-source")).toHaveCount(0);
   await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(6400);
 
   await page.goto("/articles/article-main/outlines/outline-previous/generate");
+  await openGenerationPanels(page);
   await expect(page.locator(".generate-settings-source")).toContainText("正在使用此大纲最近的生成设置");
   await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(7100);
@@ -1017,6 +1033,7 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
     return state.data.settings.generateTargetWords;
   }).toBe(6800);
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await expect(page.locator(".generate-settings-source")).toHaveCount(0);
   await showTotalWordMode(page);
   await expect.poll(() => numericValue("正文目标字数")).toBe(6800);
@@ -1044,6 +1061,7 @@ test("AI Generate shows the configured model and no longer lists candidate bodie
   expect(saved.ok()).toBeTruthy();
 
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const model = page.getByRole("combobox", { name: "本次模型" });
   await expect(model).toBeVisible();
   await model.click();
@@ -1081,19 +1099,19 @@ test("workspace AI tabs render before a background save finishes and reuse the p
     if (route.request().method() === "POST") await saveGate;
     await route.continue();
   });
-  await page.getByRole("tab", { name: "生成", exact: true }).click();
+  await selectWorkspaceMode(page,"生成");
   const model = page.getByRole("combobox", { name: "本次模型" });
   await model.click();
   await page.getByRole("option", { name: "Remote Provider-Remote Writer" }).click();
   await expect(page.locator(".save-state")).toContainText(/未保存|正在保存/);
 
   try {
-    await page.getByRole("tab", { name: "聊天" }).click();
+    await selectWorkspaceMode(page,"聊天");
     await expect(page.locator(".chat-view")).toBeVisible({ timeout: 800 });
   } finally {
     releaseSave();
   }
-  await page.getByRole("tab", { name: "生成", exact: true }).click();
+  await selectWorkspaceMode(page,"生成");
   await expect(page.locator(".generate-view")).toBeVisible();
   expect(modelRequests).toBe(1);
 });
@@ -1300,6 +1318,7 @@ test("editing a previewed body inherits that version's outline snapshot", async 
 
 test("Generate outline editing stays local until saving after default conversion", async ({ page, request }, testInfo) => {
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   await showTotalWordMode(page);
   await expect(page.getByRole("button", { name: "保存大纲", exact: true })).toHaveCount(0);
   const editor = page.getByLabel("生成使用的大纲内容");
@@ -1634,7 +1653,7 @@ test("selection context menu toggles appreciation, marks candidates, and exposes
   await page.getByRole("button", { name: "版本" }).click();
   await expect(page.locator(".version-list article.current .excellent-fragment-dot")).toBeVisible();
   await page.getByRole("button", { name: "关闭正文版本" }).click();
-  await page.getByRole("tab", { name: "生成", exact: true }).click();
+  await selectWorkspaceMode(page,"生成");
   await expect(page.locator(".generate-excellent-fragments-toggle input")).not.toBeChecked();
   await page.locator(".generate-context-summary").click();
   const excellentOption = page.locator(".generate-context-panel").getByLabel("参考优秀片段");
@@ -2911,12 +2930,12 @@ test("AI Chat finishes after leaving and clears its unread marker when opened", 
   await page.getByLabel("聊天消息").fill("离开聊天后继续完成");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
-  await page.getByRole("tab", { name: "写作", exact: true }).click();
+  await selectWorkspaceMode(page,"写作");
 
   await expect(page.getByLabel("有新生成的聊天回复")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("tab", { name: /聊天/ }).click();
   await expect(page.locator(".message.assistant").last()).toContainText("后台生成的聊天回复");
-  await page.getByRole("tab", { name: "写作", exact: true }).click();
+  await selectWorkspaceMode(page,"写作");
   await expect(page.getByLabel("有新生成的聊天回复")).toHaveCount(0);
 
   await expect.poll(async () => {
@@ -2946,7 +2965,7 @@ test("AI Chat can be cancelled from the task panel after leaving", async ({ page
   await page.getByLabel("聊天消息").fill("离开后取消这项任务");
   await page.getByRole("button", { name: "发送消息" }).click();
   await expect(page.getByRole("button", { name: "停止回复" })).toBeVisible();
-  await page.getByRole("tab", { name: "写作", exact: true }).click();
+  await selectWorkspaceMode(page,"写作");
   await page.getByRole("button", { name: /^AI 任务/ }).click();
   const task = page.locator(".task-card").filter({ hasText: "离开后取消这项任务" });
   await expect(task).toContainText("运行中");

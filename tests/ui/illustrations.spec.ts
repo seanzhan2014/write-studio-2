@@ -1,3 +1,4 @@
+import { selectWorkspaceMode } from "./workspace-controls";
 import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Page } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -111,28 +112,28 @@ test("illustration tab has its own route, preserves drafts between modes and lin
   await mockIllustrations(page);
   await page.goto("/articles/article-main/outlines/outline-current/write");
   const modes = page.getByRole("tablist", { name: "工作模式" });
-  await expect(modes.getByRole("tab")).toHaveText(["写作", "聊天", "生成", "插图"]);
+  if(await modes.isVisible()) await expect(modes.getByRole("tab")).toHaveText(["写作", "聊天", "生成", "插图"]); else await expect(page.getByRole("combobox",{name:"工作模式",exact:true})).toHaveValue("write");
   await expect(page.getByRole("button", { name: "生成插图", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "插图历史", exact: true })).toHaveCount(0);
-  await modes.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await expect(page).toHaveURL(/\/outlines\/outline-current\/illustrations$/);
   const workspace = page.getByRole("region", { name: "插图工作区" });
   await workspace.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("切换页签后保留的画面构图");
-  await modes.getByRole("tab", { name: "聊天", exact: true }).click();
-  await modes.getByRole("tab", { name: "生成", exact: true }).click();
-  await modes.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"聊天");
+  await selectWorkspaceMode(page,"生成");
+  await selectWorkspaceMode(page,"插图");
   await expect(workspace.getByRole("textbox", { name: "图片 prompt", exact: true })).toHaveValue("切换页签后保留的画面构图");
   await workspace.getByRole("button", { name: "查看历史", exact: true }).click();
   await expect(workspace.getByRole("textbox", { name: "搜索历史", exact: true })).toBeInViewport();
   await page.reload();
-  await expect(modes.getByRole("tab", { name: "插图", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/\/illustrations$/);
   await expect(workspace).toBeVisible();
 });
 
 test("illustration styles apply to both generation steps and restore from saved history", async ({ page }) => {
   const { bodies } = await mockIllustrations(page);
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const dialog = page.getByRole("region", { name: "插图工作区" });
   const styles = dialog.getByRole("combobox", { name: "插图风格", exact: true });
   await expect(styles).toHaveValue("文学插图");
@@ -165,7 +166,7 @@ test("illustration styles apply to both generation steps and restore from saved 
   await expect(dialog.getByText("Prompt 已添加到历史。", { exact: true })).toBeVisible();
   expect(bodies.at(-1)).toMatchObject({ action: "save-prompt", stylePreset: "watercolor" });
   await page.reload();
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await dialog.getByRole("region", { name: "生成内容管理" }).getByRole("button", { name: "使用此 prompt", exact: true }).click();
   await expect(styles).toHaveValue("国风水墨");
   await styles.click();
@@ -179,7 +180,7 @@ test("SpicyAPI image model exposes its native aspect ratio and resolution choice
     { id: "wan", name: "Wan 2.7 Pro", modelId: "alibaba/wan-2.7-pro/text-to-image", providerName: "spicy", hasSecret: true, adapterKind: "spicyapi", baseUrl: "https://api.spicyapi.ai/api/v1", metadata: { source: "provider", inputModalities: ["text"], outputModalities: ["image"], supportedParameters: { aspect_ratio: { type: "string", values: ["1:1", "16:9"] }, resolution: { type: "string", values: ["1k", "2k"] } } } },
   ] } }));
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const dialog = page.getByRole("region", { name: "插图工作区" });
   await dialog.getByRole("textbox", { name: "图片 prompt", exact: true }).fill("水彩画，一座海边的灯塔。");
   await dialog.getByRole("combobox", { name: "文生图模型", exact: true }).click();
@@ -219,7 +220,7 @@ test("article image presets inherit, persist outline overrides and restore artic
 
   const openGenerator = async (outlineId = "outline-current") => {
     await page.goto(`/articles/article-main/outlines/${outlineId}/write`);
-    await page.getByRole("tab", { name: "插图", exact: true }).click();
+    await selectWorkspaceMode(page,"插图");
     return page.getByRole("region", { name: "插图工作区" });
   };
   let dialog = await openGenerator();
@@ -294,7 +295,7 @@ test("illustration workflow permits prompt edits, image retry and download witho
   const { bodies, control } = await mockIllustrations(page);
   control.failImage = true;
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const dialog = page.getByRole("region", { name: "插图工作区" });
   await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();
   await page.getByRole("option", { name: /文本测试模型/ }).click();
@@ -371,7 +372,7 @@ test(`illustration source follows saved body changes after ${selected ? "opening
     });
     await page.getByRole("menuitem", { name: "生成插图", exact: true }).click();
   } else {
-    await page.getByRole("tab", { name: "插图", exact: true }).click();
+    await selectWorkspaceMode(page,"插图");
     const workspace = page.getByRole("region", { name: "插图工作区" });
     await workspace.getByRole("combobox", { name: "提示词模型", exact: true }).click();
     await page.getByRole("option", { name: /文本测试模型/ }).click();
@@ -386,7 +387,7 @@ test(`illustration source follows saved body changes after ${selected ? "opening
   await page.getByRole("button", { name: "退出编辑", exact: true }).click();
   await page.getByRole("dialog", { name: "保存正文修改？" }).getByRole("button", { name: "保存修改", exact: true }).click();
   await expect(reader).toContainText(latest);
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await expect(workspace.getByRole("textbox", { name: "正文片段", exact: true })).toHaveValue("");
   await workspace.getByRole("combobox", { name: "提示词模型", exact: true }).click();
   await page.getByRole("option", { name: /文本测试模型/ }).click();
@@ -431,7 +432,7 @@ test("background results survive tab switches and reload, and history manages pr
   control.holdPrompt = new Promise(resolve => { completePrompt = resolve; });
   control.holdImage = new Promise(resolve => { completeImage = resolve; });
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const dialog = page.getByRole("region", { name: "插图工作区" });
   await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();
   await page.getByRole("option", { name: /文本测试模型/ }).click();
@@ -439,7 +440,7 @@ test("background results survive tab switches and reload, and history manages pr
   await dialog.getByRole("button", { name: "放到后台，继续写作" }).click();
   await expect(dialog).toBeHidden();
   completePrompt();
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await dialog.getByRole("tab", { name: "Prompt 历史", exact: true }).click();
   await expect(dialog.getByRole("region", { name: "生成内容管理" }).getByText("码头上两人相望，水彩插图，无文字。", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "归档", exact: true }).click();
@@ -461,7 +462,7 @@ test("background results survive tab switches and reload, and history manages pr
   await expect(dialog).toBeHidden();
   completeImage();
   await page.reload();
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   await expect(dialog.getByAltText("历史插图")).toBeVisible();
   await expect(dialog.getByText("手动添加的历史 prompt", { exact: true })).toBeVisible();
   await page.screenshot({ path: `.test-data/illustration-history-${test.info().project.name}.png` });
@@ -480,7 +481,7 @@ test("prompt and image generation share the AI task manager, cancellation, retry
   let finishPrompt!: () => void;
   control.holdPrompt = new Promise(resolve => { finishPrompt = resolve; });
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("tab", { name: "插图", exact: true }).click();
+  await selectWorkspaceMode(page,"插图");
   const dialog = page.getByRole("region", { name: "插图工作区" });
   await expect(dialog.getByRole("tab", { name: "后台任务", exact: true })).toHaveCount(0);
   await dialog.getByRole("combobox", { name: "提示词模型", exact: true }).click();

@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -16,6 +17,7 @@ test("generation edits, persists and restores inherited article information in t
   };
   expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data, conflictResolution: "keep-local" } })).ok()).toBeTruthy();
   await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
   const settings = page.getByRole("region", { name: "文章资料继承", exact: true });
   await expect(settings).toBeVisible();
   await expect(page.locator(".generate-command-card .task-parameter-settings")).toHaveCount(1);

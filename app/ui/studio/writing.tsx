@@ -1,4 +1,5 @@
 "use client";
+import { requestTextDialog } from "@/app/ui/operation-dialogs";
 
 import { ReviewRuleSnapshotView } from "@/app/ui/review-rules";
 
@@ -22,7 +23,7 @@ import { captureContentPosition, readerOffsetAtPoint, restoreContentPosition, re
 
 import { directContentId, useDismissOnOutside, useWritingEditorViewport, selectedRangeWithin, copyTextToClipboard, Icon, IconButton, ExcellentText } from "@/app/ui/studio/shared";
 
-export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPreview, onNotice, onEditingChange, onIllustration, onSelectVersion, draftStorageKey, onDraftChange, onRequestEditing, sharedContent }: { focusMode: boolean; previewVersion?: Version; onOpenRewriteSource: (sourceId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void; onIllustration: (content: string, excerpt: string) => void; onSelectVersion?: (versionId: string) => void; draftStorageKey?: string; onDraftChange?: (content: string | null) => void; onRequestEditing?: () => boolean; sharedContent?: string }) {
+export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, onClearPreview, onNotice, onEditingChange, onManageVersions, onIllustration, onSelectVersion, draftStorageKey, onDraftChange, onRequestEditing, sharedContent }: { focusMode: boolean; previewVersion?: Version; onOpenRewriteSource: (sourceId: string) => void; onClearPreview: () => void; onNotice: (message: string) => void; onEditingChange: (editing: boolean) => void; onManageVersions?: () => void; onIllustration: (content: string, excerpt: string) => void; onSelectVersion?: (versionId: string) => void; draftStorageKey?: string; onDraftChange?: (content: string | null) => void; onRequestEditing?: () => boolean; sharedContent?: string }) {
   const studio = useStudio();
   const readerDescriptionId = useId();
   const [restoredDraft] = useState<{ text: string; baseline: string } | null>(() => {
@@ -347,7 +348,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
 
   async function saveAsEditingContent() {
     const defaultName = `${resolvedOutlineContentName(studio.currentOutline)}-复制`;
-    const name = window.prompt("另存为正文", defaultName);
+    const name = (await requestTextDialog("另存为正文", defaultName));
     if (name === null) return;
     const versionName = name.trim() || defaultName;
     studio.saveVersion(studio.currentOutline.id, versionName, "手动", content);
@@ -507,11 +508,13 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
                   {studio.currentOutline.versions.map((version) => <Menu.RadioItem key={version.id} value={version.id} checked={displayedVersion?.id === version.id} closeMenuOnClick onClick={() => void selectContent(version.id)}>
                     <span className="body-title-option"><span className="body-title-option-name">{version.name}</span><small>{currentVersion?.id === version.id ? "当前 · " : ""}{studio.currentOutline.defaultVersionId === version.id ? "默认 · " : ""}{wordCount(version.content).toLocaleString("zh-CN")} 字 · {version.source === "AI Chat" ? "聊天" : version.source === "AI Generate" ? "生成" : version.source}</small></span>
                   </Menu.RadioItem>)}
+                  {onManageVersions && <><Menu.Divider /><Menu.Item leftSection={<Icon name="versions" />} onClick={onManageVersions}>管理正文版本</Menu.Item></>}
                 </Menu.Dropdown>
               </Menu>
-              <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><span aria-hidden="true">P</span></button>
+              <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 3h12v18l-6-4-6 4z" /></svg></button>
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
               <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent || deleting} onClick={requestDeleteDisplayedContent}><Icon name="trash" /></button>
+              {!editing && !displayedIsCurrent && <><span className="body-preview-label">预览</span><button className="body-return-current" type="button" onClick={onClearPreview}>返回当前</button></>}
               {editing && <span className={`mobile-edit-save-state ${draftContent === baselineRef.current ? "saved" : "unsaved"}`}>{savingEdit ? "正在保存…" : draftContent === baselineRef.current ? "未修改" : "未保存"}</span>}
             </div>
             <div className="editor-tools">{editing ? <>

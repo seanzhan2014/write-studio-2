@@ -1,4 +1,5 @@
 "use client";
+import { requestTextDialog, requestConfirmDialog } from "@/app/ui/operation-dialogs";
 
 import { CharacterAvatar } from "@/app/ui/character-visual";
 import { CharacterPhotoWorkspace } from "@/app/ui/character-photos";
@@ -67,7 +68,7 @@ export function ArticleInfoPage({ view, onGo, onNotice }: { view: View; onGo: (v
   return (
     <div className="page-scroll"><div className="standard-page info-page">
       <PageHeader eyebrow={studio.currentArticle.title} title="文章资料" actions={<IconButton name="more" label="文章资料更多操作" className="info-more-trigger" onClick={() => setMoreOpen((open) => !open)} />} />
-      {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={() => { const value = window.prompt(`输入文章标题「${studio.currentArticle.title}」以确认删除`); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
+      {moreOpen && <div className="info-more-menu"><button type="button" onClick={() => { transfer.exportArticle(studio.currentArticle); setMoreOpen(false); }}>导出这篇文章</button><button type="button" onClick={() => { setCopySource(studio.currentArticle); setMoreOpen(false); }}>复制这篇文章</button><button type="button" onClick={() => { studio.updateSettings({ showArchived: !studio.data.settings.showArchived }); setMoreOpen(false); }}>{studio.data.settings.showArchived ? "隐藏" : "显示"}已归档内容</button><button className="danger" type="button" onClick={async () => { const value = (await requestTextDialog(`输入文章标题「${studio.currentArticle.title}」以确认删除`)); if (value === studio.currentArticle.title) studio.deleteArticle(studio.currentArticle.id); setMoreOpen(false); }}>删除文章</button></div>}
       <Tabs items={[
         ["info-basic", "基本信息"], ["info-characters", "人物"], ["info-relationships", "人物关系"], ["info-references", "参考文章"],
       ]} active={view} onGo={onGo} />
@@ -156,7 +157,7 @@ export function Characters() {
   }
   return <>
     <div className="list-toolbar"><label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物…" /></label><button className="primary-compact" type="button" onClick={openCreate}><Icon name="plus" />新建人物</button></div>
-    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}><CharacterAvatar visual={person.visual} photos={person.photos} name={person.name} /></div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={() => { if (window.confirm(`删除人物「${person.name}」及其关系？`)) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
+    <div className="character-grid">{visible.map((person, index) => { const profile = normalizeCharacterProfile(person.profile); return <article className={`character-card ${person.archived ? "archived" : ""}`} key={person.id}><div className={`character-avatar ${["coral", "blue", "green"][index % 3]}`}><CharacterAvatar visual={person.visual} photos={person.photos} name={person.name} /></div><div><h3>{person.name}</h3><span>{[profile.age, person.aliases.join("、")].filter(Boolean).join(" · ")}</span><p>{profile.immutableTraits || person.description || "暂无描述"}</p></div><div className="card-actions"><button type="button" onClick={() => openEdit(person)}>编辑</button><Menu position="bottom-end" shadow="md" width={160} withinPortal><Menu.Target><button type="button" aria-label={`${person.name}的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item onClick={() => studio.updateCharacter(person.id, { archived: !person.archived })}>{person.archived ? "恢复" : "归档"}</Menu.Item><Menu.Item color="red" onClick={async () => { if ((await requestConfirmDialog(`删除人物「${person.name}」及其关系？`))) studio.deleteCharacter(person.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     {!visible.length && <div className="empty-inline">没有符合条件的人物。</div>}
     <ResponsiveModal
       opened={formOpen}
@@ -208,7 +209,7 @@ export function Relationships() {
     else studio.addRelationship({ ...form, description });
     setFormOpen(false);
   }
-  return <><div className="relationship-toolbar"><span className="ui-title">{studio.currentArticle.relationships.length} 条人物关系</span><button className="primary-compact" type="button" disabled={people.length < 2} onClick={openCreate}><Icon name="plus" />新建关系</button></div>{people.length < 2 && <div className="empty-inline">至少需要两个人物才能建立关系。</div>}<div className="relationship-list">{studio.currentArticle.relationships.map((item) => { const a = studio.currentArticle.characters.find((person) => person.id === item.characterAId); const b = studio.currentArticle.characters.find((person) => person.id === item.characterBId); if (!a || !b) return null; return <article className="relationship-card" key={item.id}><div className="mini-avatar blue">{a.name[0]}</div><span className="ui-title">{a.name}</span><span className="relationship-line"><Icon name="link" /><em>{item.description}</em></span><span className="ui-title">{b.name}</span><div className="mini-avatar blue">{b.name[0]}</div><div className="card-actions"><button type="button" onClick={() => openEdit(item)}>编辑</button><Menu position="bottom-end" shadow="md" width={140} withinPortal><Menu.Target><button type="button" aria-label={`${a.name}与${b.name}关系的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item color="red" onClick={() => { if (window.confirm("删除这条人物关系？")) studio.deleteRelationship(item.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
+  return <><div className="relationship-toolbar"><span className="ui-title">{studio.currentArticle.relationships.length} 条人物关系</span><button className="primary-compact" type="button" disabled={people.length < 2} onClick={openCreate}><Icon name="plus" />新建关系</button></div>{people.length < 2 && <div className="empty-inline">至少需要两个人物才能建立关系。</div>}<div className="relationship-list">{studio.currentArticle.relationships.map((item) => { const a = studio.currentArticle.characters.find((person) => person.id === item.characterAId); const b = studio.currentArticle.characters.find((person) => person.id === item.characterBId); if (!a || !b) return null; return <article className="relationship-card" key={item.id}><div className="mini-avatar blue">{a.name[0]}</div><span className="ui-title">{a.name}</span><span className="relationship-line"><Icon name="link" /><em>{item.description}</em></span><span className="ui-title">{b.name}</span><div className="mini-avatar blue">{b.name[0]}</div><div className="card-actions"><button type="button" onClick={() => openEdit(item)}>编辑</button><Menu position="bottom-end" shadow="md" width={140} withinPortal><Menu.Target><button type="button" aria-label={`${a.name}与${b.name}关系的更多操作`}>更多</button></Menu.Target><Menu.Dropdown><Menu.Item color="red" onClick={async () => { if ((await requestConfirmDialog("删除这条人物关系？"))) studio.deleteRelationship(item.id); }}>删除</Menu.Item></Menu.Dropdown></Menu></div></article>; })}</div>
     <ResponsiveModal opened={formOpen} onClose={() => setFormOpen(false)} closeButtonProps={{ "aria-label": "关闭人物关系编辑" }} title={editingId ? "编辑人物关系" : "新建人物关系"} size="md" fullScreen={compact} centered={!compact}>
       <Stack gap="md"><SimpleGrid cols={{ base: 1, sm: 2 }}><Select label="人物 A" data={personOptions} value={form.characterAId} allowDeselect={false} onChange={(value) => setForm({ ...form, characterAId: value ?? "" })} /><Select label="人物 B" data={personOptions} value={form.characterBId} allowDeselect={false} onChange={(value) => setForm({ ...form, characterBId: value ?? "" })} /></SimpleGrid><Textarea label="关系描述" value={form.description} maxLength={1000} minRows={3} maxRows={8} autosize onChange={(event) => setForm({ ...form, description: event.currentTarget.value })} />{error && <Alert color="red">{error}</Alert>}<Group justify="flex-end"><Button variant="default" onClick={() => setFormOpen(false)}>取消</Button><Button disabled={!form.description.trim() || !form.characterAId || !form.characterBId} onClick={save}>保存关系</Button></Group></Stack>
     </ResponsiveModal>
@@ -216,16 +217,18 @@ export function Relationships() {
 }
 
 export function SettingsPage({ view, onGo }: { view: View; onGo: (view: View) => void }) {
+  const compact = useMediaQuery("(max-width: 767px)") ?? false;
+  const [indexOpen,setIndexOpen]=useState(false);
   const items: [View, string][] = [
     ["settings-general", "常规"],
     ["settings-appearance", "外观与编辑器"],
     ["settings-models", "AI 服务"],
-    ["settings-tasks", "AI 任务"],
+    ["settings-tasks", "AI 默认设置"],
     ["settings-database", "数据管理"],
     ["settings-system", "系统与诊断"],
   ];
   const activeItem = items.find(([key]) => key === view) ?? items[0];
-  return <div className="settings-layout"><nav className="settings-nav" aria-label="设置分类"><button className="settings-back-writing" type="button" onClick={() => onGo("write")}>← 返回写作</button><div><span>Writer Studio</span><span className="ui-title">设置</span></div>{items.map(([key, label]) => <button className={view === key ? "active" : ""} key={key} type="button" onClick={() => onGo(key)}><span className="ui-title">{label}</span></button>)}</nav><div className={`settings-content ${view === "settings-models" ? "ai-settings-content" : ""}`}><PageHeader title={activeItem[1]} />{view === "settings-general" && <GeneralSettings />}{view === "settings-appearance" && <AppearanceSettings />}{view === "settings-models" && <ModelSettings />}{view === "settings-prompts" && <TaskSettings />}{view === "settings-tasks" && <TaskSettings />}{view === "settings-database" && <DatabaseSettings />}{view === "settings-system" && <SystemSettings />}</div></div>;
+  return <div className={"settings-layout"+(compact?" settings-mobile":"")} data-index-open={indexOpen}><nav className="settings-nav" aria-label="设置分类"><button className="settings-back-writing" type="button" onClick={() => onGo("write")}>← 返回写作</button><div><span>Writer Studio</span><span className="ui-title">设置</span></div>{items.map(([key, label]) => <button className={view === key ? "active" : ""} key={key} type="button" onClick={() => {onGo(key);setIndexOpen(false);}}><span className="ui-title">{label}</span></button>)}</nav><div className={`settings-content ${view === "settings-models" ? "ai-settings-content" : ""}`}>{compact && <button className="settings-index-back" type="button" onClick={()=>setIndexOpen(true)}>← 设置分类</button>}<PageHeader title={activeItem[1]} />{view === "settings-general" && <GeneralSettings />}{view === "settings-appearance" && <AppearanceSettings />}{view === "settings-models" && <ModelSettings />}{view === "settings-prompts" && <TaskSettings />}{view === "settings-tasks" && <TaskSettings />}{view === "settings-database" && <DatabaseSettings />}{view === "settings-system" && <SystemSettings />}</div></div>;
 }
 
 export function SettingSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -240,7 +243,7 @@ export function Toggle({ label, checked = true, disabled = false, onChange }: { 
 
 export function GeneralSettings() {
   const studio = useStudio();
-  return <SettingSection title="语言与启动"><SettingRow title="界面语言"><select aria-label="界面语言"><option>简体中文</option></select></SettingRow><SettingRow title="启动时打开上次文章"><Toggle label="启动时打开上次文章" checked={studio.data.settings.openLastArticle} onChange={(checked) => studio.updateSettings({ openLastArticle: checked })} /></SettingRow><SettingRow title="默认显示已归档内容"><Toggle label="默认显示已归档内容" checked={studio.data.settings.showArchived} onChange={(checked) => studio.updateSettings({ showArchived: checked })} /></SettingRow></SettingSection>;
+  return <SettingSection title="语言与启动"><SettingRow title="界面语言"><span className="readonly-value">简体中文</span></SettingRow><SettingRow title="启动时打开上次文章"><Toggle label="启动时打开上次文章" checked={studio.data.settings.openLastArticle} onChange={(checked) => studio.updateSettings({ openLastArticle: checked })} /></SettingRow><SettingRow title="默认显示已归档内容"><Toggle label="默认显示已归档内容" checked={studio.data.settings.showArchived} onChange={(checked) => studio.updateSettings({ showArchived: checked })} /></SettingRow></SettingSection>;
 }
 
 export function AppearanceSettings() {
@@ -258,8 +261,9 @@ export function TaskSettings() {
   const [category, setCategory] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "图片" : "正文生成");
   const [imageTab, setImageTab] = useState(() => typeof window !== "undefined" && window.location.pathname.includes("/settings/prompts") ? "风格库" : "生成设置");
   const autoSaving = !(category === "图片" && imageTab === "风格库");
-  return <MantineThemeProvider theme={aiTaskFormTheme}><div className="ai-task-settings-page">
+  return <MantineThemeProvider theme={aiTaskFormTheme}><div className="ai-task-settings-page ai-default-settings-page">
     {autoSaving && <div className="ai-task-intro"><Text size="xs" c={studio.saveStatus === "failed" ? "red" : "dimmed"} role="status">{studio.saveStatus === "saved" ? "设置已自动保存" : studio.saveStatus === "failed" ? `保存失败：${studio.saveError}` : studio.saveStatus === "local" ? "已保存到此设备，等待同步" : "正在保存设置…"}</Text></div>}
+    <label className="ai-task-mobile-category">默认设置分类<select aria-label="默认设置分类" value={category} onChange={event=>setCategory(event.currentTarget.value)}>{categories.map(item=><option key={item} value={item}>{item==="全局"?"任务队列":item}</option>)}</select></label>
     <div className="ai-task-category-tabs" role="tablist" aria-label="AI 任务分类">{categories.map(item => <button type="button" role="tab" id={`ai-category-${categories.indexOf(item)}`} aria-selected={category === item} aria-controls="ai-category-panel" key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
     <div id="ai-category-panel" role="tabpanel" aria-labelledby={`ai-category-${categories.indexOf(category)}`} className="ai-task-category-panel">
       {category === "正文生成" && <ArticleGenerateSettings global />}
@@ -323,7 +327,7 @@ export function DatabaseSettings() {
     const target = direction === "pull" ? "本地" : "云端";
     const scope = ["创作数据库", overwriteModels ? "大模型配置" : "", overwriteSecrets ? "API Key/Secret" : ""].filter(Boolean).join("、");
     const sensitiveNotice = overwriteModels ? "覆盖前备份将包含目标端现有 API Key，请妥善保管 data/recovery。" : "";
-    const typed = window.prompt(`此操作会用${direction === "pull" ? "云端" : "本地"}的${scope}覆盖${target}。${sensitiveNotice}输入“${phrase}”确认：`, "");
+    const typed = (await requestTextDialog(`此操作会用${direction === "pull" ? "云端" : "本地"}的${scope}覆盖${target}。${sensitiveNotice}输入“${phrase}”确认：`, ""));
     if (typed !== phrase) return;
     setSyncBusy(direction); setSyncNotice("");
     try {
@@ -360,8 +364,8 @@ export function DatabaseSettings() {
       <div className="sync-card">
         <div className="sync-card-heading"><div><span className="ui-title">本地与云端数据库</span><p>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动后台上传已关闭 · " : ""}{syncStatus?.message ?? "正在读取同步状态…"}{syncStatus?.cloudHost ? ` · ${syncStatus.cloudHost}` : ""}</p></div><span className={syncHealthy ? "status-online" : "status-warning"}>{syncStatus?.autoUploadEnabled === false && syncStatus.state !== "cloud" ? "自动上传关闭" : syncHealthy ? "已同步" : syncStatus?.state === "pending" || syncStatus?.state === "uploading" ? "同步中" : "需检查"}</span></div>
         <div className="sync-auto-row"><div><span className="ui-label">本地保存后自动异步复制到云端</span></div><Toggle label="本地保存后自动异步复制到云端" checked={syncStatus?.autoUploadEnabled ?? true} disabled={syncToggleBusy || syncStatus?.state === "cloud"} onChange={(enabled) => void setAutoUpload(enabled)} /><span className="sync-toggle-busy">{syncToggleBusy ? "保存中…" : ""}</span></div>
-        <div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
-        <div className="sync-overwrite-options"><span className="ui-label">手动覆盖范围</span><Checkbox checked={overwriteModels} onChange={(event) => { const checked = event.currentTarget.checked; setOverwriteModels(checked); if (!checked) setOverwriteSecrets(false); }} label="同时覆盖大模型配置" /><Checkbox checked={overwriteSecrets} disabled={!overwriteModels} onChange={(event) => setOverwriteSecrets(event.currentTarget.checked)} label="同时覆盖 API Key / Secret（敏感信息）" /><p>未选择 API Key 时，会保留目标端相同模型 ID 的密钥；目标端多余模型会随模型配置覆盖而删除。</p></div>
+        <details className="sync-technical-details"><summary>同步详情</summary><div className="sync-version-grid"><span>本地版本 <strong>{syncStatus?.localDatabaseVersion ?? status?.databaseVersion ?? "—"}</strong></span><span>云端版本 <strong>{syncStatus?.remoteDatabaseVersion ?? "—"}</strong></span><span>同步基线 <strong>{syncStatus?.lastCloudVersion ?? "—"}</strong></span></div>
+        </details><div className="sync-overwrite-options"><span className="ui-label">手动覆盖范围</span><Checkbox checked={overwriteModels} onChange={(event) => { const checked = event.currentTarget.checked; setOverwriteModels(checked); if (!checked) setOverwriteSecrets(false); }} label="同时覆盖大模型配置" /><Checkbox checked={overwriteSecrets} disabled={!overwriteModels} onChange={(event) => setOverwriteSecrets(event.currentTarget.checked)} label="同时覆盖 API Key / Secret（敏感信息）" /><p>未选择 API Key 时，会保留目标端相同模型 ID 的密钥；目标端多余模型会随模型配置覆盖而删除。</p></div>
         {syncNotice && <div className={syncNotice.includes("完成") || syncNotice.includes("已用") ? "sync-notice success" : "sync-notice error"} role="status">{syncNotice}</div>}
         <Group gap="sm" className="sync-actions">
           <Button color="red" variant="light" disabled={Boolean(syncBlocked) || Boolean(syncBusy)} loading={syncBusy === "pull"} onClick={() => void replaceDatabase("pull")}>从云端取回</Button>
@@ -372,7 +376,7 @@ export function DatabaseSettings() {
       </div>
     </SettingSection>
     <SettingSection title="维护"><SettingRow title="数据完整性检查"><button className="secondary-button" type="button" disabled={checking} onClick={() => void check()}>{checking ? "正在检查…" : "开始检查"}</button></SettingRow></SettingSection>
-    <SettingSection title="危险操作"><SettingRow title="清除全部业务数据"><button className="danger-button" type="button" onClick={() => { const confirmText = window.prompt("输入 CLEAR 确认清除全部文章、正文、版本、人物、聊天和 AI 任务"); if (confirmText === "CLEAR") void studio.clearBusinessData(); }}>清除全部业务数据</button></SettingRow></SettingSection>
+    <SettingSection title="危险操作"><SettingRow title="清除全部业务数据"><button className="danger-button" type="button" onClick={async () => { const confirmText = (await requestTextDialog("输入 CLEAR 确认清除全部文章、正文、版本、人物、聊天和 AI 任务")); if (confirmText === "CLEAR") void studio.clearBusinessData(); }}>清除全部业务数据</button></SettingRow></SettingSection>
   </>;
 }
 
@@ -497,7 +501,7 @@ export function SystemSettings() {
     </SettingSection>
     <SettingSection title="诊断">
       <SettingRow title="脱敏诊断信息"><button className="secondary-button" type="button" onClick={() => void copyTextToClipboard(JSON.stringify({ version: "2.1.0-poc", articles: studio.data.articles.length, tasks: studio.data.tasks.map((task) => task.state), service: serviceStatus ? { managed: serviceStatus.service.managed, state: serviceStatus.service.state, startedAt: serviceStatus.service.startedAt } : { managed: false, state: "manager-unavailable" }, browser: navigator.userAgent }, null, 2))}>复制诊断信息</button></SettingRow>
-      <SettingRow title="非业务缓存"><button className="secondary-button" type="button" onClick={() => window.alert("非业务缓存已清除，创作数据未受影响。")}>清除缓存</button></SettingRow>
+
     </SettingSection>
     <ResponsiveModal opened={restartDialogOpen} onClose={() => setRestartDialogOpen(false)} closeButtonProps={{ "aria-label": "取消重启服务端" }} title="重启服务端？" size="sm">
       <Stack gap="md">

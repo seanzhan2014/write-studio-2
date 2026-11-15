@@ -1,3 +1,4 @@
+import { selectDefaultCategory, selectChatMode, expectChatMode, newChatSession } from "./workspace-controls";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 
@@ -13,7 +14,7 @@ test("chat modes and all three editable presets survive reload", async ({ page, 
   }
   expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
   await page.goto("/settings/tasks");
-  await page.getByRole("tab", { name: "聊天", exact: true }).click();
+  await selectDefaultCategory(page,"聊天");
   const presets = page.getByRole("region", { name: "聊天预定义" });
   for (const [label, mode] of [["普通", "normal"], ["大纲", "outline"], ["文章写作", "writing"]]) {
     await presets.getByText(label, { exact: true }).click();
@@ -21,7 +22,7 @@ test("chat modes and all three editable presets survive reload", async ({ page, 
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.chatModePrompts?.[mode]).toBe(`${label}专属测试指令`);
   }
   await page.reload();
-  await page.getByRole("tab", { name: "聊天", exact: true }).click();
+  await selectDefaultCategory(page,"聊天");
   await presets.getByText("大纲", { exact: true }).click();
   await expect(presets.getByLabel("大纲预定义指令", { exact: true })).toHaveValue("大纲专属测试指令");
   await presets.getByRole("button", { name: "恢复当前模式默认" }).click();
@@ -30,7 +31,7 @@ test("chat modes and all three editable presets survive reload", async ({ page, 
   await page.screenshot({ path: testInfo.outputPath("chat-presets.png"), fullPage: true });
   await page.goto("/articles/article-main/outlines/outline-current/chat");
   const modes = page.locator(".chat-mode-switch");
-  await modes.getByText("大纲", { exact: true }).click();
+  await selectChatMode(page,"outline");
   const savedMode = async () => {
     const state = await (await request.get("/api/state")).json();
     const outline = state.data.articles.flatMap((a: { chapters: unknown[] }) => a.chapters).flatMap((c: { outlines: unknown[] }) => c.outlines).find((o: { id: string }) => o.id === "outline-current");
@@ -38,13 +39,13 @@ test("chat modes and all three editable presets survive reload", async ({ page, 
   };
   await expect.poll(savedMode).toBe("outline");
   await page.reload();
-  await expect(modes.getByRole("radio", { name: "大纲", exact: true })).toBeChecked();
+  await expectChatMode(page,"outline");
   await expect(page.getByRole("button", { name: "整理当前情节概要", exact: true })).toBeVisible();
-  await modes.getByText("文章写作", { exact: true }).click();
+  await selectChatMode(page,"writing");
   await expect.poll(savedMode).toBe("writing");
   await expect(page.getByRole("button", { name: "按当前大纲创作正文", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("chat-modes.png"), fullPage: true });
-  await page.getByRole("button", { name: "新建聊天会话" }).click();
-  await expect(modes.getByRole("radio", { name: "普通", exact: true })).toBeChecked();
+  await newChatSession(page);
+  await expectChatMode(page,"normal");
 });

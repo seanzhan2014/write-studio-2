@@ -1,4 +1,5 @@
 "use client";
+import { configuredModelFilter } from "@/app/ui/model-options";
 
 import { Alert, Badge, Button, Card, Group, Select, Stack, Tabs, Text, Textarea, TextInput } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -45,6 +46,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     const current = resolveAiSettings(studio.currentArticle, outlineId, "generate", "outline", studio.data.settings).value;
     studio.updateOutline(outlineId, { generateOptions: overrideAiSettings(current, { tasks: { ...current.tasks, [key]: model } }) });
   }
+  const [modelsLoading,setModelsLoading]=useState(true);
   const [models, setModels] = useState<Model[]>([]);
   const [modelError, setModelError] = useState("");
   const [refreshingCapabilities, setRefreshingCapabilities] = useState(false);
@@ -65,6 +67,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
   const [busy, setBusy] = useState<"prompt" | "image" | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [view,setView]=useState(["prompts","images"].includes(initialTab) ? "history" : "new");
+  useEffect(()=>{setView(["prompts","images"].includes(initialTab)?"history":"new");if(initialTab!=="generate")setTab(initialTab==="prompts"?"prompts":"images");},[initialTab]);
   const [tab, setTab] = useState<string | null>(initialTab === "prompts" ? "prompts" : "images");
   const formRef = useRef<HTMLElement>(null);
   const historyRef = useRef<HTMLElement>(null);
@@ -130,11 +134,11 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       if (!response.ok) throw new Error("无法读取模型配置");
       const payload = await response.json() as { models: Model[] };
       if (controller.signal.aborted) return;
-      setModels(payload.models);
+      setModels(payload.models); setModelsLoading(false);
       const preferred = payload.models.find((model) => model.id === defaultModel || model.name === defaultModel || modelSelectionLabel(model) === defaultModel);
       setTextModel(preferred && supportsText(preferred) ? preferred.id : "");
       setImageModel(payload.models.find((model) => model.id === defaultImageModel && supportsImages(model))?.id ?? "");
-    }).catch((cause) => { if (!controller.signal.aborted) setModelError(cause instanceof Error ? cause.message : "无法读取模型配置"); });
+    }).catch((cause) => { if (!controller.signal.aborted) {setModelsLoading(false); setModelError(cause instanceof Error ? cause.message : "无法读取模型配置");} });
     return () => { controller.abort(); };
   }, [defaultModel, defaultImageModel]);
 
@@ -212,6 +216,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
     setExcerpt(record.excerpt && content.includes(record.excerpt) ? record.excerpt : "");
     setSelectedPrompt(record.kind === "prompt" ? record.id : null);
     formRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
+    setView("new");
     setNotice("已载入历史 prompt，可编辑后生成插图。");
     setCharacterId(record.characterReference?.characterId ?? "");
   }
@@ -267,20 +272,21 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
 
   return <div className="generate-view illustration-view" role="region" aria-label="插图工作区">
     <div className="generate-page illustration-generator">
-      <header className="generate-page-header illustration-page-header"><div><h2>AI 插图</h2></div><Button variant="default" size="sm" onClick={() => historyRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>查看历史</Button></header>
+      <header className="illustration-view-switch" aria-label="插图视图"><button type="button" aria-pressed={view==="new"} onClick={()=>setView("new")}>新建插图</button><button type="button" aria-pressed={view==="history"} onClick={()=>setView("history")}>查看历史</button></header>
       <Stack gap="md">
       {backgroundMode === "app" && <Text size="xs" c="dimmed">云端生成时请保留应用页面；可以切换到其他工作页签。</Text>}
       {error && <Alert color="red" role="alert">{error}</Alert>}
       {notice && <Text size="sm" role="status">{notice}</Text>}
       {historyError && <Alert color="red">{historyError}<Button variant="subtle" onClick={() => void loadHistory()}>重新读取历史</Button></Alert>}
       <Group justify="space-between">{activeTasks.length > 0 && <Text size="sm" role="status">{activeTasks.length} 个插图任务正在处理</Text>}<Button variant="subtle" onClick={openAiTasks}>查看 AI 任务</Button></Group>
-      <section ref={formRef} className="generate-command-card illustration-command-card" aria-label="插图生成设置"><Stack gap="md">
+      <section hidden={view!=="new"} ref={formRef} className="generate-command-card illustration-command-card" aria-label="插图生成设置"><Stack gap="md">
       <div className="illustration-source-summary"><Text size="sm" fw={600}>{outline?.title || "当前大纲"}</Text><Text size="xs" c="dimmed">当前正文 · {content.length.toLocaleString("zh-CN")} 字符</Text></div>
       {!content.trim() && <Alert color="yellow">当前大纲暂无正文。你仍可直接输入图片 Prompt 生成插图，或复用历史 Prompt。</Alert>}
       {modelError && <Alert color="red">{modelError}</Alert>}
-      {!modelError && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
+      {!modelError && !modelsLoading && models.length === 0 && <Alert color="yellow">请先在“设置 → AI 服务”添加文本模型和文生图模型，并设置 Provider 密钥。</Alert>}
       <Select label="选择历史 prompt" placeholder={historyLoading ? "正在读取历史…" : "选择已保存的 prompt"} searchable clearable disabled={Boolean(busy)} value={selectedPrompt} data={savedPrompts.map(record => ({ value: record.id, label: `${record.outlineTitle} · ${record.prompt.slice(0, 65)}` }))} onChange={value => { setSelectedPrompt(value); const record = savedPrompts.find(record => record.id === value); if (record) loadPrompt(record); }} />
-      <Select label="提示词模型" placeholder="选择文本模型" data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => { setTextModel(value ?? ""); rememberModel("illustrationPromptModel", value ?? ""); }} disabled={Boolean(busy)} searchable allowDeselect={false} />
+      <details className="illustration-step-options"><summary>提示词设置</summary><Select label="提示词模型" placeholder="选择文本模型" filter={configuredModelFilter(models)} data={options(models.filter(supportsText))} value={textModel || null} onChange={(value) => { setTextModel(value ?? ""); rememberModel("illustrationPromptModel", value ?? ""); }} disabled={Boolean(busy)} searchable allowDeselect={false} />
+      </details>
       <Select label="画面人物（可选）" placeholder="使用纯文字描述生成" clearable searchable data={visualCharacters.map(person => ({ value: person.id, label: `${person.name} · ${person.photos ? characterPhotos(person.photos).referenceIds.length : person.visual!.images.length} 张参考图` }))} value={characterId || null} disabled={Boolean(busy)} onChange={value => { setCharacterId(value || ""); const person = visualCharacters.find(person => person.id === value); if (person && (!referenceCapability || !person.photos && imageRecord?.providerId !== person.visual?.providerId)) setImageModel(models.find(model => supportsImages(model) && model.hasSecret && (person.photos || model.providerId === person.visual?.providerId) && imageReferenceCapability(model))?.id || ""); }} />
       {selectedCharacter && <CharacterReferenceSummary reference={{ characterId: selectedCharacter.id, name: selectedCharacter.name, age: resolvedCharacter?.profile.age || "", appearance: resolvedCharacter?.profile.appearance || "", ...(selectedPhotos ? { photos: selectedPhotos } : { visual: selectedCharacter.visual }) }} />}
       {referenceIssue && <Alert color="yellow">{referenceIssue}</Alert>}
@@ -288,7 +294,7 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Text size="xs" c="dimmed">{outline?.illustrationOptions == null ? "当前使用继承的图片设置" : "图片设置已保存；继承项会随来源更新"}</Text>
       {!independent && <AiSettingsInheritance kind="illustration" targetId={outlineId} value={illustrationOptions} disabled={Boolean(busy)} onChange={next => studio.updateOutline(outlineId, { illustrationOptions: next })} />}
       {!independent && <TaskParameterSettings level="outline" targetId={outlineId} groups={["插图模型"]} />}
-      <Select label="生成 Prompt 的语言" data={[...PROMPT_LANGUAGE_OPTIONS]} value="en" allowDeselect={false} disabled />
+      <div className="readonly-setting"><span>Prompt 语言</span><span>English</span></div>
       <Textarea label="正文片段" description="留空由 AI 从当前正文选景；也可粘贴正文中的连续片段（最多 3,000 字符）。" value={excerpt} onChange={(event) => setExcerpt(event.currentTarget.value)} minRows={3} maxRows={7} autosize disabled={Boolean(busy)} error={!excerptValid ? "请输入正文中的连续片段，且不超过 3,000 字符" : undefined} />
       {!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT && <Alert color="yellow">正文较长，请先选取一个片段。</Alert>}
       <Select label="插图风格" data={styles.map(({ value, label }) => ({ value, label }))} value={stylePreset} onChange={value => { if (isIllustrationStylePreset(value)) rememberOptions({ stylePreset: value }); }} allowDeselect={false} disabled={Boolean(busy)} searchable />
@@ -297,17 +303,20 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
       <Textarea label="画面要求（可选）" placeholder="例如：冷色调，逆光，重点表现人物与环境的关系" value={style} onChange={(event) => setStyle(event.currentTarget.value)} maxLength={2000} minRows={2} disabled={Boolean(busy)} />
       <Button loading={busy === "prompt"} disabled={Boolean(busy) || !textModel || !content.trim() || !excerptValid || (!excerpt.trim() && content.length > MAX_ILLUSTRATION_CONTENT)} onClick={() => void generate("prompt")}>{prompt ? "重新生成图片 prompt" : "选景并生成图片 prompt"}</Button>
       <Textarea label="图片 prompt" value={prompt} onChange={(event) => { setPrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_PROMPT} minRows={5} maxRows={12} autosize disabled={Boolean(busy)} />
-      <Textarea label="Negative Prompt（负向提示词）" placeholder="text, watermark, blurry, extra limbs, duplicate characters" value={negativePrompt} onChange={event => { setNegativePrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_NEGATIVE_PROMPT} minRows={3} maxRows={8} autosize disabled={Boolean(busy)} />
+      <details className="illustration-step-options"><summary>负向提示词{negativePrompt.trim()?" · 已设置":""}</summary><Textarea label="Negative Prompt（负向提示词）" placeholder="text, watermark, blurry, extra limbs, duplicate characters" value={negativePrompt} onChange={event => { setNegativePrompt(event.currentTarget.value); setSelectedPrompt(null); }} maxLength={MAX_ILLUSTRATION_NEGATIVE_PROMPT} minRows={3} maxRows={8} autosize disabled={Boolean(busy)} />
       <Button variant="subtle" disabled={!negativePrompt.trim() || Boolean(busy)} onClick={() => void copyPrompt(true)}>复制 Negative Prompt</Button>
+      </details>
       <Button variant="light" disabled={!prompt.trim() || Boolean(busy) || Boolean(mutation)} loading={mutation === "save"} onClick={() => void savePrompt()}>保存 prompt 到历史</Button>
-      <Select label="文生图模型" placeholder="选择文生图模型" data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); rememberModel("illustrationImageModel", value ?? ""); if (quality || aspectRatio) rememberOptions({ quality: "", aspectRatio: "" }); }} disabled={Boolean(busy)} searchable allowDeselect={false} />
+      <Select label="文生图模型" placeholder="选择文生图模型" filter={configuredModelFilter(models)} data={options(models.filter(supportsImages))} value={imageModel || null} onChange={(value) => { setImageModel(value ?? ""); rememberModel("illustrationImageModel", value ?? ""); if (quality || aspectRatio) rememberOptions({ quality: "", aspectRatio: "" }); }} disabled={Boolean(busy)} searchable allowDeselect={false} />
       {taskImageService && <Text size="xs" c="dimmed">提交后的远程任务无法取消，停止等待后仍可能产生费用。</Text>}
       {!modelError && models.length > 0 && !models.some(supportsImages) && <Alert color="yellow">尚未配置图像生成模型，请到“设置 → AI 服务”添加或编辑模型能力。</Alert>}
       {unsupportedResolution && <Text size="xs" c="dimmed">当前模型不支持预设分辨率 {illustrationOptions.resolution}，本次使用模型默认值。</Text>}
+      <details className="illustration-step-options"><summary>图片参数 · {aspectRatio || size || resolution || "模型默认"}</summary>
       {sizes.length > 0 && <Select label="图片尺寸" data={[{ value: "", label: "模型默认" }, ...sizes]} value={size} onChange={(value) => { rememberOptions({ resolution: value ?? "", aspectRatio: "" }); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {ratios.length > 0 && <Select label="画面比例" data={[{ value: "", label: "模型默认" }, ...ratios]} value={aspectRatio} onChange={(value) => { rememberOptions({ aspectRatio: value ?? "", ...(size ? { resolution: "" } : {}) }); }} disabled={Boolean(busy)} allowDeselect={false} />}
       {resolutions.length > 0 && <Select label="图像分辨率" data={[{ value: "", label: "模型默认" }, ...resolutions]} value={resolution} onChange={(value) => rememberOptions({ resolution: value ?? "" })} disabled={Boolean(busy)} allowDeselect={false} />}
       {qualities.length > 0 && <Select label="图片画质" data={[{ value: "", label: "模型默认" }, ...qualities]} value={quality} onChange={(value) => setQuality(value ?? "")} disabled={Boolean(busy)} allowDeselect={false} />}
+      </details>
       <Group grow><Button variant="default" disabled={!prompt || Boolean(busy)} onClick={() => void copyPrompt()}>复制 prompt</Button><Button loading={busy === "image"} disabled={Boolean(busy) || !imageModel || !prompt.trim() || Boolean(referenceIssue)} onClick={() => void generate("image")}>{image ? "重新生成图片" : "生成图片"}</Button></Group>
       {busy && <Group justify="space-between"><Text role="status" size="sm">{busy === "prompt" ? "正在选景并编写提示词…" : "正在生成并保存图片…"}</Text><Button onClick={onClose}>放到后台，继续写作</Button></Group>}
       {image && <figure className="illustration-result">
@@ -317,8 +326,8 @@ export function IllustrationGenerator({ outlineId, content, selectedExcerpt, def
         <Button component="a" href={`${image.src}?download=1`} download variant="default">下载图片</Button>
       </figure>}
       </Stack></section>
-      <section ref={historyRef} className="illustration-history-section" aria-label="生成内容管理">
-      <div className="generate-results-title"><div><span>生成内容</span><h3>插图历史</h3></div><Group gap="xs"><Button variant="subtle" size="compact-sm" onClick={() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>新建插图</Button><Button variant="subtle" size="compact-sm" onClick={() => void loadHistory()}>刷新历史</Button></Group></div>
+      <section hidden={view!=="history"} ref={historyRef} className="illustration-history-section" aria-label="生成内容管理">
+      <div className="generate-results-title"><div><span>生成内容</span><h3>插图历史</h3></div><Group gap="xs"><Button variant="subtle" size="compact-sm" onClick={() => setView("new")}>新建插图</Button><Button variant="subtle" size="compact-sm" onClick={() => void loadHistory()}>刷新历史</Button></Group></div>
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="images">插图历史</Tabs.Tab><Tabs.Tab value="prompts">Prompt 历史</Tabs.Tab></Tabs.List>
       {(["prompts", "images"] as const).map(panel => <Tabs.Panel key={panel} value={panel} pt="md"><Stack gap="md">

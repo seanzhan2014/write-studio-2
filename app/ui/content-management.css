@@ -1,0 +1,10 @@
+.full-text-diff { white-space:pre-wrap; overflow-wrap:anywhere; font-family:var(--font-editor); font-size:15px; line-height:1.8; padding:16px 0; }
+.full-text-diff del { color:var(--text-primary); background:color-mix(in srgb,#dc5555 18%,transparent); text-decoration:line-through; }
+.full-text-diff ins { color:var(--text-primary); background:color-mix(in srgb,#42a36d 20%,transparent); text-decoration:underline; }
+.version-list > article { padding:12px 14px; border-radius:6px; }
+.version-actions { justify-content:flex-end; gap:8px; }
+.version-preview-main { padding:0; }
+.version-content-preview { max-height:220px; overflow:auto; }
+.body-title-dropdown { max-height:min(65dvh,560px); overflow-y:auto; }
+.body-title-cluster .body-delete-button { margin-left:4px; }
+@media(max-width:767px) { .version-actions > button,.version-actions > [aria-haspopup] { min-height:44px; } }

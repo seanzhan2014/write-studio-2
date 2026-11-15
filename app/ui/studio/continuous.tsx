@@ -1,4 +1,5 @@
 "use client";
+import { requestConfirmDialog, requestTextDialog } from "@/app/ui/operation-dialogs";
 
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
@@ -417,10 +418,10 @@ export function ContinuousOutlineBlock({ item, number, mode, text, selectedVersi
             {onMoveDown && <Menu.Item leftSection={<Icon name="move" />} onClick={onMoveDown}><span className="continuous-outline-menu-item"><span>下移一位</span><kbd>Alt ↓</kbd></span></Menu.Item>}
             <Menu.Divider />
             {onArchive && <Menu.Item leftSection={<Icon name="archive" />} onClick={onArchive}>{item.archived ? "恢复" : "归档"}</Menu.Item>}
-            {onDelete && <Menu.Item className="continuous-outline-delete" leftSection={<Icon name="trash" />} onClick={() => {
+            {onDelete && <Menu.Item className="continuous-outline-delete" leftSection={<Icon name="trash" />} onClick={async () => {
               const hasBody = Boolean(item.content.trim() || resolvedOutlineContent(item).trim() || item.versions.some((version) => version.content.trim()));
               const message = hasBody ? `「${displayTitle}」已有正文。删除后正文、正文版本和聊天都会一并删除，且无法撤销。确认删除？` : `删除大纲「${displayTitle}」？此操作无法撤销。`;
-              if (window.confirm(message)) onDelete();
+              if ((await requestConfirmDialog(message))) onDelete();
             }}>删除</Menu.Item>}
           </Menu.Dropdown>
         </Menu>
@@ -772,7 +773,7 @@ export function ContinuousDocumentEditor({ mode, positionMemory, onNotice, onTas
       }
     }
     const defaultName = timestampContentName();
-    const name = window.prompt("另存为正文版本", defaultName);
+    const name = (await requestTextDialog("另存为正文版本", defaultName));
     if (name === null) return;
     const baseName = name.trim() || defaultName;
     outlines.forEach((item) => studio.saveVersion(item.id, outlines.length > 1 ? `${baseName} · ${outlineDisplayTitle(item)}` : baseName, "手动", contentDraftsRef.current[item.id] ?? ""));

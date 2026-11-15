@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test, type Page, type Locator } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -38,6 +39,7 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationRequireConfirmation).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const inline = page.locator(".task-interaction.inline");
     await expect(inline).toContainText("最大探索型讨论");
@@ -107,6 +109,7 @@ test("default preparation automatically writes without spending discussion round
     data.articles[0].aiGenerateSettings!.model = model.id;
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const inline = page.locator(".task-interaction.inline");
     await expect(inline).toContainText("正文已完成", { timeout: 25_000 });
@@ -141,6 +144,7 @@ test("a failed scene plan can be edited and rechecked before writing", async ({ 
     await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks.find((task: { id: string }) => task.id === created.data.id)?.state, { timeout: 20000 }).toBe("failed");
     expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "check", "prepare", "check"]);
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     const inline = page.locator(".task-interaction.inline");
     await inline.getByRole("tab", { name: "准备稿", exact: true }).click();
     await inline.getByRole("button", { name: "编辑准备稿", exact: true }).click();

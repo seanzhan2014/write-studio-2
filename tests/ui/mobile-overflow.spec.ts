@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 
@@ -74,16 +75,17 @@ for (const width of [320, 390, 430, 844]) {
       providerName: "测试服务", hasSecret: true,
     }] } }));
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await expect(page.getByRole("combobox", { name: "本次模型", exact: true })).toHaveValue(/unbrokentext/);
     const view = page.locator(".generate-view");
     const surfaces = [view, page.locator(".generate-page"), page.locator(".generate-command-card"), page.locator(".ai-settings-inheritance")];
     for (const surface of surfaces) await expectVerticalSurface(page, surface);
 
     await page.locator(".ai-setting-inheritance-details > summary").click();
-    const parameters = page.locator(".generate-workflow-section > .task-parameter-settings");
+    const parameters = page.locator(".generate-workflow-section .task-parameter-settings");
     await parameters.locator(":scope > summary").click();
     for (const summary of await parameters.locator(".task-parameter-group > summary").all()) await summary.click();
-    await page.locator(".generate-command-card > .writing-advanced > summary").click();
+    await page.locator(".generate-command-card .writing-advanced > summary").click();
     for (const surface of [...surfaces, parameters]) await expectVerticalSurface(page, surface);
 
     await view.evaluate(element => { element.scrollTop = 0; });

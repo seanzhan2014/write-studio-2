@@ -44,6 +44,8 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   await expect(dialog.getByText("为人物建立照片相册", { exact: true })).toBeVisible();
   await dialog.getByLabel("上传人物参考照片", { exact: true }).setInputFiles({ name: "正面.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
   await expect(dialog.locator(".photo-card")).toHaveCount(1);
+  await dialog.getByRole("checkbox", {name:"选择照片 正面.png",exact:true}).check();
+  await dialog.getByRole("toolbar", {name:"所选照片操作",exact:true}).getByRole("button", {name:"用作本次参考",exact:true}).click();
   await dialog.locator(".photo-card-preview").first().click();
   await dialog.getByRole("button", { name: "设为主图并加入相册", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "当前主图", exact: true })).toBeVisible();
@@ -73,7 +75,8 @@ test("person photos support mobile iteration, adoption, comparison and persisten
     await dialog.locator(".photo-ab-switch button").last().click();
     await expect(dialog.getByAltText("对比 B：正面.png", { exact: true })).toBeVisible();
   } else expect(await dialog.locator(".photo-compare-images figure").count()).toBe(2);
-  await dialog.getByLabel("对比缩放", { exact: true }).selectOption("2");
+  await dialog.getByLabel("对比缩放数值", { exact: true }).fill("200");
+  await dialog.getByLabel("对比缩放数值", { exact: true }).press("Tab");
   await dialog.screenshot({ path: `.test-data/character-photo-compare-${info.project.name}.png` });
   await dialog.getByRole("button", { name: "返回照片", exact: true }).first().click();
   await dialog.getByRole("button", { name: /^候选/ }).click();

@@ -21,12 +21,12 @@ test("mobile version deletion accepts touch confirmation after scrolling the dra
     data: { data: fixture, conflictResolution: "keep-local" },
   })).ok()).toBeTruthy();
   await page.goto("/articles/article-main/outlines/outline-current/write");
-  await page.getByRole("button", { name: "选择正文版本", exact: true }).tap();
+  await page.getByRole("button", { name: "更多操作", exact: true }).tap();
+  await page.getByRole("button", {name:"管理正文版本",exact:true}).tap();
   const drawer = page.locator(".version-drawer-shell");
   const version = drawer.locator("article").filter({ hasText: "待删除正文" });
-  const remove = version.getByRole("button", { name: "删除", exact: true });
-  await remove.scrollIntoViewIfNeeded();
-  await remove.tap();
+  const remove = async()=>{const trigger=version.getByRole("button",{name:"待删除正文的更多操作",exact:true});await trigger.scrollIntoViewIfNeeded();await trigger.tap();await page.getByRole("menuitem",{name:"删除",exact:true}).tap();};
+  await remove();
   const confirmation = page.getByRole("dialog", { name: "删除正文？", exact: true });
   await expect(confirmation).toBeVisible();
   expect((await confirmation.boundingBox())!.height).toBeLessThan(400);
@@ -36,11 +36,11 @@ test("mobile version deletion accepts touch confirmation after scrolling the dra
   await page.keyboard.press("Escape");
   await expect(confirmation).toBeHidden();
   await expect(drawer).toBeVisible();
-  await remove.tap();
+  await remove();
   await cancel.tap();
   await expect(confirmation).toBeHidden();
   await expect(version).toHaveCount(1);
-  await remove.tap();
+  await remove();
   await confirmation.getByRole("button", { name: "确认删除", exact: true }).tap();
   await expect(confirmation).toBeHidden();
   await expect(version).toHaveCount(0);

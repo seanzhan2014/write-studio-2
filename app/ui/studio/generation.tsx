@@ -1,4 +1,5 @@
 "use client";
+import { configuredModelFilter } from "@/app/ui/model-options";
 
 import { advancedText, GENERATE_FIELDS } from "@/lib/advanced-writing";
 import { GenerateAdvancedFields } from "@/app/ui/advanced-writing";
@@ -23,14 +24,15 @@ import { isTaskAwaitingAuthor } from "@/lib/writing-preparation";
 import { taskPhaseLabels } from "@/lib/task-history";
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, Checkbox, Group, NumberInput, Select, Slider, Text, Textarea, TextInput } from "@mantine/core";
+import { NumberPresetMenu } from "@/app/ui/compact-controls";
+import { Menu, Button, Checkbox, Group, NumberInput, Select, Text, Textarea, TextInput } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 
 import { detectFirstAppearanceCharacters, selectAiContext, type FirstAppearanceSuggestion } from "@/lib/ai-context";
 
 import { resolvedOutlineContentName } from "@/lib/content-name.mjs";
 
-import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, generateExpressionSettings, generateExpressionKey, type AiGenerateOptions, DEFAULT_REWRITE_RETENTION_LEVEL, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
+import { CLOSING_SUMMARY_OPTIONS, normalizeClosingSummaryLength, DESCRIPTION_DETAIL_OPTIONS, DIALOGUE_DENSITY_OPTIONS, INTROSPECTION_DENSITY_OPTIONS, NARRATIVE_PACE_OPTIONS, PARAGRAPH_LENGTH_OPTIONS, hasActiveProseControls, normalizeAiGenerateOptions, generateExpressionSettings, generateExpressionKey, type AiGenerateOptions, MAX_GENERATE_PRESETS, MAX_GENERATE_PRESET_CHARACTERS, MAX_GENERATE_TARGET_WORDS, MIN_GENERATE_TARGET_WORDS, normalizeGeneratePresets, normalizeRewriteRetentionLevel, type ContentGenerationMode } from "@/lib/generate-options";
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { outlineDisplayTitle } from "@/lib/outline-title";
 
@@ -240,8 +242,6 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
   const targetWordsUnset = targetWordsInput.trim() === "" || parsedTargetWords === 0;
   const targetWordsValid = expansionDraft?.enabled === true || targetWordsUnset || (Number.isInteger(parsedTargetWords) && parsedTargetWords >= MIN_GENERATE_TARGET_WORDS && parsedTargetWords <= MAX_GENERATE_TARGET_WORDS);
   const targetWords = !expansionDraft?.enabled && targetWordsValid && !targetWordsUnset ? parsedTargetWords : undefined;
-  const rewriteRetentionIndex = rewriteRetentionOptions.findIndex((item) => item.value === rewriteRetention);
-  const rewriteRetentionOption = rewriteRetentionOptions[rewriteRetentionIndex] ?? rewriteRetentionOptions[1];
   const outlinePlanDirty = outlinePlanDraft !== outline.plan || JSON.stringify(expansionDraft) !== JSON.stringify(studio.currentOutline.expansion);
   const normalizedPrompt = prompt.trim().slice(0, 20_000);
   const promptDirty = normalizedPrompt !== savedPrompt;
@@ -492,8 +492,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
             </div>}
           </div>
-          <div className="generate-preset-toolbar"><span>常用指令</span><Button className="manage-generate-presets" variant="subtle" size="compact-sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button></div>
-          {studio.data.settings.generatePresets.length > 0 && <div className="generate-quick-prompts" aria-label="自定义预设场景">{studio.data.settings.generatePresets.map((item) => <Button variant="light" size="compact-sm" type="button" key={item} onClick={() => setPrompt(item)}>{item}</Button>)}</div>}
+          <div className="generate-preset-toolbar"><Menu withinPortal position="bottom-end"><Menu.Target><Button variant="subtle" size="compact-sm" disabled={!studio.data.settings.generatePresets.length}>常用指令 ⌄</Button></Menu.Target><Menu.Dropdown>{studio.data.settings.generatePresets.map(item=><Menu.Item key={item} onClick={()=>setPrompt(item)}>{item}</Menu.Item>)}</Menu.Dropdown></Menu><Button className="manage-generate-presets" variant="subtle" size="compact-sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button></div>
           </section>
           <section className="generate-settings-scope" aria-label="生成设置范围">
             <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={independent ? [{ value: "task", label: "仅本窗口" }] : [{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
@@ -505,79 +504,47 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
             <div className="generate-mode-options" role="radiogroup" aria-label="正文生成方式">
               {contentGenerationModes.map((item) => {
                 const disabled = item.value !== "fresh" && !hasCurrentContent;
-                return <button className={generationMode === item.value ? "selected" : ""} type="button" role="radio" aria-checked={generationMode === item.value} aria-label={`${item.label}：${item.mobileDescription}`} disabled={disabled} key={item.value} onClick={() => rememberGenerateOptions({ contentMode: item.value })}><span className="ui-title">{item.label}</span></button>;
+                return <label className={generationMode === item.value ? "selected" : ""} key={item.value}><input type="radio" name={viewId+"-content-mode"} aria-label={item.label+"："+item.mobileDescription} checked={generationMode===item.value} disabled={disabled} onChange={()=>rememberGenerateOptions({contentMode:item.value})} /><span className="ui-title">{item.label}</span></label>;
               })}
             </div>
             {generationMode === "rewrite" && <p className="generate-mode-hint">原正文：{resolvedOutlineContentName(studio.currentOutline)}</p>}
             {!hasCurrentContent && <p className="generate-mode-hint">当前正文为空，只能使用全新生成。</p>}
           </section>
-          {generationMode === "rewrite" && <section className="rewrite-retention-control" aria-labelledby="rewrite-retention-heading">
-            <div className="rewrite-retention-heading">
-              <div><span id="rewrite-retention-heading">原文保留度</span></div>
-              <strong>{rewriteRetentionOption.label} · {rewriteRetentionOption.shortLabel}</strong>
-            </div>
-            <Slider
-              thumbLabel="原文保留度"
-              thumbValueText={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
-              min={0}
-              max={rewriteRetentionOptions.length - 1}
-              step={1}
-              marks={rewriteRetentionOptions.map((item, index) => ({ value: index, label: item.label }))}
-              value={rewriteRetentionIndex}
-              label={(value) => rewriteRetentionOptions[value]?.shortLabel ?? "平衡改写"}
-              onChange={(value) => rememberGenerateOptions({ rewriteRetention: rewriteRetentionOptions[value]?.value ?? DEFAULT_REWRITE_RETENTION_LEVEL })}
-            />
+          {generationMode === "rewrite" && <section className="rewrite-retention-control" aria-label="改写保留度设置">
+            <ProseControlRow id={viewId+"-retention"} label="原文保留度" value={rewriteRetention} options={rewriteRetentionOptions} onChange={rewriteRetention => rememberGenerateOptions({ rewriteRetention })} />
             {targetWords !== undefined && Math.abs(targetWords - resolvedOutlineContent(studio.currentOutline).length) > Math.max(500, resolvedOutlineContent(studio.currentOutline).length * .35) && <small className="rewrite-retention-warning">目标字数与原文长度差异较大，实际保留度可能降低。</small>}
           </section>}
-            {!expansionDraft?.enabled && <NumberInput className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />}
+            {!expansionDraft?.enabled && <NumberInput rightSectionWidth={34} rightSection={<NumberPresetMenu label="目标字数预设" values={[{value:0,label:"不限字数"},{value:1000,label:"1,000 字"},{value:2000,label:"2,000 字"},{value:3000,label:"3,000 字"},{value:5000,label:"5,000 字"}]} onChange={value=>{setTargetWordsInput(value?String(value):"");rememberGenerateOptions({targetWords:value});}} />} className="generate-word-count" label={generationMode === "continue" ? "新增目标字数" : "目标字数"} error={targetWordsValid ? undefined : `${MIN_GENERATE_TARGET_WORDS}–${MAX_GENERATE_TARGET_WORDS} 的整数`} aria-label={generationMode === "continue" ? "续写新增目标字数" : "正文目标字数"} min={0} max={MAX_GENERATE_TARGET_WORDS} step={100} thousandSeparator="," suffix=" 字" placeholder="不限" hideControls={compact} value={targetWordsInput} onChange={(value) => { const next = String(value); setTargetWordsInput(next); const parsed = Number(next); if (next.trim() === "" || parsed === 0) rememberGenerateOptions({ targetWords: 0 }); else if (Number.isInteger(parsed) && parsed >= MIN_GENERATE_TARGET_WORDS && parsed <= MAX_GENERATE_TARGET_WORDS) rememberGenerateOptions({ targetWords: parsed }); }} onBlur={() => { const parsed = Number(targetWordsInput); if (targetWordsInput.trim() === "" || parsed === 0) { setTargetWordsInput(""); rememberGenerateOptions({ targetWords: 0 }); } else if (!Number.isInteger(parsed) || parsed < MIN_GENERATE_TARGET_WORDS || parsed > MAX_GENERATE_TARGET_WORDS) setTargetWordsInput(generateOptionsRef.current.targetWords > 0 ? String(generateOptionsRef.current.targetWords) : ""); }} />}
           </div></section>
-          <section className="prose-controls-section" aria-labelledby="prose-controls-heading">
-            <div className="generate-section-heading"><span id="prose-controls-heading">表达偏好</span><strong>写作倾向</strong></div>
-            <div className="prose-controls-grid">
+          <details className="prose-controls-section generate-settings-panel"><summary><span>表达偏好</span><small>{proseControlsSummary({proseControls})}</small></summary><div className="generate-settings-panel-body"><div className="prose-controls-grid">
               <ProseControlRow id={`${viewId}-dialogue-density`} label="对话密度" value={proseControls.dialogueDensity} options={DIALOGUE_DENSITY_OPTIONS} onChange={(dialogueDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, dialogueDensity } })} className="dialogue-density-control" />
               <ProseControlRow id={`${viewId}-introspection-density`} label="内心活动" value={proseControls.introspectionDensity} options={INTROSPECTION_DENSITY_OPTIONS} onChange={(introspectionDensity) => rememberGenerateOptions({ proseControls: { ...proseControls, introspectionDensity } })} />
               <ProseControlRow id={`${viewId}-description-detail`} label="描写细度" value={proseControls.descriptionDetail} options={DESCRIPTION_DETAIL_OPTIONS} onChange={(descriptionDetail) => rememberGenerateOptions({ proseControls: { ...proseControls, descriptionDetail } })} />
               <ProseControlRow id={`${viewId}-narrative-pace`} label="叙事节奏" value={proseControls.narrativePace} options={NARRATIVE_PACE_OPTIONS} onChange={(narrativePace) => rememberGenerateOptions({ proseControls: { ...proseControls, narrativePace } })} />
               <ProseControlRow id={`${viewId}-paragraph-length`} label="段落长度" value={proseControls.paragraphLength} options={PARAGRAPH_LENGTH_OPTIONS} onChange={(paragraphLength) => rememberGenerateOptions({ proseControls: { ...proseControls, paragraphLength } })} />
               <ProseControlRow id={`${viewId}-closing-summary`} label="收尾总结" value={closingSummaryLength} options={CLOSING_SUMMARY_OPTIONS} onChange={(closingSummaryLength) => rememberGenerateOptions({ closingSummaryLength })} className="closing-summary-control" />
-            </div>
-            {!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}
-          </section>
-          <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "global", resolvedGenerateSettings.globalDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} />
-          <section className="generate-reference-section" aria-labelledby={`${viewId}-generate-reference-heading`}>
-            <div className="generate-section-heading"><h3 id={`${viewId}-generate-reference-heading`}>参考资料</h3><span>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</span></div>
-          <div className="generate-reference-bar" aria-label="生成参考设置">
+            </div>{!selectedModelReference && (hasActiveProseControls(proseControls) || closingSummaryLength !== "none") && <small>本地演示引擎不执行正文表达控制，使用配置的模型后生效。</small>}          <GenerateAdvancedFields value={advanced} inherited={inheritedExpression.advanced} onChange={advanced => rememberGenerateOptions({ advanced })} onRestore={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "global", resolvedGenerateSettings.globalDefaults, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} onPrevious={key => applyInheritedGenerateOptions(inheritAiSettings(generateOptions, "previous", resolvedGenerateSettings.previous, [generateExpressionKey(generateOptions, `advanced.${key}`)]))} /></div></details>
+          <details className="generate-reference-section generate-settings-panel"><summary><span>参考资料</span><small>{summary.previousCount} 条大纲 · {summary.characterCount} 位人物</small></summary><div className="generate-settings-panel-body"><div className="generate-reference-bar" aria-label="生成参考设置">
             <button className="generate-context-summary" type="button" onClick={() => setContextOpen(true)}><Icon name="book" /><span className="generate-context-copy"><span className="ui-title">上下文 {summary.total.toLocaleString("zh-CN")} 字符</span><small>{summary.previousCount} 条前序大纲 · {summary.characterCount} 位人物</small></span><Icon name="chevron" /></button>
             <Button className="generate-first-appearance-edit" variant="default" size="sm" type="button" onClick={() => setAppearanceEditorOpen(true)}>人物出场{firstAppearanceCharacters.length ? ` · ${firstAppearanceCharacters.length}` : ""}</Button>
-          </div>
-            <div className="generate-reference-choices"><Checkbox label="包含前面大纲" checked={includePrevious} onChange={event => rememberGenerateOptions({ includePrevious: event.currentTarget.checked })} /><Checkbox label="包含相关人物" checked={includeCharacters} onChange={event => rememberGenerateOptions({ includeCharacters: event.currentTarget.checked })} />
+          </div><div className="generate-reference-choices"><Checkbox label="包含前面大纲" checked={includePrevious} onChange={event => rememberGenerateOptions({ includePrevious: event.currentTarget.checked })} /><Checkbox label="包含相关人物" checked={includeCharacters} onChange={event => rememberGenerateOptions({ includeCharacters: event.currentTarget.checked })} />
               <label className="generate-excellent-fragments-toggle">
                 <input aria-label="参考优秀片段" type="checkbox" checked={includeExcellentFragments} disabled={availableExcellentFragmentCount === 0} onChange={(event) => rememberGenerateOptions({ includeExcellentFragments: event.currentTarget.checked })} />
                 <span><span className="ui-label">参考优秀片段</span><small>{availableExcellentFragmentCount > 0 ? `${availableExcellentFragmentCount} 个可用` : "暂无优秀片段"}</small></span>
               </label>
-            </div>
-          <section className="generate-article-settings" aria-labelledby={`${viewId}-generate-article-settings-heading`}>
+            </div><section className="generate-article-settings" aria-labelledby={`${viewId}-generate-article-settings-heading`}>
             <div className="generate-section-heading"><span id={`${viewId}-generate-article-settings-heading`}>文章资料继承</span></div>
             <ScopedSettingsInline level="outline" targetId={studio.currentOutline.id} includeTaskSettings={false} />
-          </section>
-          </section>
-          <section className="generate-workflow-section" aria-labelledby={`${viewId}-generate-workflow-heading`}>
-            <div className="generate-section-heading"><h3 id={`${viewId}-generate-workflow-heading`}>流程设置</h3><span>{preparationEnabled ? "准备 → " : ""}写作{reviewMaxRounds ? " → 审校" : ""}</span></div>
-            <div className="generate-workflow-summary"><span>{preparationEnabled ? `写作准备 · 最多互动 ${Number(taskParameters.preparationMaxRounds)} 轮` : "写作准备已关闭 · 直接写作"}</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div>
-              <label className="generate-outline-title-toggle">
+          </section></div></details>
+          <details className="generate-workflow-section generate-settings-panel"><summary><span>写作流程</span><small>{preparationEnabled?"准备开启":"准备关闭"} · {reviewMaxRounds?"审校 "+reviewMaxRounds+" 轮":"审校关闭"}</small></summary><div className="generate-settings-panel-body"><div className="generate-workflow-summary"><span>{preparationEnabled ? `写作准备 · 最多互动 ${Number(taskParameters.preparationMaxRounds)} 轮` : "写作准备已关闭 · 直接写作"}</span><span>{reviewMaxRounds ? "审校 · 最多修正 " + reviewMaxRounds + " 次" : "自动审校关闭"}</span></div><label className="generate-outline-title-toggle">
                 <input aria-label="同时生成大纲名" type="checkbox" checked={includeOutlineTitle} onChange={(event) => rememberGenerateOptions({ includeOutlineTitle: event.currentTarget.checked })} />
                 <span><span className="ui-label">同时生成大纲名</span></span>
-              </label>
-            <TaskParameterSettings level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备", "自动审校", "命名"]} title="调整准备、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} />
-          </section>
+              </label><TaskParameterSettings expanded level="outline" targetId={studio.currentOutline.id} models={models} groups={["写作准备", "自动审校", "命名"]} title="调整准备、审校与命名" value={generateOptions} onChange={applyInheritedGenerateOptions} /></div></details>
           <section className="generate-inheritance-section" aria-label="参数来源与继承"><AiSettingsInheritance taskGroups={["写作准备", "自动审校", "命名"]} kind="generate" targetId={studio.currentOutline.id} value={generateOptions} onChange={applyInheritedGenerateOptions} /></section>
-          <section className="generate-execution-section" aria-labelledby={`${viewId}-generate-execution-heading`}>
-            <div className="generate-section-heading"><h3 id={`${viewId}-generate-execution-heading`}>执行与结果</h3></div>
-              <div className="generate-reasoning-options"><ReasoningSettings value={reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(value) => rememberGenerateOptions({ reasoningEffort: value })} /></div>
-          </section>
+          <details className="generate-execution-section generate-settings-panel"><summary><span>推理设置</span><small>{reasoningEffort??"沿用模型"}</small></summary><div className="generate-settings-panel-body"><div className="generate-reasoning-options"><ReasoningSettings value={reasoningEffort} modelValue={selectedRecord?.reasoningEffort} onChange={(value) => rememberGenerateOptions({ reasoningEffort: value })} /></div></div></details>
           <div className="generate-submit-zone">
             <div className="generate-submit-row">
-              <div className="generate-model-control"><Select aria-label="本次模型" data={modelOptions} value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
+              <div className="generate-model-control"><Select aria-label="本次模型" filter={configuredModelFilter(models)} data={modelOptions} searchable nothingFoundMessage="没有匹配的模型" value={selectedModelReference} allowDeselect={false} onChange={(value) => selectGenerateModel(value ?? "")} />{selectedModelReference && !selectedRecord?.hasSecret && <small>需要载入密钥</small>}</div>
               <Button className="generate-submit-button" leftSection={<Icon name="spark" />} size="md" type="button" disabled={!targetWordsValid || generationMode !== "fresh" && !hasCurrentContent} onClick={() => void submit()}>开始生成</Button>
             </div>
           </div>

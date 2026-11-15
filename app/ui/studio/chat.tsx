@@ -1,7 +1,10 @@
 "use client";
+import { configuredModelFilter } from "@/app/ui/model-options";
+import { requestConfirmDialog, requestTextDialog } from "@/app/ui/operation-dialogs";
 
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
-import { SegmentedControl } from "@mantine/core";
+import { createPortal } from "react-dom";
+import { Popover, Select } from "@mantine/core";
 import { CHAT_MODES, normalizeChatMode } from "@/lib/chat-modes";
 import { taskReasoningEffort, type TaskParameters } from "@/lib/task-parameters";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
@@ -23,11 +26,10 @@ import { browserIsOffline, fetchFromServer, fetchServerAction, readServerJson, O
 import { chatSessionHasUnread, formatTime, useStudio, type AiTask, type Message } from "@/app/studio-state";
 
 import { ResponsiveModal } from "@/app/ui/overlays";
-import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 
 import { type ConfiguredModel, type ChatStreamState, type ChatResponseStage } from "@/app/ui/studio/types";
 
-import { configuredModelForReference, chatbotDisplayName, activeChatSession, updateScopedTaskParameters, useDismissOnOutside, activeChatStreams, releaseActiveChatStream, cancelActiveChatStream, clientId, registerActiveChatStream, copyTextToClipboard, Icon, IconButton, TaskReasoningSettings, modelDisplayLabel, useConfiguredModels } from "@/app/ui/studio/shared";
+import { configuredModelForReference, chatbotDisplayName, activeChatSession, updateScopedTaskParameters, useDismissOnOutside, activeChatStreams, releaseActiveChatStream, cancelActiveChatStream, clientId, registerActiveChatStream, copyTextToClipboard, Icon, IconButton, modelDisplayLabel, useConfiguredModels } from "@/app/ui/studio/shared";
 
 export function chatInline(text: string) {
   return text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) => part.startsWith("**") && part.endsWith("**") ? <strong key={index}>{part.slice(2, -2)}</strong> : part);
@@ -43,7 +45,8 @@ export function ChatMessageContent({ text }: { text: string }) {
   })}</div>;
 }
 
-export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice, sessionId, onSessionChange, contextContent, contextLabel, visible = true, copyOnly = false }: { models: ConfiguredModel[]; outlineId?: string; outlineTitle: string; onUseAsGenerate: (text: string) => void; onNotice: (message: string) => void; sessionId?: string; onSessionChange?: (id: string) => void; contextContent?: string; contextLabel?: string; visible?: boolean; copyOnly?: boolean }) {
+export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice, sessionId, onSessionChange, contextContent, contextLabel, headerHost, visible = true, copyOnly = false }: { headerHost?: HTMLElement | null; models: ConfiguredModel[]; outlineId?: string; outlineTitle: string; onUseAsGenerate: (text: string) => void; onNotice: (message: string) => void; sessionId?: string; onSessionChange?: (id: string) => void; contextContent?: string; contextLabel?: string; visible?: boolean; copyOnly?: boolean }) {
+  const [settingsOpen,setSettingsOpen]=useState(false);
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId) ?? studio.currentOutline;
   const inheritedChatOptions = resolveAiSettings(studio.currentArticle, outline.id, "generate", "outline", studio.data.settings).value;
@@ -360,7 +363,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
   }
 
   async function appendToBody(text: string) {
-    if (!window.confirm("把这条 AI 回复追加到当前正文？")) return;
+    if (!(await requestConfirmDialog("把这条 AI 回复追加到当前正文？"))) return;
     const currentContent = resolvedOutlineContent(outline);
     const nextContent = `${currentContent.trim()}${currentContent.trim() ? "\n\n" : ""}${text.trim()}`;
     if (!await studio.commitContentEdit(outline.id, nextContent)) return;
@@ -378,25 +381,24 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
 
   if (!session) return null;
 
-  return (
-    <div className="chat-view">
-      <header className="chat-header">
-        <button className="chat-session-switcher" type="button" aria-haspopup="dialog" aria-expanded={sessionsOpen} onClick={() => { setSessionsOpen((value) => !value); setSessionMenuOpen(false); }}>
+  const chatHeader = (<header className="chat-header">
+        <button className="chat-session-switcher" type="button" aria-label={"聊天会话 · "+session.title+" · "+outlineTitle} title={outlineTitle} aria-haspopup="dialog" aria-expanded={sessionsOpen} onClick={() => { setSessionsOpen((value) => !value); setSessionMenuOpen(false); }}>
           <span className="chat-header-icon"><Icon name="chat" /></span><span><span className="ui-title">{session.title}</span><small>{session.messages.length} 条消息</small></span><Icon name="chevron" />
         </button>
+<label className="chat-mode-switch"><select aria-label="聊天模式" value={chatMode} disabled={chatBusy || Boolean(editingMessage)} onChange={event=>studio.setChatSetting(outline.id,"mode",normalizeChatMode(event.target.value),session.id)}>{CHAT_MODES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
         <div className="chat-header-actions">
           <IconButton name="plus" label="新建聊天会话" className="chat-new-session" disabled={chatBusy} onClick={() => { if (!chatBusy) { cancelEditingMessage(); selectSession(studio.createChatSession(outline.id)); setSessionsOpen(false); composerRef.current?.focus(); } }} />
           <IconButton name="more" label="会话操作" aria-haspopup="menu" aria-expanded={sessionMenuOpen} onClick={() => { setSessionMenuOpen((value) => !value); setSessionsOpen(false); }} />
         </div>
-        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="聊天会话"><div className="chat-session-popover-head"><span className="ui-title">聊天会话</span></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={chatBusy} onClick={() => { cancelEditingMessage(); selectSession(item.id); setSessionsOpen(false); }}><span><span className="ui-title">{item.title}</span><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
-        {sessionMenuOpen && <div className="chat-session-menu" role="menu"><button role="menuitem" type="button" onClick={() => { const title = window.prompt("会话名称", session.title); if (title?.trim()) studio.renameChatSession(outline.id, session.id, title); setSessionMenuOpen(false); }}><Icon name="edit" />重命名</button><button role="menuitem" type="button" onClick={() => { if (window.confirm("清空当前会话的全部消息？")) studio.clearChat(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="refresh" />清空消息</button><button role="menuitem" className="danger" type="button" onClick={() => { if (window.confirm("删除当前会话？")) studio.deleteChatSession(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="trash" />删除会话</button></div>}
-      </header>
-
-      <div className="chat-mode-switch"><SegmentedControl aria-label="聊天模式" fullWidth value={chatMode} data={[...CHAT_MODES]} disabled={chatBusy || Boolean(editingMessage)} onChange={value => studio.setChatSetting(outline.id, "mode", normalizeChatMode(value), session.id)} /></div>
+        {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="聊天会话"><div className="chat-session-popover-head"><span className="ui-title">聊天会话</span><button type="button" disabled={chatBusy} onClick={()=>{cancelEditingMessage();selectSession(studio.createChatSession(outline.id));setSessionsOpen(false);}}>新建会话</button><button type="button" onClick={()=>{setSessionsOpen(false);setSessionMenuOpen(true);}}>会话操作</button></div><label className="chat-popover-mode">模式<select aria-label="会话中的聊天模式" value={chatMode} disabled={chatBusy || Boolean(editingMessage)} onChange={event=>studio.setChatSetting(outline.id,"mode",normalizeChatMode(event.target.value),session.id)}>{CHAT_MODES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select></label>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={chatBusy} onClick={() => { cancelEditingMessage(); selectSession(item.id); setSessionsOpen(false); }}><span><span className="ui-title">{item.title}</span><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
+        {sessionMenuOpen && <div className="chat-session-menu" role="menu"><button role="menuitem" type="button" onClick={async () => { const title = (await requestTextDialog("会话名称", session.title)); if (title?.trim()) studio.renameChatSession(outline.id, session.id, title); setSessionMenuOpen(false); }}><Icon name="edit" />重命名</button><button role="menuitem" type="button" onClick={async () => { if ((await requestConfirmDialog("清空当前会话的全部消息？"))) studio.clearChat(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="refresh" />清空消息</button><button role="menuitem" className="danger" type="button" onClick={async () => { if ((await requestConfirmDialog("删除当前会话？"))) studio.deleteChatSession(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="trash" />删除会话</button></div>}
+      </header>);
+  return (
+    <div className="chat-view">
+      {headerHost ? createPortal(chatHeader,headerHost) : chatHeader}
 
       <div className="chat-thread" ref={chatThreadRef}>
-        <TaskParameterSettings level="outline" targetId={outline.id} groups={["聊天"]} models={models} value={onSessionChange ? chatOptions : undefined} onChange={onSessionChange ? setLocalChatOptions : undefined} />
-        {!session.messages.length && !chatBusy && <div className="chat-empty"><span><Icon name="spark" /></span><h2>和 {chatbotName} 讨论「{outlineTitle}」</h2><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { setDraft(prompt); composerRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
+        {!session.messages.length && !chatBusy && <div className="chat-empty"><span><Icon name="spark" /></span><h2>开始聊天</h2><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { setDraft(prompt); composerRef.current?.focus(); }}>{prompt}</button>)}</div></div>}
         {session.messages.map((item, index) => {
           const isError = item.role === "assistant" && item.text.includes("错误：");
           const previousUser = item.role === "assistant" ? [...session.messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user") : null;
@@ -423,11 +425,10 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
 
       <div className="chat-composer-wrap">
         {contextLabel && <div className="pane-context-source" role="status">引用正文 · {contextLabel}</div>}
-        <details className="chat-reasoning-options"><summary>推理强度 · {taskReasoningEffort(chatParameters.chatReasoningEffort) === undefined ? "沿用模型" : taskReasoningEffort(chatParameters.chatReasoningEffort) ?? "不发送参数"}</summary>{onSessionChange ? <ReasoningSettings value={taskReasoningEffort(chatParameters.chatReasoningEffort)} modelValue={chatModelRecord?.reasoningEffort} disabled={chatBusy} onChange={value => editChatParameter({ chatReasoningEffort: value === null ? "__omit__" : value ?? "__inherit__" })} /> : <TaskReasoningSettings kind="chat" model={chatModelRecord} disabled={chatBusy} />}</details>
         {contextOpen && <div className="chat-context-panel" role="dialog" aria-label="聊天上下文"><header><div><span className="ui-title">本次上下文</span><span>{contextCharacters.toLocaleString("zh-CN")} 字符</span></div><IconButton name="close" label="关闭上下文" onClick={() => setContextOpen(false)} /></header><div className="chat-context-fixed"><p><Icon name="check" /><span>文章信息</span><small>{studio.currentArticle.title}</small></p><p><Icon name="check" /><span>当前章节</span><small>{studio.currentChapter.title}</small></p><p><Icon name="check" /><span>当前大纲与正文</span><small>{contextLabel ?? outlineTitle}</small></p><p><Icon name="check" /><span>最近消息</span><small>{Math.min(20, session.messages.length)} 条</small></p></div><label><input type="checkbox" checked={chatIncludePrevious} onChange={(event) => { studio.setChatSetting(outline.id, "includePrevious", event.target.checked, session.id); editChatParameter({ chatIncludePrevious: event.target.checked }); }} /><span>前面全部大纲</span><small>{previous.length} 条</small></label>{chatIncludePrevious && previous.length > 0 && <div className="chat-context-sources">{previous.map((item) => <span key={item.id}>{outlineDisplayTitle(item)}</span>)}</div>}<label><input type="checkbox" checked={chatIncludeCharacters} onChange={(event) => { studio.setChatSetting(outline.id, "includeCharacters", event.target.checked, session.id); editChatParameter({ chatIncludeCharacters: event.target.checked }); }} /><span>相关人物</span><small>{matchedCharacters.length} 位</small></label>{chatIncludeCharacters && matchedCharacters.length > 0 && <div className="chat-context-sources">{matchedCharacters.map((item) => <span key={item.id}>{item.name}</span>)}</div>}</div>}
         <div className="chat-composer">
-          <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { setDraft(event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="聊天消息" />
-          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><label className="composer-model-chip"><Icon name="spark" /><select aria-label="聊天模型" disabled={Boolean(editingMessage)} value={chatModelReference} onChange={(event) => { editChatParameter({ chatModel: event.target.value }); void studio.saveNow(); }}><option value="">本地演示引擎</option>{chatModelReference && !chatModelRecord && <option value={chatModelReference}>{chatModelReference}</option>}{models.map((model) => <option key={model.id} value={model.id}>{modelDisplayLabel(models, model.id)}</option>)}</select></label></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
+          <textarea ref={composerRef} rows={1} maxLength={20000} value={message} disabled={Boolean(editingMessage)} onChange={(event) => { setDraft(event.target.value); resizeComposer(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); void send(); } }} placeholder={editingMessage ? "正在编辑上方消息" : "输入消息"} aria-label="聊天消息" />
+          <div className="composer-actions"><div className="composer-left-actions"><IconButton name="plus" label="添加参考或快捷指令" title="添加" className="composer-icon-button" aria-haspopup="menu" aria-expanded={toolsOpen} disabled={Boolean(editingMessage)} onClick={() => { setToolsOpen((value) => !value); setContextOpen(false); }} /><button className={`composer-context-chip ${contextOpen ? "active" : ""}`} type="button" disabled={Boolean(editingMessage)} aria-expanded={contextOpen} onClick={() => { setContextOpen((value) => !value); setToolsOpen(false); }}><Icon name="context" /><span>上下文 {contextCharacters.toLocaleString("zh-CN")}</span></button><div className="composer-model-chip"><Select filter={configuredModelFilter(models)} aria-label="聊天模型" searchable allowDeselect={false} nothingFoundMessage="没有匹配的模型" disabled={Boolean(editingMessage)} value={chatModelReference} data={[{value:"",label:"本地演示引擎"},...(chatModelReference&&!chatModelRecord?[{value:chatModelReference,label:chatModelReference+"（不可用）"}]:[]),...models.map(model=>({value:model.id,label:modelDisplayLabel(models,model.id)}))]} onChange={value=>{if(value!==null){editChatParameter({chatModel:value});void studio.saveNow();}}} /></div><Popover opened={settingsOpen} onChange={setSettingsOpen} position="top-end" withinPortal trapFocus returnFocus><Popover.Target><IconButton name="settings" label="聊天参数" disabled={chatBusy} onClick={()=>setSettingsOpen(open=>!open)} /></Popover.Target><Popover.Dropdown className="chat-parameter-popover"><TaskParameterSettings level="outline" targetId={outline.id} groups={["聊天"]} models={models} value={onSessionChange ? chatOptions : undefined} onChange={onSessionChange ? setLocalChatOptions : undefined} /></Popover.Dropdown></Popover></div>{chatBusy ? <button className="composer-send stop" type="button" onClick={cancelCurrentChatTask} aria-label="停止回复"><Icon name="stop" /></button> : <button className="composer-send" type="button" onClick={() => void send()} disabled={!message.trim() || Boolean(editingMessage) || chatBusy} aria-label="发送消息"><Icon name="send" /></button>}</div>
           {toolsOpen && <div className="chat-tools-popover"><div>{quickPrompts.map((prompt) => <button type="button" key={prompt} onClick={() => { setDraft(message ? `${message}\n${prompt}` : prompt); setToolsOpen(false); composerRef.current?.focus(); }}>{prompt}</button>)}</div><button type="button" onClick={() => fileRef.current?.click()}><Icon name="attachment" />添加文本参考</button></div>}
           <input className="chat-file-input" ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => { void attachTextFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
         </div>

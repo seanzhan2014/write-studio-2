@@ -1,4 +1,5 @@
 "use client";
+import { requestConfirmDialog } from "@/app/ui/operation-dialogs";
 import { useConnectionForm, useModelEditor, useModelManagement, useModelCatalog, emptyConnection, type Model, type CatalogSearch } from "./ai-service-forms";
 
 import { Alert, Badge, Button, Checkbox, Group, NumberInput, PasswordInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
@@ -70,10 +71,6 @@ export function AiServices() {
   const imageModels = models.filter(supportsImages);
   function selectionOptions(items: Model[]) { return items.map((model) => ({ value: model.id, label: `${modelSelectionLabel(model)}${model.hasSecret ? "" : "（需密钥）"}`, disabled: !model.hasSecret })); }
   function canonical(reference?: string) { return models.find((model) => matchesReference(model, reference))?.id ?? reference ?? ""; }
-  function updateDefaults(patch: Partial<StudioSettings>) { studio.updateSettings(patch); setNotice("默认用途已更新，正在自动保存"); }
-  const textOptions = [{ value: "", label: "本地演示引擎" }, ...selectionOptions(textModels)];
-  const generateLabel = models.find((model) => matchesReference(model, settings.generateModel));
-  const inheritLabel = `继承正文生成 · ${generateLabel ? modelSelectionLabel(generateLabel) : "本地演示引擎"}`;
   const providerOptions = providers.map((provider) => ({ value: provider.id, label: provider.name }));
   const currentCatalog = catalogs[addProvider];
   const civitaiProvider = isCivitai(providers.find(provider => provider.id === addProvider) ?? {});
@@ -284,7 +281,7 @@ export function AiServices() {
     finally { setBusy(""); }
   }
   async function connectionAction(provider: AiProviderRecord, action: "test" | "delete" | "key") {
-    if (action !== "test" && !window.confirm(action === "key" ? `移除「${provider.name}」的 API Key？` : `删除服务连接「${provider.name}」？`)) return;
+    if (action !== "test" && !(await requestConfirmDialog(action === "key" ? `移除「${provider.name}」的 API Key？` : `删除服务连接「${provider.name}」？`))) return;
     setBusy(`connection:${provider.id}`); setError("");
     try {
       if (action === "test") {
@@ -311,13 +308,7 @@ export function AiServices() {
     <div className="ai-service-intro"><div><div className="ai-service-counts"><span>{providers.length} 个服务连接</span><span>{textModels.length} 个文字模型</span><span>{imageModels.length} 个图像模型</span></div></div><Button loading={loading} disabled={Boolean(busy)} onClick={() => providers.length ? openAdd() : openConnection()}>添加模型</Button></div>
     {error && <Alert color="red" role="alert" withCloseButton onClose={() => setError("")}>{error}</Alert>}
     {notice && <Alert color="studio" role="status" withCloseButton onClose={() => setNotice("")}>{notice}</Alert>}
-    <section className="ai-service-section" aria-labelledby="ai-defaults-title"><div className="ai-section-heading"><div><h2 id="ai-defaults-title">默认用途</h2></div><span className="ai-auto-save">自动保存</span></div><div className="ai-default-grid">
-      <Select label="正文生成" data={textOptions} value={canonical(settings.generateModel)} onChange={(value) => updateDefaults({ generateModel: value ?? "" })} searchable allowDeselect={false} />
-      <Select label="聊天" data={textOptions} value={canonical(settings.chatModel)} onChange={(value) => updateDefaults({ chatModel: value ?? "" })} searchable allowDeselect={false} />
-      <Select label="名称生成" data={[{ value: "__inherit__", label: inheritLabel }, ...textOptions]} value={settings.namingModelMode === "inherit" ? "__inherit__" : canonical(settings.namingModel)} onChange={(value) => updateDefaults(value === "__inherit__" ? { namingModelMode: "inherit", namingModel: "" } : { namingModelMode: "fixed", namingModel: value ?? "" })} searchable allowDeselect={false} />
-      <Select label="插图提示词" data={[{ value: "", label: inheritLabel }, ...selectionOptions(textModels)]} value={canonical(settings.illustrationPromptModel)} onChange={(value) => updateDefaults({ illustrationPromptModel: value ?? "" })} searchable allowDeselect={false} />
-      <Select label="插图生成" data={[{ value: "", label: "每次选择" }, ...selectionOptions(imageModels)]} value={canonical(settings.illustrationImageModel)} onChange={(value) => updateDefaults({ illustrationImageModel: value ?? "" })} searchable allowDeselect={false} />
-    </div></section>
+    <Button className="ai-defaults-link" variant="subtle" onClick={()=>{window.history.pushState({},"","/settings/tasks");window.dispatchEvent(new PopStateEvent("popstate"));}}>AI 默认设置 →</Button>
     <section className="ai-service-section" aria-labelledby="ai-models-title"><div className="ai-section-heading"><div><h2 id="ai-models-title">已启用模型 <span>{models.length}</span></h2></div><Button variant="subtle" size="xs" disabled={Boolean(busy) || !textModels.length} onClick={() => void testModels(textModels, "text")}>检测文字模型</Button></div>
       <div className="ai-model-tools"><TextInput aria-label="搜索已启用模型" placeholder="搜索模型名称、ID 或服务商" value={query} onChange={(event) => setQuery(event.currentTarget.value)} /><div className="ai-filter-tabs" role="group" aria-label="模型筛选">{[["all", "全部"], ["text", "文字"], ["image", "图像"], ["used", "默认使用中"], ["failed", "检测失败"]].map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
       {loading ? <Text p="md" role="status">正在加载模型配置…</Text> : visible.length || unfiltered && providers.length ? <div className="ai-model-groups">{providers.map((provider) => {

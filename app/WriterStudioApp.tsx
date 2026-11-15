@@ -1,5 +1,6 @@
 "use client";
 
+import { OperationDialogs } from "@/app/ui/operation-dialogs";
 import { CharacterPhotoRuntime } from "@/app/ui/character-photos";
 
 import { StyleLabRuntime } from "@/app/ui/style-lab";
@@ -40,7 +41,7 @@ import { SearchPage } from "@/app/ui/studio/search";
 import { VersionDrawer } from "@/app/ui/studio/versions";
 
 export default function WriterStudioApp() {
-  return <StudioProvider><StudioThemeProvider><DataTransferProvider><CharacterPhotoRuntime /><StyleLabRuntime /><WriterStudioInner /></DataTransferProvider></StudioThemeProvider></StudioProvider>;
+  return <StudioProvider><StudioThemeProvider><DataTransferProvider><OperationDialogs /><CharacterPhotoRuntime /><StyleLabRuntime /><WriterStudioInner /></DataTransferProvider></StudioThemeProvider></StudioProvider>;
 }
 
 export function WriterStudioInner() {
@@ -58,7 +59,7 @@ export function WriterStudioInner() {
   const [articleMenu, setArticleMenu] = useState(false);
   const [taskPanel, setTaskPanel] = useState(false);
   const [taskSelectionId, setTaskSelectionId] = useState("");
-  const [illustrationHistoryTab, setIllustrationHistoryTab] = useState("images");
+  const [illustrationHistoryTab, setIllustrationHistoryTab] = useState("generate");
   useEffect(() => {
     const open = (event: Event) => { setTaskSelectionId((event as CustomEvent<string>).detail); setTaskPanel(true); };
     window.addEventListener("writer-studio-open-task", open);
@@ -307,13 +308,13 @@ export function WriterStudioInner() {
         {view === "outline-home" && (hasOutlines ? <MobileOutlineHome key={`mobile-outline:${activeArticle.id}`} articleTitle={articleTitle} currentOutline={currentOutline} articleMenuOpen={articleMenu} onArticleMenu={() => setArticleMenu(true)} onOutline={openOutline} onChapter={() => go("chapter")} onTask={() => setTaskPanel(true)} onSettings={() => go("settings-general")} onNotice={setToast} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
         {isOutlineWorkspaceView && (
           hasOutlines ? (mobileLayout ? <OutlineWorkspace
-            onBack={() => void go("outline-home")}
+            onBack={() => void go("outline-home")} onPreviewVersion={versionId=>setPreviewSelection({outlineId:currentOutline,versionId})}
             key={currentOutline}
             mode={view as "write" | "chat" | "generate" | "illustrations"}
             illustrationHistoryTab={illustrationHistoryTab}
             outline={selectedOutline}
             focusMode={focusMode}
-            onMode={go}
+            onMode={next=>{if(next==="illustrations")setIllustrationHistoryTab("generate");return go(next);}}
             onVersions={() => setVersions(true)}
             onFocus={() => setFocusMode((value) => !value)}
             onTaskCreated={() => { setPreviewSelection(null); setToast("生成任务已加入队列"); }}
@@ -330,7 +331,7 @@ export function WriterStudioInner() {
             illustrationHistoryTab={illustrationHistoryTab}
             outline={selectedOutline}
             focusMode={focusMode}
-            onMode={go}
+            onMode={next=>{if(next==="illustrations")setIllustrationHistoryTab("generate");return go(next);}}
             onVersions={() => setVersions(true)}
             onFocus={() => setFocusMode((value) => !value)}
             onTaskCreated={() => { setPreviewSelection(null); setToast("生成任务已加入队列"); }}

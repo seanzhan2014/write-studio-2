@@ -1,3 +1,4 @@
+import { openGenerationPanels } from "./workspace-controls";
 import { showTotalWordMode } from "./outline-expansion-helper";
 import { expect, test } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
@@ -14,20 +15,22 @@ test("one-time generation executes its preparation and review choices without ch
     const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "One-time generation", modelId: "one-time", maxInputCharacters: 120000 } })).json();
     const state = await (await request.get("/api/state")).json();
     const data = fullStudioFixture() as unknown as StudioData;
+    Object.assign(data.settings, {generateModel: model.id, preparationMaxRounds:2, preparationRequireConfirmation:false});
     data.articles[0].aiGenerateSettings = normalizeAiGenerateOptions({ model: model.id, targetWords: 5000, tasks: { preparationMaxRounds: 2, reviewMaxRounds: 0, preparationRequireConfirmation: false } });
     expect((await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await expect(page.getByRole("region", { name: "本次写作", exact: true })).toBeInViewport({ timeout: 20000 });
     await page.screenshot({ path: info.outputPath("generation-input.png") });
     await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
     await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
     await showTotalWordMode(page);
     await page.getByRole("textbox", { name: "正文目标字数", exact: true }).fill("700");
-    await page.locator(".generate-command-card > .writing-advanced > summary").click();
+    await page.locator(".generate-command-card .writing-advanced > summary").click();
     const characters = page.getByRole("group", { name: /^人物表现/ });
     await characters.getByRole("textbox", { name: "心理展开方式", exact: true }).fill("只在关键决定处展开心理。");
-    const workflow = page.locator(".generate-workflow-section > .task-parameter-settings");
-    await workflow.locator(":scope > summary").click();
+    const workflow = page.locator(".generate-workflow-section .task-parameter-settings");
+    if (await workflow.locator(":scope > summary").isVisible()) await workflow.locator(":scope > summary").click();
     await expect(workflow.getByText("聊天", { exact: true })).toHaveCount(0);
     await expect(workflow.getByText("插图模型", { exact: true })).toHaveCount(0);
     const preparation = workflow.locator(".task-parameter-group").filter({ has: page.locator("summary > span", { hasText: "写作准备" }) });
@@ -65,25 +68,15 @@ test("one-time generation executes its preparation and review choices without ch
   } finally { fake.close(); }
 });
 
-test("saving one-time preferences as article defaults preserves unrelated task defaults", async ({ page, request }) => {
-  const state = await (await request.get("/api/state")).json();
-  const data = fullStudioFixture() as unknown as StudioData;
-  data.articles[0].aiGenerateSettings = normalizeAiGenerateOptions({ tasks: { taskConcurrency: 4, chatReasoningEffort: "high" } });
-  expect((await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data } })).ok()).toBeTruthy();
-  await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
-  await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
-  await showTotalWordMode(page);
-  await page.getByRole("textbox", { name: "正文目标字数", exact: true }).fill("900");
-  await page.getByRole("button", { name: "设为文章默认", exact: true }).click();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.targetWords).toBe(900);
-  const saved = (await (await request.get("/api/state")).json()).data.articles[0];
-  expect(saved.aiGenerateSettings.tasks).toMatchObject({ taskConcurrency: 4, chatReasoningEffort: "high" });
-  expect(saved.aiGenerateSettings.inheritance).toBeUndefined();
-  expect(saved.chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions).toBeNull();
-  await page.reload();
-  await showTotalWordMode(page);
-  await expect(page.getByRole("textbox", { name: "正文目标字数", exact: true })).toHaveValue("900 字");
+test("one-time preferences preserve global and article defaults",async({page,request})=>{
+ const state=await(await request.get("/api/state")).json();const data=fullStudioFixture() as unknown as StudioData;
+ data.articles[0].aiGenerateSettings=normalizeAiGenerateOptions({tasks:{taskConcurrency:4,chatReasoningEffort:"high"}});
+ expect((await request.put("/api/state",{headers:{"If-Match":String(state.revision)},data:{data}})).ok()).toBeTruthy();
+ await page.goto("/articles/article-main/outlines/outline-current/generate");await openGenerationPanels(page);await showTotalWordMode(page);
+ await page.getByRole("combobox",{name:"参数调整范围",exact:true}).click();await page.getByRole("option",{name:"仅本次生成",exact:true}).click();
+ await page.getByLabel("正文目标字数",{exact:true}).fill("900");await expect(page.getByRole("button",{name:"设为文章默认",exact:true})).toHaveCount(0);
+ const saved=(await(await request.get("/api/state")).json()).data;expect(saved.articles[0].aiGenerateSettings.tasks).toMatchObject({taskConcurrency:4,chatReasoningEffort:"high"});expect(saved.articles[0].chapters[0].outlines[1].generateOptions).toBeNull();
+ await page.reload();await showTotalWordMode(page);await expect(page.getByLabel("正文目标字数",{exact:true})).toHaveValue("5,000 字");
 });
 
 for (const reviewMaxRounds of [0, 1]) test(`disabled preparation skips the model call and confirmation with review rounds ${reviewMaxRounds}`, async ({ page, request }, info) => {
@@ -95,15 +88,17 @@ for (const reviewMaxRounds of [0, 1]) test(`disabled preparation skips the model
     const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "Direct writing", modelId: "direct-writing", maxInputCharacters: 120000 } })).json();
     const current = await (await request.get("/api/state")).json();
     const data = fullStudioFixture() as unknown as StudioData;
+    Object.assign(data.settings, {generateModel:model.id,preparationEnabled:true,preparationMaxRounds:4,preparationRequireConfirmation:true,generateReviewMaxRounds:reviewMaxRounds});
     data.tasks = [];
     data.articles[0].reviewRules = "保留人物年龄与环境描写。";
     data.articles[0].aiGenerateSettings = normalizeAiGenerateOptions({ model: model.id, tasks: { preparationEnabled: true, preparationMaxRounds: 4, preparationRequireConfirmation: true, reviewMaxRounds } });
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await openGenerationPanels(page);
     await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
     await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
-    const workflow = page.locator(".generate-workflow-section > .task-parameter-settings");
-    await workflow.locator(":scope > summary").click();
+    const workflow = page.locator(".generate-workflow-section .task-parameter-settings");
+    if (await workflow.locator(":scope > summary").isVisible()) await workflow.locator(":scope > summary").click();
     await workflow.getByText("写作准备", { exact: true }).click();
     const enabled = workflow.getByRole("checkbox", { name: "生成写作准备稿", exact: true });
     await expect(enabled).toBeChecked();
