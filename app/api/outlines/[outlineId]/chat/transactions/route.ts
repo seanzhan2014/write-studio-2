@@ -6,6 +6,8 @@ import { modelSelectionLabel } from "@/lib/model-label";
 import type { SelectedAiContext } from "@/lib/ai-context";
 import { currentTaskExecutionOrigin, normalizeTaskExecutionOrigin } from "@/db/task-execution";
 import { chatOptions, chatSnapshot, completeChatTask, readChatTask, recoverChatTasks } from "@/db/chat-tasks";
+import { normalizeChatMode, normalizeChatModePrompts } from "@/lib/chat-modes";
+import { readStudioState } from "@/db/studio-state";
 
 type SubmittedMessage = Pick<Message, "id" | "role" | "text" | "createdAt" | "stopped">;
 
@@ -56,8 +58,10 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
       const promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) as SelectedAiContext : undefined;
       if (promptContext && (promptContext.kind !== "chat" || promptContext.currentOutline?.id !== outlineId || JSON.stringify(promptContext).length > 200_000)) return json({ error: "聊天上下文与目标不匹配或过大" }, 422);
       const createdAt = new Date().toISOString();
+      const mode = normalizeChatMode(body.mode ?? JSON.parse(String(target.context_options_json ?? "{}"))?.mode);
+      const modePrompt = normalizeChatModePrompts((await readStudioState()).data?.settings.chatModePrompts)[mode];
       const title = String(body.sessionTitle ?? "新对话").slice(0, 48) || "新对话";
-      const sessionOptions = JSON.stringify({ title, includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, active: true, lastReadMessageId: null });
+      const sessionOptions = JSON.stringify({ title, mode, includePrevious: body.includePrevious !== false, includeCharacters: body.includeCharacters !== false, active: true, lastReadMessageId: null });
       const estimate = Number(body.estimatedCharacters ?? 0);
       const task: AiTask = {
         id: taskId,
@@ -79,6 +83,8 @@ export async function POST(request: Request, context: { params: Promise<{ outlin
         runnerId: `chat-${taskId}`,
         leaseUntil: new Date(Date.now() + 30_000).toISOString(),
         contextOptions: {
+          chatMode: mode,
+          chatModePrompt: modePrompt,
           reasoningEffort: body.reasoningEffort,
           resolvedReasoningEffort: resolveReasoningEffort(model, body.reasoningEffort),
           includePrevious: body.includePrevious !== false,

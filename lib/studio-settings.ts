@@ -1,6 +1,7 @@
 
 
 import { normalizePreparationRounds, normalizePreparationStrategy } from "./writing-preparation.ts";
+import { normalizeChatModePrompts } from "./chat-modes.ts";
 import { DEFAULT_EXPANSION_MULTIPLIER, DEFAULT_SENTENCE_TARGET_WORDS, normalizeExpansionMultiplier, normalizeSentenceTargetWords, normalizeOutlineLengthMode } from "./outline-expansion.ts";
 
 import { normalizeIllustrationStyles } from "./illustration-styles.ts";
@@ -22,6 +23,7 @@ import { DEFAULT_TASK_CONCURRENCY, normalizeTaskConcurrency } from "./task-concu
 import { DEFAULT_STYLE_LEARNING_SETTINGS, normalizeStyleLearningSettings } from "./style-learning-settings.ts";
 
 export const DEFAULT_STUDIO_SETTINGS: StudioData["settings"] = {
+  chatModePrompts: normalizeChatModePrompts(undefined),
   ...DEFAULT_APPEARANCE,
   outlineExpanded: true, showArchived: false, openLastArticle: true, taskConcurrency: DEFAULT_TASK_CONCURRENCY, preparationEnabled: true, preparationMaxRounds: 3, preparationStrategy: "minimal", preparationRequireConfirmation: false,
   chatModel: "", generateModel: "", namingModelMode: "inherit", namingModel: "", reviewModel: "", reviewModelMode: "inherit", generateReviewMaxRounds: 0, generateReviewStrategy: "minimal", generateReviewInstruction: "", generateTargetWords: DEFAULT_GENERATE_TARGET_WORDS, generatePresets: [],
@@ -38,6 +40,7 @@ export function normalizeStudioSettings(value: unknown): StudioData["settings"] 
     ...DEFAULT_STUDIO_SETTINGS,
     ...settings,
     ...normalizeAppearance(settings),
+    chatModePrompts: normalizeChatModePrompts(settings.chatModePrompts),
     styleLearningSettings: normalizeStyleLearningSettings(settings.styleLearningSettings),
     ...(settings.aiGenerateSettings ? { aiGenerateSettings: normalizeAiGenerateOptions(settings.aiGenerateSettings) } : {}),
     illustrationSettings: normalizeIllustrationOptions(settings.illustrationSettings),

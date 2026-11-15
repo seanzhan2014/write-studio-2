@@ -1,4 +1,5 @@
 import { normalizeOutlineExpansion } from "./outline-expansion.ts";
+import { normalizeChatMode } from "./chat-modes.ts";
 import type { Message, Character, Article, AiTask, StudioSettings, StudioData } from "./studio-types.ts";
 
 import { normalizeIllustrationOptions } from "./illustration-options.ts";
@@ -202,6 +203,7 @@ export function normalizeStudioData(source: StudioData): StudioData {
           if (Array.isArray(legacy.sessions) && legacy.sessions.length) {
             const sessions = legacy.sessions.map((session) => ({
               ...session,
+              mode: normalizeChatMode(session.mode),
               lastReadMessageId: Object.prototype.hasOwnProperty.call(session, "lastReadMessageId")
                 ? session.lastReadMessageId ?? null
                 : session.messages.filter((message) => message.role === "assistant").at(-1)?.id ?? null,

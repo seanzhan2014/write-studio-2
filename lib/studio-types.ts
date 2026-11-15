@@ -33,6 +33,7 @@ export type ChatSession = {
   title: string;
   messages: Message[];
   draft: string;
+  mode?: import("./chat-modes.ts").ChatMode;
   includePrevious: boolean;
   includeCharacters: boolean;
   lastReadMessageId?: string | null;
@@ -231,6 +232,8 @@ export type AiTask = {
     nameOutlineCount?: number;
     generatedNameCount?: number;
     sessionId?: string;
+    chatMode?: import("./chat-modes.ts").ChatMode;
+    chatModePrompt?: string;
     serverManaged?: boolean;
     firstAppearanceCharacterIds?: string[];
     includeExcellentFragments?: boolean;
@@ -241,6 +244,7 @@ export type AiTask = {
 };
 
 export type StudioSettings = AppearanceSettings & {
+  chatModePrompts?: import("./chat-modes.ts").ChatModePrompts;
   styleLearningSettings?: import("./style-learning-settings").StyleLearningSettings;
   aiGenerateSettings?: AiGenerateOptions;
   illustrationSettings?: IllustrationOptions;

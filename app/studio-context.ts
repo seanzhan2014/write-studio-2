@@ -1,4 +1,4 @@
-import type { Message, Version, Outline, Chapter, Character, Relationship, Article, TaskExecutionOrigin, AiTask, StudioSettings, StudioData } from "@/lib/studio-types";
+import type { ChatSession, Message, Version, Outline, Chapter, Character, Relationship, Article, TaskExecutionOrigin, AiTask, StudioSettings, StudioData } from "@/lib/studio-types";
 
 import { type AppearanceSettings } from "@/lib/appearance.mjs";
 
@@ -66,7 +66,7 @@ export type StudioContextValue = {
   deleteChatSession: (outlineId: string, sessionId: string) => void;
   branchChatSession: (outlineId: string, messageId: string, sessionId?: string) => string | null;
   setChatDraft: (outlineId: string, draft: string, sessionId?: string) => void;
-  setChatSetting: (outlineId: string, key: "includePrevious" | "includeCharacters", value: boolean, sessionId?: string) => void;
+  setChatSetting: <K extends "includePrevious" | "includeCharacters" | "mode">(outlineId: string, key: K, value: NonNullable<ChatSession[K]>, sessionId?: string) => void;
   addChatMessage: (outlineId: string, message: Message, sessionId?: string) => void;
   replaceChatMessages: (outlineId: string, messages: Message[], sessionId?: string) => void;
   markChatSessionRead: (outlineId: string, sessionId: string) => void;
