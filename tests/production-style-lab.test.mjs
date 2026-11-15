@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
+import { scenePlanFixture } from "./scene-plan-fixture.mjs";
 
 // Run explicitly after building; normal integration tests use the dev server.
 test("production bundle dispatches learning, format-corrected calibration and prepared writing without browser steps", { skip: process.env.WRITER_STUDIO_PRODUCTION_SMOKE !== "1", timeout: 90000 }, async () => {
@@ -27,9 +28,10 @@ test("production bundle dispatches learning, format-corrected calibration and pr
     let result;
     if (system.includes("风格学习助手") || system.includes("审查并修正候选")) result = configuration;
     else if (system.includes("大纲整理助手")) result = { scenes: [{ title: "归还", plan: "两位成年人核对归还的书籍，互相道别。", targetWords: 100 }] };
+    else if (system.includes("写作准备稿质量检查任务")) result = { issues: [] };
     else if (system.includes("写作前准备任务")) {
       preparations++;
-      result = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key]) => [key, "核对后道别，只使用既定事实。"])), questions: [] };
+      result = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key]) => [key, "核对后道别，只使用既定事实。"])), plan: scenePlanFixture(), questions: [] };
       if (preparations === 1) result.brief.purpose = { text: "需要纠正的字段类型" };
     } else {
       if (!generationInterrupted) {

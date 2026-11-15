@@ -3,6 +3,7 @@ export const taskPhaseLabels = {
   receiving: "接收结果", reviewing: "初稿审校", revising: "按问题修正", verifying: "修正后复检",
   saving: "保存结果", retrying: "准备重试", completed: "已保存", failed: "执行失败", cancelled: "已取消",
   preparing_brief: "整理写作准备稿", awaiting_author: "等待作者回答", awaiting_confirmation: "等待确认准备稿",
+  checking_brief: "检查场景计划",
 };
 
 export type TaskPhase = keyof typeof taskPhaseLabels;

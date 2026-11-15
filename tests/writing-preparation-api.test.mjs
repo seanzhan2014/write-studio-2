@@ -52,7 +52,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
   try {
     const provider = await api("/api/providers", "POST", { name: "Preparation integration", baseUrl: fake.baseUrl, secret: "fake-key" });
     const model = await api("/api/models", "POST", { providerId: provider.id, name: "Preparation integration", modelId: "preparation-test", maxInputCharacters: 120000 });
-    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; fake.control.ask = true; fake.control.unsupportedFormat = false; }
+    async function reset() { const current = await api("/api/state"); const data = fullStudioFixture(); data.tasks = []; await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) }); fake.control.calls = []; fake.control.invalid = 0; fake.control.ask = true; fake.control.unsupportedFormat = false; fake.control.planFailures = 0; fake.control.invalidChecks = 0; }
     const create = async (rounds = 2, options = { preparationRequireConfirmation: true }) => (await api("/api/ai/tasks", "POST", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", model: model.id, preparationRounds: rounds, instruction: "让人物发现异常，先讨论再写正文", reasoningEffort: "low", ...options }, { "Idempotency-Key": crypto.randomUUID() })).data;
     const paused = (task) => task.phase === "awaiting_author" || task.phase === "awaiting_confirmation" || task.state === "failed";
     const interact = async (task, action, extra = {}) => (await api(`/api/ai/tasks/${task.id}/interaction`, "POST", { action, revision: task.contextOptions.writingPreparation.revision, ...extra })).task;
@@ -87,10 +87,10 @@ test("durable preparation, author discussion and final writing", async (t) => {
       assert.equal(workflow.requireConfirmation, false);
       assert.ok(workflow.autoApprovedAt);
       assert.equal(workflow.confirmedAt, undefined);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "check", "write"]);
       assert.equal(task.attempt, 1);
-      assert.equal(task.inputTokens, 24);
-      assert.equal(task.outputTokens, 48);
+      assert.equal(task.inputTokens, 36);
+      assert.equal(task.outputTokens, 72);
       const prompt = fake.control.calls[0].body.messages[0].content;
       assert.match(prompt, strategy === "minimal" ? /最少条件型讨论：只询问阻碍/ : /最大探索型讨论：在轮次上限内主动探索/);
       assert.match(prompt, /最大轮次只是上限，不是目标/);
@@ -108,7 +108,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
       await reset();
       const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
       assert.equal(task.state, "success", task.error);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "check", "write"]);
       assert.equal(task.contextOptions.writingPreparation.questions.length, 0);
     });
 
@@ -136,7 +136,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
       fake.control.calls = []; fake.control.ask = false;
       const enabled = await waitTask((await create(0, { preparationEnabled: true, preparationRequireConfirmation: false })).id, (item) => ["success", "failed"].includes(item.state));
       assert.equal(enabled.state, "success", enabled.error);
-      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "check", "write"]);
       current = await api("/api/state");
       assert.equal(current.data.settings.preparationEnabled, false);
     });
@@ -146,11 +146,11 @@ test("durable preparation, author discussion and final writing", async (t) => {
       let task = await waitTask((await create(5)).id, paused);
       assert.equal(task.phase, "awaiting_confirmation");
       assert.equal(task.contextOptions.writingPreparation.questions.length, 0);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare"]);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "check"]);
       const current = await api("/api/state");
       await api("/api/settings", "PUT", { preparationRequireConfirmation: false }, { "If-Match": String(current.revision) });
       await api(`/api/ai/tasks/${task.id}/execute`, "POST", {});
-      assert.equal(fake.control.calls.length, 1);
+      assert.equal(fake.control.calls.length, 2);
       task = await interact(task, "confirm");
       task = await waitTask(task.id, (item) => item.state === "success" || item.state === "failed");
       assert.equal(task.state, "success", task.error);
@@ -169,7 +169,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
       assert.equal(task.contextOptions.writingPreparation.strategy, "minimal");
       assert.equal(task.contextOptions.writingPreparation.requireConfirmation, false);
       assert.equal(task.contextOptions.writingPreparation.round, 1);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "check", "write"]);
       assert.match(fake.control.calls[1].body.messages.at(-1).content, /只保留怀疑/);
       assert.equal(task.contextOptions.writingPreparation.history[0].reply.note, "只保留怀疑");
       const newTask = await create(0, {});
@@ -183,7 +183,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
       task = await interact(task, "finish", { draft: { answers: {}, note: "先检查这份准备稿" } });
       task = await waitTask(task.id, (item) => item.phase === "awaiting_confirmation");
       assert.equal(task.contextOptions.writingPreparation.requireConfirmation, false);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare"]);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "check"]);
     });
 
     await t.test("invalid discussion preferences are rejected before calling the model", async () => {
@@ -225,9 +225,9 @@ test("durable preparation, author discussion and final writing", async (t) => {
       task = await interact(task, "confirm");
       const completed = await waitTask(task.id, (item) => item.state === "success" || item.state === "failed");
       assert.equal(completed.state, "success", completed.error);
-      assert.equal(completed.inputTokens, 48);
-      assert.equal(completed.outputTokens, 96);
-      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "prepare", "write"]);
+      assert.equal(completed.inputTokens, 72);
+      assert.equal(completed.outputTokens, 144);
+      assert.deepEqual(fake.control.calls.map((call) => call.kind), ["prepare", "prepare", "prepare", "check", "check", "write"]);
       assert.ok(fake.control.calls.every((call) => call.body.reasoning_effort === "low"));
       assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /confirmed_writing_brief/);
       assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /最后不要透露动机/);
@@ -238,7 +238,7 @@ test("durable preparation, author discussion and final writing", async (t) => {
     await t.test("zero rounds still prepares and waits for confirmation", async () => {
       await reset(); const task = await waitTask((await create(0)).id, paused);
       assert.equal(task.phase, "awaiting_confirmation"); assert.equal(task.contextOptions.writingPreparation.round, 0);
-      assert.equal(fake.control.calls.length, 1);
+      assert.equal(fake.control.calls.length, 2);
     });
     await t.test("early finish incorporates an unsent author note before confirmation", async () => {
       await reset(); let task = await waitTask((await create(5)).id, paused);
@@ -251,18 +251,77 @@ test("durable preparation, author discussion and final writing", async (t) => {
       await reset(); fake.control.invalid = 1; fake.control.ask = false;
       const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
       assert.equal(task.state, "success", task.error);
-      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "check", "write"]);
       assert.match(fake.control.calls[1].body.messages.at(-1).content, /preparation_format_repair/);
-      assert.equal(task.inputTokens, 36); assert.equal(task.outputTokens, 72);
+      assert.equal(task.inputTokens, 48); assert.equal(task.outputTokens, 96);
     });
     await t.test("providers rejecting structured output can still complete preparation", async () => {
       await reset(); fake.control.unsupportedFormat = true; fake.control.ask = false;
       const task = await waitTask((await create(0, {})).id, (item) => item.state === "success" || item.state === "failed");
       assert.equal(task.state, "success", task.error);
-      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "write"]);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "prepare", "check", "check", "write"]);
       assert.ok(fake.control.calls[0].body.response_format);
       assert.equal(fake.control.calls[1].body.response_format, undefined);
-      assert.equal(task.inputTokens, 24); assert.equal(task.outputTokens, 48);
+      assert.equal(task.inputTokens, 36); assert.equal(task.outputTokens, 72);
+    });
+
+    await t.test("a failed plan audit is repaired once and rechecked before prose", async () => {
+      await reset(); fake.control.ask = false; fake.control.planFailures = 1;
+      const task = await waitTask((await create(0, {})).id, item => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "check", "prepare", "check", "write"]);
+      assert.match(fake.control.calls[2].body.messages.at(-1).content, /preparation_plan_repair/);
+      assert.match(fake.control.calls[2].body.messages.at(-1).content, /核实前就确认结论/);
+      assert.ok(task.contextOptions.writingPreparation.scenePlan.scenes.length);
+      assert.match(task.contextOptions.writingPreparation.planCheck.briefDigest, /^[a-f0-9]{64}$/);
+      assert.equal(task.inputTokens, 60); assert.equal(task.outputTokens, 120);
+    });
+
+    await t.test("an unresolved plan stops before writing and preserves its draft for recovery", async () => {
+      await reset(); fake.control.ask = false; fake.control.planFailures = 2;
+      const task = await waitTask((await create(0, {})).id, item => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "failed");
+      assert.match(task.error, /写作准备稿检查未通过/);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "check", "prepare", "check"]);
+      assert.match(task.contextOptions.writingPreparation.brief, /场景 S1/);
+      assert.equal(task.contextOptions.writingPreparation.planCheck, undefined);
+      assert.equal(task.resultVersionId, undefined);
+      assert.equal(task.inputTokens, 48); assert.equal(task.outputTokens, 96);
+    });
+
+    await t.test("edited briefs invalidate cached plans, are audited verbatim, and can recover after a rejected check", async () => {
+      await reset(); fake.control.ask = false;
+      let task = await waitTask((await create(0)).id, paused);
+      assert.ok(task.contextOptions.writingPreparation.planCheck);
+      const edited = task.contextOptions.writingPreparation.brief + "\n作者确定：不得解释档案修改的真实动机。";
+      task = await interact(task, "edit_brief", { brief: edited });
+      assert.equal(task.contextOptions.writingPreparation.scenePlan, undefined);
+      assert.equal(task.contextOptions.writingPreparation.planCheck, undefined);
+      fake.control.planFailures = 1;
+      await interact(task, "confirm");
+      task = await waitTask(task.id, item => item.state === "failed");
+      assert.equal(task.contextOptions.writingPreparation.brief, edited);
+      assert.equal(task.resultVersionId, undefined);
+      assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /不得解释档案修改的真实动机/);
+      const recovered = edited + "\n作者修正：先核实，再作决定。";
+      task = await interact(task, "edit_brief", { brief: recovered });
+      assert.equal(task.phase, "awaiting_confirmation");
+      assert.equal((await api("/api/ai/tasks")).tasks.find(item => item.id === task.id).state, "waiting");
+      await interact(task, "confirm");
+      task = await waitTask(task.id, item => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "check", "check", "check", "write"]);
+      assert.equal(task.contextOptions.writingPreparation.brief, recovered);
+      assert.match(fake.control.calls.at(-1).body.messages.at(-1).content, /先核实，再作决定/);
+      assert.equal(task.inputTokens, 60); assert.equal(task.outputTokens, 120);
+    });
+
+    await t.test("malformed audit output receives one format correction and counts both responses", async () => {
+      await reset(); fake.control.ask = false; fake.control.invalidChecks = 1;
+      const task = await waitTask((await create(0, {})).id, item => ["success", "failed"].includes(item.state));
+      assert.equal(task.state, "success", task.error);
+      assert.deepEqual(fake.control.calls.map(call => call.kind), ["prepare", "check", "check", "write"]);
+      assert.equal(task.inputTokens, 48); assert.equal(task.outputTokens, 96);
     });
     await t.test("malformed output retries are bounded and preserve a failed task for recovery", async () => {
       await reset(); fake.control.invalid = 6; let task = await waitTask((await create()).id, (item) => item.state === "failed");

@@ -16,7 +16,8 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
       const preparation = task?.contextOptions?.writingPreparation;
       if (!task || !preparation) return Response.json({ error: "写作准备任务不存在" }, { status: 404 });
       if (task.executionOrigin !== currentTaskExecutionOrigin()) return Response.json({ error: "请先将任务转移到当前运行端，再继续讨论" }, { status: 409 });
-      if (!isTaskAwaitingAuthor(task) || preparation.revision !== body.revision) return Response.json({ error: "任务已继续或准备稿已更新，请检查最新状态后再操作" }, { status: 409 });
+      const repairingPlan = task.state === "failed" && task.error?.startsWith("写作准备稿检查未通过") && body.action === "edit_brief";
+      if ((!isTaskAwaitingAuthor(task) && !repairingPlan) || preparation.revision !== body.revision) return Response.json({ error: "任务已继续或准备稿已更新，请检查最新状态后再操作" }, { status: 409 });
       const now = new Date().toISOString();
       if (body.action === "draft" || body.action === "reply") {
         if (preparation.stage !== "awaiting_author") return Response.json({ error: "当前没有待回答的问题" }, { status: 409 });
@@ -33,6 +34,19 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
       } else if (body.action === "edit_brief") {
         if (typeof body.brief !== "string" || !body.brief.trim() || body.brief.length > 60000) return Response.json({ error: "准备稿不能为空或超过 60,000 字符" }, { status: 400 });
         preparation.brief = body.brief.trim();
+        delete preparation.scenePlan;
+        delete preparation.planCheck;
+        if (repairingPlan) {
+          preparation.stage = "awaiting_confirmation";
+          preparation.questions = [];
+          delete preparation.confirmedAt;
+          delete preparation.autoApprovedAt;
+          task.state = "waiting";
+          task.phase = "awaiting_confirmation";
+          task.attempt = 0;
+          task.error = undefined;
+          task.completedAt = undefined;
+        }
         if (body.draft !== undefined && preparation.stage === "awaiting_author") preparation.draft = validatePreparationReply(body.draft, preparation.questions);
         preparation.revision += 1;
       } else if (body.action === "finish") {

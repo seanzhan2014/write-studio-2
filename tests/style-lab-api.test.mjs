@@ -4,6 +4,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
+import { scenePlanFixture } from "./scene-plan-fixture.mjs";
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method="GET", data, headers={}) { const response=await fetch(`${baseUrl}${path}`,{method,headers:{"Content-Type":"application/json",...headers},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.ok(response.ok,`${response.status}: ${JSON.stringify(body)}`);return body; }
 
@@ -47,9 +48,10 @@ test("learning and model calibration persist, resume and use validated best sett
     if(body.response_format?.json_schema?.name==="writer_studio_generate_review") result={version:1,sourceDigest:body.messages.at(-1).content.match(/sourceDigest=([a-f0-9]{64})/)?.[1],issues:[]};
     else if(system.includes("风格学习助手")||system.includes("审查并修正候选")||system.includes("合并多篇"))result=config;
     else if(system.includes("大纲整理助手"))result={scenes:[{title:"交接",plan:"两位成年人按约定交还书籍，核对后各自离开。",targetWords:300}]};
+    else if (system.includes("写作准备稿质量检查任务")) result = { issues: [] };
     else if(system.includes("写作前准备任务")){
       preparations++;
-      result={brief:Object.fromEntries(PREPARATION_SECTIONS.map(([key,title])=>[preparations===2?title:key,preparations===2?[title,"只按目标大纲写作"]:title+"：只按目标大纲写作"])),questions:[]};
+      result={brief:Object.fromEntries(PREPARATION_SECTIONS.map(([key,title])=>[preparations===2?title:key,preparations===2?[title,"只按目标大纲写作"]:title+"：只按目标大纲写作"])),plan:scenePlanFixture(),questions:[]};
       if(preparations===1||invalidPreparations-->0)result.brief.purpose={text:"模型返回了错误的字段类型"};
     }
     else if(system.includes("风格对照评估助手")){evaluation++;result={scores:Array(5).fill(evaluation===1?10:16),contentScore:95,evidence:"参考叙述偏简洁，生成稿的解释偏多。",suggestions:"让动作与观察自然交替，压缩无新增意义的解释。"};}

@@ -58,7 +58,7 @@ test("Generate review API executes durable loops and reports the final draft", a
         release(); reviewer.control.gate = null;
         const completed = await waitTask(task.id);
         assert.equal(completed.state, "success", completed.error);
-        assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "generate"]);
+        assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "check", "generate"]);
         assert.deepEqual(reviewer.control.calls.map((item) => item.kind), ["review", "revise", "review"]);
         assert.ok(fake.control.calls.every((item) => item.body.model === "review-integration" && item.body.reasoning_effort === "low"));
         assert.ok(reviewer.control.calls.every((item) => item.body.model === "separate-review" && item.body.reasoning_effort === "high"));
@@ -73,8 +73,8 @@ test("Generate review API executes durable loops and reports the final draft", a
         assert.equal(completed.contextOptions.reviewReport.strategy, "explore");
         assert.equal(completed.contextOptions.reviewReport.modelId, "separate-review");
         assert.equal(completed.contextOptions.reviewReport.instruction, "保留作者的雨后场景");
-        assert.equal(completed.inputTokens, 50);
-        assert.equal(completed.outputTokens, 25);
+        assert.equal(completed.inputTokens, 60);
+        assert.equal(completed.outputTokens, 30);
       } finally { release?.(); reviewer.close(); }
     });
 
@@ -86,7 +86,7 @@ test("Generate review API executes durable loops and reports the final draft", a
         const completed = await waitTask(task.id);
         assert.equal(completed.state, "success", completed.error);
         assert.equal(completed.contextOptions.closingSummaryLength, closingSummaryLength);
-        assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "generate", "review", "revise", "review"]);
+        assert.deepEqual(fake.control.calls.map((item) => item.kind), ["prepare", "check", "generate", "review", "revise", "review"]);
         for (const call of fake.control.calls) {
           assert.ok(call.body.messages.at(-1).content.includes(`<closing_summary enabled="${closingSummaryLength !== "none"}" length="${closingSummaryLength}">`), `${call.kind} must preserve the closing choice`);
         }
@@ -223,8 +223,8 @@ test("Generate review API executes durable loops and reports the final draft", a
       assert.equal(completed.state, "success", completed.error);
       assert.equal(fake.control.calls.filter((item) => item.kind === "prepare").length, 1);
       assert.equal(fake.control.calls.filter((item) => item.kind === "generate").length, 1);
-      assert.equal(completed.inputTokens, 50);
-      assert.equal(completed.outputTokens, 25);
+      assert.equal(completed.inputTokens, 60);
+      assert.equal(completed.outputTokens, 30);
     });
 
     await t.test("cancellation during review prevents further revisions or a final version", async () => {

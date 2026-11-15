@@ -1,3 +1,5 @@
+import { SCENE_PLAN_SCHEMA, parseScenePlan, renderScenePlan, type ScenePlan, type PlanCheck } from "./scene-plan.ts";
+
 export const PREPARATION_SECTIONS = [
   ["purpose", "核心与作用"], ["boundaries", "开头与结尾"], ["scenes", "场景推进"],
   ["actions", "人物目标与行动"], ["knowledge", "认知与信息边界"], ["perspective", "视角与信息揭示"],
@@ -6,7 +8,7 @@ export const PREPARATION_SECTIONS = [
 export const PREPARATION_SECTION_GUIDANCE: Record<(typeof PREPARATION_SECTIONS)[number][0], string> = {
   purpose: "本段核心冲突、在全篇中的作用及读者体验目标。",
   boundaries: "开场切入的具体状态、承接前文的方式、结尾动作或局势变化。",
-  scenes: "逐场列出作用、有效行动、冲突或转折、结束后的变化；标明展开与概述的节点。",
+  scenes: "概括总体场景推进与详略安排，具体执行细节集中在 plan.scenes。",
   actions: "人物目标、阻力、行动因果、关键选择及后果。",
   knowledge: "区分作者掌握、视角人物知道、读者已经知道的事实，以及各自未知项。",
   perspective: "每场视角、开场透露的信息、暂缓解释、可用铺垫、揭示时机与触发点；允许直接交代。",
@@ -19,8 +21,9 @@ export const PREPARATION_RESPONSE_FORMAT = {
   json_schema: {
     name: "writer_studio_writing_preparation", strict: true,
     schema: {
-      type: "object", additionalProperties: false, required: ["brief", "questions"],
+      type: "object", additionalProperties: false, required: ["brief", "plan", "questions"],
       properties: {
+        plan: SCENE_PLAN_SCHEMA,
         brief: {
           type: "object", additionalProperties: false, required: PREPARATION_SECTIONS.map(([key]) => key),
           properties: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, { type: "string", description: `${title}：${PREPARATION_SECTION_GUIDANCE[key]}必须为非空文本，最多6000字符；不适用或未知时明确说明。` }])),
@@ -54,6 +57,8 @@ export function normalizePreparationStrategy(value: unknown): PreparationStrateg
 }
 export type WritingPreparation = {
   version: 1; revision: number; maxRounds: number; round: number;
+  scenePlan?: ScenePlan;
+  planCheck?: PlanCheck;
   strategy?: PreparationStrategy;
   /** Missing on older tasks, which continue to require author confirmation. */
   requireConfirmation?: boolean;
@@ -88,6 +93,16 @@ export class PreparationResponseError extends Error {
   outputTokens = 0;
   constructor(message: string) { super(message); this.name = "PreparationResponseError"; }
 }
+export class PreparationQualityError extends PreparationResponseError {
+  prepared: { brief: string; scenePlan?: ScenePlan };
+  constructor(prepared: { brief: string; scenePlan?: ScenePlan }, problems: string[], usage: { inputTokens: number; outputTokens: number }) {
+    super(`写作准备稿检查未通过：${problems.join("；")}`);
+    this.name = "PreparationQualityError";
+    this.prepared = prepared;
+    this.inputTokens = usage.inputTokens;
+    this.outputTokens = usage.outputTokens;
+  }
+}
 function requiredText(value: unknown, maximum: number, field: string, allowEmpty = false) {
   if (typeof value !== "string" || (!allowEmpty && !value.trim()) || value.length > maximum) throw new PreparationResponseError(`准备稿 ${field} 必须为${allowEmpty ? "" : "非空"}文本，且不超过 ${maximum} 字符，请重试本步骤`);
   return value.trim();
@@ -96,7 +111,7 @@ function preparationRecord(value: unknown, field: string): Record<string, unknow
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PreparationResponseError(`准备稿 ${field} 必须为 JSON 对象，请重试本步骤`);
   return value as Record<string, unknown>;
 }
-export function parsePreparationResponse(text: string) {
+export function parsePreparationResponse(text: string, requirePlan = false) {
   let parsed: unknown;
   try { parsed = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); }
   catch { throw new PreparationResponseError("准备稿不是有效 JSON，请重试本步骤"); }
@@ -128,7 +143,12 @@ export function parsePreparationResponse(text: string) {
       return { id: optionId, label: requiredText(option.label, 500, `${optionField}.label`), description: requiredText(option.description ?? "", 1500, `${optionField}.description`, true) };
     }) };
   });
-  return { brief, questions };
+  let scenePlan: ScenePlan | undefined;
+  try { if (requirePlan || value.plan !== undefined) scenePlan = parseScenePlan(value.plan); }
+  catch (error) { throw new PreparationResponseError(error instanceof Error ? error.message : "场景计划无效"); }
+  const rendered = scenePlan ? `${brief}\n\n${renderScenePlan(scenePlan)}` : brief;
+  if (rendered.length > 60000) throw new PreparationResponseError("完整准备稿超过 60,000 字符，请压缩分析和场景计划");
+  return { brief: rendered, questions, ...(scenePlan ? { scenePlan } : {}) };
 }
 export function validatePreparationReply(value: unknown, questions: PreparationQuestion[], requireAnswer = false): PreparationReply {
   const reply = value as Partial<PreparationReply> | null;

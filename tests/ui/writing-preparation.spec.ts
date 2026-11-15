@@ -68,7 +68,7 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await expect(inline.getByLabel("作者回复", { exact: true })).toHaveValue("只保留怀疑，不揭示动机。结尾留下线索。");
     await inline.getByRole("button", { name: "提交回答，完善准备稿", exact: true }).click();
     await expect(inline.getByRole("button", { name: "确认准备稿并写正文", exact: true })).toBeVisible();
-    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare"]);
+    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare", "check"]);
     await inline.getByRole("button", { name: "检查 / 编辑准备稿", exact: true }).click();
     const brief = inline.getByLabel("修改写作准备稿", { exact: true });
     await brief.fill(await brief.inputValue() + "\n作者确定：结尾不要解释档案被修改的原因。");
@@ -86,10 +86,10 @@ test("real preparation, synchronized author draft, confirmation and prose work i
     await expect(full.getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await full.getByRole("tab", { name: "运行历史", exact: true }).click();
     await expect(full).toContainText("生成目标");
+    if (info.project.name === "desktop-chromium") await expect(page.getByLabel("AI 任务已完成").first().locator(".state-dot")).toHaveCSS("background-color", "rgb(88, 137, 202)");
     await page.getByRole("button", { name: "打开生成版本", exact: true }).click();
     await expect(page.locator(".content-reader")).toContainText("作者确认后的正文");
-    await expect(page.getByLabel("AI 任务已完成").filter({ visible: true }).first().locator(".state-dot")).toHaveCSS("background-color", "rgb(88, 137, 202)");
-    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare", "write"]);
+    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "prepare", "check", "check", "write"]);
     expect(fake.control.calls.at(-1)!.body.messages.at(-1)!.content).toContain("结尾不要解释档案被修改的原因");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   } finally { await fake.close(); }
@@ -114,7 +114,7 @@ test("default preparation automatically writes without spending discussion round
     await expect(inline.getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await expect(inline).toContainText("最少条件型讨论");
     await expect(page.getByRole("button", { name: "确认准备稿并写正文", exact: true })).toHaveCount(0);
-    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "write"]);
+    expect(fake.control.calls.map((call: { kind: string }) => call.kind)).toEqual(["prepare", "check", "write"]);
     const task = (await (await request.get("/api/ai/tasks")).json()).tasks[0];
     expect(task.contextOptions.writingPreparation.round).toBe(0);
     expect(task.contextOptions.writingPreparation.autoApprovedAt).toBeTruthy();
@@ -123,6 +123,35 @@ test("default preparation automatically writes without spending discussion round
     await expect(page.locator(".task-interaction.full").getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文");
     await fitsViewport(page, page.locator(".task-workspace"));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+  } finally { await fake.close(); }
+});
+
+test("a failed scene plan can be edited and rechecked before writing", async ({ page, request }) => {
+  const fake = await preparationModelServer();
+  fake.control.ask = false; fake.control.planFailures = 2;
+  try {
+    const provider = await (await request.post("/api/providers", { data: { name: "Plan recovery", baseUrl: fake.baseUrl, secret: "fake-key" } })).json();
+    const model = await (await request.post("/api/models", { data: { providerId: provider.id, name: "Plan recovery", modelId: "plan-recovery", maxInputCharacters: 120000 } })).json();
+    const state = await (await request.get("/api/state")).json();
+    const data = fullStudioFixture() as unknown as StudioData;
+    expect((await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data } })).ok()).toBeTruthy();
+    const response = await request.post("/api/ai/tasks", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "content", instruction: "按大纲准备后写作", model: model.id, preparationRounds: 0 } });
+    expect(response.ok()).toBeTruthy();
+    const created = await response.json();
+    await expect.poll(async () => (await (await request.get("/api/ai/tasks")).json()).tasks.find((task: { id: string }) => task.id === created.data.id)?.state, { timeout: 20000 }).toBe("failed");
+    expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "check", "prepare", "check"]);
+    await page.goto("/articles/article-main/outlines/outline-current/generate");
+    const inline = page.locator(".task-interaction.inline");
+    await inline.getByRole("tab", { name: "准备稿", exact: true }).click();
+    await inline.getByRole("button", { name: "编辑准备稿", exact: true }).click();
+    const editor = inline.getByLabel("修改写作准备稿", { exact: true });
+    await editor.fill(await editor.inputValue() + "\n作者修正：先核实线索，再作决定。");
+    await inline.getByRole("button", { name: "保存准备稿", exact: true }).click();
+    await inline.getByRole("tab", { name: "讨论", exact: true }).click();
+    await inline.getByRole("button", { name: "确认准备稿并写正文", exact: true }).click();
+    await expect(inline.getByLabel("任务结果", { exact: true })).toContainText("作者确认后的正文", { timeout: 20000 });
+    expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "check", "prepare", "check", "check", "write"]);
+    expect(fake.control.calls.at(-1)!.body.messages.at(-1)!.content).toContain("先核实线索，再作决定");
   } finally { await fake.close(); }
 });
 

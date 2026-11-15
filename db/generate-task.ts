@@ -2,7 +2,9 @@ import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { taskFromRow } from "@/lib/task-record";
 import { isNamingTarget, taskChangesOutline } from "@/lib/task-target";
 
-import { canWritePreparedProse, preparationNeedsConfirmation } from "@/lib/writing-preparation";
+import { canWritePreparedProse, preparationNeedsConfirmation, PreparationQualityError } from "@/lib/writing-preparation";
+import { preparationBriefDigest } from "@/lib/scene-plan";
+import { checkWritingPreparation } from "@/db/writing-preparation";
 import { taskReasoningEffort } from "@/lib/reasoning-options";
 import { generateWithReview } from "@/db/generate-review";
 import { normalizeReviewRounds, type GenerateReviewDraft, type GenerateReviewReport } from "@/lib/generate-review.mjs";
@@ -157,7 +159,7 @@ export async function executeTask(taskId: string) {
           } catch (error) {
             preparationError = error;
             if (upstreamController.signal.aborted) return json({ accepted: true, cancelled: true }, 202);
-            if (error instanceof AiInputError || (error instanceof AiUpstreamCompletionError && !error.retryable)) break;
+            if (error instanceof AiInputError || error instanceof PreparationQualityError || (error instanceof AiUpstreamCompletionError && !error.retryable)) break;
           }
         }
         if (!prepared) throw preparationError instanceof Error ? preparationError : new Error("准备稿生成失败");
@@ -167,6 +169,8 @@ export async function executeTask(taskId: string) {
           const workflow = task?.contextOptions?.writingPreparation;
           if (!task || !workflow || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: { saved: false, awaitingAuthor: false } };
           workflow.brief = output.brief;
+          workflow.scenePlan = output.scenePlan;
+          workflow.planCheck = output.planCheck;
           workflow.round = workflow.history.length;
           workflow.questions = workflow.round < workflow.maxRounds && !workflow.finishAfterReply ? output.questions : [];
           workflow.stage = workflow.questions.length ? "awaiting_author" : preparationNeedsConfirmation(workflow) ? "awaiting_confirmation" : "writing";
@@ -192,7 +196,7 @@ export async function executeTask(taskId: string) {
       let reviewReport: GenerateReviewReport | undefined;
       let articleNameResult: ArticleNameGenerationResult | null = null;
       const reviewEnabled = initialTask.target === "正文" && normalizeReviewRounds(initialTask.contextOptions?.reviewMaxRounds) > 0;
-      const generate = () => generateText({
+      const generateInput = {
               reasoningEffort: taskReasoningEffort(initialTask.contextOptions),
               outlineId: initialTask.outlineId, instruction: initialTask.prompt, model: executionModelReference,
               target: taskTarget(initialTask), includePrevious: initialTask.contextOptions?.includePrevious ?? true,
@@ -209,7 +213,25 @@ export async function executeTask(taskId: string) {
               closingSummaryLength: initialTask.contextOptions?.closingSummaryLength,
               context: initialTask.contextOptions?.promptContext,
               writingBrief: preparation?.stage === "writing" ? preparation.brief : undefined,
-            }, upstreamController.signal);
+            };
+      if (preparation?.stage === "writing" && preparation.planCheck?.briefDigest !== await preparationBriefDigest(preparation.brief)) {
+        if (!await updateOwnedTaskProgress(taskId, runnerId, { phase: "checking_brief" })) return json({ accepted: true, cancelled: true }, 202);
+        const checked = await checkWritingPreparation(generateInput, preparation, upstreamController.signal);
+        if (checked.issues.length) throw new PreparationQualityError(preparation, checked.issues.map(issue => `${issue.sceneId}：${issue.problem}`), checked);
+        const saved = await mutateState(data => {
+          const task = findTask(data, taskId);
+          const workflow = task?.contextOptions?.writingPreparation;
+          if (!task || !workflow || task.state !== "running" || task.runnerId !== runnerId) return { changed: false, value: false };
+          workflow.planCheck = checked.planCheck;
+          task.inputTokens = (task.inputTokens ?? 0) + checked.inputTokens;
+          task.outputTokens = (task.outputTokens ?? 0) + checked.outputTokens;
+          return { changed: true, value: true };
+        }, runnerId);
+        if (!saved) return json({ accepted: true, cancelled: true }, 202);
+        initialTask.inputTokens = (initialTask.inputTokens ?? 0) + checked.inputTokens;
+        initialTask.outputTokens = (initialTask.outputTokens ?? 0) + checked.outputTokens;
+      }
+      const generate = () => generateText(generateInput, upstreamController.signal);
       if (reviewEnabled) {
         const reviewed = await generateWithReview(initialTask, runnerId, executionModelReference, initialRow?.review_state_json, generate, upstreamController.signal);
         result = reviewed.draft;
@@ -402,6 +424,13 @@ export async function executeTask(taskId: string) {
         const task = findTask(data, taskId);
         if (!task || task.state === "cancelled" || task.runnerId !== runnerId) return { changed: false, value: false };
         const completedAt = new Date().toISOString();
+        if (error instanceof PreparationQualityError && task.contextOptions?.writingPreparation) {
+          task.contextOptions.writingPreparation.brief = error.prepared.brief;
+          task.contextOptions.writingPreparation.scenePlan = error.prepared.scenePlan;
+          delete task.contextOptions.writingPreparation.planCheck;
+          task.inputTokens = (task.inputTokens ?? 0) + error.inputTokens;
+          task.outputTokens = (task.outputTokens ?? 0) + error.outputTokens;
+        }
         Object.assign(task, {
           state: "failed", phase: "failed", completedAt, lastProgressAt: completedAt,
           error: error instanceof Error ? error.message : "生成失败", runnerId: undefined, leaseUntil: undefined,

@@ -1,6 +1,7 @@
 import http from "node:http";
 import { once } from "node:events";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
+import { scenePlanFixture } from "./scene-plan-fixture.mjs";
 
 const unescape = (value) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
 
@@ -13,7 +14,7 @@ export async function reviewModelServer({ generationReasoningTokens = 0 } = {}) 
     const body = JSON.parse(raw);
     const prompt = body.messages.at(-1).content;
     const schema = body.response_format?.json_schema?.name;
-    const kind = body.messages[0].content.includes("写作前准备任务") ? "prepare" : schema === "writer_studio_generate_review" ? "review" : schema === "writer_studio_chapter_review" ? "revise" : "generate";
+    const kind = body.messages[0].content.includes("写作准备稿质量检查任务") ? "check" : body.messages[0].content.includes("写作前准备任务") ? "prepare" : schema === "writer_studio_generate_review" ? "review" : schema === "writer_studio_chapter_review" ? "revise" : "generate";
     control.calls.push({ kind, body });
     if (kind !== "generate" && control.gate) await control.gate;
     if (kind === "review" && control.failReviews > 0) {
@@ -24,7 +25,8 @@ export async function reviewModelServer({ generationReasoningTokens = 0 } = {}) 
     }
     const digest = prompt.match(/sourceDigest=([a-f0-9]{64})/)?.[1];
     let content;
-    if (kind === "prepare") content = JSON.stringify({ brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, `${title}：保持雨后场景及人物资料，未决项留白。`])), questions: [] });
+    if (kind === "prepare") content = JSON.stringify({ brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key, title]) => [key, `${title}：保持雨后场景及人物资料，未决项留白。`])), plan: scenePlanFixture(), questions: [] });
+    else if (kind === "check") content = JSON.stringify({ issues: [] });
     else if (kind === "generate") content = "她十七岁。\n\n窗外的雨停了。";
     else {
       const blocks = [...prompt.matchAll(/<block id="([^"]+)">([\s\S]*?)<\/block>/g)];

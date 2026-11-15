@@ -76,7 +76,7 @@ export function TaskInteraction({ task, full = false, details }: { task: AiTask;
   const end = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLElement>(null);
   const awaiting = isTaskAwaitingAuthor(task);
-  const editable = awaiting && task.executionOrigin === studio.executionOrigin;
+  const editable = (awaiting || task.state === "failed" && task.error?.startsWith("写作准备稿检查未通过")) && task.executionOrigin === studio.executionOrigin;
   const authorTurn = editable && workflow.stage === "awaiting_author";
   const resultText = task.resultText || studio.data.articles
     .flatMap((article) => article.chapters).flatMap((chapter) => chapter.outlines)

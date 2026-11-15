@@ -4,6 +4,7 @@ import http from "node:http";
 import { once } from "node:events";
 import { fullStudioFixture } from "./fixtures.mjs";
 import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
+import { scenePlanFixture } from "./scene-plan-fixture.mjs";
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function request(path, method = "GET", data) {
@@ -22,7 +23,8 @@ test("calibration recovers transient generation errors, enforces coverage and st
     let result;
     if (system.includes("风格学习助手") || system.includes("审查并修正候选") || system.includes("针对固定模型校准")) result = configuration;
     else if (system.includes("大纲整理助手")) result = { scenes: [{ title: "归还", plan: "两人核对书籍后互相道别。", targetWords: 100 }] };
-    else if (system.includes("写作前准备任务")) result = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key]) => [key, "依据固定大纲核对书籍后道别。"])), questions: [] };
+    else if (system.includes("写作准备稿质量检查任务")) result = { issues: [] };
+    else if (system.includes("写作前准备任务")) result = { brief: Object.fromEntries(PREPARATION_SECTIONS.map(([key]) => [key, "依据固定大纲核对书籍后道别。"])), plan: scenePlanFixture(), questions: [] };
     else if (system.includes("风格对照评估助手")) { evaluation++; result = { scores: Array(5).fill(improve && evaluation === 2 ? 12 : 18), contentScore: improve && evaluation === 2 ? 90 : 40, evidence: "按固定大纲核对事件覆盖。", suggestions: "保留因果与人物行动。" }; }
     else if (generationFailure) {
       const finishReason = generationFailure === "length" ? "length" : "error"; generationFailure = "";
@@ -47,7 +49,7 @@ test("calibration recovers transient generation errors, enforces coverage and st
     assert.equal(retries.length, 1); assert.equal(retries[0].phase, "generate");
     assert.equal(retries[0].diagnostics.requestId, "failed-generation"); assert.equal(retries[0].diagnostics.provider, "mock-provider");
     assert.equal(job.rounds[0].drafts.length, 1); assert.equal(job.rounds[1].drafts.length, 1);
-    assert.equal(job.payload.inputTokens, 87); assert.equal(job.payload.outputTokens, 163, "failed attempt usage is retained");
+    assert.equal(job.payload.inputTokens, 107); assert.equal(job.payload.outputTokens, 203, "both plan audits and failed attempt usage are retained");
     assert.equal(job.payload.bestScore, -1); assert.equal(job.payload.autoApplyPending, false); assert.ok(!job.payload.applied);
     assert.match(job.payload.notice, /内容覆盖达到70分/);
     const refused = await request(`/api/style-lab/${job.id}`, "POST", { action: "apply" }); assert.equal(refused.response.status, 422);
