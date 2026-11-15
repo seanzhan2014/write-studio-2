@@ -43,6 +43,26 @@ test("failed settings saves keep a stable local warning, show the cause and reco
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationSettings.additionalPrompt).toBe("离线保存的画面要求");
 });
 
+test("AI submissions reach the server without a separate connectivity probe", async ({ page }) => {
+  let probes = 0;
+  let submissions = 0;
+  await page.route("**/api/connectivity", route => {
+    probes++;
+    return route.abort("timedout");
+  });
+  await page.route("**/api/ai/tasks", route => {
+    if (route.request().method() !== "POST") return route.continue();
+    submissions++;
+    return route.fulfill({ status: 503, json: { error: "模型服务暂时不可用，请重试" } });
+  });
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await page.getByRole("button", { name: "开始生成", exact: true }).click();
+  await expect(page.getByText("模型服务暂时不可用，请重试", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前处于离线模式，此操作需要连接服务端。", { exact: true })).toHaveCount(0);
+  expect(submissions).toBe(1);
+  expect(probes).toBe(0);
+});
+
 test("mobile reopens the cached library offline and syncs its local edit after reconnecting", async ({ page, context, request }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-chromium", "mobile offline workflow");
   test.setTimeout(60_000);
@@ -78,10 +98,9 @@ test("mobile reopens the cached library offline and syncs its local edit after r
   await context.setOffline(true);
   let offlineAiRequests = 0;
   page.on("request", (requested) => { if (requested.url().includes("/api/ai/")) offlineAiRequests += 1; });
-  await page.evaluate(() => {
-    window.history.pushState({}, "", "/articles/article-main/outlines/outline-current/generate?offline-test=1");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
+  await page.getByRole("button", { name: "返回大纲", exact: true }).click();
+  await page.locator(".mobile-outline-main").filter({ hasText: "当前码头" }).click();
+  await page.getByRole("combobox", { name: "工作模式", exact: true }).selectOption("generate");
   const generate = page.getByRole("button", { name: "开始生成" });
   // Measure the application's response from the actual click, excluding
   // Playwright's scrolling and actionability waits on the mobile viewport.
@@ -92,10 +111,9 @@ test("mobile reopens the cached library offline and syncs its local edit after r
   await expect(page.getByText("当前处于离线模式，此操作需要连接服务端。", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => performance.now() - Number(document.documentElement.dataset.offlineClickAt))).toBeLessThan(1_000);
   expect(offlineAiRequests).toBe(0);
-  await page.evaluate(() => {
-    window.history.pushState({}, "", "/articles/article-main/info/basic?offline-test=1");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  });
+  await page.getByRole("button", { name: "返回大纲", exact: true }).click();
+  await page.getByRole("button", { name: "切换文章，当前 严格测试文章", exact: true }).click();
+  await page.getByRole("button", { name: "文章资料", exact: true }).click();
   await page.getByLabel("文章标题").fill("手机离线标题");
   await expect(page.getByText("已保存到本设备", { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(async () => {

@@ -112,7 +112,6 @@ test("offline server actions fail before issuing a network request", async () =>
   const app = await read("app/WriterStudioApp.tsx");
   assert.match(network, /navigator\.onLine === false/);
   assert.match(network, /requireBrowserOnline\(\);[\s\S]*globalThis\.fetch/);
-  assert.match(network, /connectivityTimeoutMs[\s\S]*globalThis\.fetch\("\/api\/connectivity"/);
   assert.match(state, /if \(browserIsOffline\(\)\) \{[\s\S]*persistOfflineCache\(snapshot\)/);
   assert.match(app, /fetchServerAction\("\/api\/ai\/tasks"/);
   assert.match(app, /if \(browserIsOffline\(\)\) \{ onNotice\(OFFLINE_OPERATION_MESSAGE\); return; \}/);

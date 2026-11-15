@@ -1,10 +1,7 @@
 export const OFFLINE_OPERATION_MESSAGE = "当前处于离线模式，此操作需要连接服务端。";
-const connectivityTimeoutMs = 1_200;
-const unavailableMemoryMs = 2_000;
-let serverUnavailableUntil = 0;
 
 export function browserIsOffline() {
-  return (typeof navigator !== "undefined" && navigator.onLine === false) || Date.now() < serverUnavailableUntil;
+  return typeof navigator !== "undefined" && navigator.onLine === false;
 }
 
 export function requireBrowserOnline(message = OFFLINE_OPERATION_MESSAGE) {
@@ -14,35 +11,19 @@ export function requireBrowserOnline(message = OFFLINE_OPERATION_MESSAGE) {
 export async function fetchFromServer(input: RequestInfo | URL, init?: RequestInit) {
   requireBrowserOnline();
   try {
-    const response = await globalThis.fetch(input, init);
-    serverUnavailableUntil = 0;
-    return response;
+    return await globalThis.fetch(input, init);
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError" && init?.signal?.aborted) throw error;
-    serverUnavailableUntil = Date.now() + unavailableMemoryMs;
-    if (error instanceof TypeError || browserIsOffline()) throw new Error(OFFLINE_OPERATION_MESSAGE);
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    if (signal?.aborted) throw error;
+    if (browserIsOffline()) throw new Error(OFFLINE_OPERATION_MESSAGE);
+    if (error instanceof TypeError) throw new Error("无法连接服务端，请稍后重试。", { cause: error });
     throw error;
   }
 }
 
 export async function fetchServerAction(input: RequestInfo | URL, init?: RequestInit) {
-  requireBrowserOnline();
-  const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), connectivityTimeoutMs);
-  try {
-    const connectivity = await globalThis.fetch("/api/connectivity", {
-      cache: "no-store",
-      headers: { "X-Writer-Studio-Connectivity": "1" },
-      signal: controller.signal,
-    });
-    if (!connectivity.ok) throw new Error("服务端连接检查失败");
-    serverUnavailableUntil = 0;
-  } catch {
-    serverUnavailableUntil = Date.now() + unavailableMemoryMs;
-    throw new Error(OFFLINE_OPERATION_MESSAGE);
-  } finally {
-    globalThis.clearTimeout(timeout);
-  }
+  // Submit once to the actual endpoint. A separate probe can time out while
+  // this request would succeed, and must not prevent the user's operation.
   return fetchFromServer(input, init);
 }
 
