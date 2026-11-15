@@ -5,7 +5,7 @@ import { readJsonObject, RequestInputError } from "@/lib/request-input";
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { GENERATE_FIELDS, normalizeAdvanced, advancedText } from "@/lib/advanced-writing";
 import { parseTaskHistory } from "@/lib/task-history";
-import { taskChangesOutline } from "@/lib/task-target";
+import { isNamingTarget, taskChangesOutline, taskTargetLabel } from "@/lib/task-target";
 import { registerIllustrationTasks } from "@/db/illustration-tasks";
 import { createWritingPreparation, MAX_PREPARATION_ROUNDS, normalizePreparationStrategy, type WritingPreparation } from "@/lib/writing-preparation";
 import { reasoningEffortError, resolveReasoningEffort, type ReasoningOptions } from "@/lib/reasoning-options";
@@ -27,7 +27,7 @@ import { currentTaskExecutionOrigin } from "@/db/task-execution";
 import { recoverChatTasks } from "@/db/chat-tasks";
 import type { NamingArticleContext } from "@/db/ai-naming";
 
-type TaskTarget = "content" | "outline" | "chapter-title" | "all-names";
+type TaskTarget = "content" | "outline" | "chapter-title" | "chapter-names" | "all-names";
 type TaskBody = Record<string, unknown> & ReasoningOptions & {
   articleId?: string;
   chapterId?: string;
@@ -77,14 +77,14 @@ export async function POST(request: Request) {
     const chapterId = String(body.chapterId ?? "");
     const outlineId = String(body.outlineId ?? "");
     const target = body.target;
-    if (!articleId || !chapterId || !outlineId || !target || !["content", "outline", "chapter-title", "all-names"].includes(target)) return json({ error: "任务目标无效" }, 400);
+    if (!articleId || !chapterId || !outlineId || !target || !["content", "outline", "chapter-title", "chapter-names", "all-names"].includes(target)) return json({ error: "任务目标无效" }, 400);
     const instruction = String(body.instruction ?? "").trim().slice(0, 20_000);
     const preparationRounds = body.preparationRounds;
     if (body.preparationEnabled !== undefined && (target !== "content" || typeof body.preparationEnabled !== "boolean")) return json({ error: "写作准备开关必须为布尔值，仅支持正文生成" }, 400);
     if (preparationRounds !== undefined && (target !== "content" || typeof preparationRounds !== "number" || !Number.isInteger(preparationRounds) || preparationRounds < 0 || preparationRounds > MAX_PREPARATION_ROUNDS)) return json({ error: `写作互动轮次必须为 0–${MAX_PREPARATION_ROUNDS}` }, 400);
     if (body.preparationStrategy !== undefined && (preparationRounds === undefined || (body.preparationStrategy !== "minimal" && body.preparationStrategy !== "explore"))) return json({ error: "写作讨论策略无效" }, 400);
     if (body.preparationRequireConfirmation !== undefined && (preparationRounds === undefined || typeof body.preparationRequireConfirmation !== "boolean")) return json({ error: "准备稿确认设置必须为布尔值" }, 400);
-    if (target !== "content" && target !== "all-names" && !instruction) return json({ error: "生成指令不能为空" }, 400);
+    if (target !== "content" && !isNamingTarget(target) && !instruction) return json({ error: "生成指令不能为空" }, 400);
     const { contentMode, rewriteRetention, closingSummaryLength, targetWords: rawTargetWords, proseControls: requestedProseControls } = parseGenerateFields(body, target);
     const reviewMaxRounds = Number(body.reviewMaxRounds ?? 0);
     if (!Number.isInteger(reviewMaxRounds) || reviewMaxRounds < 0 || reviewMaxRounds > MAX_REVIEW_ROUNDS || (target !== "content" && reviewMaxRounds !== 0)) return json({ error: `审校循环次数必须是 0–${MAX_REVIEW_ROUNDS} 的整数，仅支持正文生成` }, 400);
@@ -110,7 +110,7 @@ export async function POST(request: Request) {
       WHERE o.id=? AND o.article_id=? AND o.chapter_id=?`).bind(outlineId, articleId, chapterId).first<Record<string, unknown>>();
     if (!outlineRow || Number(outlineRow.archived) || Number(outlineRow.chapter_archived)) return json({ error: "任务目标不存在或已归档" }, 422);
     const sourceArticle = snapshot.data?.articles.find(article => article.id === articleId);
-    const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, outlineId, "generate", "outline", snapshot.data!.settings).value.tasks! : {};
+    const scopedParameters = sourceArticle ? resolveAiSettings(sourceArticle, target === "chapter-names" ? chapterId : outlineId, "generate", target === "chapter-names" ? "chapter" : "outline", snapshot.data!.settings).value.tasks! : {};
     const executionParameters = { ...scopedParameters, ...normalizeTaskParameters(body.taskParameters) };
     const preparationEnabled = preparationRounds !== undefined && (body.preparationEnabled ?? executionParameters.preparationEnabled) !== false;
     const reviewRuleSnapshot = taskReviewSnapshot({ id: articleId, createdAt: String(outlineRow.article_created_at), reviewRules: normalizeReviewRules(outlineRow.review_rules), reviewRuleItems: normalizeReviewRuleItems(outlineRow.review_rule_items_json == null ? undefined : JSON.parse(String(outlineRow.review_rule_items_json)), articleId, normalizeReviewRules(outlineRow.review_rules), String(outlineRow.article_created_at)) }, executionParameters, reviewInstruction, snapshot.data?.settings);
@@ -132,8 +132,13 @@ export async function POST(request: Request) {
     let promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
     const expectedKind = target === "content" ? "content" : target === "outline" ? "outline" : target === "chapter-title" ? "chapter-title" : undefined;
     if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedKind || JSON.stringify(promptContext).length > 200_000)) return json({ error: "AI 上下文与任务目标不匹配或过大" }, 422);
-    const namingContext = target === "all-names" && body.namingContext && typeof body.namingContext === "object" ? structuredClone(body.namingContext) : undefined;
+    const namingContext = isNamingTarget(target) && body.namingContext && typeof body.namingContext === "object" ? structuredClone(body.namingContext) : undefined;
     if (namingContext && (String((namingContext as { id?: unknown }).id ?? "") !== articleId || JSON.stringify(namingContext).length > 200_000)) return json({ error: "命名上下文与文章不匹配或过大" }, 422);
+    if (target === "chapter-names" && namingContext) namingContext.chapters = namingContext.chapters.filter(chapter => chapter.id === chapterId);
+    const namingChapters = (namingContext ?? sourceArticle)?.chapters.filter(chapter => !chapter.archived && (target !== "chapter-names" || chapter.id === chapterId))
+      .map(chapter => ({ ...chapter, outlines: chapter.outlines.filter(outline => !outline.archived && outline.plan.trim()) }))
+      .filter(chapter => chapter.outlines.length > 0) ?? [];
+    if (isNamingTarget(target) && !namingChapters.length) return json({ error: "没有可供命名的大纲内容" }, 422);
 
     const createdAt = new Date().toISOString();
     const submittedPlan = target === "content" && body.currentPlan !== undefined ? String(body.currentPlan).slice(0, 10_000) : undefined;
@@ -217,11 +222,11 @@ export async function POST(request: Request) {
         outlinePlanSnapshot: promptContext?.currentOutline.plan ?? submittedPlan ?? String(outlineRow.summary),
         outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? outlineRow.title).slice(0, 80),
       } : {}),
-      ...(target === "all-names" ? {
+      ...(isNamingTarget(target) ? {
         chapterNamingSnapshot: normalizeNamingProfile(body.chapterNaming ?? JSON.parse(String(outlineRow.chapter_naming_json ?? "{}")), DEFAULT_CHAPTER_NAMING_PROFILE),
         outlineNamingSnapshot: normalizeNamingProfile(body.outlineNaming ?? JSON.parse(String(outlineRow.outline_naming_json ?? "{}")), DEFAULT_OUTLINE_NAMING_PROFILE),
-        nameChapterCount: Array.isArray((namingContext as { chapters?: unknown[] } | undefined)?.chapters) ? (namingContext as { chapters: unknown[] }).chapters.length : 0,
-        nameOutlineCount: Array.isArray((namingContext as { chapters?: Array<{ outlines?: unknown[] }> } | undefined)?.chapters) ? (namingContext as { chapters: Array<{ outlines?: unknown[] }> }).chapters.reduce((sum, chapter) => sum + (chapter.outlines?.length ?? 0), 0) : 0,
+        nameChapterCount: namingChapters.length,
+        nameOutlineCount: namingChapters.reduce((sum, chapter) => sum + chapter.outlines.length, 0),
         namingContext,
       } : {}),
       configuredModelId: configuredModel?.id,
@@ -234,7 +239,7 @@ export async function POST(request: Request) {
       articleId,
       chapterId,
       outlineId,
-      target: target === "content" ? "正文" : target === "outline" ? "大纲" : target === "chapter-title" ? "章节标题" : "全部名称",
+      target: taskTargetLabel(target),
       prompt: instruction,
       model: configuredModel ? modelSelectionLabel(configuredModel) : "",
       executionOrigin,
