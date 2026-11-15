@@ -272,6 +272,7 @@ function cloneChapterSettings(value: unknown, ids: IdMaps): ChapterSettings {
   const source = normalizeChapterSettings(value);
   return {
     story: structuredClone(source.story),
+    ...(source.legacy ? { legacy: { story: structuredClone(source.legacy.story), characters: Object.fromEntries(Object.entries(source.legacy.characters).map(([id, setting]) => [mapped(ids.characters, id), structuredClone(setting)]).filter(([id]) => Boolean(id))) } } : {}),
     ...(source.aiTasks ? { aiTasks: { ...structuredClone(source.aiTasks), ...(source.aiTasks.generate ? { generate: { ...structuredClone(source.aiTasks.generate), firstAppearanceOverrides: Object.fromEntries(Object.entries(source.aiTasks.generate.firstAppearanceOverrides).map(([id, value]) => [mapped(ids.characters, id), value]).filter(([id]) => Boolean(id))) } } : {}) } } : {}),
     characters: Object.fromEntries(Object.entries(source.characters).map(([id, settings]) => [mapped(ids.characters, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
     relationships: Object.fromEntries(Object.entries(source.relationships).map(([id, settings]) => [mapped(ids.relationships, id), structuredClone(settings)]).filter(([id]) => Boolean(id))),
@@ -439,10 +440,13 @@ function keepDefaultContent(outline: Outline): Outline {
 function copiedSettings(value: unknown, options: ArticleCopyOptions) {
   const settings = normalizeChapterSettings(value);
   if (!options.includeMetadata) settings.story = {};
+  if (settings.legacy && !options.includeMetadata) settings.legacy.story = {};
+  if (settings.legacy && !options.includeStyle) delete settings.legacy.story.tone;
   else if (!options.includeStyle) delete settings.story.style;
   if (!options.includeCharacters) {
     settings.characters = {};
     settings.relationships = {};
+    if (settings.legacy) settings.legacy.characters = {};
   }
   return settings;
 }

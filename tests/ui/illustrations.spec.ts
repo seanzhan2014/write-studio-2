@@ -1,4 +1,4 @@
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Page } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import type { IllustrationRecord } from "../../lib/illustration-history";
@@ -206,14 +206,14 @@ test("article image presets inherit, persist outline overrides and restore artic
   };
   const storedArticle = async () => (await (await request.get("/api/state")).json()).data.articles[0];
   const storedOptions = async () => (await storedArticle()).chapters.flatMap((chapter: { outlines: { id: string; illustrationOptions: unknown }[] }) => chapter.outlines).find((outline: { id: string }) => outline.id === "outline-current").illustrationOptions;
-  await openArticleAiSettings(page);
+  await openGlobalAiSettings(page, "图片");
   await expect(page.getByRole("heading", { name: "图片生成设置", exact: true })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toHaveValue("English");
   await expect(page.getByRole("combobox", { name: "文章图片 Prompt 默认语言", exact: true })).toBeDisabled();
   await choose("文章图片默认风格", "国风水墨");
   await choose("文章图片默认分辨率", "2K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill(articlePrompt);
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: articlePrompt });
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: articlePrompt });
   await page.getByRole("heading", { name: "图片生成设置", exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: `.test-data/article-image-settings-${testInfo.project.name}.png` });
 
@@ -241,11 +241,11 @@ test("article image presets inherit, persist outline overrides and restore artic
   await expect.poll(storedOptions).toMatchObject({ promptLanguage: "en", stylePreset: "anime", resolution: "2k", additionalPrompt: outlinePrompt });
   await dialog.getByRole("button", { name: "返回正文", exact: true }).click();
 
-  await openArticleAiSettings(page);
+  await openGlobalAiSettings(page, "图片");
   await choose("文章图片默认风格", "水彩插画");
   await choose("文章图片默认分辨率", "4K");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("保留水彩纸张纹理。");
-  await expect.poll(async () => (await storedArticle()).illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationSettings).toMatchObject({ promptLanguage: "en", stylePreset: "watercolor", resolution: "4k", additionalPrompt: "保留水彩纸张纹理。" });
   dialog = await openGenerator();
   await expect(dialog.getByRole("textbox", { name: "附加 Prompt", exact: true })).toHaveValue(outlinePrompt);
   await expect(dialog.getByRole("combobox", { name: "生成 Prompt 的语言", exact: true })).toHaveValue("English");

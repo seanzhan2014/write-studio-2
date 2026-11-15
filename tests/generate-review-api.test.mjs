@@ -15,6 +15,7 @@ async function reset() {
   const data = fullStudioFixture();
   data.tasks = [];
   data.articles[0].reviewRules = "人物必须十八岁；保留环境描写。";
+  data.settings.reviewRuleItems = [{ id: "age-rule", title: "人物年龄", content: data.articles[0].reviewRules, origin: "custom", archived: false, revision: 1, createdAt: data.articles[0].createdAt, updatedAt: data.articles[0].createdAt }];
   await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) });
 }
 async function waitTask(id, predicate = (task) => ["success", "failed", "cancelled"].includes(task.state)) {

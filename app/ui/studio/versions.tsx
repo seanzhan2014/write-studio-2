@@ -78,6 +78,9 @@ export function VersionDrawer({ selectedVersionId, onClose, onPreview, onClearPr
     scrollMode="content"
     opened
     onClose={onClose}
+    trapFocus={deleteTarget === null}
+    closeOnEscape={deleteTarget === null}
+    closeOnClickOutside={deleteTarget === null}
     closeButtonProps={{ "aria-label": "关闭正文版本" }}
     title={<div className="ws-drawer-title"><span>正文版本</span><span className="ui-title">{outlineDisplayTitle(studio.currentOutline)}</span></div>}
     position={compact ? "bottom" : "right"}

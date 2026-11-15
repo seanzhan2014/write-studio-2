@@ -108,7 +108,7 @@ test("portraits upload, iterate, recover native tasks, adopt and reconcile full 
   }
   const original = await api("/api/state"); let provider, model;
   const fixture = fullStudioFixture(); const personId = fixture.articles[0].characters[0].id;
-  fixture.articles[0].illustrationSettings = { stylePreset: "ink", promptLanguage: "zh", resolution: "" };
+  fixture.settings.illustrationSettings = { stylePreset: "ink", promptLanguage: "zh", resolution: "" };
   t.after(async () => { try { if (model) await api(`/api/models/${model.id}`, undefined, "DELETE"); if (provider) await api(`/api/providers/${provider.id}`, undefined, "DELETE"); const current = await api("/api/state"); await api("/api/state", { data: original.data }, "PUT", { "If-Match": String(current.revision) }); } finally { server.closeAllConnections(); server.close(); } });
   await api("/api/state", { data: fixture }, "PUT", { "If-Match": String(original.revision) });
   const photo = (action, rest = {}) => api("/api/ai/character-photos", { action, characterId: personId, ...rest });

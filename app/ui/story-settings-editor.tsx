@@ -1,5 +1,6 @@
 "use client";
 import { createScopedSettingActions } from "@/lib/story-setting-actions";
+import { LEGACY_STORY_LABELS, LEGACY_CHARACTER_LABELS } from "@/lib/legacy-story-settings";
 
 import { Button, Checkbox, Group, Select, Stack, Text, TextInput, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
@@ -126,6 +127,23 @@ export function ArticleSettingsInline() {
 
 type ScopedSettingsLevel = "chapter" | "outline";
 
+function LegacySettingsFields({ settings, level, onChange }: { settings: ChapterSettings; level: ScopedSettingsLevel; onChange: (value: ChapterSettings) => void }) {
+  const { currentArticle } = useStudio();
+  if (!settings.legacy) return null;
+  function edit(change: (value: NonNullable<ChapterSettings["legacy"]>) => void) {
+    const next = structuredClone(settings);
+    change(next.legacy!);
+    onChange(normalizeChapterSettings(next));
+  }
+  return <details className="writing-advanced"><summary>历史设定</summary><Stack gap="md" className="writing-advanced-body">
+    {Object.entries(settings.legacy.story).map(([key, item]) => <Stack key={key} gap="xs"><Textarea label={LEGACY_STORY_LABELS[key]} value={item.value} autosize minRows={2} onChange={event => edit(next => { next.story[key].value = event.currentTarget.value; })} /><ScopeSelect level={level} value={item.scope} onChange={scope => edit(next => { next.story[key].scope = scope; })} /><Button variant="subtle" color="red" onClick={() => edit(next => { delete next.story[key]; })}>移除{LEGACY_STORY_LABELS[key]}</Button></Stack>)}
+    {Object.entries(settings.legacy.characters).map(([id, item]) => <details key={id}><summary>{currentArticle.characters.find(person => person.id === id)?.name ?? "人物"}</summary><Stack gap="md">
+      {Object.entries(item.start).map(([key, change]) => <Stack key={key} gap="xs"><Textarea label={LEGACY_CHARACTER_LABELS[key]} value={change.value} autosize minRows={2} onChange={event => edit(next => { next.characters[id].start[key].value = event.currentTarget.value; })} /><ScopeSelect level={level} value={change.scope} onChange={scope => edit(next => { next.characters[id].start[key].scope = scope; })} /><Button variant="subtle" color="red" onClick={() => edit(next => { delete next.characters[id].start[key]; })}>移除{LEGACY_CHARACTER_LABELS[key]}</Button></Stack>)}
+      {Object.entries(item.end).map(([key, value]) => <Stack key={key} gap="xs"><Textarea label={`${level === "chapter" ? "章末" : "大纲末"}${LEGACY_CHARACTER_LABELS[key]}`} value={value} autosize minRows={2} onChange={event => edit(next => { next.characters[id].end[key] = event.currentTarget.value; })} /><Button variant="subtle" color="red" onClick={() => edit(next => { delete next.characters[id].end[key]; })}>移除变化</Button></Stack>)}
+    </Stack></details>)}
+  </Stack></details>;
+}
+
 export function ScopedSettingsInline({ level, targetId, includeTaskSettings = true }: { level: ScopedSettingsLevel; targetId: string; includeTaskSettings?: boolean }) {
   const studio = useStudio();
   const article = studio.currentArticle;
@@ -169,6 +187,7 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
 
   return <div className="inline-story-settings">
     {includeTaskSettings && level === "outline" && <TaskParameterSettings level="outline" targetId={targetId} />}
+    <LegacySettingsFields settings={settings} level={level} onChange={next => commit(next, "历史设定")} />
     <div className="inline-setting-toolbar">
       <SectionTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setShowInherited(false); }} />
       <div className="inline-setting-summary"><span>{changeCount ? `${levelLabel}修改 ${changeCount} 项` : `${levelLabel}全部继承`} · {inheritedLabel}</span>{inheritedCount > 0 && <button type="button" aria-expanded={showInherited} onClick={() => setShowInherited((value) => !value)}>{showInherited ? "收起继承内容" : `查看继承内容 · ${inheritedCount}`}</button>}</div>
@@ -233,6 +252,7 @@ export function ChapterSettingsDrawer({ chapterId, opened = true, onClose }: { c
 
   const visibleCharacters = resolved.characters.filter((person) => !person.archived && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (!onlyChanges || Boolean(settings.characters[person.id])));
   return <ScrollableDrawer opened={opened} onClose={onClose} position={compact ? "bottom" : "right"} size={compact ? "100%" : 620} title={<div className="chapter-settings-title"><span>{chapter.title}</span><small>{resolved.inheritedFromChapter ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"} · 本章修改 {changeCount} 项</small></div>} closeButtonProps={{ "aria-label": "关闭章节设定" }} classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}>
+    <LegacySettingsFields settings={settings} level="chapter" onChange={next => commit(next, "历史设定")} />
     <div className="chapter-setting-toolbar"><Checkbox checked={onlyChanges} onChange={(event) => setOnlyChanges(event.currentTarget.checked)} label="只看本章修改" /><Text size="sm" c="dimmed">持续修改会影响后续 {futureCount} 章</Text></div>
     {lastChange && <div className="setting-undo" role="status"><span>已修改“{lastChange.label}”</span><button type="button" onClick={() => { studio.updateChapter(chapter.id, { settings: lastChange.settings }); setLastChange(null); }}>撤销</button></div>}
     <SectionTabs value={tab} onChange={setTab} />
@@ -280,6 +300,7 @@ export function OutlineSettingsDrawer({ outlineId, opened = true, onClose }: { o
     classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}
   >
     <TaskParameterSettings level="outline" targetId={outlineId} />
+    <LegacySettingsFields settings={settings} level="chapter" onChange={next => commit(next, "历史设定")} />
     <div className="chapter-setting-toolbar"><Checkbox checked={onlyChanges} onChange={(event) => setOnlyChanges(event.currentTarget.checked)} label="只看本大纲修改" /><Text size="sm" c="dimmed">持续修改会影响后续 {futureCount} 条大纲</Text></div>
     {lastChange && <div className="setting-undo" role="status"><span>已修改“{lastChange.label}”</span><button type="button" onClick={() => { studio.updateOutline(outline.id, { settings: lastChange.settings }); setLastChange(null); }}>撤销</button></div>}
     <SectionTabs value={tab} onChange={setTab} />

@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Group } from "@mantine/core";
+import { Button, getDefaultZIndex, Group } from "@mantine/core";
 import { ResponsiveModal } from "@/app/ui/overlays";
 
 export type BodyDeleteTarget = {
@@ -17,7 +17,7 @@ export function BodyDeleteDialog({ target, hasUnsavedChanges = false, deleting, 
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  return <ResponsiveModal opened={target !== null} onClose={onClose} title="删除正文？" size="sm" mobileFullScreen={false} closeButtonProps={{ "aria-label": "取消删除正文", disabled: deleting }} closeOnClickOutside={!deleting} closeOnEscape={!deleting}>
+  return <ResponsiveModal opened={target !== null} onClose={onClose} title="删除正文？" size="sm" mobileFullScreen={false} zIndex={getDefaultZIndex("modal") + 1} closeButtonProps={{ "aria-label": "取消删除正文", disabled: deleting }} closeOnClickOutside={!deleting} closeOnEscape={!deleting} onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}>
     <p>将删除「{target?.name}」。{target?.isCurrent && "删除后将按版本列表顺序切换到下一版。"}{hasUnsavedChanges && "尚未保存的修改也会删除。"}</p>
     <Group justify="flex-end" gap="sm">
       <Button variant="default" type="button" disabled={deleting} data-autofocus onClick={onClose}>取消</Button>

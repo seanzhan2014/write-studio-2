@@ -94,8 +94,8 @@ test("prose controls reach generation, frozen task retries and review revisions"
   await t.test("rewrite automatic settings bypass ordinary article expression in prompts and queued tasks", async () => {
     const current = await api("/api/state");
     const changed = structuredClone(current.data);
-    changed.articles[0].aiGenerateSettings.advanced = { psychology: "普通写作专属的心理展开要求" };
-    changed.articles[0].aiGenerateSettings.proseControls = { dialogueDensity: "high", introspectionDensity: "high", descriptionDetail: "high", narrativePace: "slow", paragraphLength: "long" };
+    changed.settings.aiGenerateSettings = { ...changed.settings.aiGenerateSettings, advanced: { psychology: "普通写作专属的心理展开要求" } };
+    changed.settings.aiGenerateSettings.proseControls = { dialogueDensity: "high", introspectionDensity: "high", descriptionDetail: "high", narrativePace: "slow", paragraphLength: "long" };
     await api("/api/state", { data: changed }, "PUT", { "If-Match": String(current.revision) });
     try {
       for (const path of ["/api/ai/generate", "/api/ai/generate-stream"]) {

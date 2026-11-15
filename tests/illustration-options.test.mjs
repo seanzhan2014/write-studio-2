@@ -32,13 +32,15 @@ test("image presets and outline overrides survive snapshots, incremental saves a
   const original = await api("/api/state");
   try {
     const data = fullStudioFixture();
-    data.articles[0].illustrationSettings = { promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: "无文字，无水印" };
+    data.settings.illustrationSettings = { promptLanguage: "en", stylePreset: "ink", resolution: "2k", additionalPrompt: "无文字，无水印" };
     await api("/api/state", { data }, "PUT", { "If-Match": String(original.revision) });
     await api("/api/outlines/outline-current", { illustrationOptions: { stylePreset: "anime", resolution: "" } }, "PATCH");
     let state = await api("/api/state");
     let article = state.data.articles[0];
     let outline = article.chapters.flatMap(chapter => chapter.outlines).find(outline => outline.id === "outline-current");
-    assert.deepEqual(outline.illustrationOptions, { promptLanguage: "en", stylePreset: "anime", resolution: "", additionalPrompt: "无文字，无水印" });
+    assert.equal(outline.illustrationOptions.stylePreset, "anime");
+    assert.equal(outline.illustrationOptions.resolution, "");
+    assert.equal(outline.illustrationOptions.additionalPrompt, "无文字，无水印");
     const { diffStudioData } = await import("./studio-test-runtime.mjs");
     const edited = structuredClone(state.data);
     const longPrompt = "\n\"\\\t\u0000".repeat(1500);

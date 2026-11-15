@@ -1,3 +1,4 @@
+import { namingArticleContext as currentNamingContext } from "@/lib/naming-context";
 
 
 import { type ReasoningOptions } from "@/lib/reasoning-options";
@@ -101,8 +102,10 @@ export function generatedNameForPreview(value: string, profile: NamingProfile, m
 }
 
 export async function generateNames(input: { articleId: string; chapterId: string; outlineId?: string; target: NameGenerationTarget; includeChapter?: boolean; outlineIds?: string[]; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string; context?: NamingArticleContext } & ReasoningOptions, signal?: AbortSignal): Promise<NameGenerationResult> {
-  const supplied = suppliedNamingContext(input.context, input.articleId);
+  let supplied = suppliedNamingContext(input.context, input.articleId);
   const state = supplied ? null : await readStudioState();
+  const storedArticle = state?.data?.articles.find(item => item.id === input.articleId);
+  if (!supplied && storedArticle) supplied = currentNamingContext(storedArticle, state?.data?.settings);
   const article = supplied ?? state?.data?.articles.find((item) => item.id === input.articleId);
   const chapter = article?.chapters.find((item) => item.id === input.chapterId);
   if (!article || !chapter || chapter.archived) throw new AiInputError("命名目标不存在或已归档");
@@ -215,8 +218,10 @@ export function parseArticleNamesResponse(value: string) {
 }
 
 export async function generateArticleNames(input: { articleId: string; chapterNaming?: NamingProfile; outlineNaming?: NamingProfile; model?: string; instruction?: string; context?: NamingArticleContext } & ReasoningOptions, signal?: AbortSignal): Promise<ArticleNameGenerationResult> {
-  const supplied = suppliedNamingContext(input.context, input.articleId);
+  let supplied = suppliedNamingContext(input.context, input.articleId);
   const state = supplied ? null : await readStudioState();
+  const storedArticle = state?.data?.articles.find(item => item.id === input.articleId);
+  if (!supplied && storedArticle) supplied = currentNamingContext(storedArticle, state?.data?.settings);
   const article = supplied ?? state?.data?.articles.find((item) => item.id === input.articleId);
   if (!article) throw new AiInputError("命名文章不存在");
   const chapters = article.chapters

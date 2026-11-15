@@ -88,7 +88,7 @@ export async function photoOverview(id?: string) {
 async function snapshotFor(id: string, draftValue: unknown) {
   const { data } = await readStudioState();
   const styles = normalizeIllustrationStyles(data?.settings.illustrationStyles);
-  const { article, person } = personIn(data, id);
+  const { person } = personIn(data, id);
   if (person.archived) throw new Error("请先恢复此人物，再生成照片");
   const gallery = characterPhotos(person.photos, person.visual);
   let draft = normalizePhotoDraft(draftValue);

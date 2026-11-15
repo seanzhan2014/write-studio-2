@@ -2,7 +2,7 @@
 
 import { rebaseOutlineExpansion } from "@/lib/outline-expansion";
 
-import { taskReasoningEffort, taskNamingProfile, type TaskParameters } from "@/lib/task-parameters";
+import { taskReasoningEffort, type TaskParameters } from "@/lib/task-parameters";
 import { articleAiSettings, resolveAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { ReasoningSettings } from "@/app/ui/reasoning-settings";
@@ -17,10 +17,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ButtonH
 
 import getCaretCoordinates from "textarea-caret";
 import { selectAiContext, summarizeAiContext } from "@/lib/ai-context";
-import type { NamingArticleContext } from "@/db/ai-naming";
 import { timestampContentName } from "@/lib/content-name.mjs";
 import { normalizeExcellentFragments } from "@/lib/excellent-fragments.mjs";
-import { descriptionDetailLabel, dialogueDensityLabel, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeProseControls, type AiGenerateOptions, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
+import { descriptionDetailLabel, dialogueDensityLabel, introspectionDensityLabel, narrativePaceLabel, paragraphLengthLabel, normalizeProseControls, normalizeRewriteRetentionLevel, type ContentGenerationMode, type RewriteRetentionLevel } from "@/lib/generate-options";
 import { currentOutlineVersion, resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
 import { modelSelectionLabel } from "@/lib/model-label";
@@ -135,30 +134,7 @@ export async function createServerTask(studio: ReturnType<typeof useStudio>, inp
   return task;
 }
 
-export function namingArticleContext(article: Article, globalSettings: object = {}): NamingArticleContext {
-  const defaults = resolveAiSettings(article, article.id, "generate", "outline", globalSettings).globalDefaults;
-  const namingFor = (id: string, level: "chapter" | "outline") => {
-    const options = resolveAiSettings(article, id, "generate", level, globalSettings).value;
-    const build = (value: AiGenerateOptions) => ({ model: String(value.tasks!.namingModelMode === "fixed" ? value.tasks!.namingModel : value.model), reasoningEffort: taskReasoningEffort(value.tasks!.namingReasoningEffort), chapterNaming: taskNamingProfile(value.tasks!, "chapterNaming"), outlineNaming: taskNamingProfile(value.tasks!, "outlineNaming") });
-    const settings = build(options);
-    return JSON.stringify(settings) === JSON.stringify(build(defaults)) ? undefined : settings;
-  };
-  return {
-    id: article.id,
-    title: article.title,
-    summary: article.summary,
-    style: article.style,
-    chapterNaming: taskNamingProfile(defaults.tasks!, "chapterNaming"),
-    outlineNaming: taskNamingProfile(defaults.tasks!, "outlineNaming"),
-    chapters: article.chapters.map((chapter) => ({
-      id: chapter.id,
-      title: chapter.title,
-      archived: chapter.archived,
-      naming: namingFor(chapter.id, "chapter"),
-      outlines: chapter.outlines.map((outline) => ({ id: outline.id, title: outline.title, plan: outline.plan, archived: outline.archived, naming: namingFor(outline.id, "outline") })),
-    })),
-  };
-}
+export { namingArticleContext } from "@/lib/naming-context";
 
 export const activeChatStreams = new Map<string, ActiveChatStream>();
 

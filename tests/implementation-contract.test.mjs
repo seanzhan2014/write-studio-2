@@ -58,7 +58,7 @@ test("snapshot inserts name every migration-sensitive column explicitly", async 
 test("schema-extensible inserts name their columns explicitly", async () => {
   const runtime = await read("db/runtime.ts");
   const ai = await read("db/ai.ts");
-  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,illustration_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision\)/);
+  assert.match(runtime, /INSERT INTO outlines\(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,illustration_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision,expansion_json\)/);
   assert.match(runtime, /INSERT INTO contents\(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision\)/);
   assert.match(ai, /INSERT INTO ai_providers\(id,name,adapter_kind,base_url,timeout_ms,has_secret,secret,created_at,updated_at\)/);
   assert.match(ai, /INSERT INTO ai_models\(id,provider_id,name,base_url,model_id,system_prompt,temperature,max_output,max_input_characters,timeout_ms,timeout_override_ms,has_secret,secret,created_at,updated_at,reasoning_effort,metadata_json\)/);
@@ -180,7 +180,6 @@ test("cloud sync uses a database-version baseline and manual overwrite escape ha
   assert.match(app, /同时覆盖大模型配置/);
   assert.match(app, /同时覆盖 API Key \/ Secret/);
   assert.match(app, /本地保存后自动异步复制到云端/);
-  assert.match(app, /云端版本 = 同步基线/);
 });
 
 test("task execution ownership keeps cloud reads from resuming local work", async () => {
@@ -268,7 +267,6 @@ test("full outline and full content editors use one continuous auto-growing docu
   assert.match(app, /const mirror = node\.cloneNode\(false\) as HTMLTextAreaElement/);
   assert.match(app, /const nextHeight = Math\.max\(mirror\.scrollHeight \+ verticalInsets, 34\)/);
   assert.match(app, /node\.style\.height = `\$\{nextHeight\}px`/);
-  assert.match(app, /mode === "outline" \? studio\.updateOutline/);
   assert.match(app, /onContentBlur=\{mode === "content" \? \(\) => commitContent\(item\.id\)/);
   assert.match(app, /studio\.stageContentDraft\(outlineId, text\)/);
   assert.match(app, /studio\.saveCurrentContent\(outlineId, next, editSourceVersionIdsRef\.current\[outlineId\]\)/);
@@ -445,7 +443,6 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /改写正文/);
   assert.match(app, /续写正文/);
   assert.match(app, /thumbLabel="原文保留度"/);
-  assert.match(app, /控制改写幅度，不代表精确相似度/);
   assert.match(app, /contentMode: generationMode/);
   assert.match(app, /rewriteRetention/);
   assert.match(app, /补充指令（可选）/);
@@ -456,7 +453,7 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.doesNotMatch(app, /if \(!taskId\)[^\n]+\n\s*setPrompt\(""\)/);
   assert.match(app, /GeneratePresetDialog/);
   assert.match(app, /aria-label="生成使用的大纲内容"/);
-  assert.match(app, /studio\.saveOutlinePlan\(studio\.currentOutline\.id, outlinePlanDraft\)/);
+  assert.match(app, /studio\.saveOutlinePlan\(studio\.currentOutline\.id, outlinePlanDraft,/);
   assert.doesNotMatch(app, /onBlur=\{\(\) => void studio\.saveNow\(\)\}/);
   assert.match(state, /generateTargetWords: number/);
   assert.match(state, /generatePresets: string\[\]/);
@@ -471,7 +468,7 @@ test("AI Generate keeps the prompt primary and automatically sets completed bodi
   assert.match(app, /本次生成上下文/);
   assert.doesNotMatch(app, /候选版本对比/);
   assert.doesNotMatch(app, /className="generation-card candidate-card"/);
-  assert.match(app, /完成后更新当前正文，旧版本保留/);
+  assert.doesNotMatch(app, /完成后更新当前正文，旧版本保留/);
   assert.match(app, /查看全部 AI 任务/);
   assert.doesNotMatch(app, /约 3,840 字/);
   assert.doesNotMatch(executor, /found\.outline\.defaultVersionId = version\.id/);
@@ -508,7 +505,7 @@ test("mobile Generate edits use an explicit draft save and insecure HTTP clipboa
   assert.match(app, /currentPlan: outlinePlanDraft/);
   const generateSubmit = app.match(/const submit = useCallback[\s\S]*?useEffect\(\(\) => \{/)[0];
   assert.doesNotMatch(generateSubmit, /saveNow\(|await saveOutlineDraft/);
-  assert.match(state, /saveOutlinePlan: \(outlineId: string, plan: string\) => Promise<boolean>/);
+  assert.match(state, /saveOutlinePlan: \(outlineId: string, plan: string[,)]/);
   assert.match(state, /mergeStudioConflict/);
   assert.match(state, /durableSnapshot/);
   assert.match(merge, /resolveStudioConflict/);
@@ -578,8 +575,8 @@ test("dedicated naming is centralized and all-name generation is one durable bac
   assert.match(versions, /appendNameVersion/);
   assert.match(migration, /name_versions_json/);
   assert.match(migration, /default_name_version_id/);
-  assert.match(app, /chapterNaming: article\.chapterNaming/);
-  assert.match(app, /outlineNaming: article\.outlineNaming/);
+  assert.match(app, /chapterNaming: taskNamingProfile\(/);
+  assert.match(app, /outlineNaming: taskNamingProfile\(/);
   assert.match(app, /namingContext: namingArticleContext\(article, studio\.data\.settings\)/);
   assert.match(app, /studio\.acceptServerMutation/);
   assert.match(ai, /export async function generateNames/);

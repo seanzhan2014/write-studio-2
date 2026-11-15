@@ -1,4 +1,4 @@
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test } from "@playwright/test";
 import type { AiTask } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -8,14 +8,14 @@ test.beforeEach(async ({ request }) => {
   expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data: fullStudioFixture() } })).ok()).toBeTruthy();
 });
 
-test("closing summary defaults off, inherits article settings and persists an explicit opt-out", async ({ page, request }, testInfo) => {
-  await openArticleAiSettings(page);
+test("closing summary defaults off, inherits global settings and persists an explicit opt-out", async ({ page, request }, testInfo) => {
+  await openGlobalAiSettings(page);
   const summary = page.getByRole("radiogroup", { name: "收尾总结", exact: true });
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.closingSummaryLength).toBe("short");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.aiGenerateSettings.closingSummaryLength).toBe("short");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
   await summary.getByRole("radio", { name: "无", exact: true }).check();
@@ -99,7 +99,7 @@ test("prose controls support keyboard selection, mode changes and narrow touch t
 
 test("rewrite defaults and explicit edits persist independently from ordinary writing", async ({ page, request }) => {
   test.setTimeout(90_000);
-  await openArticleAiSettings(page);
+  await openGlobalAiSettings(page);
   await page.getByRole("radiogroup", { name: "对话密度", exact: true }).getByRole("radio", { name: "高", exact: true }).check();
   const advanced = page.locator(".article-generate-settings .writing-advanced");
   await advanced.locator("summary").click();

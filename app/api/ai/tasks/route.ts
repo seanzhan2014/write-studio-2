@@ -1,3 +1,5 @@
+import { namingArticleContext } from "@/lib/naming-context";
+import { taskNamingProfile } from "@/lib/task-parameters";
 import { EXPANSION_MULTIPLIER_HELP, normalizeOutlineExpansion, rebaseOutlineExpansion, resolveOutlineExpansion, validOutlineExpansion } from "@/lib/outline-expansion";
 import { taskFromRow } from "@/lib/task-record";
 import { parseGenerateFields } from "@/lib/generate-request";
@@ -132,7 +134,7 @@ export async function POST(request: Request) {
     let promptContext = body.promptContext && typeof body.promptContext === "object" ? structuredClone(body.promptContext) : undefined;
     const expectedKind = target === "content" ? "content" : target === "outline" ? "outline" : target === "chapter-title" ? "chapter-title" : undefined;
     if (promptContext && (promptContext.currentOutline?.id !== outlineId || promptContext.kind !== expectedKind || JSON.stringify(promptContext).length > 200_000)) return json({ error: "AI 上下文与任务目标不匹配或过大" }, 422);
-    const namingContext = isNamingTarget(target) && body.namingContext && typeof body.namingContext === "object" ? structuredClone(body.namingContext) : undefined;
+    const namingContext = isNamingTarget(target) ? body.namingContext && typeof body.namingContext === "object" ? structuredClone(body.namingContext) : sourceArticle ? namingArticleContext(sourceArticle, snapshot.data?.settings) : undefined : undefined;
     if (namingContext && (String((namingContext as { id?: unknown }).id ?? "") !== articleId || JSON.stringify(namingContext).length > 200_000)) return json({ error: "命名上下文与文章不匹配或过大" }, 422);
     if (target === "chapter-names" && namingContext) namingContext.chapters = namingContext.chapters.filter(chapter => chapter.id === chapterId);
     const namingChapters = (namingContext ?? sourceArticle)?.chapters.filter(chapter => !chapter.archived && (target !== "chapter-names" || chapter.id === chapterId))
@@ -223,8 +225,8 @@ export async function POST(request: Request) {
         outlineTitleSnapshot: String(body.outlineTitleSnapshot ?? outlineRow.title).slice(0, 80),
       } : {}),
       ...(isNamingTarget(target) ? {
-        chapterNamingSnapshot: normalizeNamingProfile(body.chapterNaming ?? JSON.parse(String(outlineRow.chapter_naming_json ?? "{}")), DEFAULT_CHAPTER_NAMING_PROFILE),
-        outlineNamingSnapshot: normalizeNamingProfile(body.outlineNaming ?? JSON.parse(String(outlineRow.outline_naming_json ?? "{}")), DEFAULT_OUTLINE_NAMING_PROFILE),
+        chapterNamingSnapshot: normalizeNamingProfile(body.chapterNaming ?? taskNamingProfile(resolveAiSettings(sourceArticle!, target === "all-names" ? articleId : chapterId, "generate", "chapter", snapshot.data?.settings).value.tasks!, "chapterNaming"), DEFAULT_CHAPTER_NAMING_PROFILE),
+        outlineNamingSnapshot: normalizeNamingProfile(body.outlineNaming ?? taskNamingProfile(resolveAiSettings(sourceArticle!, target === "all-names" ? articleId : target === "chapter-names" ? chapterId : outlineId, "generate", target === "chapter-names" ? "chapter" : "outline", snapshot.data?.settings).value.tasks!, "outlineNaming"), DEFAULT_OUTLINE_NAMING_PROFILE),
         nameChapterCount: namingChapters.length,
         nameOutlineCount: namingChapters.reduce((sum, chapter) => sum + chapter.outlines.length, 0),
         namingContext,

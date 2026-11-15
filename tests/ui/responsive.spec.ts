@@ -1,5 +1,5 @@
 import { showTotalWordMode } from "./outline-expansion-helper";
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -1004,17 +1004,17 @@ test("article AI Generate presets flow into outlines until an outline keeps its 
     const response = await request.get("/api/state");
     const state = await response.json() as { data: StudioData };
     return state.data.articles[0].chapters[0].outlines.find((item) => item.id === "outline-previous")?.generateOptions?.inheritance?.targetWords;
-  }).toBe("article");
+  }).toBe("global");
 
-  await openArticleAiSettings(page);
-  await expect(page.getByRole("heading", { name: "正文生成" })).toBeVisible();
+  await openGlobalAiSettings(page);
+  await expect(page.getByRole("heading", { name: "模型与篇幅" })).toBeVisible();
   const articleTarget = page.getByRole("textbox", { name: "文章生成默认目标字数" });
   await articleTarget.fill("6800");
   await articleTarget.press("Tab");
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: StudioData };
-    return state.data.articles[0].aiGenerateSettings.targetWords;
+    return state.data.settings.generateTargetWords;
   }).toBe(6800);
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await expect(page.locator(".generate-settings-source")).toHaveCount(0);
@@ -2639,7 +2639,7 @@ test("full content title row respects AI Review visibility and keeps article rul
     await expect(title).toBeVisible();
     await expect(review).toHaveCount(0);
     await expect(editor.getByRole("button", { name: "保存", exact: true })).toBeVisible();
-    await openArticleAiSettings(page);
+    await openGlobalAiSettings(page, "自动审校");
     await expect(page.getByRole("heading", { name: "审校规则", exact: true })).toBeVisible();
     return;
   }

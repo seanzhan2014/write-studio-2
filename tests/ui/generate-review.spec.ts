@@ -1,4 +1,4 @@
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { StudioData } from "../../app/studio-state";
 import { fullStudioFixture } from "../fixtures.mjs";
@@ -109,13 +109,13 @@ test("Generate review settings, server loop and durable report work together", a
     data.articles[0].aiGenerateSettings!.model = model.id;
     data.settings.preparationMaxRounds = 0;
     expect((await request.put("/api/state", { headers: { "If-Match": String(latest.revision ?? current.revision) }, data: { data } })).ok()).toBeTruthy();
-    await openArticleAiSettings(page);
+    await openGlobalAiSettings(page, "自动审校");
     await page.getByRole("button", { name: "新增规则", exact: true }).click();
     await page.getByLabel("规则名称", { exact: true }).fill("人物年龄");
     await page.getByLabel("规则内容", { exact: true }).fill("人物必须十八岁；保留环境描写。");
     await page.getByRole("button", { name: "保存规则", exact: true }).click();
-    await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].reviewRuleItems.some((rule: { content: string }) => rule.content === "人物必须十八岁；保留环境描写。")).toBe(true);
-    await openArticleAiSettings(page);
+    await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.reviewRuleItems.some((rule: { content: string }) => rule.content === "人物必须十八岁；保留环境描写。")).toBe(true);
+    await openGlobalAiSettings(page, "自动审校");
     await expect(page.getByLabel("规则：人物年龄", { exact: true })).toContainText("人物必须十八岁");
     await page.goto("/settings/tasks");
     await page.getByRole("tab", { name: "自动审校", exact: true }).click();

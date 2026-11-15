@@ -1,4 +1,4 @@
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { normalizeConfiguration } from "../../lib/style-learning";
@@ -73,12 +73,12 @@ test("advanced settings stay optional and reference learning saves inputs before
   await expect(style).not.toHaveAttribute("open",/.*/);
   await style.locator("summary").click(); await style.getByRole("textbox",{name:"附加",exact:true}).fill("保留有意义的情绪呼应");
   await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.articles[0].storySettings?.advancedStyle?.additional).toBe("保留有意义的情绪呼应");
-  await openArticleAiSettings(page);
+  await openGlobalAiSettings(page);
   const advanced=page.locator(".article-generate-settings details.writing-advanced");
   await expect(advanced).not.toHaveAttribute("open",/.*/); await advanced.locator("summary").click();
   await advanced.getByRole("textbox",{name:"细节组织方式",exact:true}).fill("重复时产生新的意义");
   await advanced.getByRole("textbox",{name:"附加",exact:true}).fill("对话场景允许自然停顿");
-  await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings?.advanced?.additional).toBe("对话场景允许自然停顿");
+  await expect.poll(async()=>(await(await request.get("/api/state")).json()).data.settings.aiGenerateSettings?.advanced?.additional).toBe("对话场景允许自然停顿");
   await advanced.locator("summary").click();
   await page.goto("/articles/article-main/info/basic");
   await page.getByRole("tab", { name: "参考文章", exact: true }).click();
@@ -93,7 +93,7 @@ test("advanced settings stay optional and reference learning saves inputs before
   const saved=(await(await request.get("/api/state")).json()).data.articles[0];
   expect(saved.storySettings.styleLibrary.references[0].title).toBe("我的参考文章");
   expect(saved.storySettings.advancedStyle.additional).toBe("保留有意义的情绪呼应");
-  expect(saved.aiGenerateSettings.advanced.detailOrganization).toBe("重复时产生新的意义");
+  expect((await (await request.get("/api/state")).json()).data.settings.aiGenerateSettings.advanced.detailOrganization).toBe("重复时产生新的意义");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
   await page.screenshot({path:testInfo.outputPath("style-lab.png"),fullPage:true});
 });

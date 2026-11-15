@@ -8,7 +8,7 @@ import { databasePath, getDatabase, isCloudDatabase } from "@/db/sqlite";
 import { readStyleLabSnapshot, validateStyleLabSnapshot, type StyleLabSnapshot } from "./style-lab-history";
 import { isStudioChanges, isStudioChangesEmpty, mergeStudioChanges, type StudioChanges } from "@/lib/studio-changes";
 
-export const SYNC_SCHEMA_VERSION = 18;
+export const SYNC_SCHEMA_VERSION = 19;
 const syncFormat = "writer-studio-sync-v1";
 const syncChangesFormat = "writer-studio-changes-v2";
 const remoteTimeoutMs = 30_000;

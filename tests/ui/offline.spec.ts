@@ -1,4 +1,4 @@
-import { openArticleAiSettings } from "./article-ai-settings-helper";
+import { openGlobalAiSettings } from "./ai-task-settings-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 
@@ -24,7 +24,7 @@ test("failed settings saves keep a stable local warning, show the cause and reco
     if (fail) return route.fulfill({ status: 500, json: { error: "save_failed", message: "图片设置数据库暂时无法写入" } });
     return route.continue();
   });
-  await openArticleAiSettings(page);
+  await openGlobalAiSettings(page, "图片");
   await page.getByRole("textbox", { name: "文章图片附加 Prompt", exact: true }).fill("离线保存的画面要求");
   const banner = page.locator(".persistence-banner.local");
   await expect(banner).toContainText("图片设置数据库暂时无法写入");
@@ -40,7 +40,7 @@ test("failed settings saves keep a stable local warning, show the cause and reco
   fail = false;
   await banner.getByRole("button", { name: "立即同步", exact: true }).click();
   await expect(banner).toHaveCount(0);
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].illustrationSettings.additionalPrompt).toBe("离线保存的画面要求");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.illustrationSettings.additionalPrompt).toBe("离线保存的画面要求");
 });
 
 test("mobile reopens the cached library offline and syncs its local edit after reconnecting", async ({ page, context, request }, testInfo) => {

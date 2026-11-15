@@ -6,7 +6,7 @@ test("person photos support mobile iteration, adoption, comparison and persisten
   test.setTimeout(60000);
   const original = await (await request.get("/api/state")).json();
   const fixture = fullStudioFixture();
-  fixture.articles[0].illustrationSettings = { stylePreset: "ink", promptLanguage: "en", resolution: "", additionalPrompt: "" };
+  fixture.settings.illustrationSettings = { stylePreset: "ink", promptLanguage: "en", resolution: "", additionalPrompt: "" };
   await request.put("/api/state", { headers: { "If-Match": String(original.revision) }, data: { data: fixture } });
   const jobs: Array<Record<string, unknown>> = []; let submissions = 0;
   const model = { id: "portrait-model", name: "参考图模型", modelId: "example/edit", providerId: "image-service", providerName: "图像服务", adapterKind: "openai-compatible", hasSecret: true, metadata: { source: "provider", inputModalities: ["text", "image"], outputModalities: ["image"], supportedParameters: { image_urls: { referenceImage: true, maxImages: 3 } } } };

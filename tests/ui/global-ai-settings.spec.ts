@@ -2,7 +2,6 @@ import { showTotalWordMode } from "./outline-expansion-helper";
 import { expect, test } from "@playwright/test";
 import { fullStudioFixture } from "../fixtures.mjs";
 import { createInheritedAiSettings } from "../../lib/ai-settings-inheritance";
-import { openArticleAiSettings } from "./article-ai-settings-helper";
 
 test.beforeEach(async ({ request }) => {
   const current = await (await request.get("/api/state")).json();
@@ -33,32 +32,25 @@ test("global task categories replace the article tab and image prompt entry on d
   await expect(page.getByRole("region", { name: "图片风格管理" })).toBeVisible();
 });
 
-test("global changes propagate across reloads while an article field override remains independent", async ({ page, request }) => {
+test("global changes remain live while an outline field override stays independent", async ({ page, request }) => {
   await page.goto("/settings/tasks");
   await page.getByLabel("文章生成默认目标字数", { exact: true }).fill("3000");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.generateTargetWords).toBe(3000);
-  await openArticleAiSettings(page);
-  await expect(page.getByLabel("文章生成默认目标字数", { exact: true })).toHaveValue("3,000 字");
-  await page.getByLabel("文章生成默认目标字数", { exact: true }).fill("2000");
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.inheritance.targetWords).toBeUndefined();
-  await page.goto("/settings/tasks");
-  await page.getByLabel("文章生成默认目标字数", { exact: true }).fill("4000");
-  await page.getByRole("tab", { name: "写作准备", exact: true }).click();
-  await page.getByLabel("写作前最多互动轮次", { exact: true }).fill("4");
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.preparationMaxRounds).toBe(4);
-  await openArticleAiSettings(page);
-  await expect(page.getByLabel("文章生成默认目标字数", { exact: true })).toHaveValue("2,000 字");
-  const workflow = page.locator(".article-ai-task-settings > .task-parameter-settings");
-  await workflow.locator(":scope > summary").click();
-  await workflow.getByText("写作准备", { exact: true }).click();
-  await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("4");
-  await page.locator(".article-ai-inheritance").first().locator("summary").click();
-  await page.getByRole("button", { name: "目标字数恢复全局默认", exact: true }).click();
-  await expect(page.getByLabel("文章生成默认目标字数", { exact: true })).toHaveValue("4,000 字");
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.inheritance.targetWords).toBe("global");
   await page.goto("/articles/article-main/outlines/outline-current/generate");
   await showTotalWordMode(page);
-  await expect(page.getByLabel("正文目标字数", { exact: true })).toHaveValue("4,000 字");
+  const words = page.getByLabel("正文目标字数", { exact: true });
+  await expect(words).toHaveValue("3,000 字");
+  await words.fill("2000");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].generateOptions?.targetWords).toBe(2000);
+  await page.goto("/settings/tasks");
+  await page.getByLabel("文章生成默认目标字数", { exact: true }).fill("4000");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.settings.generateTargetWords).toBe(4000);
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  await showTotalWordMode(page);
+  await expect(words).toHaveValue("2,000 字");
+  await page.locator(".ai-setting-inheritance-details > summary").click();
+  await page.getByRole("group", { name: "目标字数继承", exact: true }).getByRole("button", { name: "恢复全局默认", exact: true }).click();
+  await expect(words).toHaveValue("4,000 字");
 });
 
 test("outline settings preserve conditional values and model inheritance when switching choices", async ({ page, request }) => {
@@ -101,14 +93,14 @@ test("the global preparation switch persists and disables inherited preparation 
   await expect(enabled).not.toBeChecked();
   await expect(page.getByLabel("写作前最多互动轮次", { exact: true })).toBeDisabled();
   await expect(page.getByLabel("写作前最多互动轮次", { exact: true })).toHaveValue("2");
-  await openArticleAiSettings(page);
-  const workflow = page.locator(".article-ai-task-settings > .task-parameter-settings");
+  await page.goto("/articles/article-main/outlines/outline-current/generate");
+  const workflow = page.locator(".generate-workflow-section > .task-parameter-settings");
   await workflow.locator(":scope > summary").click();
   await workflow.getByText("写作准备", { exact: true }).click();
   await expect(workflow.getByRole("checkbox", { name: "生成写作准备稿", exact: true })).not.toBeChecked();
   await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toBeDisabled();
   await workflow.getByRole("checkbox", { name: "生成写作准备稿", exact: true }).check();
   await expect(workflow.getByLabel("写作前最多互动轮次", { exact: true })).toBeEnabled();
-  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].aiGenerateSettings.tasks.preparationEnabled).toBe(true);
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].generateOptions?.tasks.preparationEnabled).toBe(true);
   expect((await (await request.get("/api/state")).json()).data.settings.preparationEnabled).toBe(false);
 });

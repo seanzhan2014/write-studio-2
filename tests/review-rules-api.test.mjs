@@ -6,6 +6,7 @@ import { createReviewRuleSnapshot, DEFAULT_REVIEW_RULES } from "../lib/review-ru
 
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function request(path, method = "GET", data, headers = {}) {
+  if (path === "/api/ai/tasks" && method === "POST" && !data.reviewRuleSnapshot) { const current = await api("/api/state"); data = { ...data, reviewRuleSnapshot: createReviewRuleSnapshot(current.data.articles[0], data.reviewInstruction) }; }
   const response = await fetch(`${baseUrl}${path}`, { method, headers: { "Content-Type": "application/json", ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
   return { status: response.status, body: await response.json() };
 }

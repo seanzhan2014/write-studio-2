@@ -441,9 +441,10 @@ export function resolveOutlineSettings(article: StorySettingsArticle, outlineId:
 
 export function countChapterSettingChanges(value: unknown) {
   const settings = normalizeChapterSettings(value);
-  let count = Object.keys(settings.story).length + Object.keys(settings.aiTasks ?? {}).length;
+  let count = Object.keys(settings.story).length;
   for (const item of Object.values(settings.characters)) count += Object.keys(item.start).length + Object.keys(item.end).length + (item.appears ? 1 : 0);
   for (const item of Object.values(settings.relationships)) count += (item.start ? 1 : 0) + (Object.prototype.hasOwnProperty.call(item, "end") ? 1 : 0) + (item.active ? 1 : 0);
+  if (settings.legacy) { count += Object.keys(settings.legacy.story).length; for (const person of Object.values(settings.legacy.characters)) count += Object.keys(person.start).length + Object.keys(person.end).length; }
   return count;
 }
 

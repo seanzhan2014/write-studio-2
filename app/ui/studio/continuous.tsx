@@ -3,8 +3,9 @@
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { OutlineExpansionEditor } from "@/app/ui/outline-expansion-editor";
 import { normalizeOutlineExpansion, outlineExpansionForEditing, rebaseOutlineExpansion } from "@/lib/outline-expansion";
-import { taskReasoningEffort, taskNamingProfile } from "@/lib/task-parameters";
-import { articleAiSettings, resolveAiSettings } from "@/lib/ai-settings-inheritance";
+import { taskReasoningEffort, taskNamingProfile, type TaskParameters } from "@/lib/task-parameters";
+import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
+import { ReasoningSettings } from "@/app/ui/reasoning-settings";
 
 import { STANDALONE_AI_REVIEW_ENABLED } from "@/lib/features.mjs";
 
@@ -173,7 +174,8 @@ export function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTask
   const article = studio.currentArticle;
   const scopeId = target === "outline" ? outline?.id ?? "" : chapter?.id ?? article.id;
   const scopedOptions = resolveAiSettings(article, scopeId, "generate", target === "chapter" ? "chapter" : "outline", studio.data.settings).value;
-  const scopedParameters = scopedOptions.tasks!;
+  const [articleParameters, setArticleParameters] = useState<TaskParameters>({});
+  const scopedParameters = target === "article" ? { ...scopedOptions.tasks!, ...articleParameters } : scopedOptions.tasks!;
   const settings = { ...studio.data.settings, generateModel: scopedOptions.model, namingModelMode: scopedParameters.namingModelMode === "fixed" ? "fixed" as const : "inherit" as const, namingModel: String(scopedParameters.namingModel), namingReasoningEffort: taskReasoningEffort(scopedParameters.namingReasoningEffort) };
   const visibleChapters = article.chapters.filter((item) => studio.data.settings.showArchived || !item.archived);
   const eligibleOutlines = (item: Chapter) => item.outlines.filter((candidate) => !candidate.archived && candidate.plan.trim());
@@ -196,6 +198,7 @@ export function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTask
   ];
 
   function selectNamingModel(value: string | null) {
+    if (target === "article") { setArticleParameters(current => ({ ...current, namingModelMode: !value || value === "__inherit__" ? "inherit" : "fixed", namingModel: value === "__local__" ? "" : value ?? "" })); setError(""); return; }
     if (!value || value === "__inherit__") updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "inherit" });
     else if (value === "__local__") updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "fixed", namingModel: "" });
     else updateScopedTaskParameters(studio, target, scopeId, { namingModelMode: "fixed", namingModel: value });
@@ -302,7 +305,7 @@ export function UnifiedNamingEditor({ target, chapter, outline, onNotice, onTask
     <div className="full-chapter-generation-bar">
       <Select label="名称生成模型" data={modelData} value={namingSelection} allowDeselect={false} disabled={Boolean(activeAllTask)} onChange={selectNamingModel} />
       <Textarea label="补充命名要求（可选）" maxLength={20_000} autosize minRows={2} maxRows={5} value={instruction} disabled={Boolean(activeAllTask)} placeholder="例如：避免剧透，保持海洋意象" onChange={(event) => setInstruction(event.currentTarget.value)} />
-      <div className="name-generation-reasoning"><TaskReasoningSettings kind="naming" level={target} targetId={scopeId} model={selectedRecord} disabled={Boolean(activeAllTask)} /></div>
+      <div className="name-generation-reasoning">{target === "article" ? <ReasoningSettings value={taskReasoningEffort(scopedParameters.namingReasoningEffort)} modelValue={selectedRecord?.reasoningEffort} disabled={Boolean(activeAllTask)} onChange={value => setArticleParameters(current => ({ ...current, namingReasoningEffort: value === null ? "__omit__" : value ?? "__inherit__" }))} /> : <TaskReasoningSettings kind="naming" level={target} targetId={scopeId} model={selectedRecord} disabled={Boolean(activeAllTask)} />}</div>
       <Button leftSection={<Icon name="spark" />} loading={activeAllTask?.state === "running"} disabled={Boolean(activeAllTask) || missingSecret || !eligibleChapters.length} onClick={() => void generateAll()}>{activeAllTask ? "全部名称生成中" : "生成全部名称"}</Button>
     </div>
     {activeAllTask && <Alert color="studio">全部名称正在后台{activeAllTask.state === "waiting" ? "排队" : "生成"}，可以收起本区域；完成后候选名称会自动出现。</Alert>}

@@ -7,14 +7,15 @@ import { PREPARATION_SECTIONS } from "../lib/writing-preparation.ts";
 const baseUrl = process.env.WRITER_STUDIO_TEST_BASE_URL;
 async function api(path, method="GET", data, headers={}) { const response=await fetch(`${baseUrl}${path}`,{method,headers:{"Content-Type":"application/json",...headers},body:data===undefined?undefined:JSON.stringify(data)});const body=await response.json();assert.ok(response.ok,`${response.status}: ${JSON.stringify(body)}`);return body; }
 
-test("style tasks snapshot global defaults, allow per-task overrides and follow article models", async () => {
+test("style tasks snapshot global defaults, allow per-task overrides and follow global models", async () => {
   const provider = await api("/api/providers", "POST", { name: "learning-defaults", baseUrl: "http://127.0.0.1:9/v1", secret: "test-key" });
   const fixed = await api("/api/models", "POST", { providerId: provider.id, name: "fixed-learning", modelId: "fixed-learning" });
   const other = await api("/api/models", "POST", { providerId: provider.id, name: "article-learning", modelId: "article-learning" });
   const current = await api("/api/state");
   const data = fullStudioFixture(); data.tasks = [];
   data.settings.styleLearningSettings = { model: fixed.id, maxRounds: 5, autoApply: false };
-  data.articles[0].aiGenerateSettings.model = other.id;
+  data.articles[0].aiGenerateSettings.model = "retired-article-model";
+  data.settings.generateModel = other.id;
   data.articles[0].storySettings = { styleLibrary: { references: [{ id: "saved-reference", title: "已有参考文章", text: "两位朋友核对书籍后道别。" }] } };
   await api("/api/state", "PUT", { data }, { "If-Match": String(current.revision) });
   const first = (await api("/api/style-lab", "POST", { articleId: "article-main", kind: "tune" })).job;
