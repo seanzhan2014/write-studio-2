@@ -488,7 +488,7 @@ test("prompt and image generation share the AI task manager, cancellation, retry
   await page.getByRole("option", { name: /文本测试模型/ }).click();
   await dialog.getByRole("button", { name: "选景并生成图片 prompt" }).click();
   await dialog.getByRole("button", { name: "查看 AI 任务", exact: true }).click();
-  const taskArea = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  const taskArea = page.getByRole("region", { name: "任务工作区", exact: true });
   await expect(taskArea.getByText("生成目标", { exact: true })).toBeVisible();
   await expect(taskArea.getByText("插图 Prompt", { exact: true })).toBeVisible();
   await taskArea.getByRole("button", { name: "取消", exact: true }).click();

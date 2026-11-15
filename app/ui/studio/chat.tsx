@@ -46,6 +46,7 @@ export function ChatMessageContent({ text }: { text: string }) {
 }
 
 export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onNotice, sessionId, onSessionChange, contextContent, contextLabel, headerHost, visible = true, copyOnly = false }: { headerHost?: HTMLElement | null; models: ConfiguredModel[]; outlineId?: string; outlineTitle: string; onUseAsGenerate: (text: string) => void; onNotice: (message: string) => void; sessionId?: string; onSessionChange?: (id: string) => void; contextContent?: string; contextLabel?: string; visible?: boolean; copyOnly?: boolean }) {
+  const [selectedMessageId,setSelectedMessageId]=useState("");
   const [settingsOpen,setSettingsOpen]=useState(false);
   const studio = useStudio();
   const outline = studio.currentArticle.chapters.flatMap((chapter) => chapter.outlines).find((item) => item.id === outlineId) ?? studio.currentOutline;
@@ -402,7 +403,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
         {session.messages.map((item, index) => {
           const isError = item.role === "assistant" && item.text.includes("错误：");
           const previousUser = item.role === "assistant" ? [...session.messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user") : null;
-          return <article className={`message ${item.role} ${isError ? "error" : ""} ${editingMessage?.sessionId === session.id && editingMessage.messageId === item.id ? "editing" : ""}`} key={item.id}>
+          return <article className={`message ${item.role} ${isError ? "error" : ""} ${editingMessage?.sessionId === session.id && editingMessage.messageId === item.id ? "editing" : ""}`} key={item.id} tabIndex={0} data-selected={selectedMessageId===item.id||undefined} onClick={()=>setSelectedMessageId(item.id)} onFocus={()=>setSelectedMessageId(item.id)} onKeyDown={event=>{if(event.key==="Escape")setSelectedMessageId("");}}>
             {item.role === "assistant" && <div className="avatar"><Icon name="spark" /></div>}
             <div className="message-body"><div className="message-meta"><span className="ui-label">{item.role === "user" ? "你" : chatbotName}</span>{item.stopped && <span>已停止</span>}</div>
               {editingMessage?.sessionId === session.id && editingMessage.messageId === item.id ? <form className="inline-message-editor" onSubmit={(event) => { event.preventDefault(); void submitEditedMessage(); }}>

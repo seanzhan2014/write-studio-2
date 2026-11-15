@@ -60,7 +60,7 @@
  .chat-session-popover { position:fixed; left:12px; top:56px; width:calc(100vw - 24px); max-height:65dvh; overflow:auto; }
  .chat-session-menu { position:fixed; right:12px; top:56px; }
  .workspace-mobile-chat-slot .chat-session-switcher { min-height:44px; padding:0 4px; }
- .chat-session-switcher::after { content:"⌄"; margin-left:4px; }
+
  .composer-model-chip { flex-basis:80px; max-width:170px; }
  .composer-context-chip > span { max-width:85px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .composer-left-actions > .icon-button { min-width:36px; }
@@ -99,3 +99,7 @@
 .workspace-chat-slot .chat-header,.workspace-mobile-chat-slot .chat-header { flex:1 1 auto; }
 .workspace-chat-slot .chat-session-switcher,.workspace-mobile-chat-slot .chat-session-switcher { max-width:none; }
 .ai-default-settings-page > .ai-task-intro { grid-column:1/-1; }
+
+.message[data-selected="true"] .message-actions { opacity:1; pointer-events:auto; }
+.message:focus-visible { outline:1px solid var(--border); outline-offset:4px; border-radius:6px; }
+@media(hover:none){.message .message-actions { opacity:0; max-height:0; overflow:hidden; margin:0; pointer-events:none; }.message[data-selected="true"] .message-actions,.message:focus-within .message-actions { opacity:1; max-height:44px; overflow:visible; margin-top:4px; pointer-events:auto; }}

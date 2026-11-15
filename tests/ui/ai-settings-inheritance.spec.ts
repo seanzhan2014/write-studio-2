@@ -31,6 +31,7 @@ test("AI parameter inheritance persists and controls real preparation tasks", as
     await expect(discussion.getByLabel("准备稿无问题时仍需确认", { exact: true })).toBeChecked();
     await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].generateOptions?.inheritance?.["tasks.preparationStrategy"]).toBe("previous");
     await page.reload();
+  await openGenerationPanels(page);
     if (await settings.locator(":scope > summary").isVisible()) await settings.locator(":scope > summary").click();
     await discussion.locator(":scope > summary").click();
     await expect(discussion.getByLabel("讨论策略", { exact: true })).toHaveValue("最大探索型");
@@ -77,6 +78,7 @@ test("generation follows global defaults, then preceding outline edits, and save
   await chooseInheritance(actions, page, "继承上一项");
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].generateOptions?.inheritance?.targetWords).toBe("previous");
   await page.reload();
+  await openGenerationPanels(page);
   await expect(page.getByLabel("正文目标字数", { exact: true })).toHaveValue("7,300 字");
   await page.screenshot({ path: info.outputPath("outline-inheritance.png"), fullPage: true });
 });

@@ -433,7 +433,7 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   await expectOverlayContract(page, newArticle);
   await newArticle.getByRole("button", { name: "关闭新建文章" }).click();
 
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  await page.getByRole("button", { name: "任务", exact: true }).click();
   const tasks = page.locator(".task-workspace");
   await expectInsideViewport(page, tasks);
   await tasks.getByRole("button", { name: "关闭 AI 任务" }).click();
@@ -464,7 +464,8 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   const appearance = page.locator(".first-appearance-dialog");
   await expectOverlayContract(page, appearance);
   await appearance.getByRole("button", { name: "关闭首次出场人物编辑" }).click();
-  await page.getByRole("button", { name: "管理预设" }).click();
+  await page.getByRole("button", {name:"常用指令 ⌄",exact:true}).click();
+  await page.getByRole("menuitem", { name: "管理预设",exact:true }).click();
   const presets = page.locator(".generate-preset-dialog");
   await expectOverlayContract(page, presets);
   await presets.getByRole("button", { name: "关闭预设管理" }).click();
@@ -1867,7 +1868,7 @@ test("mobile starts at outline and separates article and global entry points", a
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "大纲" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "主要功能" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "AI 任务" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "任务" })).toBeVisible();
   await expect(page.getByRole("button", { name: "设置" })).toBeVisible();
 
   await page.getByRole("button", { name: /切换文章，当前/ }).click();
@@ -1891,7 +1892,7 @@ test("mobile starts at outline and separates article and global entry points", a
   await expect(page.getByRole("button", { name: "删除大纲" })).toBeVisible();
   await page.getByRole("button", { name: "关闭大纲操作" }).click();
 
-  await page.getByRole("button", { name: "AI 任务" }).click();
+  await page.getByRole("button", { name: "任务" }).click();
   await expect(page.locator(".task-workspace > header")).toContainText("AI 任务");
   await page.getByRole("button", { name: "关闭 AI 任务", exact: true }).click();
   await page.getByRole("button", { name: "设置" }).click();
@@ -3018,7 +3019,7 @@ test("mobile icon controls use glass surfaces and consistent touch sizing", asyn
 
   const header = page.locator(".mobile-outline-header");
   await expect(header.locator(":scope > button")).toHaveCount(3);
-  const tasks = header.getByRole("button", { name: "AI 任务", exact: true });
+  const tasks = header.getByRole("button", { name: "任务", exact: true });
   const settings = header.getByRole("button", { name: "设置", exact: true });
   const more = page.getByRole("button", { name: "当前码头更多操作", exact: true });
   for (const control of [tasks, settings, more]) await expectIconControl(control);
@@ -3232,8 +3233,8 @@ test("chapter three-dot menu generates whole-chapter candidates on the home and 
   }).toEqual({ taskCount: 1, taskState: "success", chapterTitle: "第一章", chapterCandidates: 1, outlineCandidates: 3 });
   expect(directNameCalls).toBe(0);
 
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
-  const tasks = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  await page.getByRole("button", { name: "任务", exact: true }).click();
+  const tasks = page.getByRole("region", { name: "任务工作区", exact: true });
   const taskTitle = tasks.getByRole("button", { name: "查看任务详情：第一章 · 整章名称", exact: true });
   await expect(taskTitle).toBeVisible();
   await taskTitle.click();
@@ -3243,7 +3244,7 @@ test("chapter three-dot menu generates whole-chapter candidates on the home and 
   await expect(page).toHaveURL(/\/articles\/article-main\/outlines\/edit-all$/);
   await page.reload();
   if (testInfo.project.name === "mobile-chromium") await page.goto("/");
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  await page.getByRole("button", { name: "任务", exact: true }).click();
   await expect(page.getByRole("button", { name: "查看任务详情：第一章 · 整章名称", exact: true })).toBeVisible();
 });
 

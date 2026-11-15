@@ -23,6 +23,7 @@ test("closing summary defaults off, inherits global settings and persists an exp
   await summary.getByRole("radio", { name: "无", exact: true }).check();
   await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines.find((item: { id: string }) => item.id === "outline-current").generateOptions?.closingSummaryLength).toBe("none");
   await page.reload();
+  await openGenerationPanels(page);
   await expect(summary.getByRole("radio", { name: "无", exact: true })).toBeChecked();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
   await summary.scrollIntoViewIfNeeded();
@@ -133,6 +134,7 @@ test("rewrite defaults and explicit edits persist independently from ordinary wr
     return data.articles[0].chapters[0].outlines.find((outline: { id: string }) => outline.id === "outline-current").generateOptions?.rewriteExpression?.advanced?.psychology;
   }).toBe("改写专属心理要求");
   await page.reload();
+  await openGenerationPanels(page);
   await expect(page.getByRole("radio", { name: /^改写正文/ })).toBeChecked({ timeout: 30_000 });
   await expect(dialogue.getByRole("radio", { name: "低", exact: true })).toBeChecked();
   await expect(summary.getByRole("radio", { name: "1句", exact: true })).toBeChecked();
@@ -186,8 +188,9 @@ test("prose controls are submitted, distinguish recent requests and remain visib
     return tasks.filter((task) => createdTasks.some((created) => created.id === task.id) && task.state === "success").length;
   }).toBe(2);
   await page.reload();
+  await openGenerationPanels(page);
   if (test.info().project.name === "mobile-chromium") await page.getByRole("button", { name: "返回大纲", exact: true }).click();
-  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  await page.getByRole("button", { name: "任务", exact: true }).click();
   await page.getByRole("button", { name: "查看任务详情：当前码头", exact: true }).first().click();
   await expect(page.locator(".task-context-tags")).toContainText("对话 高");
   await expect(page.locator(".task-context-tags")).toContainText("心理 少");

@@ -85,7 +85,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
     await expect(reader).toBeInViewport();
 
     await page.goto("/");
-    await page.getByRole("button", { name: "AI 任务", exact: true }).tap();
+    await page.getByRole("button", { name: "任务", exact: true }).tap();
     await page.getByRole("button", { name: "查看任务详情：当前码头" }).tap();
     const detail = page.locator(".task-detail-body");
     const summary = review.locator(":scope > summary");
@@ -147,7 +147,7 @@ test("Generate review settings, server loop and durable report work together", a
     expect(fake.control.calls.filter((item) => ["prepare", "generate"].includes(item.kind)).every((item) => item.body.model === "ui-review")).toBeTruthy();
     expect(fake.control.calls.filter((item) => ["review", "revise"].includes(item.kind)).every((item) => item.body.model === "ui-review-separate")).toBeTruthy();
     await page.goto("/");
-    await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+    await page.getByRole("button", { name: "任务", exact: true }).click();
     await page.getByRole("button", { name: "查看任务详情：当前码头" }).click();
     await page.getByText("审校报告 · 未发现剩余问题", { exact: true }).click();
     await expect(page.locator(".generate-review-report")).toContainText("已修正 1 / 2 次");
@@ -173,7 +173,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 568 }
     data.tasks = [{ id: "task-review-ui", articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "正文", prompt: "检查时间线", model: "", executionOrigin: "local", state: "success", phase: "completed", createdAt: "2026-09-07T00:00:00.000Z", resultText: "终稿正文", contextOptions: { includePrevious: true, includeCharacters: true, estimatedCharacters: 0, reviewMaxRounds: 3, reviewRound: 3, reviewReport: report } }];
     expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/");
-    await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+    await page.getByRole("button", { name: "任务", exact: true }).click();
     await page.getByRole("button", { name: "查看任务详情：当前码头" }).click();
     await page.getByText("审校报告 · 剩余 1 项问题", { exact: true }).click();
     const reportView = page.locator(".generate-review-report");

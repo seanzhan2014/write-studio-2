@@ -19,9 +19,9 @@ test("one-time generation executes its preparation and review choices without ch
     data.articles[0].aiGenerateSettings = normalizeAiGenerateOptions({ model: model.id, targetWords: 5000, tasks: { preparationMaxRounds: 2, reviewMaxRounds: 0, preparationRequireConfirmation: false } });
     expect((await request.put("/api/state", { headers: { "If-Match": String(state.revision) }, data: { data } })).ok()).toBeTruthy();
     await page.goto("/articles/article-main/outlines/outline-current/generate");
-  await openGenerationPanels(page);
     await expect(page.getByRole("region", { name: "本次写作", exact: true })).toBeInViewport({ timeout: 20000 });
     await page.screenshot({ path: info.outputPath("generation-input.png") });
+    await openGenerationPanels(page);
     await page.getByRole("combobox", { name: "参数调整范围", exact: true }).click();
     await page.getByRole("option", { name: "仅本次生成", exact: true }).click();
     await showTotalWordMode(page);
@@ -53,7 +53,7 @@ test("one-time generation executes its preparation and review choices without ch
     const completed = (await (await request.get("/api/ai/tasks")).json()).tasks[0];
     expect(completed.contextOptions).toMatchObject({ targetWords: 700, reviewMaxRounds: 1, advanced: { psychology: "只在关键决定处展开心理。" }, writingPreparation: { maxRounds: 0, requireConfirmation: true } });
     expect(completed.contextOptions.reviewRuleSnapshot.rules[0].content).toBe("本次仅检查人物年龄，保留雨后场景。");
-    expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "generate", "review"]);
+    expect(fake.control.calls.map(call => call.kind)).toEqual(["prepare", "check", "generate", "review"]);
     expect(JSON.stringify(fake.control.calls.find(call => call.kind === "generate")?.body)).toContain("700");
     await page.reload();
     await showTotalWordMode(page);

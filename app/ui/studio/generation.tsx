@@ -457,7 +457,7 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
               className="generate-outline-plan-control"
               classNames={{ input: "generate-outline-plan-input" }}
               maxLength={10000}
-              rows={6}
+              rows={4}
               value={outlinePlanDraft}
               onChange={(event) => { const nextPlan = event.target.value; changeExpansion(rebaseOutlineExpansion(outlinePlanDraftRef.current, nextPlan, expansionDraftRef.current), nextPlan); outlinePlanDraftRef.current = nextPlan; setOutlinePlanDraft(nextPlan); }}
             /></OutlineExpansionEditor>
@@ -486,17 +486,17 @@ export function GenerateView({ models, outline, initialPrompt = "", onTaskCreate
           </section>
           <div className="generate-prompt-label">
             <span>补充指令（可选） <small>{prompt.length.toLocaleString("zh-CN")} / 20,000</small></span>
-            <Textarea ref={registerInstruction} maxLength={20000} rows={4} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
+            <Textarea ref={registerInstruction} maxLength={20000} rows={3} value={prompt} onChange={(event) => { setPrompt(event.target.value); setPromptSaveFailed(false); }} placeholder={generationMode === "rewrite" ? "说明改写方向和需要保留的内容" : generationMode === "continue" ? "说明接下来要发生的情节或节奏" : "补充生成要求"} />
             {(promptDirty || promptSaving || promptSaveFailed) && <div className="generate-instruction-save-row">
               <span className={`generate-instruction-save-state ${promptSaveFailed ? "failed" : promptDirty ? "unsaved" : "saved"}`}>{promptSaving ? "正在保存…" : promptSaveFailed ? "保存失败，请重试" : promptDirty ? "有未保存修改" : "已保存"}</span>
               <Button className="generate-instruction-save-button" variant={promptDirty ? "light" : "subtle"} size="compact-sm" type="button" leftSection={<Icon name="check" />} disabled={!promptDirty || promptSaving} loading={promptSaving} onClick={() => void saveGenerateInstruction()}>保存指令</Button>
             </div>}
           </div>
-          <div className="generate-preset-toolbar"><Menu withinPortal position="bottom-end"><Menu.Target><Button variant="subtle" size="compact-sm" disabled={!studio.data.settings.generatePresets.length}>常用指令 ⌄</Button></Menu.Target><Menu.Dropdown>{studio.data.settings.generatePresets.map(item=><Menu.Item key={item} onClick={()=>setPrompt(item)}>{item}</Menu.Item>)}</Menu.Dropdown></Menu><Button className="manage-generate-presets" variant="subtle" size="compact-sm" onClick={() => setPresetManagerOpen(true)}>管理预设</Button></div>
+          <div className="generate-preset-toolbar"><Menu withinPortal position="bottom-end"><Menu.Target><Button variant="subtle" size="compact-sm">常用指令 ⌄</Button></Menu.Target><Menu.Dropdown>{studio.data.settings.generatePresets.map(item=><Menu.Item key={item} onClick={()=>setPrompt(item)}>{item}</Menu.Item>)}<Menu.Divider /><Menu.Item onClick={()=>setPresetManagerOpen(true)}>管理预设</Menu.Item></Menu.Dropdown></Menu></div>
           </section>
           <section className="generate-settings-scope" aria-label="生成设置范围">
             <Select label="参数调整范围" aria-label="参数调整范围" value={settingsScope} allowDeselect={false} data={independent ? [{ value: "task", label: "仅本窗口" }] : [{ value: "outline", label: "当前大纲（自动保存）" }, { value: "task", label: "仅本次生成" }]} onChange={value => { if (value !== "outline" && value !== "task") return; if (value === "outline") studio.updateOutline(studio.currentOutline.id, { generateOptions: generateOptionsRef.current }); setSettingsScope(value); }} />
-            <div className="generate-scope-description">{studio.currentOutline.generateOptions ? <span className="generate-settings-source">正在使用此大纲最近的生成设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
+            <div className="generate-scope-description">{studio.currentOutline.generateOptions ? <span className="generate-settings-source">本大纲设置</span> : <span>当前来源 · {resolvedGenerateSettings.baselineLabel}</span>}</div>
           </section>
           <section className="generate-configuration-section" aria-label="生成方式与篇幅"><div className="generate-basics-grid" data-expansion-mode={expansionDraft?.enabled || undefined}>
           <section className="generate-mode-section" aria-labelledby={`${viewId}-mode-heading`}>

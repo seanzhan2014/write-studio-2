@@ -12,7 +12,7 @@ test.beforeEach(async ({ page, request }) => {
 test("manage image styles, persist edits and copies, select them and delete safely", async ({ page, request }, testInfo) => {
   test.setTimeout(90_000);
   await page.goto("/settings/general");
-  await page.getByRole("navigation", { name: "设置分类" }).getByRole("button", { name: "AI 任务", exact: true }).click();
+  await page.getByRole("navigation", { name: "设置分类" }).getByRole("button", { name: "任务", exact: true }).click();
   await expect(page).toHaveURL(/settings\/tasks/);
   await page.getByRole("tab", { name: "图片", exact: true }).click();
   await page.getByRole("tab", { name: "风格库", exact: true }).click();
