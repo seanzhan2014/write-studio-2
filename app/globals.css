@@ -1008,6 +1008,12 @@ button:disabled {
 .mobile-header-title-line { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; }
 .mobile-header-title-line .ui-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-header-title-line .outline-task-indicator { min-width: 32px; min-height: 32px; }
+.mobile-outline-title-toggle { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: inline-flex; font: inherit; gap: 5px; justify-content: center; max-width: 100%; min-height: 44px; min-width: 0; padding: 0 4px; }
+.mobile-outline-title-toggle .icon { --icon-size: 12px; flex-shrink: 0; }
+.mobile-outline-title-dropdown { max-height: min(60dvh, 420px); overflow-y: auto; overscroll-behavior: contain; }
+.mobile-outline-title-option { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.mobile-outline-title-option small { color: var(--text-secondary); font-size: 10px; }
+.mobile-outline-title-error { margin: 8px; }
 .tasks-main-area { min-height: 0; overflow: hidden; }
 .task-workspace { display: flex; flex: 1; flex-direction: column; height: 100%; min-height: 0; min-width: 0; }
 .task-workspace > .workspace-header { flex: 0 0 auto; }
@@ -6301,6 +6307,7 @@ kbd {
     z-index: 25;
   }
   .mobile-header > div { display: grid; min-width: 0; text-align: center; }
+  .mobile-header:has(.mobile-outline-title-toggle) { height: 60px; }
   .mobile-header .ui-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-header > div > span:not(.ui-title) { color: var(--success); font-size: 9px; }
   .mobile-header > .icon-button .icon { color: var(--text-secondary); font-size: 18px; }

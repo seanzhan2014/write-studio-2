@@ -7,11 +7,13 @@ import { OutlineTaskIndicator } from "@/app/ui/task-interaction";
 import { IllustrationGenerator } from "@/app/ui/illustration-generator";
 
 import { useEffect, useState } from "react";
+import { Alert, Menu } from "@mantine/core";
 
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
 
 import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
+import { normalizeNameVersionState } from "@/lib/name-versions";
 
 import { chatSessionHasUnread, useStudio, type Version } from "@/app/studio-state";
 
@@ -30,11 +32,55 @@ import { ChatView } from "@/app/ui/studio/chat";
 
 import { GenerateView } from "@/app/ui/studio/generation";
 
+function MobileOutlineTitleMenu({ outlineId, title }: { outlineId: string; title: string }) {
+  const studio = useStudio();
+  const [opened, setOpened] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const chapter = studio.currentArticle.chapters.find(chapter => chapter.outlines.some(outline => outline.id === outlineId));
+  const outline = chapter?.outlines.find(outline => outline.id === outlineId);
+  if (!outline) return <span className="ui-title">{title}</span>;
+  const state = normalizeNameVersionState(outline.id, outline.title, outline.nameVersions, outline.defaultNameVersionId, outline.updatedAt, 80);
+
+  async function selectTitle(versionId: string) {
+    if (saving) return;
+    const selected = state.nameVersions.find(version => version.id === versionId);
+    if (!selected) return;
+    if (chapter?.outlines.some(item => item.id !== outlineId && normalizeOutlineTitle(item.title) === selected.title)) {
+      setError(`同一章节内已经使用大纲名「${selected.title}」`);
+      return;
+    }
+    if (versionId === state.defaultNameVersionId) { setOpened(false); return; }
+    setSaving(true);
+    setError("");
+    try {
+      studio.setDefaultNameVersion("outline", outlineId, versionId);
+      if (await studio.saveNow()) setOpened(false);
+      else setError("名称已更新，但保存尚未完成");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "名称保存失败"); }
+    finally { setSaving(false); }
+  }
+
+  return <Menu opened={opened} onChange={value => { setOpened(value); if (value) setError(""); }} position="bottom" offset={16} shadow="md" width="min(360px, calc(100vw - 24px))" withinPortal>
+    <Menu.Target>
+      <button className="mobile-outline-title-toggle" type="button" aria-label="大纲标题，选择候选标题" aria-busy={saving} title={`${title} · 选择候选标题`}><span className="ui-title">{title}</span><Icon name="chevron" /></button>
+    </Menu.Target>
+    <Menu.Dropdown className="mobile-outline-title-dropdown">
+      <Menu.Label>候选标题</Menu.Label>
+      {state.nameVersions.map(version => <Menu.RadioItem key={version.id} value={version.id} checked={version.id === state.defaultNameVersionId} disabled={saving} closeMenuOnClick={false} onClick={() => void selectTitle(version.id)}>
+        <span className="mobile-outline-title-option"><span>{version.title}</span><small>{version.source === "ai" ? "AI 候选" : "手动名称"}{version.id === state.defaultNameVersionId ? " · 当前" : ""}</small></span>
+      </Menu.RadioItem>)}
+      {!state.nameVersions.length && <Menu.Item disabled>尚无候选标题</Menu.Item>}
+      {error && <Alert color="red" className="mobile-outline-title-error">{error}</Alert>}
+    </Menu.Dropdown>
+  </Menu>;
+}
+
 export function MobileHeader({ title, status, onBack, onVersions, showVersions, outlineId }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean; outlineId?: string }) {
   return (
     <div className="mobile-header">
       <IconButton name="back" label="返回大纲" variant="glass" size="large" className="mobile-back-button" onClick={onBack} />
-      <div><div className="mobile-header-title-line"><span className="ui-title">{title}</span>{outlineId && <OutlineTaskIndicator outlineId={outlineId} />}</div><span>{status}</span></div>
+      <div><div className="mobile-header-title-line">{outlineId ? <MobileOutlineTitleMenu key={outlineId} outlineId={outlineId} title={title} /> : <span className="ui-title">{title}</span>}{outlineId && <OutlineTaskIndicator outlineId={outlineId} />}</div><span>{status}</span></div>
       {showVersions ? <IconButton name="versions" label="选择正文版本" variant="glass" size="large" onClick={onVersions} /> : <span className="mobile-header-placeholder" />}
     </div>
   );
