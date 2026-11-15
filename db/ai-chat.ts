@@ -27,7 +27,7 @@ export async function streamChat(input: { outlineId: string; message: string; mo
   const prompts = input.modePrompt === undefined ? (await readStudioState()).data?.settings.chatModePrompts : { [mode]: input.modePrompt };
   const system = composeSystemPrompt(`${CHAT_SYSTEM_PROMPT}\n${chatModeInstruction(mode, prompts)}`, model.systemPrompt);
   const prompt = chatPrompt(source, input.message, system, model.maxInputCharacters);
-  const handle = await upstream(model, prompt.messages, signal, true, {}, input.reasoningEffort);
+  const handle = await upstream(model, prompt.messages, signal, true, { max_tokens: undefined }, input.reasoningEffort);
   if (!handle.response.body) { handle.cleanup(); throw new Error("模型没有返回流"); }
   return sseToTextStream(handle.response.body, signal, handle.controller, handle.cleanup);
 }

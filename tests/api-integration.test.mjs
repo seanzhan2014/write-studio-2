@@ -1000,7 +1000,7 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.equal(partialLength.response.status, 502, partialLength.text);
     assert.match(partialLength.data.error, /输出长度上限/);
     assert.match(partialLength.data.error, /丢弃/);
-    assert.equal(modelServer.received.at(-1).body.max_tokens, 65536, "目标字数约束正文篇幅，不能压缩模型推理和正文共用的输出预算");
+    assert.equal(Object.hasOwn(modelServer.received.at(-1).body, "max_tokens"), false, "目标字数只约束提示词，不设置服务端输出上限");
 
     const partialError = await api("/api/ai/generate", { method: "POST", body: { outlineId: "outline-current", instruction: "PARTIAL_ERROR", model: "捕获模型", target: "content" } });
     assert.equal(partialError.response.status, 502, partialError.text);

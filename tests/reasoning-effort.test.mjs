@@ -131,12 +131,14 @@ test("reasoning settings survive model persistence and reach real task request p
   });
 
   await t.test("direct chat, streaming generate, names and chapter review support overrides", async () => {
-    await patch({ reasoningEffort: "high" });
+    await patch({ reasoningEffort: "high", maxOutput: 8000 });
     for (const effort of [undefined, null, "low"]) {
       await api("/api/outlines/outline-current/chat/stream", { message: "测试", model: model.id, reasoningEffort: effort });
       expectEffort(effort === undefined ? "high" : effort);
+      assert.equal(Object.hasOwn(last(), "max_tokens"), false);
     }
     await api("/api/ai/generate-stream", { outlineId: "outline-current", target: "content", model: model.id, reasoningEffort: null }); expectEffort(null);
+    assert.equal(Object.hasOwn(last(), "max_tokens"), false);
     await api("/api/ai/names", { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "outline", model: model.id, reasoningEffort: "low" }); expectEffort("low");
     await api("/api/ai/review", { articleId: "article-main", chapterId: "chapter-main", model: model.id, additionalRequirement: "测试审校", reasoningEffort: null }); expectEffort(null);
   });
@@ -169,5 +171,6 @@ test("reasoning settings survive model persistence and reach real task request p
     await patch({ reasoningEffort: "max" });
     await api("/api/outlines/outline-current/chat/stream", { requestId: taskId, sessionId, message, model: model.id, reasoningEffort: null }, "POST", { "Idempotency-Key": taskId });
     expectEffort(null);
+    assert.equal(Object.hasOwn(last(), "max_tokens"), false);
   });
 });

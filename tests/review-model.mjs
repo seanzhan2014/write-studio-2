@@ -43,7 +43,7 @@ export async function reviewModelServer({ generationReasoningTokens = 0 } = {}) 
     // Some providers reason by default, even without a reasoning_effort field.
     // Their output budget must cover thinking as well as the visible draft.
     const reasoningTokens = kind === "generate" ? generationReasoningTokens : 0;
-    const truncated = Number.isFinite(body.max_tokens) && body.max_tokens < reasoningTokens + 5;
+    const truncated = (kind === "generate" && control.mode === "truncated") || (Number.isFinite(body.max_tokens) && body.max_tokens < reasoningTokens + 5);
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ choices: [{ finish_reason: truncated ? "length" : "stop", message: { content: truncated ? "她" : content } }], usage: { prompt_tokens: 10, completion_tokens: truncated ? body.max_tokens : reasoningTokens + 5, completion_tokens_details: { reasoning_tokens: Math.min(reasoningTokens, body.max_tokens ?? Infinity) } } }));
   });

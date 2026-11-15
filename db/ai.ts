@@ -12,7 +12,7 @@ import { SCENE_WRITING_RULES } from "@/lib/narrative-craft";
 import { GENERATE_FIELDS, normalizeAdvanced, type GenerateAdvanced } from "@/lib/advanced-writing";
 import { compiledStyle, configurationOf, modelConfiguration, modelSettingsFingerprint } from "@/lib/style-learning";
 
-import { type GenerateTarget, suppliedPromptContext, selectPromptContext, withOutlineTitleOutput, composeSystemPrompt, GENERATE_SYSTEM_PROMPTS, generatePrompt, generateMaxTokens, normalizeGenerateResult } from "@/db/ai-prompts";
+import { type GenerateTarget, suppliedPromptContext, selectPromptContext, withOutlineTitleOutput, composeSystemPrompt, GENERATE_SYSTEM_PROMPTS, generatePrompt, normalizeGenerateResult } from "@/db/ai-prompts";
 
 import { AiInputError } from "@/db/ai-errors";
 
@@ -41,7 +41,7 @@ export async function generateText(input: { outlineId: string; instruction?: str
   if (!model) return localGenerate(input.target, source.currentOutline.title, source.currentOutline.plan, source.currentOutline.content, instruction, source.currentOutline.expansion?.estimatedCharacters || targetWords || DEFAULT_GENERATE_TARGET_WORDS, includeOutlineTitle, contentMode, outlineNaming);
   const system = withOutlineTitleOutput(composeSystemPrompt(GENERATE_SYSTEM_PROMPTS[input.target], model.systemPrompt), includeOutlineTitle, outlineNaming);
   const prompt = generatePrompt(source, instruction, input.target, input.writingBrief ? `${system}\n正文遵循写作准备稿；原始资料中的事实与约束仍有效。未决项不得擅自写成事实。\n${SCENE_WRITING_RULES}` : system, targetWords, contentMode, rewriteRetention, model.maxInputCharacters, input.proseControls, input.dialogueDensity, input.writingBrief, input.advanced, "writing", normalizeClosingSummaryLength(input.closingSummaryLength, input.includeClosingSummary, normalizeContentGenerationMode(input.contentMode)));
-  const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: generateMaxTokens(model, input.target) }, input.reasoningEffort);
+  const handle = await upstream(model, prompt.messages, signal, false, { max_tokens: undefined }, input.reasoningEffort);
   const payload = await consumeUpstream(handle, (response) => response.json()) as ChatCompletionPayload;
   const completion = completionResult(payload, handle, "模型生成");
   const result = {

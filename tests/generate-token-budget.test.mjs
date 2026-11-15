@@ -14,7 +14,7 @@ async function api(path, method = "GET", body, headers = {}) {
   return { response, data };
 }
 
-test("body generation leaves room for provider-default reasoning", async (t) => {
+test("generation leaves output limits to the provider", async (t) => {
   assert.ok(baseUrl);
   const fake = await reviewModelServer({ generationReasoningTokens: 10000 });
   t.after(() => fake.close());
@@ -60,7 +60,7 @@ test("body generation leaves room for provider-default reasoning", async (t) => 
       assert.ok(task.resultVersionId);
       assert.ok(task.resultText.endsWith("她十七岁。\n\n窗外的雨停了。"));
       const { body } = fake.control.calls[0];
-      assert.equal(body.max_tokens, 65536);
+      assert.equal(Object.hasOwn(body, "max_tokens"), false);
       assert.equal(Object.hasOwn(body, "reasoning_effort"), false);
       assert.match(body.messages.at(-1).content, /<target_characters>4000<\/target_characters>/);
     });
@@ -73,30 +73,50 @@ test("body generation leaves room for provider-default reasoning", async (t) => 
     assert.deepEqual(fake.control.calls.map((call) => call.kind), ["generate", "review", "revise", "review"]);
     assert.equal(task.resultText, "她十八岁。\n\n窗外的雨停了。");
     assert.equal(task.contextOptions.reviewReport.stopReason, "passed");
-    for (const call of fake.control.calls) assert.equal(call.body.max_tokens, 65536);
+    for (const call of fake.control.calls) {
+      if (call.kind === "generate") assert.equal(Object.hasOwn(call.body, "max_tokens"), false);
+      else assert.equal(call.body.max_tokens, 65536);
+    }
   });
 
-  await t.test("direct and streaming generation also keep a separate output budget", async () => {
+  await t.test("direct and streaming generation omit the output limit with or without a target", async () => {
     await reset();
     for (const endpoint of ["generate", "generate-stream"]) {
       for (const targetWords of [4000, 0]) {
         const result = await api(`/api/ai/${endpoint}`, "POST", { outlineId: "outline-current", target: "content", model: model.id, targetWords });
         assert.equal(result.response.status, 200);
         assert.equal(result.data.text, "她十七岁。\n\n窗外的雨停了。", result.data.error);
-        assert.equal(fake.control.calls.at(-1).body.max_tokens, 65536);
+        assert.equal(Object.hasOwn(fake.control.calls.at(-1).body, "max_tokens"), false);
       }
     }
   });
 
-  await t.test("an explicit output limit is respected and a truncated draft never reaches review or versions", async () => {
-    const before = await reset();
+  await t.test("generation ignores a configured model output limit for every target", async () => {
+    await reset();
     const { data: limited } = await api("/api/models", "POST", { providerId: provider.id, name: "Explicit budget", modelId: "limited-thinking", maxOutput: 8000, maxInputCharacters: 120000 });
-    const task = await execute({ model: limited.id, reviewMaxRounds: 1 });
+    assert.equal(limited.maxOutput, 8000);
+    for (const target of ["content", "outline", "chapter-title"]) {
+      for (const endpoint of ["generate", "generate-stream"]) {
+        const result = await api(`/api/ai/${endpoint}`, "POST", { outlineId: "outline-current", target, instruction: "测试输出上限", model: limited.id, targetWords: 4000 });
+        assert.equal(result.response.status, 200, JSON.stringify(result.data));
+        assert.ok(result.data.text, JSON.stringify(result.data));
+        assert.equal(Object.hasOwn(fake.control.calls.at(-1).body, "max_tokens"), false);
+      }
+    }
+    const task = await execute({ model: limited.id });
+    assert.equal(task.state, "success", task.error);
+    assert.equal(Object.hasOwn(fake.control.calls.at(-1).body, "max_tokens"), false);
+  });
+
+  await t.test("provider-truncated drafts never reach review or versions", async () => {
+    const before = await reset();
+    fake.control.mode = "truncated";
+    const task = await execute({ reviewMaxRounds: 1 });
     assert.equal(task.state, "failed");
     assert.match(task.error, /输出长度上限/);
     assert.equal(task.resultVersionId, undefined);
     assert.deepEqual(fake.control.calls.map((call) => call.kind), ["generate"]);
-    assert.equal(fake.control.calls[0].body.max_tokens, 8000);
+    assert.equal(Object.hasOwn(fake.control.calls[0].body, "max_tokens"), false);
     const { data: saved } = await api("/api/state");
     const after = saved.data.articles[0].chapters[0].outlines.find((outline) => outline.id === "outline-current");
     assert.equal(after.currentVersionId, before.currentVersionId);

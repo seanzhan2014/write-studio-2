@@ -15,8 +15,6 @@ import { ADVANCED_WRITING_RULES, GENERATE_FIELDS, advancedText, type GenerateAdv
 
 import { AiInputError, AiPromptTooLongError } from "@/db/ai-errors";
 
-import { type AiModelRecord } from "@/db/ai-models";
-
 export function trimCurrent(text: string, maximum = 30000) {
   return text.length <= maximum ? text : `${text.slice(0, 10000)}\n\n[中间内容已截断]\n\n${text.slice(-20000)}`;
 }
@@ -449,13 +447,4 @@ export function normalizeGenerateResult(target: GenerateTarget, value: string, i
   if (!titleMatch) return { text, outlineTitleError: "模型没有返回大纲名" };
   const validated = validateGeneratedName(titleMatch[1], outlineNaming, 80);
   return validated.valid ? { text, outlineTitle: validated.name } : { text, outlineTitleError: validated.error };
-}
-
-export function generateMaxTokens(model: AiModelRecord, target: GenerateTarget) {
-  if (model.maxOutput != null) return model.maxOutput;
-  if (target !== "content") return undefined;
-  // Target characters constrain the visible draft in the prompt. The provider
-  // may spend output tokens on reasoning even when reasoning_effort is omitted,
-  // so keep the same budget as untargeted generation and automatic review.
-  return 65_536;
 }
