@@ -1,5 +1,6 @@
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { taskFromRow } from "@/lib/task-record";
+import { isNamingTarget, taskChangesOutline } from "@/lib/task-target";
 
 import { canWritePreparedProse, preparationNeedsConfirmation } from "@/lib/writing-preparation";
 import { taskReasoningEffort } from "@/lib/reasoning-options";
@@ -8,7 +9,7 @@ import { normalizeReviewRounds, type GenerateReviewDraft, type GenerateReviewRep
 import type { AiTask, StudioData, Version } from "@/lib/studio-types";
 import { AiInputError, AiUpstreamCompletionError } from "@/db/ai-errors";
 import { findModel } from "@/db/ai-models";
-import { generateArticleNames, type ArticleNameGenerationResult } from "@/db/ai-naming";
+import { generateArticleNames, generateNames, type ArticleNameGenerationResult } from "@/db/ai-naming";
 import { generateText, generateWritingPreparation } from "@/db/ai";
 import { applyStudioChanges, ensureDatabase, getDatabase, readStudioState } from "@/db/studio-state";
 import { normalizeOutlineTitle } from "@/lib/outline-title";
@@ -121,7 +122,7 @@ export async function executeTask(taskId: string) {
     const claimed = Number(claimResult.meta?.changes ?? 0) > 0;
     if (claimed) {
       const statements = [db.prepare("UPDATE app_settings SET value_json=CAST(CAST(value_json AS INTEGER)+1 AS TEXT),updated_at=? WHERE key='state_revision'").bind(startedAt)];
-      if (initialTask.target !== "全部名称") statements.unshift(db.prepare("UPDATE outlines SET state='running',updated_at=?,revision=revision+1 WHERE id=?").bind(startedAt, initialTask.outlineId));
+      if (taskChangesOutline(initialTask.target)) statements.unshift(db.prepare("UPDATE outlines SET state='running',updated_at=?,revision=revision+1 WHERE id=?").bind(startedAt, initialTask.outlineId));
       await db.batch(statements);
     }
     if (!claimed) return json({ accepted: false, reason: "already_claimed" }, 202);
@@ -234,6 +235,24 @@ export async function executeTask(taskId: string) {
               instruction: initialTask.prompt,
               context: initialTask.contextOptions?.namingContext,
             }, upstreamController.signal);
+          } else if (initialTask.target === "整章名称") {
+            const generated = await generateNames({
+              articleId: initialTask.articleId,
+              chapterId: initialTask.chapterId,
+              target: "chapter",
+              includeChapter: true,
+              chapterNaming: initialTask.contextOptions?.chapterNamingSnapshot,
+              outlineNaming: initialTask.contextOptions?.outlineNamingSnapshot,
+              reasoningEffort: taskReasoningEffort(initialTask.contextOptions),
+              model: executionModelReference,
+              instruction: initialTask.prompt,
+              context: initialTask.contextOptions?.namingContext,
+            }, upstreamController.signal);
+            articleNameResult = {
+              ...generated,
+              chapterTitles: generated.chapterTitle ? [{ id: initialTask.chapterId, title: generated.chapterTitle }] : [],
+              outlineTitles: generated.outlineTitles.map(outline => ({ ...outline, chapterId: initialTask.chapterId })),
+            };
           } else {
             result = await generate();
           }
@@ -259,7 +278,7 @@ export async function executeTask(taskId: string) {
         let receivedCharacters = result?.text.length ?? 0;
         let inputTokens = result?.inputTokens;
         let outputTokens = result?.outputTokens;
-        if (task.target === "全部名称" && articleNameResult) {
+        if (isNamingTarget(task.target) && articleNameResult) {
           const article = data.articles.find((item) => item.id === task.articleId);
           if (!article) return { changed: false, value: false };
           let added = 0;
@@ -388,7 +407,7 @@ export async function executeTask(taskId: string) {
           error: error instanceof Error ? error.message : "生成失败", runnerId: undefined, leaseUntil: undefined,
         } satisfies Partial<AiTask>);
         const found = findOutline(data, task.outlineId);
-        if (found && task.target !== "全部名称") found.outline.state = "failed";
+        if (found && taskChangesOutline(task.target)) found.outline.state = "failed";
         return { changed: true, value: true };
       }, runnerId);
       return json({ accepted: true, completed: false, error: error instanceof Error ? error.message : "生成失败" }, 502);

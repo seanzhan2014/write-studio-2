@@ -69,6 +69,12 @@ export function deviceUiForCurrentPath(source: DeviceUiState, data: StudioData):
   const articleId = window.location.pathname.match(/\/articles\/([^/]+)/)?.[1];
   const outlineId = window.location.pathname.match(/\/outlines\/([^/]+)/)?.[1];
   const chapterId = window.location.pathname.match(/\/chapters\/([^/]+)/)?.[1];
+  if (!articleId && !outlineId && !chapterId && (ui.settings?.openLastArticle ?? data.settings.openLastArticle) === false) {
+    const first = data.articles[0];
+    ui.currentArticleId = first?.id ?? "";
+    ui.currentOutlineId = first ? firstOutline(first) : "";
+    if (first) ui.lastOutlineByArticle = { ...ui.lastOutlineByArticle, [first.id]: ui.currentOutlineId };
+  }
   const outlineOwner = outlineId
     ? data.articles.find((article) => article.chapters.some((chapter) => chapter.outlines.some((outline) => outline.id === outlineId)))
     : undefined;

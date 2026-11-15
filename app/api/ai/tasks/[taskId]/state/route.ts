@@ -1,5 +1,5 @@
 import type { AiTask } from "@/lib/studio-types";
-import { isIllustrationTarget } from "@/lib/task-target";
+import { isIllustrationTarget, isNamingTarget } from "@/lib/task-target";
 import { updateIllustration } from "@/db/illustrations";
 import { parseTaskHistory } from "@/lib/task-history";
 import { ensureDatabase, getDatabase } from "@/db/runtime";
@@ -46,7 +46,7 @@ export async function POST(request: Request, context: { params: Promise<{ taskId
       if (!["queued", "running"].includes(String(row.status))) return json({ error: "只有等待或运行中的任务可以取消" }, 409);
       patch = { state: "cancelled", phase: "cancelled", completedAt: now, lastProgressAt: now, runnerId: undefined, leaseUntil: undefined };
       statements.push(db.prepare("UPDATE ai_tasks SET status='cancelled',phase='cancelled',completed_at=?,last_progress_at=?,runner_id=NULL,lease_until=NULL WHERE id=? AND status IN ('queued','running')").bind(now, now, taskId));
-      if (!['chat', 'all-names'].includes(String(row.target))) statements.push(db.prepare("UPDATE outlines SET state='saved',updated_at=?,revision=revision+1 WHERE id=?").bind(now, String(row.outline_id)));
+      if (!isNamingTarget(row.target)) statements.push(db.prepare("UPDATE outlines SET state='saved',updated_at=?,revision=revision+1 WHERE id=?").bind(now, String(row.outline_id)));
     } else if (body.action === "retry") {
       const stale = String(row.status) === "running" && (!row.lease_until || String(row.lease_until) <= now);
       if (!["error", "cancelled"].includes(String(row.status)) && !stale) return json({ error: "只有失败、已取消或中断的任务可以重试" }, 409);

@@ -54,7 +54,7 @@ export type SelectedAiContext = {
   previousOutlines: Array<{ id: string; title: string; plan: string }>;
   previousContentTail: string;
   chapterOutlines: Array<{ id: string; title: string; plan: string }>;
-  characters: Array<{ id: string; name: string; aliases: string[]; description: string; profile: CharacterProfile; endingChanges: Partial<CharacterProfile>; appearanceStatus?: "first" | "established" }>;
+  characters: Array<{ id: string; name: string; aliases: string[]; description: string; profile: CharacterProfile; endingChanges: Partial<CharacterProfile> & { description?: string }; appearanceStatus?: "first" | "established" }>;
   relationships: Array<{ characterA: string; characterB: string; description: string; endingDescription?: string }>;
   recentMessages: ContextMessage[];
   excellentFragments: Array<{ id: string; text: string; outlineId: string; outlineTitle: string; versionId?: string }>;

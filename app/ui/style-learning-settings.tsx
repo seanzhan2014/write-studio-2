@@ -11,7 +11,7 @@ export function StyleLearningDefaultsSettings() {
   const defaults = normalizeStyleLearningSettings(studio.data.settings.styleLearningSettings);
   const patch = (value: Partial<StyleLearningSettings>) => studio.updateSettings({ styleLearningSettings: normalizeStyleLearningSettings({ ...defaults, ...value }) });
   const options = [
-    { value: "", label: "跟随文章生成模型" },
+    { value: "", label: "跟随全局生成模型" },
     ...(defaults.model && !models.some(model => model.id === defaults.model) ? [{ value: defaults.model, label: `${defaults.model}（不可用）` }] : []),
     ...models.map(model => ({ value: model.id, label: `${model.providerName} · ${model.name}${model.hasSecret ? "" : "（需密钥）"}`, disabled: !model.hasSecret })),
   ];

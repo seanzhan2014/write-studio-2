@@ -3165,14 +3165,14 @@ test("chapter naming generates one candidate for the chapter and every eligible 
   await expect(naming.getByRole("button", { name: "生成整章候选（含大纲）" })).toHaveCount(0);
   const calls: Record<string, unknown>[] = [];
   page.on("request", (outgoing) => {
-    if (outgoing.url().endsWith("/api/ai/names")) calls.push(outgoing.postDataJSON() as Record<string, unknown>);
+    if (outgoing.url().endsWith("/api/ai/tasks") && outgoing.method() === "POST") calls.push(outgoing.postDataJSON() as Record<string, unknown>);
   });
   await chapter.locator(".continuous-chapter-heading").getByRole("button", { name: "第一章更多操作" }).click();
   await page.getByRole("button", { name: "生成整章名称（含大纲）" }).click();
   await expect(naming.getByRole("radio", { name: /AI 候选/ })).toHaveCount(1);
   await expect(naming.getByRole("radio", { name: /第一章/ })).toHaveAttribute("aria-checked", "true");
   expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ target: "chapter", includeChapter: true, outlineIds: ["outline-previous", "outline-current", "outline-after"] });
+  expect(calls[0]).toMatchObject({ target: "chapter-names", chapterId: "chapter-main", namingContext: { chapters: [{ id: "chapter-main" }] } });
 
   const state = await (await request.get("/api/state")).json() as { data: StudioData };
   const savedChapter = state.data.articles[0].chapters[0];
@@ -3200,14 +3200,32 @@ test("chapter three-dot menu generates whole-chapter candidates on the home and 
   test.skip(!["desktop-chromium", "mobile-chromium"].includes(testInfo.project.name), "chapter menu workflow");
   test.setTimeout(60_000);
   await page.goto(testInfo.project.name === "mobile-chromium" ? "/" : "/articles/article-main/outlines/outline-current/write");
+  let directNameCalls = 0;
+  page.on("request", outgoing => { if (outgoing.url().endsWith("/api/ai/names")) directNameCalls += 1; });
   await page.getByRole("button", { name: "第一章更多操作", exact: true }).click();
   await expect(page.getByRole("button", { name: "生成整章名称（含大纲）" })).toBeVisible();
   await page.getByRole("button", { name: "生成整章名称（含大纲）" }).click();
   await expect.poll(async () => {
     const state = await (await request.get("/api/state")).json() as { data: StudioData };
     const chapter = state.data.articles[0].chapters[0];
-    return { chapterTitle: chapter.title, chapterCandidates: chapter.nameVersions?.filter((name) => name.source === "ai").length ?? 0, outlineCandidates: chapter.outlines.filter((outline) => !outline.archived && outline.nameVersions?.some((name) => name.source === "ai")).length };
-  }).toEqual({ chapterTitle: "第一章", chapterCandidates: 1, outlineCandidates: 3 });
+    const tasks = state.data.tasks.filter(task => task.target === "整章名称");
+    return { taskCount: tasks.length, taskState: tasks[0]?.state, chapterTitle: chapter.title, chapterCandidates: chapter.nameVersions?.filter((name) => name.source === "ai").length ?? 0, outlineCandidates: chapter.outlines.filter((outline) => !outline.archived && outline.nameVersions?.some((name) => name.source === "ai")).length };
+  }).toEqual({ taskCount: 1, taskState: "success", chapterTitle: "第一章", chapterCandidates: 1, outlineCandidates: 3 });
+  expect(directNameCalls).toBe(0);
+
+  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  const tasks = page.getByRole("region", { name: "AI 任务工作区", exact: true });
+  const taskTitle = tasks.getByRole("button", { name: "查看任务详情：第一章 · 整章名称", exact: true });
+  await expect(taskTitle).toBeVisible();
+  await taskTitle.click();
+  await expect(tasks.getByLabel("任务结果", { exact: true })).toContainText("1 个章节名和 3 个大纲名");
+  await expect(tasks.getByText("使用本章命名设置，无补充要求", { exact: true })).toBeVisible();
+  await tasks.getByRole("button", { name: "查看名称候选", exact: true }).click();
+  await expect(page).toHaveURL(/\/articles\/article-main\/outlines\/edit-all$/);
+  await page.reload();
+  if (testInfo.project.name === "mobile-chromium") await page.goto("/");
+  await page.getByRole("button", { name: "AI 任务", exact: true }).click();
+  await expect(page.getByRole("button", { name: "查看任务详情：第一章 · 整章名称", exact: true })).toBeVisible();
 });
 
 test("chapter candidate names can be deleted from the icon beside the three-dot menu", async ({ page, request }, testInfo) => {

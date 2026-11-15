@@ -3,6 +3,7 @@ import { normalizeOutlineExpansion } from "@/lib/outline-expansion";
 import { serializeArticleSettings, serializeCharacterSettings } from "@/db/studio-serialization";
 import { taskFromRow } from "@/lib/task-record";
 import { normalizeStudioSettings } from "@/lib/studio-settings";
+import { normalizeChatMode, type ChatMode } from "@/lib/chat-modes";
 import { normalizeCharacterPhotos } from "@/lib/character-photos";
 
 import { preserveStyleLabSql, restoreStyleLabSql, clearStyleLabBackupSql, importStyleLabStatements, type StyleLabSnapshot } from "@/db/style-lab-history";
@@ -123,7 +124,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
         const content = contents.get(outlineId);
         const outlineSessionRows = sessions.filter((row) => row.outline_id === outlineId);
         const sessionItems = outlineSessionRows.map((sessionRow) => {
-          const options = safeJson<{ title?: string; includePrevious?: boolean; includeCharacters?: boolean; active?: boolean; lastReadMessageId?: string | null }>(sessionRow.context_options_json, {});
+          const options = safeJson<{ title?: string; mode?: ChatMode; includePrevious?: boolean; includeCharacters?: boolean; active?: boolean; lastReadMessageId?: string | null }>(sessionRow.context_options_json, {});
           const sessionMessages = messages.filter((row) => row.session_id === sessionRow.id).map((row) => ({
             id: String(row.id), role: String(row.role) as "user" | "assistant", text: String(row.content),
             createdAt: String(row.created_at), stopped: row.status === "stopped" || undefined,
@@ -131,6 +132,7 @@ export async function readStudioState(): Promise<{ data: StudioData | null; revi
           return {
             id: String(sessionRow.id),
             title: options.title?.trim() || "新对话",
+            mode: normalizeChatMode(options.mode),
             messages: sessionMessages,
             draft: "",
             includePrevious: options.includePrevious !== false,
@@ -333,7 +335,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         const contentOutlineSnapshot = outline.contentOutlineSnapshot
           ?? (!currentVersionId && outline.sourceVersionId ? outline.versions.find((version) => version.id === outline.sourceVersionId)?.outlineSnapshot : undefined)
           ?? { title: normalizedTitle, plan: outline.plan };
-        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,illustration_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision,expansion_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, JSON.stringify(outlineNameState.nameVersions), outlineNameState.defaultNameVersionId, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), outline.generateOptions == null ? null : JSON.stringify(normalizeAiGenerateOptions(outline.generateOptions, article.aiGenerateSettings)), outline.illustrationOptions == null ? null : JSON.stringify(normalizeIllustrationOptions(outline.illustrationOptions)), JSON.stringify(normalizeChapterSettings(outline.settings)), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision, outline.expansion ? JSON.stringify(normalizeOutlineExpansion(outline.plan, outline.expansion)) : null]));
+        statements.push(insert(db, "INSERT INTO outlines(id,article_id,chapter_id,title,name_versions_json,default_name_version_id,summary,generate_instruction,generate_options_json,illustration_options_json,settings_json,position,archived,state,title_generation_pending,created_at,updated_at,revision,expansion_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [outline.id, article.id, chapter.id, normalizedTitle, JSON.stringify(outlineNameState.nameVersions), outlineNameState.defaultNameVersionId, outline.plan.slice(0, 10000), String(outline.generateInstruction ?? "").slice(0, 20000), outline.generateOptions == null ? null : JSON.stringify(normalizeAiGenerateOptions(outline.generateOptions)), outline.illustrationOptions == null ? null : JSON.stringify(normalizeIllustrationOptions(outline.illustrationOptions)), JSON.stringify(normalizeChapterSettings(outline.settings)), (outlineIndex + 1) * 1024, outline.archived ? 1 : 0, outline.state, outline.titleGenerationPending ? 1 : 0, outline.updatedAt, outline.updatedAt, nextRevision, outline.expansion ? JSON.stringify(normalizeOutlineExpansion(outline.plan, outline.expansion)) : null]));
         statements.push(insert(db, "INSERT INTO contents(id,outline_id,text,content_name,content_override,source_version_id,current_version_id,default_version_id,outline_snapshot_json,manual_excellent,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [`content:${outline.id}`, outline.id, outline.content, outline.contentName?.trim() || timestampContentName(outline.updatedAt), currentVersionId ? 0 : 1, defaultVersionId, currentVersionId, defaultVersionId, JSON.stringify(contentOutlineSnapshot), outline.manualExcellent ? 1 : 0, outline.updatedAt, nextRevision]));
         statements.push(insert(db, "INSERT INTO search_documents(article_id,chapter_id,outline_id,entity_type,entity_id,title,body) VALUES(?,?,?,?,?,?,?)", [article.id, chapter.id, outline.id, "outline", outline.id, outlineDisplayTitle({ title: normalizedTitle, plan: outline.plan }), `${outline.plan}\n${referenceContent}`]));
         outline.versions.forEach((version) => {
@@ -342,7 +344,7 @@ export async function writeStudioState(data: StudioData, expectedRevision: numbe
         });
         uniqueExcellentFragments(outline.content, outline.excellentFragments, writtenExcellentFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
         outline.chat.sessions.forEach((session) => {
-          statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+          statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, article.id, outline.id, session.draft, null, JSON.stringify({ title: session.title, mode: normalizeChatMode(session.mode), includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
           session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
         });
       });
@@ -505,7 +507,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     uniqueExcellentFragments(outline.content, outline.excellentFragments, usedFragmentIds).forEach((fragment) => statements.push(insert(db, "INSERT INTO excellent_fragments(id,outline_id,version_id,start_offset,end_offset,selected_text,prefix_context,suffix_context,source_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [fragment.id, outline.id, null, fragment.start, fragment.end, fragment.text, fragment.prefix, fragment.suffix, fragment.sourceHash, fragment.createdAt, fragment.updatedAt])));
     statements.push(db.prepare("DELETE FROM chat_sessions WHERE outline_id=?").bind(outline.id));
     for (const session of outline.chat.sessions) {
-      statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, outline.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+      statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, outline.id, session.draft, null, JSON.stringify({ title: session.title, mode: normalizeChatMode(session.mode), includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === outline.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
       session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
     }
     statements.push(db.prepare("DELETE FROM search_documents WHERE entity_type='outline' AND entity_id=?").bind(outline.id));
@@ -585,7 +587,7 @@ export async function applyStudioChanges(changes: StudioChanges, expectedRevisio
     if (item.chat) {
       statements.push(db.prepare("DELETE FROM chat_sessions WHERE outline_id=?").bind(item.id));
       for (const session of item.chat.sessions) {
-        statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, item.id, session.draft, null, JSON.stringify({ title: session.title, includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === item.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
+        statements.push(insert(db, "INSERT INTO chat_sessions(id,article_id,outline_id,draft,model_id,context_options_json,created_at,updated_at,revision) VALUES(?,?,?,?,?,?,?,?,?)", [session.id, item.articleId, item.id, session.draft, null, JSON.stringify({ title: session.title, mode: normalizeChatMode(session.mode), includePrevious: session.includePrevious, includeCharacters: session.includeCharacters, active: session.id === item.chat.activeSessionId, lastReadMessageId: session.lastReadMessageId ?? null }), session.createdAt, session.updatedAt, nextRevision]));
         session.messages.forEach((message, index) => statements.push(insert(db, "INSERT INTO chat_messages(id,session_id,role,content,status,order_index,created_at) VALUES(?,?,?,?,?,?,?)", [message.id, session.id, message.role, message.text, message.stopped ? "stopped" : "complete", index, message.createdAt])));
       }
     }

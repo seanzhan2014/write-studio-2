@@ -1,5 +1,5 @@
 "use client";
-import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { globalAiSettings } from "@/lib/ai-settings-inheritance";
 import { resolveStyleLearningSettings } from "@/lib/style-learning-settings";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, MultiSelect, NumberInput, Select, Stack, Text, Textarea, TextInput } from "@mantine/core";
@@ -71,7 +71,7 @@ function ArticleStyleLabPanel() {
   const [references, setReferences] = useState<ReferenceDocument[]>(library.references);
   const [dirty, setDirty] = useState(false);
   const [models, setModels] = useState<Array<{ id: string; name: string; providerName: string; hasSecret: boolean }>>([]);
-  const defaults = resolveStyleLearningSettings(studio.data.settings, articleAiSettings(article, "generate", studio.data.settings).model);
+  const defaults = resolveStyleLearningSettings(studio.data.settings, globalAiSettings("generate", studio.data.settings).model);
   const [taskOptions, setTaskOptions] = useState<{ model?: string; maxRounds?: number | string; autoApply?: boolean }>({});
   const model = taskOptions.model ?? defaults.model;
   const rounds = taskOptions.maxRounds ?? defaults.maxRounds;
@@ -119,7 +119,9 @@ function ArticleStyleLabPanel() {
       studio.updateArticle({ storySettings: { ...article.storySettings!, styleLibrary: normalizeStyleLibrary(next) } });
     } else {
       next.scenes = version.configuration.scenes;
-      studio.updateArticle({ style: version.configuration.style, aiGenerateSettings: overrideAiSettings(articleAiSettings(article, "generate", studio.data.settings), { proseControls: version.configuration.generate.proseControls, advanced: version.configuration.generate.advanced }), storySettings: { ...article.storySettings!, advancedStyle: version.configuration.advancedStyle, styleLibrary: normalizeStyleLibrary(next) } });
+      next.expression = { proseControls: version.configuration.generate.proseControls, advanced: version.configuration.generate.advanced };
+      next.activeVersionId = version.id;
+      studio.updateArticle({ style: version.configuration.style, storySettings: { ...article.storySettings!, advancedStyle: version.configuration.advancedStyle, styleLibrary: normalizeStyleLibrary(next) } });
     }
     setNotice("已应用配置，可在版本记录中恢复。");
   }

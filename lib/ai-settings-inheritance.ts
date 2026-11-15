@@ -7,6 +7,7 @@ import type { NamingProfile } from "./naming-options.ts";
 export type AiSettingsKind = "generate" | "illustration";
 type TaskOptions = AiGenerateOptions | IllustrationOptions;
 type SettingsArticle = {
+  storySettings?: { styleLibrary?: { expression?: Pick<AiGenerateOptions, "proseControls" | "advanced">; activeVersionId?: string } };
   chapterNaming?: NamingProfile;
   outlineNaming?: NamingProfile;
   aiGenerateSettings?: AiGenerateOptions;
@@ -102,15 +103,26 @@ export function articleAiSettings<K extends AiSettingsKind>(article: SettingsArt
   return resolve(kind, baseline, global, global, global, global) as K extends "generate" ? AiGenerateOptions : IllustrationOptions;
 }
 
+/** Only an explicitly applied learning result may add article expression preferences. */
+export function writingDefaults(article: SettingsArticle, settings: object = {}) {
+  const value = globalAiSettings("generate", settings);
+  const library = article.storySettings?.styleLibrary;
+  const learned = library?.expression ?? (library?.activeVersionId ? article.aiGenerateSettings : undefined);
+  if (!learned) return value;
+  const expression = normalizeAiGenerateOptions(learned);
+  return { ...value, proseControls: expression.proseControls, advanced: expression.advanced };
+}
+
 /** Outline defaults follow the preceding active outline across chapter boundaries. */
 export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArticle, targetId: string, kind: K, level: "outline" | "chapter" = "outline", globalSettings: object = {}) {
   const global = globalAiSettings(kind, globalSettings);
-  let previous: TaskOptions = global;
+  const baseline = kind === "generate" ? writingDefaults(article, globalSettings) : global;
+  let previous: TaskOptions = baseline;
   let previousLabel = "全局默认";
   for (const chapter of article.chapters) {
     if (chapter.archived && chapter.id !== targetId && !chapter.outlines.some(outline => outline.id === targetId)) continue;
     if (level === "chapter" && chapter.id === targetId) {
-      return result(resolve(kind, chapter.settings?.aiTasks?.[kind], global, previous, previous, global, "parent"), previous, previousLabel);
+      return result(previous, previous, previousLabel);
     }
     for (const outline of chapter.outlines) {
       if (outline.archived && outline.id !== targetId) continue;
@@ -125,7 +137,7 @@ export function resolveAiSettings<K extends AiSettingsKind>(article: SettingsArt
       }
     }
   }
-  return result(global, global, "全局默认");
+  return result(baseline, baseline, "全局默认");
 
   function result(value: TaskOptions, previous: TaskOptions, previousLabel: string, baselineLabel = previousLabel) {
     type Options = K extends "generate" ? AiGenerateOptions : IllustrationOptions;

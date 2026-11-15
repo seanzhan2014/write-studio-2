@@ -10,6 +10,7 @@ import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
 import { StyleLabPanel } from "@/app/ui/style-lab";
 import { StyleLearningDefaultsSettings } from "@/app/ui/style-learning-settings";
 import { AiPromptSettings } from "@/app/ui/ai-prompt-settings";
+import { ChatModeSettings } from "@/app/ui/chat-mode-settings";
 
 import { ArticleReviewRulesPage } from "@/app/ui/review-rules";
 
@@ -265,7 +266,7 @@ export function TaskSettings() {
       {category === "写作准备" && <TaskParameterSettings level="global" targetId="global" groups={["写作准备"]} title="写作准备" />}
       {category === "自动审校" && <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["自动审校"]} title="自动审校" /><ArticleReviewRulesPage global /></div>}
       {category === "大纲" && <TaskParameterSettings level="global" targetId="global" groups={["命名"]} title="章节与大纲名称" />}
-      {category === "聊天" && <TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" />}
+      {category === "聊天" && <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["聊天"]} title="聊天" /><ChatModeSettings /></div>}
       {category === "图片" && <><div className="ai-task-subtabs" role="tablist" aria-label="图片设置分类">{["生成设置", "风格库"].map(tab => <button type="button" role="tab" key={tab} id={`ai-image-${tab === "生成设置" ? "generation" : "styles"}`} aria-selected={imageTab === tab} aria-controls="ai-image-panel" onClick={() => setImageTab(tab)}>{tab}</button>)}</div><div id="ai-image-panel" role="tabpanel" aria-labelledby={`ai-image-${imageTab === "生成设置" ? "generation" : "styles"}`}>{imageTab === "生成设置" ? <div className="ai-task-sections"><TaskParameterSettings level="global" targetId="global" groups={["插图模型"]} title="图片模型" /><ArticleIllustrationSettings global /></div> : <AiPromptSettings />}</div></>}
       {category === "学习与微调" && <StyleLearningDefaultsSettings />}
       {category === "全局" && <TaskParameterSettings level="global" targetId="global" groups={["任务队列"]} title="全局任务设置" />}

@@ -20,7 +20,7 @@ import { useStudio, type Chapter } from "@/app/studio-state";
 
 import { ScrollableDrawer } from "@/app/ui/overlays";
 
-import { useConfiguredModels, canonicalModelReference, generateContextSummary, Icon, configuredModelForReference, modelDisplayLabel, namingArticleContext } from "@/app/ui/studio/shared";
+import { useConfiguredModels, canonicalModelReference, generateContextSummary, Icon, configuredModelForReference, modelDisplayLabel, namingArticleContext, createServerTask } from "@/app/ui/studio/shared";
 
 import { type NameGeneratePreview, type ConfiguredModel } from "@/app/ui/studio/types";
 
@@ -116,31 +116,30 @@ export async function generateWholeChapterNameCandidates(studio: ReturnType<type
   const outlines = chapter.outlines.filter((item) => !item.archived && item.plan.trim());
   if (chapter.archived || !outlines.length) throw new Error(`「${chapter.title}」没有可供命名的大纲内容`);
   if (studio.data.tasks.some((task) => task.articleId === article.id && task.target === "全部名称" && (task.state === "waiting" || task.state === "running"))) throw new Error("整篇名称任务正在运行，请完成后再生成本章名称");
+  const existing = studio.data.tasks.find(task => task.articleId === article.id && task.chapterId === chapter.id && task.target === "整章名称" && (task.state === "waiting" || task.state === "running"));
+  if (existing) return existing;
   const options = resolveAiSettings(article, chapter.id, "generate", "chapter", studio.data.settings).value;
   const settings = options.tasks!;
   const model = canonicalModelReference(models, String(settings.namingModelMode === "inherit" ? options.model : settings.namingModel));
   const selectedRecord = configuredModelForReference(models, model);
   if (selectedRecord && !selectedRecord.hasSecret) throw new Error("所选模型还没有载入 API 密钥");
-  const response = await fetchServerAction("/api/ai/names", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      articleId: article.id,
-      chapterId: chapter.id,
-      target: "chapter",
-      includeChapter: true,
-      outlineIds: outlines.map((item) => item.id),
-      chapterNaming: taskNamingProfile(settings, "chapterNaming"),
-      outlineNaming: taskNamingProfile(settings, "outlineNaming"),
-      model,
-      reasoningEffort: taskReasoningEffort(settings.namingReasoningEffort),
-      modelLabel: modelDisplayLabel(models, model),
-      instruction: "",
-      context: namingArticleContext(article, studio.data.settings),
-      persist: true,
-    }),
+  const context = namingArticleContext(article, studio.data.settings);
+  context.chapters = context.chapters.filter(item => item.id === chapter.id);
+  return createServerTask(studio, {
+    articleId: article.id,
+    chapterId: chapter.id,
+    outlineId: outlines[0].id,
+    target: "chapter-names",
+    chapterNaming: taskNamingProfile(settings, "chapterNaming"),
+    outlineNaming: taskNamingProfile(settings, "outlineNaming"),
+    model,
+    reasoningEffort: taskReasoningEffort(settings.namingReasoningEffort),
+    instruction: "",
+    includePrevious: false,
+    includeCharacters: false,
+    estimatedCharacters: article.summary.length + article.style.length + outlines.reduce((sum, item) => sum + item.plan.length, 0),
+    taskParameters: settings,
+    timeoutMs: selectedRecord?.timeoutMs ?? 600_000,
+    namingContext: context,
   });
-  const payload = await response.json() as NameGeneratePreview & { error?: string };
-  if (!response.ok) throw new Error(payload.error || "整章名称生成失败");
-  return storeNameCandidates(studio, article.id, chapter.id, payload);
 }

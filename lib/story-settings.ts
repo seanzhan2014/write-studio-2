@@ -2,6 +2,7 @@ import { STYLE_FIELDS, normalizeAdvanced, type StyleAdvanced } from "./advanced-
 import { normalizeStyleLibrary, type StyleLibrary } from "./style-learning.ts";
 import { normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
 import { normalizeIllustrationOptions, type IllustrationOptions } from "./illustration-options.ts";
+import { normalizeLegacySettings, resolveLegacyContext, type LegacySettings } from "./legacy-story-settings.ts";
 
 export const STORY_FIELD_KEYS = ["summary", "location", "style", "negativeConstraints"] as const;
 export type StoryFieldKey = typeof STORY_FIELD_KEYS[number];
@@ -39,6 +40,7 @@ export type ChapterRelationshipSettings = {
 };
 
 export type ChapterSettings = {
+  legacy?: LegacySettings;
   aiTasks?: { generate?: AiGenerateOptions; illustration?: IllustrationOptions };
   story: Partial<Record<StoryFieldKey, TextSettingOverride>>;
   characters: Record<string, ChapterCharacterSettings>;
@@ -108,6 +110,7 @@ export function migrateArticleStoryDetails(summaryValue: unknown, typeValue: unk
       ["类型", typeValue],
       ["时代背景", rawSettings.era],
       ["世界规则", rawSettings.worldRules],
+      ["语调", rawSettings.tone],
     ], 10_000),
     type: "",
     storySettings: normalizeArticleStorySettings(rawSettings),
@@ -183,7 +186,8 @@ export function normalizeChapterSettings(value: unknown): ChapterSettings {
     ...(tasks.generate && typeof tasks.generate === "object" ? { generate: normalizeAiGenerateOptions(tasks.generate) } : {}),
     ...(tasks.illustration && typeof tasks.illustration === "object" ? { illustration: normalizeIllustrationOptions(tasks.illustration) } : {}),
   };
-  return { story, characters, relationships, ...(Object.keys(aiTasks).length ? { aiTasks } : {}) };
+  const legacy = normalizeLegacySettings(item);
+  return { story, characters, relationships, ...(legacy ? { legacy } : {}), ...(Object.keys(aiTasks).length ? { aiTasks } : {}) };
 }
 
 export type StorySettingsArticle = {
@@ -210,7 +214,7 @@ export type ResolvedChapterSettings = {
     appears?: boolean;
     profile: CharacterProfile;
     profileSources: Record<CharacterProfileKey, SettingSource>;
-    endingChanges: Partial<CharacterProfile>;
+    endingChanges: Partial<CharacterProfile> & { description?: string };
   }>;
   relationships: Array<{
     id: string;
@@ -232,7 +236,7 @@ function articleSource(): SettingSource { return { kind: "article" }; }
 function chapterSource(chapter: { id: string; title: string }): SettingSource { return { kind: "chapter", chapterId: chapter.id, chapterTitle: chapter.title }; }
 function outlineSource(outline: { id: string; title: string }): SettingSource { return { kind: "outline", outlineId: outline.id, outlineTitle: outline.title }; }
 
-export function resolveChapterSettings(article: StorySettingsArticle, chapterId: string): ResolvedChapterSettings {
+export function resolveChapterSettings(article: StorySettingsArticle, chapterId: string, includeLegacy = true): ResolvedChapterSettings {
   const base = normalizeArticleStorySettings(article.storySettings);
   const story = { summary: text(article.summary, 10_000), location: base.location, style: text(article.style), negativeConstraints: base.negativeConstraints };
   const storySources = Object.fromEntries(STORY_FIELD_KEYS.map((key) => [key, articleSource()])) as Record<StoryFieldKey, SettingSource>;
@@ -301,7 +305,7 @@ export function resolveChapterSettings(article: StorySettingsArticle, chapterId:
     if (relationshipSettings.active) relationshipActive.set(relationshipId, relationshipSettings.active.value);
   }
 
-  return {
+  const resolved: ResolvedChapterSettings = {
     chapterId: target.id,
     inheritedFromChapter: preceding.at(-1) ? { id: preceding.at(-1)!.id, title: preceding.at(-1)!.title } : undefined,
     story,
@@ -327,6 +331,16 @@ export function resolveChapterSettings(article: StorySettingsArticle, chapterId:
       endingDescription: current.relationships[relationshipId(relationship)]?.end,
     })),
   };
+  return includeLegacy ? withLegacyContext(article, resolved) : resolved;
+}
+
+function withLegacyContext<T extends ResolvedChapterSettings>(article: StorySettingsArticle, resolved: T): T {
+  const legacy = resolveLegacyContext(article.chapters, resolved.chapterId, "outlineId" in resolved ? String(resolved.outlineId) : undefined);
+  const append = (...parts: (string | undefined)[]) => parts.filter(part => part?.trim()).join("\n");
+  return { ...resolved,
+    story: { ...resolved.story, summary: append(resolved.story.summary, legacy.summary), style: append(resolved.story.style, legacy.tone ? `语调：${legacy.tone}` : "") },
+    characters: resolved.characters.map(person => ({ ...person, description: append(person.description, legacy.descriptions.get(person.id)), endingChanges: { ...person.endingChanges, ...(legacy.endings.has(person.id) ? { description: legacy.endings.get(person.id) } : {}) } })),
+  };
 }
 
 export function resolveOutlineSettings(article: StorySettingsArticle, outlineId: string): ResolvedOutlineSettings {
@@ -337,7 +351,7 @@ export function resolveOutlineSettings(article: StorySettingsArticle, outlineId:
     return { ...fallback, outlineId };
   }
 
-  const chapterResolved = resolveChapterSettings(article, chapter.id);
+  const chapterResolved = resolveChapterSettings(article, chapter.id, false);
   const story = { ...chapterResolved.story };
   const storySources = { ...chapterResolved.storySources };
   const profiles = new Map(chapterResolved.characters.map((character) => [character.id, { ...character.profile }]));
@@ -402,7 +416,7 @@ export function resolveOutlineSettings(article: StorySettingsArticle, outlineId:
     if (relationshipSettings.active) relationshipActive.set(relationshipId, relationshipSettings.active.value);
   }
 
-  return {
+  return withLegacyContext(article, {
     ...chapterResolved,
     outlineId: target.id,
     inheritedFromOutline: preceding.at(-1) ? { id: preceding.at(-1)!.id, title: preceding.at(-1)!.title } : undefined,
@@ -422,7 +436,7 @@ export function resolveOutlineSettings(article: StorySettingsArticle, outlineId:
       source: relationshipSources.get(relationship.id) ?? relationship.source,
       endingDescription: current.relationships[relationship.id]?.end ?? relationship.endingDescription,
     })),
-  };
+  });
 }
 
 export function countChapterSettingChanges(value: unknown) {

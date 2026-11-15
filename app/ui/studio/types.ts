@@ -91,7 +91,7 @@ export type ServerTaskInput = {
   articleId: string;
   chapterId: string;
   outlineId: string;
-  target: "content" | "outline" | "chapter-title" | "all-names";
+  target: "content" | "outline" | "chapter-title" | "chapter-names" | "all-names";
   instruction: string;
   model: string;
   includePrevious?: boolean;

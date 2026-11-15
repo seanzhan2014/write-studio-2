@@ -636,6 +636,82 @@ test("isolated SQLite, REST, AI and security integration", async (t) => {
     assert.doesNotMatch(selectedPrompt, /第一章|前序灯塔|当前码头|绝密后续大纲|灯塔取得前序线索/);
   });
 
+  await t.test("background chapter-name tasks track execution, cancellation and retries without naming other chapters", async () => {
+    const fixture = fullStudioFixture();
+    const article = fixture.articles[0];
+    const otherChapter = structuredClone(article.chapters[0]);
+    otherChapter.id = "chapter-other-naming";
+    otherChapter.title = "第二章";
+    otherChapter.outlines = [{ ...structuredClone(otherChapter.outlines[0]), id: "outline-other-naming", title: "其他章节线索", plan: "OTHER_CHAPTER_NAMING_CANARY", versions: [], currentVersionId: null, defaultVersionId: null, chat: { sessions: [], activeSessionId: "" } }];
+    article.chapters.push(otherChapter);
+    const saved = await api("/api/state", { method: "PUT", headers: { "If-Match": String(revision) }, body: { data: fixture } });
+    assert.equal(saved.response.status, 200, saved.text);
+    const namingContext = { id: article.id, title: article.title, summary: article.summary, style: article.style, chapters: article.chapters };
+    const taskId = "background-chapter-names-task";
+    const body = { articleId: "article-main", chapterId: "chapter-main", outlineId: "outline-current", target: "chapter-names", model: "捕获模型", namingContext };
+    const created = await api("/api/ai/tasks", { method: "POST", headers: { "Idempotency-Key": taskId }, body });
+    assert.equal(created.response.status, 200, created.text);
+    assert.equal(created.data.data.target, "整章名称");
+    assert.equal(created.data.data.state, "waiting");
+    assert.equal(created.data.data.contextOptions.nameChapterCount, 1);
+    assert.equal(created.data.data.contextOptions.nameOutlineCount, 3);
+    assert.deepEqual(created.data.data.contextOptions.namingContext.chapters.map(chapter => chapter.id), ["chapter-main"]);
+    const duplicate = await api("/api/ai/tasks", { method: "POST", headers: { "Idempotency-Key": taskId }, body });
+    assert.equal(duplicate.data.data.id, taskId);
+
+    const cancelled = await api(`/api/ai/tasks/${taskId}/state`, { method: "POST", body: { action: "cancel" } });
+    assert.equal(cancelled.response.status, 200, cancelled.text);
+    assert.equal(cancelled.data.task.state, "cancelled");
+    const receivedBefore = modelServer.received.length;
+    const cancelledExecution = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(cancelledExecution.response.status, 202, cancelledExecution.text);
+    assert.equal(modelServer.received.length, receivedBefore);
+    const retried = await api(`/api/ai/tasks/${taskId}/state`, { method: "POST", body: { action: "retry" } });
+    assert.equal(retried.response.status, 200, retried.text);
+    assert.equal(retried.data.task.state, "waiting");
+    const executed = await api(`/api/ai/tasks/${taskId}/execute`, { method: "POST" });
+    assert.equal(executed.response.status, 200, executed.text);
+    assert.equal(modelServer.received.length, receivedBefore + 1);
+    const prompt = modelServer.received.at(-1).body.messages.at(-1).content;
+    assert.match(prompt, /purpose="chapter-and-outline-naming"/);
+    assert.doesNotMatch(prompt, /OTHER_CHAPTER_NAMING_CANARY|归档秘密|灯塔正文/);
+
+    const loaded = await api("/api/state");
+    const task = loaded.data.data.tasks.find(item => item.id === taskId);
+    const chapter = loaded.data.data.articles[0].chapters[0];
+    const other = loaded.data.data.articles[0].chapters.find(item => item.id === otherChapter.id);
+    assert.equal(task.state, "success");
+    assert.equal(task.target, "整章名称");
+    assert.equal(task.contextOptions.generatedNameCount, 4);
+    assert.match(task.resultText, /1 个章节名和 3 个大纲名/);
+    assert.ok(task.history.some(entry => entry.phase === "generating"));
+    assert.equal(task.history.at(-1).phase, "completed");
+    assert.equal(chapter.title, "第一章");
+    assert.equal(chapter.nameVersions.filter(item => item.source === "ai").length, 1);
+    assert.equal(chapter.outlines.find(item => item.id === "outline-current").state, fixture.articles[0].chapters[0].outlines.find(item => item.id === "outline-current").state);
+    assert.equal(other.nameVersions?.filter(item => item.source === "ai").length ?? 0, 0);
+    assert.equal(other.outlines[0].nameVersions?.filter(item => item.source === "ai").length ?? 0, 0);
+
+    const oversizedContext = structuredClone(namingContext);
+    oversizedContext.chapters[0].outlines[0].plan = "潮".repeat(65_000);
+    const failedId = "oversized-chapter-names-task";
+    const failing = await api("/api/ai/tasks", { method: "POST", headers: { "Idempotency-Key": failedId }, body: { ...body, namingContext: oversizedContext } });
+    assert.equal(failing.response.status, 200, failing.text);
+    const failed = await api(`/api/ai/tasks/${failedId}/execute`, { method: "POST" });
+    assert.equal(failed.response.status, 502, failed.text);
+    const failedState = await api("/api/state");
+    const failedTask = failedState.data.data.tasks.find(item => item.id === failedId);
+    assert.equal(failedTask.state, "failed");
+    assert.equal(failedTask.phase, "failed");
+    assert.match(failedTask.error, /超过模型设定/);
+    assert.equal(modelServer.received.length, receivedBefore + 1, "输入超限的失败任务不能调用模型");
+    assert.equal(failedState.data.data.articles[0].chapters[0].outlines.find(item => item.id === "outline-current").state, chapter.outlines.find(item => item.id === "outline-current").state);
+
+    const restored = await api("/api/state", { method: "PUT", headers: { "If-Match": String(failedState.data.revision) }, body: { data: fullStudioFixture() } });
+    assert.equal(restored.response.status, 200, restored.text);
+    revision = restored.data.revision;
+  });
+
   await t.test("background all-name task generates the whole article in one model request and stores candidates", async () => {
     const taskId = "background-all-names-task";
     const receivedBefore = modelServer.received.length;

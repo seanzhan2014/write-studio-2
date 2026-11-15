@@ -1,4 +1,4 @@
-import { articleAiSettings, overrideAiSettings } from "@/lib/ai-settings-inheritance";
+import { globalAiSettings } from "@/lib/ai-settings-inheritance";
 import { resolveStyleLearningSettings } from "@/lib/style-learning-settings";
 import { taskReviewSnapshot } from "@/lib/task-parameters";
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
@@ -19,13 +19,13 @@ import { DEFAULT_OUTLINE_NAMING_PROFILE } from "@/lib/naming-options";
 import { type ReviewRuleSnapshot } from "@/lib/review-rules.mjs";
 import { runGenerateReview, type GenerateReviewCheckpoint } from "@/lib/generate-review.mjs";
 import { STYLE_FIELDS, advancedText } from "@/lib/advanced-writing";
-import { LEARNING_RULES, SCORE_DIMENSIONS, STYLE_SCORE_RUBRIC, STYLE_TRIAL_INSTRUCTION, STYLE_TRIAL_EVALUATION_RULES, MIN_STYLE_CONTENT_SCORE, MAX_REFERENCE_TOTAL, applyLocks, restoreStyleGenerateSettings, configurationFingerprint, configurationOf, configurationSchema, fingerprint, modelConfiguration, normalizeConfiguration, normalizeStyleLibrary, sceneInstructions, textStatistics, type StyleConfiguration, type ReferenceDocument, type ConfigurationVersion } from "@/lib/style-learning";
+import { LEARNING_RULES, SCORE_DIMENSIONS, STYLE_SCORE_RUBRIC, STYLE_TRIAL_INSTRUCTION, STYLE_TRIAL_EVALUATION_RULES, MIN_STYLE_CONTENT_SCORE, MAX_REFERENCE_TOTAL, applyLocks, configurationFingerprint, configurationOf, configurationSchema, fingerprint, modelConfiguration, normalizeConfiguration, normalizeStyleLibrary, sceneInstructions, textStatistics, type StyleConfiguration, type ReferenceDocument, type ConfigurationVersion } from "@/lib/style-learning";
 import type { SelectedAiContext } from "@/lib/ai-context";
 
 type Plan = { referenceId: string; scenes: Array<{ title: string; plan: string; targetWords: number }> };
 type Evaluation = { scores: number[]; contentScore: number; evidence: string; suggestions: string };
 export type StyleRound = { index: number; configuration: StyleConfiguration; drafts: Array<{ referenceId: string; scene: number; raw: string; text: string; brief?: string }>; evaluations: Evaluation[]; reviewCheckpoint?: GenerateReviewCheckpoint; score?: number; contentScore?: number; change?: string };
-type Application = { id: string; at: string; before: StyleConfiguration; previousCalibration?: ConfigurationVersion; restoredAt?: string };
+type Application = { id: string; at: string; before: StyleConfiguration; beforeExpression?: import("@/lib/style-learning").StyleExpression | null; previousCalibration?: ConfigurationVersion; restoredAt?: string };
 type Payload = { references: ReferenceDocument[]; base: StyleConfiguration; candidate: StyleConfiguration; best: StyleConfiguration; bestScore: number; bestRound: number; maxRounds: number; round: number; referenceIndex: number; outlines: Plan[]; analyses: StyleConfiguration[]; locked: string[]; modelFingerprint: string; reviewModel: string; reviewModelFingerprint: string; preparation: boolean; reviewRounds: number; reviewStrategy: "minimal" | "explore"; rules: ReviewRuleSnapshot; inputTokens: number; outputTokens: number; applied?: boolean; notice?: string;
   autoApply?: boolean; autoApplyPending?: boolean; archived?: boolean; completedAt?: string; executionOrigin?: "local" | "cloud";
   modelName?: string; providerName?: string; modelSnapshot?: Record<string, unknown>;
@@ -101,7 +101,7 @@ export async function createStyleJob(input: Record<string, unknown>) {
   const library = normalizeStyleLibrary(article.storySettings?.styleLibrary);
   if (!library.references.length || library.references.some(r => !r.text.trim())) throw new AiInputError("请先添加并保存参考文章");
   if (library.references.reduce((n, r) => n + r.text.length, 0) > MAX_REFERENCE_TOTAL) throw new AiInputError("参考材料总长度超过上限");
-  const defaults = resolveStyleLearningSettings(snapshot.data.settings, articleAiSettings(article, "generate", snapshot.data.settings).model);
+  const defaults = resolveStyleLearningSettings(snapshot.data.settings, globalAiSettings("generate", snapshot.data.settings).model);
   const model = await findModel(String(input.model ?? defaults.model));
   if (!model?.hasSecret || !supportsText(model)) throw new AiInputError("请选择已配置密钥的文本模型");
   const maximum = input.kind === "tune" ? Number(input.maxRounds ?? defaults.maxRounds) : 0;
@@ -111,7 +111,7 @@ export async function createStyleJob(input: Record<string, unknown>) {
   const base = configurationOf(article, snapshot.data.settings);
   const previous = modelConfiguration(article, model.id, snapshot.data.settings);
   const initial = previous.calibration?.modelFingerprint === modelFingerprint(model) ? previous.configuration : base;
-  const taskDefaults = articleAiSettings(article, "generate", snapshot.data.settings).tasks!;
+  const taskDefaults = globalAiSettings("generate", snapshot.data.settings).tasks!;
   const reviewModel = taskDefaults.reviewModelMode === "fixed" ? await findModel(String(taskDefaults.reviewModel)) : model;
   const reviewRounds = Math.max(0, Math.min(10, Number(taskDefaults.reviewMaxRounds) || 0));
   if (reviewRounds && !reviewModel?.hasSecret) throw new AiInputError("当前审校模型不可用，请先调整 AI 任务设置");
@@ -146,14 +146,14 @@ export async function applyStyleResult(id: string, force = false) {
     }
     const at = stamp(); const applicationId = crypto.randomUUID();
     const version: ConfigurationVersion = { id, name: `${job.kind === "learn" ? "学习" : "微调"} ${at.slice(0, 16).replace("T", " ")}`, createdAt: at, configuration: p.best, ...(job.kind === "tune" ? { model: job.model, baseFingerprint: configurationFingerprint(current), modelFingerprint: p.modelFingerprint } : {}) };
-    p.applications = [...(p.applications ?? []), { id: applicationId, at, before: current, ...(library.calibrations[job.model] ? { previousCalibration: library.calibrations[job.model] } : {}) }];
+    p.applications = [...(p.applications ?? []), { id: applicationId, at, before: current, beforeExpression: library.expression ?? (library.activeVersionId ? { proseControls: current.generate.proseControls, advanced: current.generate.advanced } : null), ...(library.calibrations[job.model] ? { previousCalibration: library.calibrations[job.model] } : {}) }];
     library.versions = library.versions.filter(v => v.id !== id);
     library.versions.push({ id: `${id}-before-${applicationId}`, name: "应用前配置", createdAt: at, configuration: current });
     if (job.kind === "learn") {
       library.versions.push(version);
       library.scenes = p.best.scenes;
       article.style = p.best.style; story.advancedStyle = p.best.advancedStyle;
-      article.aiGenerateSettings = overrideAiSettings(articleAiSettings(article, "generate", snapshot.data.settings), { proseControls: p.best.generate.proseControls, advanced: p.best.generate.advanced });
+      library.expression = { proseControls: p.best.generate.proseControls, advanced: p.best.generate.advanced };
     } else { library.versions.push(version); library.calibrations[job.model] = version; }
     if (job.kind === "learn") library.activeVersionId = id;
     story.styleLibrary = normalizeStyleLibrary(library); article.storySettings = story; article.updatedAt = at;
@@ -177,7 +177,9 @@ async function restoreStyleApplication(id: string) {
       if (configurationFingerprint(configurationOf(article, snapshot.data.settings)) !== configurationFingerprint(p.best)) throw new AiInputError("当前配置已经修改，请先对照学习历史，避免覆盖人工修改");
       const before = application.before;
       article.style = before.style;
-      article.aiGenerateSettings = restoreStyleGenerateSettings(articleAiSettings(article, "generate", snapshot.data.settings), before.generate);
+      if (application.beforeExpression) library.expression = application.beforeExpression;
+      else if (application.beforeExpression === null || Object.values(before.generate.inheritance ?? {}).includes("global")) delete library.expression;
+      else library.expression = { proseControls: before.generate.proseControls, advanced: before.generate.advanced };
       library.scenes = before.scenes; library.activeVersionId = undefined;
       article.storySettings = { ...normalizeArticleStorySettings(article.storySettings), advancedStyle: before.advancedStyle };
     } else {

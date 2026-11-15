@@ -18,6 +18,7 @@ export function emptyChat(outlineId: string, messages: Message[] = []): Outline[
     title: messages[0]?.text.slice(0, 24) || "新对话",
     messages,
     draft: "",
+    mode: "normal",
     includePrevious: true,
     includeCharacters: true,
     lastReadMessageId,

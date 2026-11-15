@@ -2062,6 +2062,8 @@ button:disabled {
   position: relative;
 }
 
+.chat-mode-switch { flex: 0 0 auto; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+
 .full-outline-chat-modal {
   display: flex;
   flex-direction: column;

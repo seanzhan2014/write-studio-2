@@ -1,4 +1,4 @@
-import { articleAiSettings, overrideAiSettings } from "./ai-settings-inheritance.ts";
+import { writingDefaults, overrideAiSettings } from "./ai-settings-inheritance.ts";
 import { STYLE_FIELDS, GENERATE_FIELDS, normalizeAdvanced, advancedText, type StyleAdvanced } from "./advanced-writing.ts";
 import { normalizeAiGenerateOptions, type AiGenerateOptions } from "./generate-options.ts";
 
@@ -6,7 +6,8 @@ export type ReferenceDocument = { id: string; title: string; text: string };
 export type ScenePreference = { name: string; when: string; instruction: string };
 export type StyleConfiguration = { style: string; advancedStyle: StyleAdvanced; generate: AiGenerateOptions; scenes: ScenePreference[]; notes: string };
 export type ConfigurationVersion = { id: string; name: string; createdAt: string; configuration: StyleConfiguration; model?: string; baseFingerprint?: string; modelFingerprint?: string };
-export type StyleLibrary = { references: ReferenceDocument[]; scenes: ScenePreference[]; versions: ConfigurationVersion[]; calibrations: Record<string, ConfigurationVersion>; locked: string[]; activeVersionId?: string };
+export type StyleExpression = Pick<AiGenerateOptions, "proseControls" | "advanced">;
+export type StyleLibrary = { references: ReferenceDocument[]; scenes: ScenePreference[]; versions: ConfigurationVersion[]; calibrations: Record<string, ConfigurationVersion>; locked: string[]; activeVersionId?: string; expression?: StyleExpression };
 export const MAX_REFERENCE_TOTAL = 240_000;
 export const MIN_STYLE_CONTENT_SCORE = 70;
 export const STYLE_TRIAL_INSTRUCTION = "按固定大纲完成当前场景；仅试写可迁移的表达方式，亲密情节留白，仅保留非露骨的关系变化与剧情作用。";
@@ -38,11 +39,11 @@ export function normalizeStyleLibrary(value: unknown): StyleLibrary {
     return { id: String(r.id ?? `reference-${i}`).slice(0, 100), title: String(r.title ?? `参考文章 ${i + 1}`).slice(0, 150), text };
   });
   function version(raw: unknown): ConfigurationVersion { const p = rec(raw); return { id: String(p.id ?? "").slice(0, 100), name: String(p.name ?? "配置版本").slice(0, 150), createdAt: String(p.createdAt ?? ""), configuration: normalizeConfiguration(p.configuration), ...(p.model ? { model: String(p.model).slice(0, 300), baseFingerprint: String(p.baseFingerprint ?? ""), modelFingerprint: String(p.modelFingerprint ?? "") } : {}) }; }
-  return { references, scenes: normalizeConfiguration({ scenes: v.scenes }).scenes, versions: (Array.isArray(v.versions) ? v.versions : []).slice(-20).map(version), calibrations: Object.fromEntries(Object.entries(rec(v.calibrations)).slice(0, 30).map(([key, val]) => [key, version(val)])), locked: (Array.isArray(v.locked) ? v.locked : []).map(String).slice(0, 100), ...(typeof v.activeVersionId === "string" ? { activeVersionId: v.activeVersionId } : {}) };
+  return { references, scenes: normalizeConfiguration({ scenes: v.scenes }).scenes, versions: (Array.isArray(v.versions) ? v.versions : []).slice(-20).map(version), calibrations: Object.fromEntries(Object.entries(rec(v.calibrations)).slice(0, 30).map(([key, val]) => [key, version(val)])), locked: (Array.isArray(v.locked) ? v.locked : []).map(String).slice(0, 100), ...(typeof v.activeVersionId === "string" ? { activeVersionId: v.activeVersionId } : {}), ...(v.expression ? { expression: { proseControls: normalizeAiGenerateOptions(v.expression).proseControls, advanced: normalizeAiGenerateOptions(v.expression).advanced } } : {}) };
 }
 type ConfiguredArticle = { style: string; aiGenerateSettings: unknown; storySettings?: { advancedStyle?: StyleAdvanced; styleLibrary?: StyleLibrary } };
 export function configurationOf(article: ConfiguredArticle, settings?: object): StyleConfiguration {
-  return normalizeConfiguration({ style: article.style, advancedStyle: article.storySettings?.advancedStyle, generate: settings ? articleAiSettings({ aiGenerateSettings: normalizeAiGenerateOptions(article.aiGenerateSettings), chapters: [] }, "generate", settings) : article.aiGenerateSettings, scenes: article.storySettings?.styleLibrary?.scenes });
+  return normalizeConfiguration({ style: article.style, advancedStyle: article.storySettings?.advancedStyle, generate: settings ? writingDefaults({ ...article, aiGenerateSettings: normalizeAiGenerateOptions(article.aiGenerateSettings), chapters: [] }, settings) : article.storySettings?.styleLibrary?.expression ?? article.aiGenerateSettings, scenes: article.storySettings?.styleLibrary?.scenes });
 }
 export function modelConfiguration(article: ConfiguredArticle, model: string, settings?: object) {
   const base = configurationOf(article, settings);

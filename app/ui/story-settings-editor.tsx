@@ -8,7 +8,6 @@ import { useStudio, type Article, type Character } from "@/app/studio-state";
 import { CHARACTER_PROFILE_KEYS, EMPTY_CHARACTER_PROFILE, STORY_FIELD_KEYS, countChapterSettingChanges, countOutlineSettingChanges, normalizeArticleStorySettings, normalizeCharacterProfile, normalizeChapterSettings, resolveChapterSettings, resolveOutlineSettings, type CharacterProfileKey, type ChapterSettings, type OverrideScope, type SettingSource, type StoryFieldKey } from "@/lib/story-settings";
 import { CharacterPhotoEntry } from "./character-photos";
 import { AdvancedWritingFields } from "./advanced-writing";
-import { ChapterAiSettings } from "./ai-settings-inheritance";
 import { TaskParameterSettings } from "./task-parameter-settings";
 import { STYLE_FIELDS } from "@/lib/advanced-writing";
 import { ScrollableDrawer } from "./overlays";
@@ -169,7 +168,6 @@ export function ScopedSettingsInline({ level, targetId, includeTaskSettings = tr
   const inheritedCount = tab === "story" ? inheritedStoryCount : tab === "characters" ? inheritedCharacterCount : inheritedRelationshipCount;
 
   return <div className="inline-story-settings">
-    {includeTaskSettings && level === "chapter" && <ChapterAiSettings chapterId={targetId} />}
     {includeTaskSettings && level === "outline" && <TaskParameterSettings level="outline" targetId={targetId} />}
     <div className="inline-setting-toolbar">
       <SectionTabs value={tab} onChange={(nextTab) => { setTab(nextTab); setShowInherited(false); }} />
@@ -235,7 +233,6 @@ export function ChapterSettingsDrawer({ chapterId, opened = true, onClose }: { c
 
   const visibleCharacters = resolved.characters.filter((person) => !person.archived && `${person.name}${person.aliases.join("")}${Object.values(person.profile).join("")}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (!onlyChanges || Boolean(settings.characters[person.id])));
   return <ScrollableDrawer opened={opened} onClose={onClose} position={compact ? "bottom" : "right"} size={compact ? "100%" : 620} title={<div className="chapter-settings-title"><span>{chapter.title}</span><small>{resolved.inheritedFromChapter ? `继承${resolved.inheritedFromChapter.title}` : "继承文章设定"} · 本章修改 {changeCount} 项</small></div>} closeButtonProps={{ "aria-label": "关闭章节设定" }} classNames={{ content: "story-settings-drawer", body: "story-settings-drawer-body" }}>
-    <ChapterAiSettings chapterId={chapterId} />
     <div className="chapter-setting-toolbar"><Checkbox checked={onlyChanges} onChange={(event) => setOnlyChanges(event.currentTarget.checked)} label="只看本章修改" /><Text size="sm" c="dimmed">持续修改会影响后续 {futureCount} 章</Text></div>
     {lastChange && <div className="setting-undo" role="status"><span>已修改“{lastChange.label}”</span><button type="button" onClick={() => { studio.updateChapter(chapter.id, { settings: lastChange.settings }); setLastChange(null); }}>撤销</button></div>}
     <SectionTabs value={tab} onChange={setTab} />

@@ -1,4 +1,4 @@
-import { articleAiSettings } from "@/lib/ai-settings-inheritance";
+import { globalAiSettings } from "@/lib/ai-settings-inheritance";
 import { normalizeTaskConcurrency } from "@/lib/task-concurrency";
 import { resolvePhotoModel } from "./photo-model-resolution";
 import { photoModelOptions } from "@/lib/photo-model-resolution";
@@ -103,7 +103,7 @@ async function snapshotFor(id: string, draftValue: unknown) {
   if (referenceCount && !capability) throw new Error("此模型没有可用的参考图或 edit 版本，请选择其他图像模型");
   if (capability?.required && !referenceCount) throw new Error("此模型需要参考照片");
   if (capability?.maxImages && referenceCount > capability.maxImages) throw new Error(`此模型最多支持 ${capability.maxImages} 张参考图（包括修改底图）`);
-  const style = photoStyle(draft, gallery, articleAiSettings(article, "illustration", data?.settings).stylePreset);
+  const style = photoStyle(draft, gallery, globalAiSettings("illustration", data?.settings).stylePreset);
   style.stylePreset = resolveIllustrationStyle(style.stylePreset, styles).value;
   const personSnapshot = { name: person.name, age: person.profile?.age || "", appearance: person.profile?.appearance || "" };
   const prompt = [`人物定妆照片：${person.name}。年龄：${personSnapshot.age || "以参考照片为准"}。外貌：${personSnapshot.appearance || "以参考照片及画面要求为准"}。`, `构图：${draft.pose || "正面半身"}。${draft.prompt}`, referenceCount ? `${basePhoto ? "第一张图片是修改底图，" : ""}其余参考照片用于保持同一人物的脸型、五官和体态；只调整本次要求的内容。` : "", illustrationVisualDirection(style.stylePreset, "", styles), "单个人物，清晰完整，无文字、水印或拼图。"].filter(Boolean).join("\n");

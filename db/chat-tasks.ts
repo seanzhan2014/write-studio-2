@@ -136,7 +136,7 @@ export async function managedChatStream(row: Row) {
         }, 1_000);
         let failure = "";
         try {
-          const source = await abortable(streamChat({ reasoningEffort: taskReasoningEffort(options), outlineId: String(row.outline_id), message: String(row.instruction), model: options.configuredModelId, sessionId: options.sessionId, includePrevious: options.includePrevious, includeCharacters: options.includeCharacters, context: options.promptContext }, controller.signal), controller.signal);
+          const source = await abortable(streamChat({ reasoningEffort: taskReasoningEffort(options), outlineId: String(row.outline_id), message: String(row.instruction), model: options.configuredModelId, sessionId: options.sessionId, mode: options.chatMode, modePrompt: options.chatModePrompt, includePrevious: options.includePrevious, includeCharacters: options.includeCharacters, context: options.promptContext }, controller.signal), controller.signal);
           phase = "generating";
           await persist();
           chatLog("upstream_ready", id, { elapsedMs: Date.now() - Date.parse(String(row.started_at)) });

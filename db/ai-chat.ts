@@ -11,8 +11,10 @@ import { findModel } from "@/db/ai-models";
 import { AiInputError } from "@/db/ai-errors";
 
 import { upstream, sseToTextStream } from "@/db/ai-transport";
+import { chatModeInstruction, normalizeChatMode, type ChatMode } from "@/lib/chat-modes";
+import { readStudioState } from "@/db/studio-state";
 
-export async function streamChat(input: { outlineId: string; message: string; model?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; context?: SelectedAiContext } & ReasoningOptions, signal?: AbortSignal) {
+export async function streamChat(input: { outlineId: string; message: string; model?: string; mode?: ChatMode; modePrompt?: string; includePrevious?: boolean; includeCharacters?: boolean; sessionId?: string; context?: SelectedAiContext } & ReasoningOptions, signal?: AbortSignal) {
   const source = suppliedPromptContext(input.context, input.outlineId, "chat")
     ?? await selectPromptContext(input.outlineId, "chat", input);
   const model = await findModel(input.model);
@@ -21,7 +23,9 @@ export async function streamChat(input: { outlineId: string; message: string; mo
     const answer = `我参考了当前大纲、${source.previousOutlines.length} 条相关前文结构${source.characters.length ? `，并匹配到人物 ${source.characters.map((item) => item.name).join("、")}` : ""}。当前段落已经承接已有线索，建议把角色此刻必须行动的原因再明确一拍：先确认一个无法回避的事实，再作出选择，让冲突自然升级。`;
     return plainTextStream(answer, signal);
   }
-  const system = composeSystemPrompt(CHAT_SYSTEM_PROMPT, model.systemPrompt);
+  const mode = normalizeChatMode(input.mode);
+  const prompts = input.modePrompt === undefined ? (await readStudioState()).data?.settings.chatModePrompts : { [mode]: input.modePrompt };
+  const system = composeSystemPrompt(`${CHAT_SYSTEM_PROMPT}\n${chatModeInstruction(mode, prompts)}`, model.systemPrompt);
   const prompt = chatPrompt(source, input.message, system, model.maxInputCharacters);
   const handle = await upstream(model, prompt.messages, signal, true, {}, input.reasoningEffort);
   if (!handle.response.body) { handle.cleanup(); throw new Error("模型没有返回流"); }

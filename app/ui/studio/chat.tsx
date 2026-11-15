@@ -1,6 +1,8 @@
 "use client";
 
 import { TaskParameterSettings } from "@/app/ui/task-parameter-settings";
+import { SegmentedControl } from "@mantine/core";
+import { CHAT_MODES, normalizeChatMode } from "@/lib/chat-modes";
 import { taskReasoningEffort, type TaskParameters } from "@/lib/task-parameters";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 
@@ -52,6 +54,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
   const chatModelReference = chatModelRecord?.id ?? String(chatParameters.chatModel).trim();
   const chatbotName = chatbotDisplayName(models, chatModelReference);
   const session = outline.chat.sessions.find(item => item.id === sessionId) ?? activeChatSession(outline);
+  const chatMode = normalizeChatMode(session?.mode);
   const selectSession = (id: string) => onSessionChange ? onSessionChange(id) : studio.setActiveChatSession(outline.id, id);
   const setDraft = (text: string) => studio.setChatDraft(outline.id, text, session?.id);
   const contextArticle = contextContent === undefined ? studio.currentArticle : {
@@ -122,7 +125,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
   const previous = chatContext?.previousOutlines ?? [];
   const matchedCharacters = chatContext?.characters ?? [];
   const contextCharacters = chatContext ? summarizeAiContext(chatContext, message).total : 0;
-  const quickPrompts = ["分析当前冲突", "检查人物动机", "寻找逻辑漏洞", "建议下一步"];
+  const quickPrompts = chatMode === "outline" ? ["整理当前情节概要", "检查事件因果", "完善人物动机", "规划后续大纲"] : chatMode === "writing" ? ["按当前大纲创作正文", "续写当前正文", "润色当前正文", "检查叙事节奏"] : ["分析当前冲突", "检查人物动机", "寻找逻辑漏洞", "建议下一步"];
 
   function resizeComposer(target = composerRef.current) {
     if (!target) return;
@@ -246,7 +249,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
         signal: AbortSignal.timeout(15_000),
         cache: "no-store",
         headers: { "Content-Type": "application/json", "Idempotency-Key": taskId },
-        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
+        body: JSON.stringify({ action: "submit", taskId, sessionId: targetSessionId, mode: normalizeChatMode(targetSession.mode), sessionTitle: submittedTitle, message: question, messages: submittedMessages, model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), estimatedCharacters: summarizeAiContext(promptContext, question).total, timeoutMs: chatModelRecord?.timeoutMs ?? 600_000, promptContext }),
       });
       const submitted = await submitResponse.json() as { revision?: number; task?: AiTask; messages?: Message[]; sessionTitle?: string; sessionUpdatedAt?: string; error?: string };
       if (!submitResponse.ok || submitted.revision === undefined || !submitted.task || !submitted.messages) throw new Error(submitted.error || "消息提交失败");
@@ -260,7 +263,7 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
       setChatResponseStage({ taskId, stage: "requesting-model" });
       try {
         if (controller.signal.aborted) return;
-        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), context: promptContext }) });
+        const response = await fetchFromServer(`/api/outlines/${encodeURIComponent(outline.id)}/chat/stream`, { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json", "Idempotency-Key": taskId }, body: JSON.stringify({ requestId: taskId, message: question, sessionId: targetSessionId, mode: normalizeChatMode(targetSession.mode), model: chatModelReference, reasoningEffort: taskReasoningEffort(chatParameters.chatReasoningEffort), includePrevious: chatContextSetting("chatIncludePrevious", targetSession.includePrevious), includeCharacters: chatContextSetting("chatIncludeCharacters", targetSession.includeCharacters), context: promptContext }) });
         if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})) as { error?: string }; throw new Error(payload.error || `${chatbotName} 失败（${response.status}）`); }
         setChatResponseStage({ taskId, stage: "waiting-first-token" });
         const reader = response.body.getReader();
@@ -388,6 +391,8 @@ export function ChatView({ models, outlineId, outlineTitle, onUseAsGenerate, onN
         {sessionsOpen && <div className="chat-session-popover" role="dialog" aria-label="聊天会话"><div className="chat-session-popover-head"><span className="ui-title">聊天会话</span></div>{outline.chat.sessions.map((item) => <button className={item.id === session.id ? "active" : ""} type="button" key={item.id} disabled={chatBusy} onClick={() => { cancelEditingMessage(); selectSession(item.id); setSessionsOpen(false); }}><span><span className="ui-title">{item.title}</span><small>{item.messages.length} 条 · {formatTime(item.updatedAt)}</small></span>{item.id === session.id && <Icon name="check" />}</button>)}</div>}
         {sessionMenuOpen && <div className="chat-session-menu" role="menu"><button role="menuitem" type="button" onClick={() => { const title = window.prompt("会话名称", session.title); if (title?.trim()) studio.renameChatSession(outline.id, session.id, title); setSessionMenuOpen(false); }}><Icon name="edit" />重命名</button><button role="menuitem" type="button" onClick={() => { if (window.confirm("清空当前会话的全部消息？")) studio.clearChat(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="refresh" />清空消息</button><button role="menuitem" className="danger" type="button" onClick={() => { if (window.confirm("删除当前会话？")) studio.deleteChatSession(outline.id, session.id); setSessionMenuOpen(false); }}><Icon name="trash" />删除会话</button></div>}
       </header>
+
+      <div className="chat-mode-switch"><SegmentedControl aria-label="聊天模式" fullWidth value={chatMode} data={[...CHAT_MODES]} disabled={chatBusy || Boolean(editingMessage)} onChange={value => studio.setChatSetting(outline.id, "mode", normalizeChatMode(value), session.id)} /></div>
 
       <div className="chat-thread" ref={chatThreadRef}>
         <TaskParameterSettings level="outline" targetId={outline.id} groups={["聊天"]} models={models} value={onSessionChange ? chatOptions : undefined} onChange={onSessionChange ? setLocalChatOptions : undefined} />

@@ -985,9 +985,8 @@ export function ChapterActionSheet({ chapter, onClose, onNotice, onOpenOutline, 
     { key: "rename", label: "重命名", icon: "edit", onSelect: () => { const title = window.prompt("章节标题", chapter.title); if (title?.trim()) { studio.updateChapter(chapter.id, { title: title.trim().slice(0, 120) }); onNotice("章节已重命名"); } } },
     { key: "settings", label: `章节设定${countChapterSettingChanges(chapter.settings) ? ` · ${countChapterSettingChanges(chapter.settings)}` : ""}`, icon: "info", onSelect: onSettings },
     { key: "generate-names", label: "生成整章名称（含大纲）", icon: "spark", disabled: chapter.archived || !chapter.outlines.some((item) => !item.archived && item.plan.trim()), onSelect: () => {
-      onNotice(`正在生成「${chapter.title}」的名称候选…`);
       void generateWholeChapterNameCandidates(studio, models, chapter)
-        .then((added) => onNotice(added ? `已添加本章 ${added} 个名称候选；点击章节或大纲三点菜单左侧的图标选择` : "生成名称与已有版本相同"))
+        .then(() => onNotice(`「${chapter.title}」整章名称任务已加入 AI 任务`))
         .catch((error) => onNotice(error instanceof Error ? error.message : "整章名称生成失败"));
     } },
     { key: "create", label: "新建大纲", icon: "plus", onSelect: () => { const id = studio.createOutline(chapter.id); onOpenOutline(id); } },
