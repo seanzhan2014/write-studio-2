@@ -4,6 +4,8 @@ import { fullStudioFixture } from "../fixtures.mjs";
 const url = "/articles/article-main/outlines/outline-current/write";
 const pane = (page: Page, id: number) => page.getByRole("region", { name: `窗口 ${id}`, exact: true });
 const layout = (page: Page, name: string) => page.getByRole("toolbar", { name: "窗口布局" }).getByRole("button", { name, exact: true });
+const selectLayout = async (page: Page, name: string) => { await page.getByRole("button", { name: "窗口布局", exact: true }).click(); await layout(page,name).click(); };
+const layoutTrigger = (page: Page) => page.getByRole("button", { name: "窗口布局", exact: true });
 const choose = (page: Page, id: number, mode: string) => page.getByLabel(`窗口 ${id} 功能`, { exact: true }).selectOption(mode);
 
 test.beforeEach(async ({ request }) => {
@@ -15,11 +17,11 @@ test.describe("desktop multi workspace", () => {
   test.beforeEach(async ({ page }, info) => {
     test.skip(info.project.name !== "desktop-chromium");
     await page.goto(url);
-    await expect(layout(page, "单窗")).toHaveAttribute("aria-pressed", "true");
+    await expect(layoutTrigger(page)).toHaveAttribute("data-layout", "single");
   });
 
   test("all layouts remain available in focus mode and restore their proportions", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await expect(pane(page, 1)).toBeVisible();
     await expect(pane(page, 2)).toBeVisible();
     const splitter = page.getByRole("separator", { name: "调整左右窗口宽度" });
@@ -28,23 +30,23 @@ test.describe("desktop multi workspace", () => {
     await expect(splitter).toHaveAttribute("aria-valuenow", "52");
     await page.getByRole("button", { name: "专注写作", exact: true }).click();
     await expect(page.locator(".sidebar")).toBeHidden();
-    await expect(layout(page, "左右")).toBeVisible();
-    await layout(page, "上下").click();
+    await expect(layoutTrigger(page)).toBeVisible();
+    await selectLayout(page, "上下");
     const a = (await pane(page, 1).boundingBox())!;
     const b = (await pane(page, 2).boundingBox())!;
     expect(b.y).toBeGreaterThan(a.y + a.height - 2);
-    await layout(page, "四宫格").click();
+    await selectLayout(page, "四宫格");
     await expect(pane(page, 4)).toBeVisible();
     await page.getByRole("button", { name: "退出专注写作", exact: true }).click();
-    await expect(layout(page, "四宫格")).toHaveAttribute("aria-pressed", "true");
+    await expect(layoutTrigger(page)).toHaveAttribute("data-layout", "grid");
     await expect(page.locator(".workspace-grid").getByRole("separator")).toHaveCount(2);
     await page.reload();
-    await expect(layout(page, "四宫格")).toHaveAttribute("aria-pressed", "true");
+    await expect(layoutTrigger(page)).toHaveAttribute("data-layout", "grid");
     await expect(page.getByRole("separator", { name: "调整左右窗口宽度" })).toHaveAttribute("aria-valuenow", "52");
   });
 
   test("grid has two shared dividers and pointer resizing moves complete rows and columns", async ({ page }, info) => {
-    await layout(page, "四宫格").click();
+    await selectLayout(page, "四宫格");
     const grid = (await page.locator(".workspace-grid").boundingBox())!;
     const vertical = (await page.getByRole("separator", { name: "调整左右窗口宽度" }).boundingBox())!;
     await page.mouse.move(vertical.x + vertical.width / 2, grid.y + 80);
@@ -72,7 +74,7 @@ test.describe("desktop multi workspace", () => {
   test("all sixteen function combinations are selectable without errors", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     for (const left of ["write", "chat", "generate", "illustrations"]) {
       await choose(page, 1, left);
       for (const right of ["write", "chat", "generate", "illustrations"]) {
@@ -85,7 +87,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("two bodies select versions independently without changing the current body", async ({ page, request }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await choose(page, 2, "write");
     await page.getByLabel("窗口 2 正文版本", { exact: true }).selectOption("version-manual");
     await expect(pane(page, 1).getByLabel("正文内容", { exact: true })).toContainText("确认潮汐表");
@@ -98,7 +100,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("body drafts survive changing layout and function and are quoted by chat", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await pane(page, 1).getByLabel("正文内容", { exact: true }).press("Enter");
     await pane(page, 1).getByLabel("正文编辑器", { exact: true }).fill("正在编辑的新草稿，尚未保存。");
     await expect(pane(page, 2).getByRole("status")).toContainText("窗口 1");
@@ -106,16 +108,16 @@ test.describe("desktop multi workspace", () => {
     await choose(page, 1, "generate");
     await choose(page, 1, "write");
     await expect(pane(page, 1).getByLabel("正文编辑器", { exact: true })).toHaveValue("正在编辑的新草稿，尚未保存。");
-    await layout(page, "四宫格").click();
-    await layout(page, "单窗").click();
-    await layout(page, "左右").click();
+    await selectLayout(page, "四宫格");
+    await selectLayout(page, "单窗");
+    await selectLayout(page, "左右");
     await expect(pane(page, 1).getByLabel("正文编辑器", { exact: true })).toHaveValue("正在编辑的新草稿，尚未保存。");
     await page.reload();
     await expect(pane(page, 1).getByLabel("正文编辑器", { exact: true })).toHaveValue("正在编辑的新草稿，尚未保存。");
   });
 
   test("chat sends a snapshot of the visible draft and has only copy actions", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await pane(page, 1).getByLabel("正文内容", { exact: true }).press("Enter");
     await pane(page, 1).getByLabel("正文编辑器", { exact: true }).fill("本次聊天必须引用的未保存正文。");
     let snapshot = "";
@@ -131,7 +133,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("two chat panes retain different sessions and drafts", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await choose(page, 1, "chat");
     await pane(page, 2).locator(".chat-session-switcher").click();
     await pane(page, 2).getByRole("button", { name: /人物动机分支/ }).click();
@@ -145,7 +147,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("generation and illustration forms keep separate inputs", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await choose(page, 1, "generate");
     await choose(page, 2, "generate");
     await pane(page, 1).getByPlaceholder("补充生成要求", { exact: true }).fill("左侧生成指令");
@@ -163,7 +165,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("grid controls fit narrow desktop windows and share the same body draft", async ({ page }, info) => {
-    await layout(page, "四宫格").click();
+    await selectLayout(page, "四宫格");
     await choose(page, 2, "write");
     await pane(page, 1).getByLabel("正文内容", { exact: true }).press("Enter");
     await pane(page, 1).getByLabel("正文编辑器", { exact: true }).fill("同一正文的共享草稿。");
@@ -184,7 +186,7 @@ test.describe("desktop multi workspace", () => {
   });
 
   test("pane drafts recover from IndexedDB when the tab session is gone", async ({ page }) => {
-    await layout(page, "左右").click();
+    await selectLayout(page, "左右");
     await pane(page, 1).getByLabel("正文内容", { exact: true }).press("Enter");
     await pane(page, 1).getByLabel("正文编辑器", { exact: true }).fill("从浏览器本地数据库恢复的窗口草稿。");
     await expect.poll(() => page.evaluate(async () => {

@@ -1,0 +1,38 @@
+/* Shared working-area chrome. Content controls stay with their pane. */
+.workspace-unified-header { flex: 0 0 48px; min-height:48px; gap:12px; padding:0 12px; }
+.workspace-unified-header .breadcrumb { flex:1; overflow:hidden; }
+.workspace-unified-header .breadcrumb > button { max-width:150px; font-size:12px; flex:0 1 auto; }
+.workspace-unified-header .breadcrumb input { flex:1; width:100%; max-width:300px; min-width:70px; font-size:13px; }
+.workspace-unified-header .workspace-meta { gap:2px; flex:0 0 auto; }
+.workspace-unified-header .workspace-meta .icon-button { width:32px; height:32px; }
+.workspace-unified-header .save-state { padding:0 6px; gap:5px; font-size:12px; }
+.workspace-unified-header .save-state.saved .save-state-label { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.workspace-focus-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.workspace-mode-tabs { display:flex; align-items:center; gap:2px; flex:0 0 auto; }
+.workspace-mode-tabs > button { position:relative; min-height:32px; padding:4px 10px; border:0; border-radius:6px; background:transparent; color:var(--text-secondary); cursor:pointer; white-space:nowrap; }
+.workspace-mode-tabs > button[aria-selected="true"] { background:var(--surface-hover); color:var(--text-primary); font-weight:var(--weight-label); }
+.workspace-mode-tabs > button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.workspace-layout-glyph { display:grid; gap:2px; width:19px; height:16px; padding:2px; border:1px solid currentColor; border-radius:2px; color:inherit; }
+.workspace-layout-glyph > span { min-height:0; min-width:0; background:currentColor; opacity:.4; border-radius:1px; }
+.workspace-layout-glyph.layout-columns { grid-template-columns:1fr 1fr; }
+.workspace-layout-glyph.layout-rows { grid-template-rows:1fr 1fr; }
+.workspace-layout-glyph.layout-grid { grid-template:1fr 1fr / 1fr 1fr; }
+.workspace-layout-popover { padding:8px; background:var(--surface); color:var(--text-primary); border:1px solid var(--border); }
+.workspace-layout-popover .workspace-layout-options { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.workspace-layout-popover .workspace-layout-options > button { display:flex; flex-direction:column; align-items:center; gap:8px; min-width:100px; padding:12px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--text-secondary); cursor:pointer; }
+.workspace-layout-popover .workspace-layout-options > button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--surface-hover); }
+.workspace-layout-popover .workspace-layout-glyph { width:50px; height:32px; }
+.workspace-layout-popover .workspace-layout-options > button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.workspace-mode-select { border:0; background:transparent; color:var(--text-primary); min-height:44px; max-width:82px; padding:4px; }
+.multi-workspace .workspace-pane-toolbar { min-height:40px; height:40px; padding:3px 10px; }
+.workspace-pane-mode > span { display:none; }
+@media (max-width:1050px) { .workspace-unified-header .breadcrumb > button,.workspace-unified-header .breadcrumb > span { display:none; } .workspace-unified-header .breadcrumb input { min-width:60px; } .workspace-mode-tabs > button { padding-inline:8px; } }
+@media (max-width:767px) {
+  .mobile-workspace-header { display:flex; flex:0 0 52px; min-height:52px; height:52px; padding:4px 8px; gap:4px; }
+  .mobile-workspace-header > div { min-width:0; flex:1; }
+  .mobile-workspace-header .mobile-header-title-line { justify-content:flex-start; }
+  .mobile-workspace-header .mobile-outline-title-toggle { min-width:0; max-width:100%; text-align:left; justify-content:flex-start; }
+  .mobile-workspace-header > div > span { font-size:11px; text-align:left; display:block; }
+  .mobile-workspace-header .icon-button { flex:0 0 44px; width:44px; height:44px; }
+  .mobile-workspace-header .workspace-mode-select { flex:0 0 auto; }
+}

@@ -1,5 +1,7 @@
 "use client";
 
+import { WorkspaceModeSelect, type WorkspaceMode } from "./workspace-chrome";
+
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 
 import { OutlineTaskIndicator } from "@/app/ui/task-interaction";
@@ -15,7 +17,7 @@ import { resolvedOutlineContent } from "@/lib/outline-content";
 import { normalizeOutlineTitle, outlineDisplayTitle } from "@/lib/outline-title";
 import { normalizeNameVersionState } from "@/lib/name-versions";
 
-import { chatSessionHasUnread, useStudio, type Version } from "@/app/studio-state";
+import { useStudio, type Version } from "@/app/studio-state";
 
 import { OutlineSettingsDrawer } from "@/app/ui/story-settings-editor";
 import { countOutlineSettingChanges } from "@/lib/story-settings";
@@ -76,12 +78,13 @@ function MobileOutlineTitleMenu({ outlineId, title }: { outlineId: string; title
   </Menu>;
 }
 
-export function MobileHeader({ title, status, onBack, onVersions, showVersions, outlineId }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean; outlineId?: string }) {
+export function MobileHeader({ title, status, onBack, onVersions, showVersions, outlineId, mode, onMode, onMore }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean; outlineId?: string; mode?: WorkspaceMode; onMode?: (mode: WorkspaceMode) => void; onMore?: () => void }) {
   return (
-    <div className="mobile-header">
+    <div className={mode ? "mobile-header mobile-workspace-header" : "mobile-header"}>
       <IconButton name="back" label="返回大纲" variant="glass" size="large" className="mobile-back-button" onClick={onBack} />
       <div><div className="mobile-header-title-line">{outlineId ? <MobileOutlineTitleMenu key={outlineId} outlineId={outlineId} title={title} /> : <span className="ui-title">{title}</span>}{outlineId && <OutlineTaskIndicator outlineId={outlineId} />}</div><span>{status}</span></div>
-      {showVersions ? <IconButton name="versions" label="选择正文版本" variant="glass" size="large" onClick={onVersions} /> : <span className="mobile-header-placeholder" />}
+      {mode && onMode && <WorkspaceModeSelect value={mode} onChange={onMode} />}
+      {onMore ? <IconButton name="more" label="更多操作" onClick={onMore} className="workspace-more-trigger" /> : showVersions ? <IconButton name="versions" label="选择正文版本" variant="glass" size="large" onClick={onVersions} /> : <span className="mobile-header-placeholder" />}
     </div>
   );
 }
@@ -101,6 +104,7 @@ export function OutlineWorkspace({
   onOpenRewriteSource,
   onClearPreview,
   onWritingEditingChange,
+  onBack,
 }: {
   mode: "write" | "chat" | "generate" | "illustrations";
   illustrationHistoryTab: string;
@@ -116,6 +120,7 @@ export function OutlineWorkspace({
   onOpenRewriteSource: (sourceId: string) => void;
   onClearPreview: () => void;
   onWritingEditingChange: (editing: boolean) => void;
+  onBack?: () => void;
 }) {
   const studio = useStudio();
   const models = useConfiguredModels();
@@ -136,7 +141,6 @@ export function OutlineWorkspace({
   const activeIllustrationSource = illustrationSource?.currentContent === resolvedOutlineContent(studio.currentOutline)
     && illustrationSource.currentVersionId === studio.currentOutline.currentVersionId ? illustrationSource : null;
   const displayTitle = outlineDisplayTitle(outline);
-  const chatResultReady = mode !== "chat" && studio.currentOutline.chat.sessions.some(chatSessionHasUnread);
   useDismissOnOutside(moreOpen, () => setMoreOpen(false), ".workspace-more-trigger, .workspace-more-menu");
 
   async function saveAsCurrentContent() {
@@ -152,26 +156,7 @@ export function OutlineWorkspace({
 
   return (
     <div className="workspace">
-      <header className="workspace-header">
-        {!focusMode ? (
-          <div className="breadcrumb"><button type="button" onClick={() => { window.history.pushState({}, "", `/articles/${studio.currentArticle.id}/chapters/${studio.currentChapter.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{outline.chapter}</button><span>/</span><input value={normalizeOutlineTitle(outline.title)} placeholder={displayTitle} onChange={(event) => studio.updateOutline(studio.currentOutline.id, { title: event.target.value.slice(0, 80) })} aria-label="大纲标题" /><OutlineTaskIndicator outlineId={studio.currentOutline.id} fallback={studio.currentOutline.state} /></div>
-        ) : <span className="ui-title">专注写作</span>}
-        <div className="workspace-meta">
-          <span className={`save-state ${studio.saveStatus}`}><i /> {saveStatusLabel(studio.saveStatus)}</span>
-          {!focusMode && <button className="text-button" type="button" onClick={onVersions}><Icon name="versions" />版本</button>}
-          <IconButton name={focusMode ? "close" : "focus"} label={focusMode ? "退出专注写作" : "专注写作"} onClick={onFocus} />
-          {!focusMode && <IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={() => setMoreOpen((open) => !open)} />}
-        </div>
-      </header>
-
-      {!focusMode && (
-        <div className="mode-bar" role="tablist" aria-label="工作模式">
-          <button className={mode === "write" ? "active" : ""} role="tab" aria-selected={mode === "write"} type="button" onClick={() => onMode("write")}>写作</button>
-          <button className={mode === "chat" ? "active" : ""} role="tab" aria-label="聊天" aria-selected={mode === "chat"} type="button" onClick={() => onMode("chat")}><span>聊天</span>{chatResultReady && <i className="chat-result-ready" title="聊天已生成新回复" aria-label="有新生成的聊天回复" />}</button>
-          <button className={mode === "generate" ? "active" : ""} role="tab" aria-selected={mode === "generate"} type="button" onClick={() => onMode("generate")}>生成</button>
-          <button className={mode === "illustrations" ? "active" : ""} role="tab" aria-selected={mode === "illustrations"} type="button" onClick={() => onMode("illustrations")}>插图</button>
-        </div>
-      )}
+      <MobileHeader title={displayTitle} status={saveStatusLabel(studio.saveStatus)} onBack={onBack ?? (()=>onMode("outline-home"))} onVersions={onVersions} showVersions={false} outlineId={studio.currentOutline.id} mode={mode} onMode={onMode} onMore={()=>setMoreOpen(value=>!value)} />
 
       {mode === "write" && <WritingView focusMode={focusMode} previewVersion={previewVersion} onOpenRewriteSource={onOpenRewriteSource} onClearPreview={onClearPreview} onNotice={onNotice} onEditingChange={onWritingEditingChange} onIllustration={openIllustration} />}
       {mode === "chat" && <ChatView models={models} outlineTitle={displayTitle} onNotice={onNotice} onUseAsGenerate={(text) => { setGenerateSeed(text); void onMode("generate"); }} />}
@@ -179,7 +164,7 @@ export function OutlineWorkspace({
       {(mode === "illustrations" || illustrationOpened) && <div className="illustration-mode-panel" hidden={mode !== "illustrations"}>
         <IllustrationGenerator outlineId={studio.currentOutline.id} content={activeIllustrationSource?.content ?? outline.content} selectedExcerpt={activeIllustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationPromptModel)} defaultImageModel={String(resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!.illustrationImageModel)} onClose={() => onMode("write")} />
       </div>}
-      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定{countOutlineSettingChanges(studio.currentOutline.settings) ? ` · ${countOutlineSettingChanges(studio.currentOutline.settings)}` : ""}</button><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
+      {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={()=>{onVersions();setMoreOpen(false);}}>管理正文版本</button><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定{countOutlineSettingChanges(studio.currentOutline.settings) ? ` · ${countOutlineSettingChanges(studio.currentOutline.settings)}` : ""}</button><button type="button" onClick={() => { studio.saveVersion(studio.currentOutline.id, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(studio.currentOutline.id, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${displayTitle}」？`)) studio.deleteOutline(studio.currentOutline.id); setMoreOpen(false); }}>删除大纲</button></div>}
       {settingsOpen && <OutlineSettingsDrawer outlineId={studio.currentOutline.id} onClose={() => setSettingsOpen(false)} />}
     </div>
   );

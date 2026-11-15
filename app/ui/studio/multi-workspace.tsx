@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ComponentProps, type CSSProperties, type PointerEvent } from "react";
 import { useMediaQuery } from "@mantine/hooks";
+import { WorkspaceLayoutPicker, WorkspaceModeTabs } from "./workspace-chrome";
 import { useStudio, type Version } from "@/app/studio-state";
 import { resolveAiSettings } from "@/lib/ai-settings-inheritance";
 import { resolvedOutlineContentName, timestampContentName } from "@/lib/content-name.mjs";
@@ -162,14 +163,11 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
   const selectedPane = state.panes.find(pane => pane.id === versionPane);
 
   return <div className="workspace multi-workspace">
-    <div className="workspace-layout-toolbar" role="toolbar" aria-label="窗口布局">
-      <div className="workspace-layout-options">{layouts.map(item => <button key={item.value} type="button" disabled={!ready} aria-pressed={state.layout === item.value} onClick={() => setLayout(item.value)}>{item.label}</button>)}</div>
-      <IconButton name={focusMode ? "close" : "focus"} label={focusMode ? "退出专注写作" : "专注写作"} onClick={onFocus} />
-    </div>
-    {!focusMode && <header className="workspace-header">
-      <div className="breadcrumb"><button type="button" onClick={() => { window.history.pushState({}, "", `/articles/${studio.currentArticle.id}/chapters/${studio.currentChapter.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{outline.chapter}</button><span>/</span><input value={normalizeOutlineTitle(outline.title)} placeholder={title} onChange={event => studio.updateOutline(outlineId, { title: event.target.value.slice(0, 80) })} aria-label="大纲标题" /><OutlineTaskIndicator outlineId={outlineId} /></div>
-      <div className="workspace-meta"><span className={`save-state ${studio.saveStatus}`}><i />{saveStatusLabel(studio.saveStatus)}</span><button className="text-button" type="button" onClick={() => setVersionPane(state.active)}><Icon name="versions" />版本</button><IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={() => setMoreOpen(value => !value)} /></div>
-    </header>}
+    <header className="workspace-header workspace-unified-header">
+      {!focusMode ? <div className="breadcrumb"><button type="button" onClick={() => { window.history.pushState({}, "", `/articles/${studio.currentArticle.id}/chapters/${studio.currentChapter.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{outline.chapter}</button><span>/</span><input value={normalizeOutlineTitle(outline.title)} placeholder={title} onChange={event => studio.updateOutline(outlineId, { title: event.target.value.slice(0, 80) })} aria-label="大纲标题" /><OutlineTaskIndicator outlineId={outlineId} /></div> : <span className="workspace-focus-title">{title}</span>}
+      {state.layout === "single" && <WorkspaceModeTabs value={state.panes[state.active].mode} onChange={next=>selectMode(state.active,next)} />}
+      <div className="workspace-meta"><span className={`save-state ${studio.saveStatus}`} title={saveStatusLabel(studio.saveStatus)} aria-label={saveStatusLabel(studio.saveStatus)}><i /><span className="save-state-label">{saveStatusLabel(studio.saveStatus)}</span></span><WorkspaceLayoutPicker value={state.layout} onChange={setLayout} disabled={!ready} /><IconButton name={focusMode?"close":"focus"} label={focusMode?"退出专注写作":"专注写作"} onClick={onFocus} /><IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={()=>setMoreOpen(value=>!value)} /></div>
+    </header>
     <div className="workspace-grid" ref={gridRef} data-layout={state.layout} data-dragging={dragging || undefined} style={{ "--split-x": `${state.x * 100}%`, "--split-y": `${state.y * 100}%` } as CSSProperties}>
       {state.panes.map(pane => <WorkspacePane key={pane.id} pane={pane} visible={visibleIds.includes(pane.id)} position={visibleIds.indexOf(pane.id)} split={state.layout !== "single"} active={state.active === pane.id}
         models={models} title={title} outline={outline} focusMode={focusMode} onActivate={() => activate(pane.id)} onMode={next => selectMode(pane.id, next)} onUpdate={patch => updatePane(pane.id, patch)}
@@ -184,7 +182,7 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
       {state.layout === "grid" && <button type="button" className="workspace-divider-cross" aria-label="同时调整窗口宽高" onPointerDown={event => startResize(event, "both")} onPointerMove={resize} onPointerUp={stopResize} onPointerCancel={stopResize} onLostPointerCapture={() => { drag.current = null; setDragging(false); }} onDoubleClick={() => setState(current => ({ ...current, x: .5, y: .5 }))} />}
     </div>
     {versionPane !== null && <VersionDrawer selectedVersionId={selectedPane?.version === "current" ? undefined : selectedPane?.version} onClose={() => setVersionPane(null)} onPreview={id => { if (selectedPane) { updatePane(selectedPane.id, { mode: "write", version: id }); } }} onClearPreview={() => { if (selectedPane) { updatePane(selectedPane.id, { mode: "write", version: "current" }); } }} onOpenRewriteSource={onOpenRewriteSource} onNotice={onNotice} />}
-    {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定</button><button type="button" onClick={() => { studio.saveVersion(outlineId, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(outlineId, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${title}」？`)) studio.deleteOutline(outlineId); setMoreOpen(false); }}>删除大纲</button></div>}
+    {moreOpen && <div className="workspace-more-menu"><button type="button" onClick={()=>{setVersionPane(state.active);setMoreOpen(false);}}>管理正文版本</button><button type="button" onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>大纲设定</button><button type="button" onClick={() => { studio.saveVersion(outlineId, timestampContentName(), "手动", resolvedOutlineContent(studio.currentOutline)); setMoreOpen(false); }}>保存正文版本</button><button type="button" onClick={() => void saveAsCurrentContent()}>另存为正文版本</button><button type="button" onClick={() => { studio.updateOutline(outlineId, { archived: true }); setMoreOpen(false); }}>归档大纲</button><button className="danger" type="button" onClick={() => { if (window.confirm(`删除「${title}」？`)) studio.deleteOutline(outlineId); setMoreOpen(false); }}>删除大纲</button></div>}
     {settingsOpen && <OutlineSettingsDrawer outlineId={outlineId} onClose={() => setSettingsOpen(false)} />}
   </div>;
 }
@@ -226,10 +224,10 @@ function WorkspacePane({ pane, visible, position, split, active, models, title, 
   const illustrationSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!;
   const bodyVisible = visible && pane.mode === "write";
   return <section className="workspace-pane" data-position={position} data-active={active || undefined} hidden={!visible} aria-label={`窗口 ${pane.id + 1}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
-    <div className="workspace-pane-toolbar">
+    {split && <div className="workspace-pane-toolbar">
       {!split && !focusMode ? <div className="mode-bar" role="tablist" aria-label="工作模式">{modes.map(item => <button key={item.value} role="tab" type="button" aria-selected={pane.mode === item.value} className={pane.mode === item.value ? "active" : ""} onClick={() => onMode(item.value)}>{item.value === "write" ? "写作" : item.label}</button>)}</div> : <label className="workspace-pane-mode"><span>{pane.id + 1}</span><select aria-label={`窗口 ${pane.id + 1} 功能`} value={pane.mode} onChange={event => onMode(event.target.value as Mode)}>{modes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>}
       {pane.mode === "write" && (split || focusMode) && <div className="workspace-pane-versions"><select aria-label={`窗口 ${pane.id + 1} 正文版本`} disabled={editing} value={preview?.id ?? "current"} onChange={event => onUpdate({ version: event.target.value })}><option value="current">当前正文</option>{studio.currentOutline.content && <option value={directContentId(studio.currentOutline.id)}>直接保存正文</option>}{studio.currentOutline.versions.map(version => <option key={version.id} value={version.id}>{version.name}</option>)}</select><IconButton name="versions" label={`窗口 ${pane.id + 1} 版本管理`} onClick={onVersions} disabled={editing} /></div>}
-    </div>
+    </div>}
     {opened.includes("write") && <div className="workspace-pane-view" hidden={!bodyVisible}>
       <WritingView key={pane.version} sharedContent={sharedContent} focusMode={focusMode} previewVersion={preview} onOpenRewriteSource={onOpenRewriteSource} onClearPreview={() => onUpdate({ version: "current" })} onNotice={onNotice} onEditingChange={editingCallback}
         onSelectVersion={split ? version => onUpdate({ version }) : undefined} draftStorageKey={`writer-studio:pane-draft:${studio.currentOutline.id}:${pane.id}:${pane.version}`}

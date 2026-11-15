@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { ColorSchemeScript } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "./globals.css";
+import "./ui/studio/workspace-chrome.css";
 import OfflineBootstrap from "./offline-bootstrap";
 
 export async function generateMetadata(): Promise<Metadata> {

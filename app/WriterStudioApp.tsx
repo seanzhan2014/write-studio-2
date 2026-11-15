@@ -295,7 +295,7 @@ export function WriterStudioInner() {
           setIllustrationHistoryTab(task.target === "插图" ? "images" : "prompts");
           void openOutline(task.outlineId, "illustrations");
         }} /> : <>
-        {view !== "outline-home" && <MobileHeader
+        {view !== "outline-home" && !isOutlineWorkspaceView && <MobileHeader
           title={mobilePageTitle}
           status={isOutlineWorkspaceView ? saveStatusLabel(studio.saveStatus) : articleTitle}
           onBack={() => go("outline-home")}
@@ -307,6 +307,7 @@ export function WriterStudioInner() {
         {view === "outline-home" && (hasOutlines ? <MobileOutlineHome key={`mobile-outline:${activeArticle.id}`} articleTitle={articleTitle} currentOutline={currentOutline} articleMenuOpen={articleMenu} onArticleMenu={() => setArticleMenu(true)} onOutline={openOutline} onChapter={() => go("chapter")} onTask={() => setTaskPanel(true)} onSettings={() => go("settings-general")} onNotice={setToast} /> : <StructureEmptyState articleTitle={articleTitle} onCreate={() => { const id = studio.createOutline(); setView("write"); window.history.pushState({}, "", `/articles/${activeArticle.id}/outlines/${id}/write`); }} />)}
         {isOutlineWorkspaceView && (
           hasOutlines ? (mobileLayout ? <OutlineWorkspace
+            onBack={() => void go("outline-home")}
             key={currentOutline}
             mode={view as "write" | "chat" | "generate" | "illustrations"}
             illustrationHistoryTab={illustrationHistoryTab}
