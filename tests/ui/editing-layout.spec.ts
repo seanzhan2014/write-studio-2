@@ -50,6 +50,12 @@ for (const ratio of [0, .42, 1]) {
     const reader = page.getByLabel("正文内容", { exact: true });
     await expect(reader).toContainText("最终查找目标");
     await reader.evaluate((element, value) => { element.scrollTop = (element.scrollHeight - element.clientHeight) * value; }, ratio);
+    if (ratio > 0 && info.project.name === "mobile-chromium") {
+      // Measure the text anchor after the scroll-responsive controls finish moving.
+      const toolbar = page.locator('.workspace-pane[data-reading-chrome="hidden"] > .workspace-pane-toolbar');
+      await expect(toolbar).toBeHidden();
+      await expect.poll(async () => (await toolbar.boundingBox())?.height ?? 0).toBeLessThan(1);
+    }
     const offset = await reader.evaluate(element => {
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);

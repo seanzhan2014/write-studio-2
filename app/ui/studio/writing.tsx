@@ -30,7 +30,6 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     if (!draftStorageKey || typeof window === "undefined") return null;
     try { const value = JSON.parse(sessionStorage.getItem(draftStorageKey) ?? "null"); return typeof value?.text === "string" && typeof value?.baseline === "string" ? value : null; } catch { return null; }
   });
-  const [planOpen, setPlanOpen] = useState(studio.data.settings.outlineExpanded);
   const [planPeek, setPlanPeek] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
@@ -168,7 +167,20 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
     const restore = () => restoreContentPosition(target, snapshot);
     restore();
     const frame = window.requestAnimationFrame(restore);
-    return () => window.cancelAnimationFrame(frame);
+    // The reading controls and the phone keyboard may still be changing height.
+    // Keep the text anchor until that initial layout settles or the user acts.
+    const observer = new ResizeObserver(restore);
+    observer.observe(target);
+    const stop = () => observer.disconnect();
+    const timer = window.setTimeout(stop, 500);
+    const events = ["pointerdown", "touchstart", "wheel", "keydown", "input"] as const;
+    events.forEach(name => target.addEventListener(name, stop, { once: true, passive: true }));
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      observer.disconnect();
+      events.forEach(name => target.removeEventListener(name, stop));
+    };
   }, [editing]);
 
   useEffect(() => () => {
@@ -483,14 +495,6 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
   return (
     <div ref={writingScrollRef} className={`writing-scroll ${editing ? "editing" : ""}`} style={{ "--editor-font-size": `${studio.data.settings.fontSize}px` } as CSSProperties}>
       <div className="writing-canvas">
-        {!focusMode && <button className="mobile-plan-peek" type="button" onClick={() => setPlanPeek(true)}>此正文大纲 <span><Icon name="chevron" /></span></button>}
-        {!focusMode && (
-          <section className="outline-editor-section">
-            <button className="section-heading" type="button" onClick={() => { setPlanOpen((value) => !value); studio.updateSettings({ outlineExpanded: !planOpen }); }}><span>此正文大纲</span><span>{planOpen ? "收起" : "展开"} <Icon name="chevron" /></span></button>
-            {planOpen && <div className="outline-snapshot-content" aria-label="此正文大纲内容">{plan || "此版本未保存生成时的大纲内容"}</div>}
-          </section>
-        )}
-
         {!editing && displayedVersion?.reviewReport && <GenerateReviewReportView report={displayedVersion.reviewReport} />}
         {!editing && displayedVersion?.reviewRuleSnapshot && <details className="generate-review-report"><summary>本次 Review 规则</summary><ReviewRuleSnapshotView snapshot={displayedVersion.reviewRuleSnapshot} /></details>}
         <section className="content-editor-section">
@@ -498,10 +502,11 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
             <div className="body-title-cluster">
               <Menu position="bottom-start" shadow="md" width="min(400px, calc(100vw - 24px))" withinPortal>
                 <Menu.Target>
-                  <button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={editing || savingEdit || settingDefault || settingExcellent} aria-label="正文标题，选择正文候选" title={editing ? "完成编辑后可切换正文" : `${displayedContentName} · 选择正文候选`}><span>{displayedContentName}</span><Icon name="chevron" /></button>
+                  <button className={`body-title-toggle ${displayedIsDefault ? "default" : ""}`} type="button" disabled={editing || savingEdit || settingDefault || settingExcellent} aria-label="正文标题，选择正文候选" title={editing ? "完成编辑后可切换正文" : `${displayedContentName} · 选择正文候选`}><span className="body-title-current">{displayedContentName}</span><span className="body-title-mobile">{displayedIsCurrent ? "正文候选" : "候选预览"}</span><Icon name="chevron" /></button>
                 </Menu.Target>
                 <Menu.Dropdown className="body-title-dropdown">
                   <Menu.Label>正文候选</Menu.Label>
+                  {!displayedIsCurrent && <Menu.Item onClick={onClearPreview}>返回当前正文</Menu.Item>}
                   {showDirectContent && <Menu.RadioItem value={directContentId(studio.currentOutline.id)} checked={!displayedVersion || displayedIsDirectContent} closeMenuOnClick onClick={() => void selectContent()}>
                     <span className="body-title-option"><span className="body-title-option-name">{directContentName}</span><small>{!currentVersion ? "当前 · " : ""}已直接保存 · {wordCount(studio.currentOutline.content).toLocaleString("zh-CN")} 字</small></span>
                   </Menu.RadioItem>}
@@ -511,7 +516,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
                   {onManageVersions && <><Menu.Divider /><Menu.Item leftSection={<Icon name="versions" />} onClick={onManageVersions}>管理正文版本</Menu.Item></>}
                 </Menu.Dropdown>
               </Menu>
-              <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M6 3h12v18l-6-4-6 4z" /></svg></button>
+              <button className={`body-status-button default-status ${displayedIsDefault ? "active" : ""}`} type="button" disabled={!displayedContent.trim() || settingDefault} aria-label={displayedIsDefault ? "取消默认正文" : "设为默认正文"} aria-pressed={displayedIsDefault} title={displayedIsDefault ? "取消默认正文" : "设为默认正文"} onClick={() => void toggleDisplayedContentDefault()}><span aria-hidden="true">P</span></button>
               <button className={`body-status-button excellent-status ${displayedIsExcellent ? "active" : ""} ${displayedAutomaticallyExcellent && !displayedManuallyExcellent ? "automatic" : ""}`} type="button" disabled={!displayedContent.trim() || settingExcellent} aria-label={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "手动保留优秀正文" : "设为优秀正文"} aria-pressed={displayedIsExcellent} title={displayedManuallyExcellent ? "取消手动优秀正文" : displayedAutomaticallyExcellent ? "含优秀片段，已自动设为优秀；点击可手动保留" : "设为优秀正文"} onClick={() => void toggleDisplayedBodyExcellent()}><span aria-hidden="true">★</span></button>
               <button className="body-status-button body-delete-button" type="button" aria-label="删除正文" title="删除正文" disabled={savingEdit || settingDefault || settingExcellent || deleting} onClick={requestDeleteDisplayedContent}><Icon name="trash" /></button>
               {!editing && !displayedIsCurrent && <><span className="body-preview-label">预览</span><button className="body-return-current" type="button" onClick={onClearPreview}>返回当前</button></>}
@@ -520,7 +525,7 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
             <div className="editor-tools">{editing ? <>
               <div className="desktop-edit-tools"><IconButton name="search" label="查找正文" title="查找" size="small" onClick={() => setFindOpen((value) => !value)} /><IconButton name="copy" label="复制正文" title="复制" size="small" onClick={() => void copyEditingContent()} /><IconButton name="paste" label="粘贴正文" title="粘贴" size="small" onClick={() => void pasteEditingContent()} /><IconButton name="save" label="保存正文" title="保存" size="small" disabled={savingEdit} onClick={() => void saveEditing()} /><IconButton name="saveAs" label="另存为正文" title="另存为" size="small" onClick={() => void saveAsEditingContent()} /><button className="finish-edit-button" type="button" onClick={requestExitEditing}>退出编辑</button></div>
               <div className="mobile-edit-tools"><button className="finish-edit-button" type="button" aria-label="退出编辑" onClick={requestExitEditing}>完成</button><IconButton name="more" label="更多编辑操作" size="small" className="mobile-edit-more" aria-expanded={editToolsOpen} aria-haspopup="menu" onClick={() => setEditToolsOpen((open) => !open)} />{editToolsOpen && <div className="mobile-edit-overflow-menu" role="menu" aria-label="编辑操作"><button type="button" role="menuitem" onClick={() => { setFindOpen((value) => !value); setEditToolsOpen(false); }}><Icon name="search" />查找与替换</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void copyEditingContent(); }}><Icon name="copy" />复制全文</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void pasteEditingContent(); }}><Icon name="paste" />粘贴</button><button type="button" role="menuitem" disabled={savingEdit} onClick={() => { setEditToolsOpen(false); void saveEditing(); }}><Icon name="save" />保存并结束</button><button type="button" role="menuitem" onClick={() => { setEditToolsOpen(false); void saveAsEditingContent(); }}><Icon name="saveAs" />另存为正文</button><button className="danger-text" type="button" role="menuitem" disabled={savingEdit || settingDefault || settingExcellent || deleting} onClick={requestDeleteDisplayedContent}><Icon name="trash" />删除正文</button></div>}</div>
-            </> : <span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>}</div>
+            </> : <><span className="content-word-count">{wordCount(displayedContent).toLocaleString("zh-CN")} 字</span>{!focusMode && <button className="body-plan-trigger" type="button" onClick={() => setPlanPeek(true)}>大纲<Icon name="chevron" /></button>}</>}</div>
           </div>
           {!editing && displayedVersion?.rewriteSourceId && <div className="rewrite-source-row"><span>改写自</span><button type="button" onClick={() => onOpenRewriteSource(displayedVersion.rewriteSourceId!)}>{displayedVersion.rewriteSourceName || "原正文"}</button></div>}
           {findOpen && editing && <div className="find-bar"><input autoFocus value={findQuery} onChange={(event) => { setFindQuery(event.target.value); setMatchIndex(0); }} placeholder="查找…" aria-label="查找正文" /><input value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="替换为…" aria-label="替换内容" /><label><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />Aa</label><span>{matches.length ? `${Math.min(matchIndex + 1, matches.length)} / ${matches.length}` : "0 / 0"}</span><button type="button" onClick={() => selectMatch(matchIndex - 1)}>上一个</button><button type="button" onClick={() => selectMatch(matchIndex + 1)}>下一个</button><button type="button" onClick={replaceCurrent}>替换</button><button type="button" onClick={replaceAll}>全部</button><IconButton name="close" label="关闭查找" onClick={() => setFindOpen(false)} /></div>}
@@ -537,13 +542,13 @@ export function WritingView({ focusMode, previewVersion, onOpenRewriteSource, on
       {planPeek && <ScrollableDrawer
         opened
         onClose={() => setPlanPeek(false)}
-        closeButtonProps={{ "aria-label": "关闭此正文大纲" }}
-        title={<div className="ws-overlay-title"><span>{planSnapshot?.title ? `生成时大纲 · ${planSnapshot.title}` : "正文版本"}</span><span className="ui-title">此正文大纲</span></div>}
+        closeButtonProps={{ "aria-label": "关闭大纲" }}
+        title={<div className="ws-overlay-title"><span>{planSnapshot?.title ? `生成时大纲 · ${planSnapshot.title}` : "正文版本"}</span><span className="ui-title">大纲</span></div>}
         position="bottom"
         size="auto"
         classNames={{ content: "plan-peek-drawer", body: "plan-peek-drawer-body" }}
       >
-        <p aria-label="此正文大纲内容">{plan || "此版本未保存生成时的大纲内容"}</p>
+        <p aria-label="大纲内容">{plan || "此版本未保存生成时的大纲内容"}</p>
         <Button type="button" onClick={() => setPlanPeek(false)}>返回正文</Button>
       </ScrollableDrawer>}
       <BodyDeleteDialog target={deleteTarget} hasUnsavedChanges={editing && draftContent !== baselineRef.current} deleting={deleting} onClose={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => void deleteDisplayedContent()} />

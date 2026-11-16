@@ -100,7 +100,7 @@ test("mobile reopens the cached library offline and syncs its local edit after r
   page.on("request", (requested) => { if (requested.url().includes("/api/ai/")) offlineAiRequests += 1; });
   await page.getByRole("button", { name: "返回大纲", exact: true }).click();
   await page.locator(".mobile-outline-main").filter({ hasText: "当前码头" }).click();
-  await page.getByRole("combobox", { name: "工作模式", exact: true }).selectOption("generate");
+  await page.getByRole("tab", { name: "生成", exact: true }).click();
   const generate = page.getByRole("button", { name: "开始生成" });
   // Measure the application's response from the actual click, excluding
   // Playwright's scrolling and actionability waits on the mobile viewport.

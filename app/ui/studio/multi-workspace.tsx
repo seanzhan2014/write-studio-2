@@ -203,7 +203,7 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
       {!(state.layout === "single" && state.panes[state.active].mode === "chat") && (!focusMode ? <div className="breadcrumb"><button type="button" onClick={() => { window.history.pushState({}, "", `/articles/${studio.currentArticle.id}/chapters/${studio.currentChapter.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{outline.chapter}</button><span>/</span><input value={normalizeOutlineTitle(outline.title)} placeholder={title} onChange={event => studio.updateOutline(outlineId, { title: event.target.value.slice(0, 80) })} aria-label="大纲标题" /><OutlineTaskIndicator outlineId={outlineId} /></div> : <span className="workspace-focus-title">{title}</span>)}
       <div className="workspace-chat-slot" ref={setChatHeaderHost} style={{display:state.layout === "single" && state.panes[state.active].mode === "chat"?"flex":"none"}} />
       {state.layout === "single" && <WorkspaceModeTabs value={state.panes[state.active].mode} onChange={next=>selectMode(state.active,next)} />}
-      <div className="workspace-meta"><span className={`save-state ${studio.saveStatus}`} title={saveStatusLabel(studio.saveStatus)} aria-label={saveStatusLabel(studio.saveStatus)}><i /><span className="save-state-label">{saveStatusLabel(studio.saveStatus)}</span></span><WorkspaceLayoutPicker value={state.layout} onChange={setLayout} disabled={!ready} /><IconButton name={focusMode?"close":"focus"} label={focusMode?"退出专注写作":"专注写作"} onClick={onFocus} /><IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={()=>setMoreOpen(value=>!value)} /></div>
+      <div className="workspace-meta">{studio.saveStatus !== "saved" && <span className={`save-state ${studio.saveStatus}`} title={saveStatusLabel(studio.saveStatus)} aria-label={saveStatusLabel(studio.saveStatus)}><i /><span className="save-state-label">{saveStatusLabel(studio.saveStatus)}</span></span>}<WorkspaceLayoutPicker value={state.layout} onChange={setLayout} disabled={!ready} /><IconButton name={focusMode?"close":"focus"} label={focusMode?"退出专注写作":"专注写作"} onClick={onFocus} /><IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={()=>setMoreOpen(value=>!value)} /></div>
     </header>}
     <div className="workspace-grid" ref={gridRef} data-layout={state.layout} data-dragging={dragging || undefined} style={{ "--split-x": `${state.x * 100}%`, "--split-y": `${state.y * 100}%` } as CSSProperties}>
       {state.panes.map(pane => <WorkspacePane key={pane.id} pane={pane} mobile={mobile} visible={visibleIds.includes(pane.id)} position={visibleIds.indexOf(pane.id)} split={state.layout !== "single"} active={state.active === pane.id}
@@ -240,6 +240,44 @@ function WorkspacePane({ globalChatHost, pane, mobile, visible, position, split,
   const [localChatHost,setLocalChatHost]=useState<HTMLDivElement|null>(null);
   const [opened, setOpened] = useState<Mode[]>(visible ? [pane.mode] : []);
   const [editing, setEditing] = useState(false);
+  const paneRef = useRef<HTMLElement>(null);
+  const [readingChromeHidden, setReadingChromeHidden] = useState(false);
+  useEffect(() => {
+    setReadingChromeHidden(false);
+    const element = paneRef.current;
+    element?.style.removeProperty("--reading-toolbar-height");
+    element?.style.removeProperty("--reading-heading-height");
+    if (!element || !mobile || !visible || pane.mode !== "write" || editing) return;
+    let previous = 0;
+    let distance = 0;
+    let direction = 0;
+    const onScroll = (event: Event) => {
+      const reader = event.target;
+      if (!(reader instanceof HTMLElement) || !reader.classList.contains("content-reader")) return;
+      const maximum = Math.max(0, reader.scrollHeight - reader.clientHeight);
+      const top = Math.max(0, Math.min(reader.scrollTop, maximum));
+      // Ignore clamps caused by toolbar resizing and Safari rubber-band scrolling.
+      const delta = top - Math.min(previous, maximum);
+      previous = top;
+      if (top <= 8) { distance = 0; setReadingChromeHidden(false); return; }
+      if (Math.abs(delta) < 1) return;
+      const nextDirection = Math.sign(delta);
+      distance = nextDirection === direction ? distance + Math.abs(delta) : Math.abs(delta);
+      direction = nextDirection;
+      if (distance >= (direction > 0 ? 20 : 10)) {
+        if (direction > 0 && !element.hasAttribute("data-reading-chrome")) {
+          const toolbar = element.querySelector<HTMLElement>(".workspace-pane-toolbar");
+          const heading = reader.closest(".content-editor-section")?.querySelector<HTMLElement>(".editor-heading");
+          if (toolbar) element.style.setProperty("--reading-toolbar-height", `${toolbar.offsetHeight}px`);
+          if (heading) element.style.setProperty("--reading-heading-height", `${heading.offsetHeight}px`);
+        }
+        setReadingChromeHidden(direction > 0);
+        distance = 0;
+      }
+    };
+    element.addEventListener("scroll", onScroll, true);
+    return () => element.removeEventListener("scroll", onScroll, true);
+  }, [mobile, visible, split, pane.mode, pane.version, editing]);
   const [illustrationSource, setIllustrationSource] = useState<{ content: string; excerpt: string; currentContent: string; currentVersionId: string | null | undefined } | null>(null);
   const preview = selectedVersion(pane.version, studio.currentOutline);
   const editingKey = preview?.id ?? studio.currentOutline.currentVersionId ?? directContentId(studio.currentOutline.id);
@@ -260,9 +298,9 @@ function WorkspacePane({ globalChatHost, pane, mobile, visible, position, split,
   }, [pane.mode, visible]);
   const illustrationSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!;
   const bodyVisible = visible && pane.mode === "write";
-  return <section className={`workspace-pane${mobile && editing ? " mobile-writing-editing" : ""}`} data-position={position} data-active={active || undefined} hidden={!visible} aria-label={`窗口 ${pane.id + 1}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
+  return <section ref={paneRef} className={`workspace-pane${mobile && editing ? " mobile-writing-editing" : ""}`} data-reading-chrome={readingChromeHidden && bodyVisible && !editing ? "hidden" : undefined} data-position={position} data-active={active || undefined} hidden={!visible} aria-label={`窗口 ${pane.id + 1}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
     {(split || mobile) && <div className="workspace-pane-toolbar">
-      <label className="workspace-pane-mode"><span>{pane.id + 1}</span><select className={!split && mobile ? "workspace-mode-select" : undefined} aria-label={!split && mobile ? "工作模式" : `窗口 ${pane.id + 1} 功能`} value={pane.mode} onChange={event => onMode(event.target.value as Mode)}>{modes.map(item => <option key={item.value} value={item.value}>{!split && mobile && item.value === "write" ? "写作" : item.label}</option>)}</select></label>
+      <WorkspaceModeTabs value={pane.mode} onChange={onMode} label={split ? `窗口 ${pane.id + 1} 功能` : "工作模式"} />
       <div className="workspace-chat-slot" ref={setLocalChatHost} style={{display:split && pane.mode === "chat"?"flex":"none"}} />
       {pane.mode === "write" && (split || focusMode) && <div className="workspace-pane-versions"><select aria-label={`窗口 ${pane.id + 1} 正文版本`} disabled={editing} value={preview?.id ?? "current"} onChange={event => onUpdate({ version: event.target.value })}><option value="current">当前正文</option>{studio.currentOutline.content && <option value={directContentId(studio.currentOutline.id)}>直接保存正文</option>}{studio.currentOutline.versions.map(version => <option key={version.id} value={version.id}>{version.name}</option>)}</select><IconButton name="versions" label={`窗口 ${pane.id + 1} 版本管理`} onClick={onVersions} disabled={editing} /></div>}
     </div>}

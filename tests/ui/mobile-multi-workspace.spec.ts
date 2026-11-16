@@ -8,7 +8,7 @@ async function layout(page: Page, label: string) {
   await page.getByRole("button", { name: "窗口布局", exact: true }).click();
   await page.getByRole("toolbar", { name: "窗口布局" }).getByRole("button", { name: label, exact: true }).click();
 }
-const choose = (page: Page, id: number, mode: string) => page.getByLabel(`窗口 ${id} 功能`, { exact: true }).selectOption(mode);
+const choose = (page: Page, id: number, mode: string) => pane(page, id).getByRole("tab", { name: ({ write: "写作", chat: "聊天", generate: "生成", illustrations: "插图" } as Record<string, string>)[mode], exact: true }).click();
 
 test.beforeEach(async ({ page, request }, info) => {
   test.skip(!info.project.name.startsWith("mobile-"));
@@ -128,4 +128,68 @@ test("mobile input drafts survive desktop and phone viewport changes", async ({ 
   await expect(prompt).toHaveValue("mobile illustration prompt");
   await page.getByRole("button", { name: "返回大纲", exact: true }).click();
   await expect(page.locator(".mobile-outline-home")).toBeVisible();
+});
+
+test("mobile writing tabs and candidate metadata share compact rows", async ({ page, request }, info) => {
+  const tabs = page.getByRole("tablist", { name: "工作模式", exact: true });
+  await expect(tabs.getByRole("tab")).toHaveText(["写作", "聊天", "生成", "插图"]);
+  await expect(page.getByRole("combobox", { name: "工作模式", exact: true })).toHaveCount(0);
+  await expect(page.locator(".mobile-header")).not.toContainText("已保存");
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    const targets = [page.getByRole("button", { name: "正文标题，选择正文候选", exact: true }), page.locator(".content-word-count"), page.getByRole("button", { name: "大纲", exact: true })];
+    const boxes = await Promise.all(targets.map(target => target.boundingBox()));
+    const centers = boxes.map(box => box!.y + box!.height / 2);
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(2);
+    for (const box of boxes) { expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(width); }
+    expect(await page.locator(".editor-heading").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  }
+  const defaultButton = page.getByRole("button", { name: "设为默认正文", exact: true });
+  await expect(defaultButton).toHaveText("P");
+  await defaultButton.click();
+  await expect(page.getByRole("button", { name: "取消默认正文", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(async () => (await (await request.get("/api/state")).json()).data.articles[0].chapters[0].outlines[1].defaultVersionId).toBeTruthy();
+  await page.getByRole("button", { name: "大纲", exact: true }).click();
+  await expect(page.getByLabel("大纲内容", { exact: true })).toHaveText("林澈与顾屿在七码头会合。");
+  await page.getByRole("button", { name: "关闭大纲", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: info.outputPath("mobile-compact-writing.png") });
+  for (const label of ["聊天", "生成", "插图", "写作"]) {
+    await tabs.getByRole("tab", { name: label, exact: true }).click();
+    await expect(tabs.getByRole("tab", { name: label, exact: true })).toHaveAttribute("aria-selected", "true");
+  }
+});
+
+test("mobile reading hides both control rows on forward scroll and reveals them on reverse scroll", async ({ page, request }, info) => {
+  const current = await (await request.get("/api/state")).json();
+  const data = fullStudioFixture();
+  data.articles[0].chapters[0].outlines[1].content = "阅读滚动测试，保持正文位置。\n".repeat(180);
+  expect((await request.put("/api/state", { headers: { "If-Match": String(current.revision) }, data: { data, conflictResolution: "keep-local" } })).ok()).toBeTruthy();
+  await page.reload();
+  const reader = page.getByLabel("正文内容", { exact: true });
+  const tabs = page.getByRole("tablist", { name: "工作模式", exact: true });
+  const heading = page.locator(".editor-heading");
+  await expect(reader).toBeVisible();
+  const initialHeight = (await reader.boundingBox())!.height;
+  await reader.evaluate(element => { element.scrollTop = 250; });
+  await expect(tabs).toBeHidden();
+  await expect(heading).toBeHidden();
+  await expect(page.locator(".mobile-workspace-header")).toBeVisible();
+  expect((await reader.boundingBox())!.height).toBeGreaterThan(initialHeight + 70);
+  await reader.evaluate(element => { element.scrollTop -= 3; });
+  await expect(tabs).toBeHidden();
+  await reader.evaluate(element => { element.scrollTop -= 60; });
+  await expect(tabs).toBeVisible();
+  await expect(heading).toBeVisible();
+  await reader.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(tabs).toBeHidden();
+  await expect.poll(() => reader.evaluate(element => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThan(2);
+  await page.screenshot({ path: info.outputPath("mobile-reading-controls-hidden.png") });
+  await reader.evaluate(element => { element.scrollTop -= 100; });
+  await expect(tabs).toBeVisible();
+  await reader.evaluate(element => { element.scrollTop = 0; });
+  await expect(heading).toBeVisible();
+  await reader.press("Enter");
+  await expect(page.getByLabel("正文编辑器", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "退出编辑", exact: true })).toBeVisible();
 });

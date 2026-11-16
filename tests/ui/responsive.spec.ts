@@ -454,10 +454,10 @@ test("all responsive overlay consumers open inside a keyboard-compressed viewpor
   const versions = page.locator(".version-drawer-shell");
   await expectOverlayContract(page, versions);
   await versions.getByRole("button", { name: "关闭正文版本" }).click();
-  await page.locator(".mobile-plan-peek").click();
+  await page.locator(".body-plan-trigger").click();
   const planPeek = page.locator(".plan-peek-drawer");
   await expectOverlayContract(page, planPeek);
-  await planPeek.getByRole("button", { name: "关闭此正文大纲" }).click();
+  await planPeek.getByRole("button", { name: "关闭大纲" }).click();
 
   await gotoSettled("/articles/article-main/outlines/outline-current/generate");
   await page.locator(".generate-first-appearance-edit").click();
@@ -1235,7 +1235,9 @@ test("desktop writing save updates the current body without creating a version o
   await page.getByLabel("正文编辑器").fill("直接保存的当前正文");
   await page.getByRole("button", { name: "保存正文", exact: true }).click();
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
-  await expect(page.getByLabel("此正文大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
+  await page.getByRole("button", { name: "大纲", exact: true }).click();
+  await expect(page.getByLabel("大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
+  await page.getByRole("button", { name: "关闭大纲", exact: true }).click();
 
   await expect.poll(async () => {
     const response = await request.get("/api/state");
@@ -1260,7 +1262,9 @@ test("desktop writing save updates the current body without creating a version o
 
   await page.reload();
   await expect(page.getByLabel("正文内容")).toHaveText("直接保存的当前正文");
-  await expect(page.getByLabel("此正文大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
+  await page.getByRole("button", { name: "大纲", exact: true }).click();
+  await expect(page.getByLabel("大纲内容")).toHaveText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
+  await page.getByRole("button", { name: "关闭大纲", exact: true }).click();
 
   await page.getByRole("button", { name: "版本", exact: true }).click();
   await expect(page.locator(".version-list article em").filter({ hasText: "默认" })).toHaveCount(1);
@@ -1298,7 +1302,9 @@ test("editing a previewed body inherits that version's outline snapshot", async 
   await page.getByRole("button", { name: "保存正文", exact: true }).click();
 
   await expect(page.getByLabel("正文内容")).toHaveText("从预览版本修改并保存的当前正文");
-  await expect(page.getByLabel("此正文大纲内容")).toHaveText("预览正文独有的大纲快照。");
+  await page.getByRole("button", { name: "大纲", exact: true }).click();
+  await expect(page.getByLabel("大纲内容")).toHaveText("预览正文独有的大纲快照。");
+  await page.getByRole("button", { name: "关闭大纲", exact: true }).click();
   await expect.poll(async () => {
     const response = await request.get("/api/state");
     const state = await response.json() as { data: ReturnType<typeof fullStudioFixture> };
@@ -2380,7 +2386,7 @@ test("mobile body editor keeps the caret above a visual-viewport keyboard", asyn
   await expect(shell).toHaveClass(/mobile-writing-editing/);
   await expect(page.locator(".mobile-header")).toBeHidden();
   await expect(page.getByRole("tablist", { name: "工作模式" })).toBeHidden();
-  await expect(page.getByRole("button", { name: "此正文大纲" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "大纲" })).toBeHidden();
   const toolbar = page.locator(".editor-heading");
   await expect.poll(async () => (await toolbar.boundingBox())?.height ?? 999).toBeLessThanOrEqual(48);
   await expect(page.getByRole("button", { name: "退出编辑" })).toContainText("完成");
@@ -3500,10 +3506,10 @@ test("mobile writing view previews a selected version and explicitly saves or di
   await expect(page.locator(".version-drawer")).toHaveCount(0);
   await expect(page.locator(".version-preview-bar")).toHaveCount(0);
   await expect(reader).toContainText("不可变版本正文");
-  await page.getByRole("button", { name: "此正文大纲" }).click();
-  await expect(page.locator('[aria-label="此正文大纲内容"]').last()).toContainText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
+  await page.getByRole("button", { name: "大纲" }).click();
+  await expect(page.locator('[aria-label="大纲内容"]').last()).toContainText("生成时的大纲快照：林澈在七码头确认潮汐密钥。");
   await expect(page.getByText("林澈与顾屿在七码头会合。", { exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "关闭此正文大纲" }).first().click();
+  await page.getByRole("button", { name: "关闭大纲" }).first().click();
 
   await doubleTouch(reader);
   await expect(page.getByLabel("正文编辑器")).toHaveValue("不可变版本正文");

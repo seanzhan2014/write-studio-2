@@ -6,7 +6,7 @@ const pane = (page: Page, id: number) => page.getByRole("region", { name: `窗�
 const layout = (page: Page, name: string) => page.getByRole("toolbar", { name: "窗口布局" }).getByRole("button", { name, exact: true });
 const selectLayout = async (page: Page, name: string) => { await page.getByRole("button", { name: "窗口布局", exact: true }).click(); await layout(page,name).click(); };
 const layoutTrigger = (page: Page) => page.getByRole("button", { name: "窗口布局", exact: true });
-const choose = (page: Page, id: number, mode: string) => page.getByLabel(`窗口 ${id} 功能`, { exact: true }).selectOption(mode);
+const choose = (page: Page, id: number, mode: string) => pane(page, id).getByRole("tab", { name: ({ write: "写作", chat: "聊天", generate: "生成", illustrations: "插图" } as Record<string, string>)[mode], exact: true }).click();
 
 test.beforeEach(async ({ request }) => {
   const current = await (await request.get("/api/state")).json();
