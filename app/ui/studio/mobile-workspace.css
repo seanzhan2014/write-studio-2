@@ -1,0 +1,79 @@
+@media (max-width: 767px) {
+  .multi-workspace { height: min(100%, var(--workspace-visible-height, 100dvh)); max-height: var(--workspace-visible-height, 100dvh); }
+  .multi-workspace > .mobile-workspace-header,
+  .focus-mode .multi-workspace > .mobile-workspace-header { display: flex; flex-shrink: 0; }
+  .multi-workspace > .mobile-workspace-header .workspace-layout-trigger { flex: 0 0 44px; }
+  .multi-workspace .workspace-pane-toolbar { height: auto; min-height: 48px; flex-wrap: wrap; gap: 4px; padding: 4px 6px; }
+  .multi-workspace .workspace-pane-mode { flex: 1 1 72px; min-width: 0; }
+  .multi-workspace .workspace-pane-mode select { width: 100%; min-width: 0; min-height: 44px; font-size: 16px; }
+  .multi-workspace .workspace-pane-versions { flex: 1 1 110px; min-width: 0; margin-left: 0; }
+  .multi-workspace .workspace-pane-versions select { flex: 1; width: 0; max-width: none; min-height: 44px; font-size: 16px; }
+  .multi-workspace .workspace-pane-versions .icon-button { flex: 0 0 44px; width: 44px; height: 44px; }
+  .multi-workspace .workspace-pane-toolbar > .workspace-chat-slot { flex: 1 1 150px; }
+  .multi-workspace .workspace-pane .workspace-chat-slot .chat-header { height: 44px; }
+  .multi-workspace .workspace-pane.mobile-writing-editing .writing-scroll { flex: 1; height: auto; max-height: 100%; min-height: 0; }
+  .multi-workspace .workspace-pane .writing-canvas { padding: 8px 10px; min-height: 0; }
+  .multi-workspace .workspace-pane .content-editor-section { min-height: 0; }
+  .multi-workspace .workspace-pane .content-editor,
+  .multi-workspace .workspace-pane .content-reader { min-height: 0; }
+  .multi-workspace .workspace-pane .chat-view { flex: 1; height: 100%; max-height: 100%; min-height: 0; }
+  .multi-workspace .workspace-pane .chat-thread { min-height: 0; padding: 8px; }
+  .multi-workspace .workspace-pane .chat-composer-wrap { flex-shrink: 0; padding: 6px 8px; }
+  .multi-workspace .workspace-pane .chat-composer { padding: 8px; min-width: 0; }
+  .multi-workspace .workspace-pane .chat-composer textarea { min-height: 44px; max-height: 88px; }
+  .multi-workspace .workspace-pane .composer-actions,
+  .multi-workspace .workspace-pane .composer-left-actions { flex-wrap: wrap; min-width: 0; }
+  .multi-workspace .workspace-pane .composer-left-actions { flex: 1 1 100px; }
+  .multi-workspace .workspace-pane .composer-model-chip { flex: 1 1 100px; max-width: 100%; min-width: 0; }
+  .multi-workspace .workspace-pane .composer-context-chip { max-width: 100%; }
+  .multi-workspace .workspace-pane .chat-tools-popover { left: 0; width: 100%; }
+  .multi-workspace .workspace-pane .chat-context-panel { max-height: min(240px, 40dvh); }
+  .multi-workspace .workspace-pane .generate-page { min-width: 0; padding: 8px 10px 24px; }
+  .multi-workspace .workspace-pane .generate-page .generate-submit-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .multi-workspace .workspace-pane .generate-page .generate-submit-button { min-width: 0; padding-inline: 10px; }
+  .multi-workspace .divider-x { width: 20px; }
+  .multi-workspace .divider-x::after { left: 9.5px; }
+  .multi-workspace .divider-y { height: 20px; }
+  .multi-workspace .divider-y::after { top: 9.5px; }
+  .multi-workspace .workspace-divider-cross { width: 44px; height: 44px; background: transparent; border: 0; }
+  .multi-workspace .workspace-divider-cross::after { content: ""; position: absolute; width: 14px; height: 14px; left: 15px; top: 15px; border: 1px solid var(--border); border-radius: 3px; background: var(--surface); }
+
+  .multi-workspace[data-compact-height="true"] .workspace-pane-view .pane-context-source,
+  .multi-workspace[data-compact-height="true"] .workspace-pane-view .composer-left-actions,
+  .multi-workspace[data-compact-height="true"] .workspace-pane-view .chat-reasoning-options { display: none; }
+  .multi-workspace[data-compact-height="true"] .workspace-pane-view .composer-actions { justify-content: flex-end; }
+
+  @container workspace-pane (max-width: 310px) {
+    .workspace-pane-toolbar { align-content: flex-start; }
+    .workspace-pane-versions { flex-basis: 100%; }
+    .workspace-pane-view .editor-heading { gap: 4px; flex-wrap: wrap; }
+    .workspace-pane-view .body-title-cluster { max-width: 100%; min-width: 0; }
+    .workspace-pane-view .body-title-toggle { min-width: 0; }
+    .workspace-pane-view .mobile-edit-tools { flex-wrap: wrap; }
+    .workspace-pane-view .editor-heading .body-status-button { display: none; }
+    .workspace-pane-view .outline-snapshot-content { padding: 8px; }
+    .workspace-pane-view .message { gap: 6px; }
+    .workspace-pane-view .message .avatar { display: none; }
+    .workspace-pane-view .message-body { min-width: 0; }
+    .workspace-pane-view .message-actions { flex-wrap: wrap; }
+    .workspace-pane-view .composer-left-actions { flex-basis: 100%; }
+    .workspace-pane-view .composer-send { margin-left: auto; }
+    .workspace-pane-view .pane-context-source { white-space: normal; overflow-wrap: anywhere; }
+    .multi-workspace .workspace-pane .generate-page .generate-submit-row,
+    .workspace-pane-view .generate-settings-scope .mantine-Select-root,
+    .workspace-pane-view .range-number-fields,
+    .workspace-pane-view .prose-control-row { grid-template-columns: minmax(0, 1fr); }
+    .workspace-pane-view .generate-page .generate-submit-button { width: 100%; }
+    .workspace-pane-view .generate-section-heading,
+    .workspace-pane-view .generate-outline-editor-heading,
+    .workspace-pane-view .generate-prompt-label,
+    .workspace-pane-view .illustration-page-header { flex-wrap: wrap; gap: 4px; }
+    .workspace-pane-view .generate-mode-options { flex-wrap: wrap; }
+    .workspace-pane-view .generate-mode-options label { flex: 1 1 100%; }
+    .workspace-pane-view .mantine-Group-root { flex-wrap: wrap; }
+    .workspace-pane-view .mantine-Group-root > .mantine-Button-root { flex-basis: 100%; }
+    .workspace-pane-view .mantine-Button-label { white-space: normal; overflow-wrap: anywhere; }
+    .workspace-pane-view .mantine-Button-root { height: auto; min-height: 44px; padding-block: 8px; }
+    .workspace-pane-view .illustration-view-switch { flex-wrap: wrap; }
+  }
+}

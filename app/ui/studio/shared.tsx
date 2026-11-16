@@ -625,7 +625,8 @@ export function useWritingEditorViewport(scrollRef: { current: HTMLDivElement | 
       }
       const viewport = viewportMetrics();
       const containerTopWithinViewport = Math.max(0, container.getBoundingClientRect().top - viewport.top);
-      const visibleHeight = Math.max(180, viewport.height - containerTopWithinViewport);
+      const pane = container.closest(".workspace-pane");
+      const visibleHeight = pane ? Math.max(0, Math.min(viewport.bottom, pane.getBoundingClientRect().bottom) - Math.max(viewport.top, container.getBoundingClientRect().top)) : Math.max(180, viewport.height - containerTopWithinViewport);
       const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
       const keyboardInset = Math.max(0, layoutHeight - viewport.bottom);
       container.style.setProperty("--writing-visible-height", `${visibleHeight}px`);

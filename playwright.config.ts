@@ -26,6 +26,11 @@ export default defineConfig({
   },
   projects: [
     {
+      name: "mobile-webkit-workspace",
+      testMatch: /mobile-multi-workspace\.spec\.ts/,
+      use: { browserName: "webkit", viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true },
+    },
+    {
       name: "desktop-chromium",
       use: { browserName: "chromium", viewport: { width: 1440, height: 900 } },
     },

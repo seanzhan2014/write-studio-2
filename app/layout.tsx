@@ -7,6 +7,7 @@ import "./ui/studio/workspace-chrome.css";
 import "./ui/compact-controls.css";
 import "./ui/content-management.css";
 import "./ui/workspace-objects.css";
+import "./ui/studio/mobile-workspace.css";
 import OfflineBootstrap from "./offline-bootstrap";
 
 export async function generateMetadata(): Promise<Metadata> {

@@ -13,12 +13,12 @@ import { OutlineTaskIndicator } from "@/app/ui/task-interaction";
 import { IllustrationGenerator } from "@/app/ui/illustration-generator";
 import { OutlineSettingsDrawer } from "@/app/ui/story-settings-editor";
 import { saveStatusLabel } from "./navigation";
-import { directContentId, directContentPreview, Icon, IconButton, useConfiguredModels, useDismissOnOutside } from "./shared";
+import { directContentId, directContentPreview, IconButton, useConfiguredModels, useDismissOnOutside } from "./shared";
 import { WritingView } from "./writing";
 import { ChatView } from "./chat";
 import { GenerateView } from "./generation";
 import { VersionDrawer } from "./versions";
-import type { OutlineWorkspace } from "./workspace";
+import { MobileHeader, type OutlineWorkspace } from "./workspace";
 
 type Mode = "write" | "chat" | "generate" | "illustrations";
 type Layout = "single" | "columns" | "rows" | "grid";
@@ -36,8 +36,9 @@ function clampRatio(value: number, extent: number, minimum: number) {
   return Math.max(limit, Math.min(1 - limit, value));
 }
 
-export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTaskCreated, onOpenTasks, onNotice, previewVersion, onOpenRewriteSource, illustrationHistoryTab, navigationId = 0 }: ComponentProps<typeof OutlineWorkspace> & { navigationId?: number }) {
+export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTaskCreated, onOpenTasks, onNotice, previewVersion, onOpenRewriteSource, illustrationHistoryTab, navigationId = 0, onBack }: ComponentProps<typeof OutlineWorkspace> & { navigationId?: number }) {
   const studio = useStudio();
+  const mobile = useMediaQuery("(max-width: 767px)") ?? false;
   const [chatHeaderHost,setChatHeaderHost]=useState<HTMLDivElement|null>(null);
   const outlineId = studio.currentOutline.id;
   const models = useConfiguredModels();
@@ -51,6 +52,40 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
   const [drafts, setDrafts] = useState<Record<number, string | null>>({});
   const editors = useRef<Record<string, number>>({});
   const gridRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const observer = new ResizeObserver(() => {
+      const { width, height } = grid.getBoundingClientRect();
+      if (!width || !height) return;
+      setState(current => {
+        const x = clampRatio(current.x, width, mobile ? 120 : 300);
+        const y = clampRatio(current.y, height, mobile ? 96 : 180);
+        return Math.abs(x - current.x) < .001 && Math.abs(y - current.y) < .001 ? current : { ...current, x, y };
+      });
+    });
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [mobile]);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || !mobile) return;
+    const viewport = window.visualViewport;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const top = Math.max(viewport?.offsetTop ?? 0, workspace.getBoundingClientRect().top);
+      workspace.dataset.compactHeight = ((viewport?.height ?? window.innerHeight) < 480) ? "true" : "false";
+      workspace.style.setProperty("--workspace-visible-height", Math.max(0, (viewport?.height ?? window.innerHeight) + (viewport?.offsetTop ?? 0) - top) + "px");
+    };
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(measure); };
+    measure();
+    viewport?.addEventListener("resize", schedule);
+    viewport?.addEventListener("scroll", schedule);
+    window.addEventListener("resize", schedule);
+    return () => { cancelAnimationFrame(frame); viewport?.removeEventListener("resize", schedule); viewport?.removeEventListener("scroll", schedule); window.removeEventListener("resize", schedule); workspace.style.removeProperty("--workspace-visible-height"); delete workspace.dataset.compactHeight; };
+  }, [mobile]);
   const drag = useRef<{ pointer: number; axis: "x" | "y" | "both" } | null>(null);
   const [dragging, setDragging] = useState(false);
   const routeRef = useRef({ mode, preview: previewVersion?.id, navigationId });
@@ -134,7 +169,7 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
     if (!drag.current || drag.current.pointer !== event.pointerId || !gridRef.current) return;
     const rect = gridRef.current.getBoundingClientRect();
     const axis = drag.current.axis;
-    setState(current => ({ ...current, ...(axis !== "y" ? { x: clampRatio((event.clientX - rect.left) / rect.width, rect.width, 300) } : {}), ...(axis !== "x" ? { y: clampRatio((event.clientY - rect.top) / rect.height, rect.height, 180) } : {}) }));
+    setState(current => ({ ...current, ...(axis !== "y" ? { x: clampRatio((event.clientX - rect.left) / rect.width, rect.width, mobile ? 120 : 300) } : {}), ...(axis !== "x" ? { y: clampRatio((event.clientY - rect.top) / rect.height, rect.height, mobile ? 96 : 180) } : {}) }));
   }
   function startResize(event: PointerEvent<HTMLElement>, axis: "x" | "y" | "both") {
     if (event.button !== 0) return;
@@ -156,22 +191,22 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
     onDoubleClick={() => setState(current => ({ ...current, [axis]: .5 }))}
     onKeyDown={event => {
       const direction = axis === "x" ? event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0 : event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
-      if (direction || event.key === "Home") { event.preventDefault(); const extent = axis === "x" ? gridRef.current?.clientWidth : gridRef.current?.clientHeight; setState(current => ({ ...current, [axis]: event.key === "Home" ? .5 : clampRatio(current[axis] + direction * .02, extent ?? 1000, axis === "x" ? 300 : 180) })); }
+      if (direction || event.key === "Home") { event.preventDefault(); const extent = axis === "x" ? gridRef.current?.clientWidth : gridRef.current?.clientHeight; setState(current => ({ ...current, [axis]: event.key === "Home" ? .5 : clampRatio(current[axis] + direction * .02, extent ?? 1000, axis === "x" ? mobile ? 120 : 300 : mobile ? 96 : 180) })); }
     }}
   />;
   useDismissOnOutside(moreOpen, () => setMoreOpen(false), ".workspace-more-trigger, .workspace-more-menu");
   const title = outlineDisplayTitle(outline);
   const selectedPane = state.panes.find(pane => pane.id === versionPane);
 
-  return <div className="workspace multi-workspace">
-    <header className="workspace-header workspace-unified-header">
+  return <div className="workspace multi-workspace" ref={workspaceRef}>
+    {mobile ? <MobileHeader title={title} status={saveStatusLabel(studio.saveStatus)} outlineId={outlineId} onBack={onBack ?? (() => {})} showVersions onVersions={() => setVersionPane(state.active)} mode={state.layout === "single" && state.panes[state.active].mode === "chat" ? "chat" : undefined} onChatHost={setChatHeaderHost} onMore={() => setMoreOpen(value => !value)} controls={<><WorkspaceLayoutPicker value={state.layout} onChange={setLayout} disabled={!ready} /><IconButton name={focusMode ? "close" : "focus"} label={focusMode ? "退出专注写作" : "专注写作"} onClick={onFocus} /></>} /> : <header className="workspace-header workspace-unified-header">
       {!(state.layout === "single" && state.panes[state.active].mode === "chat") && (!focusMode ? <div className="breadcrumb"><button type="button" onClick={() => { window.history.pushState({}, "", `/articles/${studio.currentArticle.id}/chapters/${studio.currentChapter.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>{outline.chapter}</button><span>/</span><input value={normalizeOutlineTitle(outline.title)} placeholder={title} onChange={event => studio.updateOutline(outlineId, { title: event.target.value.slice(0, 80) })} aria-label="大纲标题" /><OutlineTaskIndicator outlineId={outlineId} /></div> : <span className="workspace-focus-title">{title}</span>)}
       <div className="workspace-chat-slot" ref={setChatHeaderHost} style={{display:state.layout === "single" && state.panes[state.active].mode === "chat"?"flex":"none"}} />
       {state.layout === "single" && <WorkspaceModeTabs value={state.panes[state.active].mode} onChange={next=>selectMode(state.active,next)} />}
       <div className="workspace-meta"><span className={`save-state ${studio.saveStatus}`} title={saveStatusLabel(studio.saveStatus)} aria-label={saveStatusLabel(studio.saveStatus)}><i /><span className="save-state-label">{saveStatusLabel(studio.saveStatus)}</span></span><WorkspaceLayoutPicker value={state.layout} onChange={setLayout} disabled={!ready} /><IconButton name={focusMode?"close":"focus"} label={focusMode?"退出专注写作":"专注写作"} onClick={onFocus} /><IconButton name="more" label="更多操作" className="workspace-more-trigger" onClick={()=>setMoreOpen(value=>!value)} /></div>
-    </header>
+    </header>}
     <div className="workspace-grid" ref={gridRef} data-layout={state.layout} data-dragging={dragging || undefined} style={{ "--split-x": `${state.x * 100}%`, "--split-y": `${state.y * 100}%` } as CSSProperties}>
-      {state.panes.map(pane => <WorkspacePane key={pane.id} pane={pane} visible={visibleIds.includes(pane.id)} position={visibleIds.indexOf(pane.id)} split={state.layout !== "single"} active={state.active === pane.id}
+      {state.panes.map(pane => <WorkspacePane key={pane.id} pane={pane} mobile={mobile} visible={visibleIds.includes(pane.id)} position={visibleIds.indexOf(pane.id)} split={state.layout !== "single"} active={state.active === pane.id}
         globalChatHost={state.layout === "single" && visibleIds.includes(pane.id) ? chatHeaderHost : null} models={models} title={title} outline={outline} focusMode={focusMode} onActivate={() => activate(pane.id)} onMode={next => selectMode(pane.id, next)} onUpdate={patch => updatePane(pane.id, patch)}
         onNotice={onNotice} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} onOpenRewriteSource={onOpenRewriteSource} onVersions={() => setVersionPane(pane.id)}
         onDraftChange={draftChanged} onEditorChange={editorChanged} onRequestEditor={requestEditor} illustrationHistoryTab={illustrationHistoryTab}
@@ -190,7 +225,7 @@ export function MultiWorkspace({ mode, outline, focusMode, onMode, onFocus, onTa
 }
 
 type PaneProps = {
-  globalChatHost: HTMLElement | null; pane: Pane; visible: boolean; position: number; split: boolean; active: boolean; models: ReturnType<typeof useConfiguredModels>; title: string;
+  globalChatHost: HTMLElement | null; pane: Pane; mobile: boolean; visible: boolean; position: number; split: boolean; active: boolean; models: ReturnType<typeof useConfiguredModels>; title: string;
   outline: ComponentProps<typeof OutlineWorkspace>["outline"]; focusMode: boolean; onActivate: () => void; onMode: (mode: Mode) => void; onUpdate: (patch: Partial<Pane>) => void;
   onNotice: (message: string) => void; onTaskCreated: () => void; onOpenTasks: () => void; onOpenRewriteSource: (id: string) => void; onVersions: () => void;
   onDraftChange: (id: number, text: string | null) => void; onEditorChange: (key: string, id: number, editing: boolean) => void; onRequestEditor: (key: string, id: number) => boolean; illustrationHistoryTab: string; contextSource?: Pane; drafts: Record<number, string | null>; sharedContent?: string;
@@ -200,13 +235,12 @@ function selectedVersion(version: string, outline: ReturnType<typeof useStudio>[
   return version === directContentId(outline.id) ? directContentPreview(outline) : outline.versions.find(item => item.id === version);
 }
 
-function WorkspacePane({ globalChatHost, pane, visible, position, split, active, models, title, outline, focusMode, onActivate, onMode, onUpdate, onNotice, onTaskCreated, onOpenTasks, onOpenRewriteSource, onVersions, onDraftChange, onEditorChange, onRequestEditor, illustrationHistoryTab, contextSource, drafts, sharedContent }: PaneProps) {
+function WorkspacePane({ globalChatHost, pane, mobile, visible, position, split, active, models, title, outline, focusMode, onActivate, onMode, onUpdate, onNotice, onTaskCreated, onOpenTasks, onOpenRewriteSource, onVersions, onDraftChange, onEditorChange, onRequestEditor, illustrationHistoryTab, contextSource, drafts, sharedContent }: PaneProps) {
   const studio = useStudio();
   const [localChatHost,setLocalChatHost]=useState<HTMLDivElement|null>(null);
   const [opened, setOpened] = useState<Mode[]>(visible ? [pane.mode] : []);
   const [editing, setEditing] = useState(false);
   const [illustrationSource, setIllustrationSource] = useState<{ content: string; excerpt: string; currentContent: string; currentVersionId: string | null | undefined } | null>(null);
-  const narrow = useMediaQuery("(max-width: 767px)") ?? false;
   const preview = selectedVersion(pane.version, studio.currentOutline);
   const editingKey = preview?.id ?? studio.currentOutline.currentVersionId ?? directContentId(studio.currentOutline.id);
   const ownContent = preview?.content ?? resolvedOutlineContent(studio.currentOutline);
@@ -226,10 +260,10 @@ function WorkspacePane({ globalChatHost, pane, visible, position, split, active,
   }, [pane.mode, visible]);
   const illustrationSettings = resolveAiSettings(studio.currentArticle, studio.currentOutline.id, "generate", "outline", studio.data.settings).value.tasks!;
   const bodyVisible = visible && pane.mode === "write";
-  return <section className="workspace-pane" data-position={position} data-active={active || undefined} hidden={!visible} aria-label={`窗口 ${pane.id + 1}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
-    {split && <div className="workspace-pane-toolbar">
-      <label className="workspace-pane-mode"><span>{pane.id + 1}</span><select aria-label={`窗口 ${pane.id + 1} 功能`} value={pane.mode} onChange={event => onMode(event.target.value as Mode)}>{modes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-      <div className="workspace-chat-slot" ref={setLocalChatHost} style={{display:pane.mode === "chat"?"flex":"none"}} />
+  return <section className={`workspace-pane${mobile && editing ? " mobile-writing-editing" : ""}`} data-position={position} data-active={active || undefined} hidden={!visible} aria-label={`窗口 ${pane.id + 1}`} onPointerDownCapture={onActivate} onFocusCapture={onActivate}>
+    {(split || mobile) && <div className="workspace-pane-toolbar">
+      <label className="workspace-pane-mode"><span>{pane.id + 1}</span><select className={!split && mobile ? "workspace-mode-select" : undefined} aria-label={!split && mobile ? "工作模式" : `窗口 ${pane.id + 1} 功能`} value={pane.mode} onChange={event => onMode(event.target.value as Mode)}>{modes.map(item => <option key={item.value} value={item.value}>{!split && mobile && item.value === "write" ? "写作" : item.label}</option>)}</select></label>
+      <div className="workspace-chat-slot" ref={setLocalChatHost} style={{display:split && pane.mode === "chat"?"flex":"none"}} />
       {pane.mode === "write" && (split || focusMode) && <div className="workspace-pane-versions"><select aria-label={`窗口 ${pane.id + 1} 正文版本`} disabled={editing} value={preview?.id ?? "current"} onChange={event => onUpdate({ version: event.target.value })}><option value="current">当前正文</option>{studio.currentOutline.content && <option value={directContentId(studio.currentOutline.id)}>直接保存正文</option>}{studio.currentOutline.versions.map(version => <option key={version.id} value={version.id}>{version.name}</option>)}</select><IconButton name="versions" label={`窗口 ${pane.id + 1} 版本管理`} onClick={onVersions} disabled={editing} /></div>}
     </div>}
     {opened.includes("write") && <div className="workspace-pane-view" hidden={!bodyVisible}>
@@ -240,6 +274,6 @@ function WorkspacePane({ globalChatHost, pane, visible, position, split, active,
     </div>}
     {opened.includes("chat") && <div className="workspace-pane-view" hidden={!visible || pane.mode !== "chat"}><ChatView headerHost={visible && pane.mode === "chat" ? (split ? localChatHost : globalChatHost) : null} models={models} outlineTitle={title} onNotice={onNotice} onUseAsGenerate={() => {}} sessionId={pane.session || studio.currentOutline.chat.sessions[0]?.id} onSessionChange={session => onUpdate({ session })} contextContent={contextContent} contextLabel={contextLabel} visible={visible && pane.mode === "chat"} copyOnly /></div>}
     {opened.includes("generate") && <div className="workspace-pane-view" hidden={!visible || pane.mode !== "generate"}><GenerateView models={models} outline={outline} onTaskCreated={onTaskCreated} onOpenTasks={onOpenTasks} independent={split} instanceId={pane.id === 0 ? undefined : String(pane.id)} /></div>}
-    {opened.includes("illustrations") && <div className="workspace-pane-view illustration-mode-panel" hidden={!visible || pane.mode !== "illustrations"}><IllustrationGenerator outlineId={studio.currentOutline.id} content={activeIllustrationSource?.content ?? ownContent} selectedExcerpt={activeIllustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(illustrationSettings.illustrationPromptModel)} defaultImageModel={String(illustrationSettings.illustrationImageModel)} onClose={() => onMode("write")} independent={split && !narrow} /></div>}
+    {opened.includes("illustrations") && <div className="workspace-pane-view illustration-mode-panel" hidden={!visible || pane.mode !== "illustrations"}><IllustrationGenerator outlineId={studio.currentOutline.id} content={activeIllustrationSource?.content ?? ownContent} selectedExcerpt={activeIllustrationSource?.excerpt ?? ""} initialTab={illustrationHistoryTab} defaultModel={String(illustrationSettings.illustrationPromptModel)} defaultImageModel={String(illustrationSettings.illustrationImageModel)} onClose={() => onMode("write")} independent={split} /></div>}
   </section>;
 }

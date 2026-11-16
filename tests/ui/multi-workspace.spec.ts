@@ -199,11 +199,12 @@ test.describe("desktop multi workspace", () => {
   });
 });
 
-test("mobile keeps a single workspace despite a desktop split preference", async ({ page }, info) => {
+test("mobile restores the saved split workspace", async ({ page }, info) => {
   test.skip(info.project.name !== "mobile-chromium");
   await page.addInitScript(() => localStorage.setItem("writer-studio:workspace-layout", JSON.stringify({ layout: "grid", x: .6, y: .4 })));
   await page.goto(url);
-  await expect(page.getByLabel("正文内容", { exact: true })).toBeVisible();
-  await expect(page.getByRole("toolbar", { name: "窗口布局" })).toHaveCount(0);
-  await expect(page.locator(".workspace-divider")).toHaveCount(0);
+  await expect(layoutTrigger(page)).toHaveAttribute("data-layout", "grid");
+  await expect(pane(page, 1).getByLabel("正文内容", { exact: true })).toBeVisible();
+  await expect(pane(page, 4)).toBeVisible();
+  await expect(page.locator(".workspace-grid").getByRole("separator")).toHaveCount(2);
 });

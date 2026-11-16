@@ -79,12 +79,13 @@ function MobileOutlineTitleMenu({ outlineId, title }: { outlineId: string; title
   </Menu>;
 }
 
-export function MobileHeader({ title, status, onBack, onVersions, showVersions, outlineId, mode, onMode, onMore, onChatHost }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean; outlineId?: string; mode?: WorkspaceMode; onMode?: (mode: WorkspaceMode) => void; onMore?: () => void; onChatHost?: (element:HTMLDivElement|null)=>void }) {
+export function MobileHeader({ title, status, onBack, onVersions, showVersions, outlineId, mode, onMode, onMore, onChatHost, controls }: { title: string; status: string; onBack: () => void; onVersions: () => void; showVersions: boolean; outlineId?: string; mode?: WorkspaceMode; onMode?: (mode: WorkspaceMode) => void; onMore?: () => void; onChatHost?: (element:HTMLDivElement|null)=>void; controls?: React.ReactNode }) {
   return (
-    <div className={mode ? "mobile-header mobile-workspace-header" : "mobile-header"}>
+    <div className={mode || controls ? "mobile-header mobile-workspace-header" : "mobile-header"}>
       <IconButton name="back" label="返回大纲" variant="glass" size="large" className="mobile-back-button" onClick={onBack} />
       {mode === "chat" ? <div className="workspace-mobile-chat-slot" ref={onChatHost} /> : <div><div className="mobile-header-title-line">{outlineId ? <MobileOutlineTitleMenu key={outlineId} outlineId={outlineId} title={title} /> : <span className="ui-title">{title}</span>}{outlineId && <OutlineTaskIndicator outlineId={outlineId} />}</div><span>{status}</span></div>}
       {mode && onMode && <WorkspaceModeSelect value={mode} onChange={onMode} />}
+      {controls}
       {onMore ? <IconButton name="more" label="更多操作" onClick={onMore} className="workspace-more-trigger" /> : showVersions ? <IconButton name="versions" label="选择正文版本" variant="glass" size="large" onClick={onVersions} /> : <span className="mobile-header-placeholder" />}
     </div>
   );
@@ -97,7 +98,7 @@ export function OutlineWorkspace({
   focusMode,
   onMode,
   onVersions,
-  onFocus,
+  onFocus: _onFocus,
   onTaskCreated,
   onOpenTasks,
   onNotice,
