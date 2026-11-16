@@ -14,7 +14,7 @@ export function buildProduction({ workspace = process.cwd(), onLog = () => {} } 
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cli, "build"], {
       cwd: workspace,
-      env: process.env,
+      env: { ...process.env, WRITER_STUDIO_BUILD_TARGET: "local" },
       stdio: "inherit",
       windowsHide: true,
     });

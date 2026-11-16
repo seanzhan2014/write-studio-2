@@ -142,8 +142,15 @@ test("service controller runs the production build with local SQLite", async () 
   try {
     const start = await controller.start();
     assert.equal(start.ok, true);
-    await waitFor(async () => (await controller.status()).service.state === "running", 15_000);
-    const response = await fetch(`http://127.0.0.1:${servicePort}/api/database/status`);
+    // The launcher's temporary port-availability probe can accept TCP before
+    // the production app exists. Wait for the actual HTTP handler instead.
+    let response;
+    await waitFor(async () => {
+      try {
+        response = await fetch(`http://127.0.0.1:${servicePort}/api/database/status`, { signal: AbortSignal.timeout(1000) });
+        return response.ok;
+      } catch { return false; }
+    }, 15_000);
     assert.equal(response.status, 200);
     const status = await response.json();
     assert.equal(status.engine, "SQLite");

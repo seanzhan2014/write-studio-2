@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { sourceIdentity } from "../scripts/source-identity.mjs";
 
 const workspace = fileURLToPath(new URL("..", import.meta.url));
 
@@ -83,6 +84,13 @@ test("application restart endpoint rebuilds and restarts its managed production 
       return status.service?.state === "running" && status.service?.startedAt !== initial.service.startedAt ? status : null;
     }, manager, output, 150_000);
     assert.equal(restarted.service.managed, true);
+    const buildResponse = await fetch(`${appUrl}/api/system/build`, { cache: "no-store" });
+    assert.equal(buildResponse.status, 200);
+    assert.equal(buildResponse.headers.get("cache-control"), "no-store");
+    const build = await buildResponse.json();
+    assert.equal(build.target, "local");
+    assert.equal(build.sourceHash, await sourceIdentity(workspace));
+    assert.ok(Number.isFinite(Date.parse(build.builtAt)));
   } finally {
     await fetch(`${managerUrl}/api/stop`, { method: "POST" }).catch(() => null);
     if (manager.exitCode === null) {

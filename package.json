@@ -12,6 +12,8 @@
     "dev:test": "node scripts/dev-test-server.mjs",
     "build": "vinext build",
     "build:sites": "node scripts/build-sites.mjs",
+    "deploy:local": "node scripts/deploy-local.mjs",
+    "verify:local": "node scripts/deploy-local.mjs --verify-only",
     "start": "node scripts/prod-server.mjs",
     "test": "npm run typecheck && npm run lint -- --max-warnings=0 && npm run build && node scripts/run-tests.mjs && npm run test:ui",
     "typecheck": "tsc --noEmit",
